@@ -56,6 +56,19 @@ managed_venv_python <- function(dir = jax_backend_dir()) {
 }
 
 
+#' Absolutize a path while preserving a final symlink
+#'
+#' A venv's `bin/python` is a symlink to the base interpreter. `normalizePath()`
+#' resolves it on Unix, which would point the backend at the base install whose
+#' site-packages has no jax. We normalize only the (real) parent directory and
+#' re-attach the basename, keeping the venv interpreter itself.
+#' @noRd
+abs_keep_symlink <- function(p) {
+  file.path(normalizePath(dirname(p), winslash = "/", mustWork = FALSE),
+            basename(p))
+}
+
+
 #' Install the JAX/NumPyro backend into a managed venv
 #'
 #' Creates an isolated Python virtual environment under `jax_backend_dir()`
@@ -158,11 +171,12 @@ install_jax_backend <- function(dir = jax_backend_dir(),
   }, error = function(e) FALSE)
   if (!ok) stop("Install completed but jax/numpyro import failed.", call. = FALSE)
 
-  # Cache the path so future fit_broc() calls find it first
-  Sys.setenv(BAYESROC_PYTHON = normalizePath(venv_py))
+  # Cache the path so future fit_broc() calls find it first. Keep the venv
+  # symlink intact -- resolving it points at the base interpreter (no jax).
+  Sys.setenv(BAYESROC_PYTHON = abs_keep_symlink(venv_py))
 
   if (!quiet) message("\nDone. The JAX backend will use this venv from now on.")
-  invisible(normalizePath(venv_py))
+  invisible(abs_keep_symlink(venv_py))
 }
 
 
@@ -207,7 +221,7 @@ set_jax_python <- function(python) {
   if (!file.exists(python)) {
     stop("Python executable not found: ", python, call. = FALSE)
   }
-  python <- normalizePath(python)
+  python <- abs_keep_symlink(python)
   Sys.setenv(BAYESROC_PYTHON = python)
   invisible(python)
 }
