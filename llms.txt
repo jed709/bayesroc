@@ -1,0 +1,315 @@
+# bayesroc
+
+Bayesian signal detection models in R, with a formula-based API.
+Compiles models to Stan (via
+[`cmdstanr`](https://mc-stan.org/cmdstanr/)) or
+[`NumPyro`](https://github.com/pyro-ppl/numpyro) and supports multiple
+univariate and bivariate model families with fixed and random effects on
+any model parameter.
+
+## Installation
+
+bayesroc is not yet on CRAN. Install from GitHub:
+
+``` r
+
+# install.packages("remotes")
+remotes::install_github("jed709/bayesroc")
+```
+
+The Stan backend requires `cmdstanr` and a working CmdStan installation:
+
+``` r
+
+install.packages("cmdstanr",
+  repos = c("https://stan-dev.r-universe.dev", getOption("repos")))
+cmdstanr::install_cmdstan()
+```
+
+The optional JAX backend runs in a managed Python virtual environment.
+It requires a **system Python (\>= 3.10) installed first** — bayesroc
+creates the venv but does not install Python itself. On macOS/Linux a
+`python.org`, Homebrew (`brew install python`), pyenv, or conda
+interpreter all work and are auto-discovered. On Windows, install Python
+from [python.org](https://www.python.org/downloads/) rather than the
+Microsoft Store (the Store “python” stub is not a usable interpreter).
+Then:
+
+``` r
+
+bayesroc::install_jax_backend()   # creates a managed venv with jax + numpyro
+bayesroc::check_jax_backend()     # confirms the backend is ready ("ok")
+```
+
+Once installed, switch backends with `fit_broc(model, backend = "jax")`.
+
+If
+[`install_jax_backend()`](https://jed709.github.io/bayesroc/reference/install_jax_backend.md)
+cannot find Python, point it at one explicitly with
+`install_jax_backend(python = "/path/to/python")`, or set the
+interpreter used for fitting with
+[`set_jax_python()`](https://jed709.github.io/bayesroc/reference/set_jax_python.md).
+See
+[`?install_jax_backend`](https://jed709.github.io/bayesroc/reference/install_jax_backend.md)
+and
+[`?check_jax_backend`](https://jed709.github.io/bayesroc/reference/check_jax_backend.md)
+for troubleshooting.
+
+## A simple example
+
+Formulas provided to univariate bayesroc models must supply both a
+response variable and a binary indicator variable using either 0/1 or
+-0.5/0.5 coding that denotes whether the trial is a lure or a target.
+These variables should be provided in the form
+`response | is_old ~ predictors`, where this formula implictly applies
+to d’ and subsequent formulae are provided for other model parameters
+(e.g., `criterion ~ predictors`, `sigma ~ predictors`).
+
+The code below shows how a hierarchical unequal variance signal
+detection model (UVSD) can be fit to the bundled `prm09` dataset (97
+subjects, 480 items, 6-point confidence; Pratte et al., 2010), with
+correlated subject- and item-level random intercepts on every parameter
+that are cross-correlated between d’ and sigma. We then view the model
+summary and plot the model-implied ROC curve. Because the dataset is
+very large, we fit this basic example to the first 20 participants.
+Here, `resp` is the rating response on a 6-point scale (with higher
+responses indicating “sure old”) and `cond` is the 0/1 coded indicator
+variable.
+
+``` r
+
+library(bayesroc)
+data(prm09)
+
+first20 <- prm09[prm09$sub<20,]
+
+m <- broc(brf(resp | cond ~ 1 + (1|s|sub) + (1|i|item),
+              criterion ~ 1 + (1|sub) + (1|item),
+              sigma ~ 1 + (1|s|sub) + (1|i|item),
+              family = uvsd()),
+          data = first20)
+fit <- fit_broc(m, backend = "stan")
+
+summary(fit)
+plot_roc_curve(fit)
+```
+
+If we are not interested in modeling trial-level data (e.g., random
+effects on items), we can aggregate the data to per-subject counts and
+fit a quick version of the model.
+
+``` r
+
+agg <- as.data.frame(table(first20[c("sub", "cond", "resp")]), 
+                     responseName = "count")
+
+m <- broc(brf(resp | cond ~ 1 + (1|s|sub),
+              criterion ~ 1 + (1|sub),
+              sigma ~ 1 + (1|s|sub),
+              family = uvsd()),
+              counts = "count",
+          data = agg)
+fit <- fit_broc(m, backend = "stan")
+```
+
+See the
+[vignette](https://jed709.github.io/bayesroc/vignettes/univariate-recognition.Rmd)
+for an in-depth example.
+
+### Backends and speed
+
+The Stan backend uses a fused likelihood with analytic gradients by
+default (`batch_likelihood = TRUE`), which is much faster than plain
+Stan with autodiff and needs no extra toolchain beyond `cmdstanr`. Pass
+`batch_likelihood = FALSE` to force the plain path (e.g. for
+cross-checking). The Stan backend is single-threaded by default but
+supports multithreading via `reduce_sum` by passing `threads = TRUE` to
+[`broc()`](https://jed709.github.io/bayesroc/reference/broc.md) and
+specifying `threads_per_chain = N_threads` when calling
+[`fit_broc()`](https://jed709.github.io/bayesroc/reference/fit_broc.md).
+
+The NumPyro backend (`fit_broc(m, backend = "jax")`) is generally faster
+than Stan and uses analytic custom JVPs. This backend only supports
+multithreading and the number of threads spawned for each chain depends
+on the model family, fixed- and random- effects structure, and dataset
+size. Threads per chain cannot be set directly. At present, the NumPyro
+backend is CPU-only, but GPU support may be added in future releases.
+
+## Supported families
+
+| Family | Description |
+|----|----|
+| [`evsd()`](https://jed709.github.io/bayesroc/reference/evsd.md) | Equal variance signal detection model |
+| [`uvsd()`](https://jed709.github.io/bayesroc/reference/uvsd.md) | Unequal variance signal detection model |
+| [`dpsd()`](https://jed709.github.io/bayesroc/reference/dpsd.md) | Dual process signal detection model (Yonelinas, 1994) |
+| [`mixture()`](https://jed709.github.io/bayesroc/reference/mixture.md) | Mixture signal detection model (with optional lure mixture; DeCarlo, 2002) |
+| [`source_mixture()`](https://jed709.github.io/bayesroc/reference/source_mixture.md) | Source-discrimination mixture (DeCarlo, 2003a) |
+| [`bivariate_gaussian()`](https://jed709.github.io/bayesroc/reference/bivariate_gaussian.md) | Bivariate Gaussian signal detection model (DeCarlo, 2003b; Starns et al., 2014) |
+| [`bivariate_dp()`](https://jed709.github.io/bayesroc/reference/bivariate_dp.md) | Bivariate dual process signal detection model (Starns et al., 2014) |
+| [`vrdp2d()`](https://jed709.github.io/bayesroc/reference/vrdp2d.md) | 2D variable recollection dual process model (Onyper et al., 2010) |
+| [`cdp()`](https://jed709.github.io/bayesroc/reference/cdp.md) | Continuous dual process model for Remember/Know (Wixted & Mickes, 2010) |
+| [`cumulative()`](https://jed709.github.io/bayesroc/reference/cumulative.md) | Plain cumulative ordinal regression |
+| [`bivariate_cumulative()`](https://jed709.github.io/bayesroc/reference/bivariate_cumulative.md) | Bivariate cumulative ordinal regression |
+
+## Bundled datasets
+
+bayesroc ships five datasets:
+
+| Dataset | Format | Use |
+|----|----|----|
+| `prm09` | trial-level, 46,495 × 5 (97 subjects, 480 items, 6-point confidence) | Pratte et al. (2010) — hierarchical univariate models |
+| `whitridge_2024` | trial-level, 7,560 × 6 (42 subjects, 360 items, 6-point confidence) | Whitridge et al. (2024) — hierarchical univariate models with within-subject effects |
+| `yonelinas_1999` | aggregated counts, 108 × 4 (3 item types × 6×6 detect/source ratings) | Yonelinas (1999) — item/source judgements for bivariate SDT models (`bivariate_gaussian`, `bivariate_dp`, `vrdp2d`) |
+| `hilford_2002` | aggregated counts, 12 × 3 (2 sources × 6 ratings) | Hilford et al. (2002) — [`source_mixture()`](https://jed709.github.io/bayesroc/reference/source_mixture.md) models |
+| `rotello_2005` | aggregated counts, 44 × 5 | Rotello et al. (2005) — Remember/Know data for [`cdp()`](https://jed709.github.io/bayesroc/reference/cdp.md) |
+
+``` r
+
+data(prm09)
+data(whitridge_2024)
+data(yonelinas_1999)
+data(hilford_2002)
+data(rotello_2005)
+```
+
+See the corresponding help pages
+(e.g. [`?yonelinas_1999`](https://jed709.github.io/bayesroc/reference/yonelinas_1999.md),
+[`?hilford_2002`](https://jed709.github.io/bayesroc/reference/hilford_2002.md))
+for column descriptions.
+
+## Documentation
+
+- [`?broc`](https://jed709.github.io/bayesroc/reference/broc.md) — main
+  entry point
+- [`?brf`](https://jed709.github.io/bayesroc/reference/brf.md) — formula
+  composition
+- [`?fit_broc`](https://jed709.github.io/bayesroc/reference/fit_broc.md)
+  — fitting (Stan or JAX)
+- `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`,
+  `loo(fit)`, `posterior_epred(fit)`, `posterior_linpred(fit)` — S3
+  methods on the fitted model
+- [`?plot_roc_curve`](https://jed709.github.io/bayesroc/reference/plot_roc_curve.md)
+  — ROC curve plot
+- [`?conditional_smooths`](https://jed709.github.io/bayesroc/reference/conditional_smooths.md)
+  — smooth-term evaluation/plotting (mgcv `s()` / `t2()` are supported
+  in any parameter formula)
+- [`?broc_prior`](https://jed709.github.io/bayesroc/reference/broc_prior.md)
+  — prior specification
+
+## License
+
+MIT. See `LICENSE.md`.
+
+# Package index
+
+## All functions
+
+- [`bivariate_cumulative()`](https://jed709.github.io/bayesroc/reference/bivariate_cumulative.md)
+  : Bivariate Cumulative Ordinal Model
+- [`bivariate_dp()`](https://jed709.github.io/bayesroc/reference/bivariate_dp.md)
+  : Bivariate Dual Process Signal Detection Model
+- [`bivariate_gaussian()`](https://jed709.github.io/bayesroc/reference/bivariate_gaussian.md)
+  : Bivariate Gaussian Signal Detection Model
+- [`brf()`](https://jed709.github.io/bayesroc/reference/brf.md) :
+  Compose a Multi-Parameter SDT Model Formula
+- [`broc()`](https://jed709.github.io/bayesroc/reference/broc.md) :
+  Specify a Bayesian SDT Model
+- [`broc_prior()`](https://jed709.github.io/bayesroc/reference/broc_prior.md)
+  : Set a Prior on an SDT Model Parameter
+- [`c(`*`<broc_prior>`*`)`](https://jed709.github.io/bayesroc/reference/c.broc_prior.md)
+  : Combine Multiple Priors
+- [`cdp()`](https://jed709.github.io/bayesroc/reference/cdp.md) :
+  Continuous Dual Process Signal Detection Model
+- [`check_jax_backend()`](https://jed709.github.io/bayesroc/reference/check_jax_backend.md)
+  : Diagnose the JAX backend setup
+- [`conditional_smooths()`](https://jed709.github.io/bayesroc/reference/conditional_smooths.md)
+  : Conditional Smooth Effects
+- [`cumulative()`](https://jed709.github.io/bayesroc/reference/cumulative.md)
+  : Cumulative Ordinal Regression Model
+- [`dpsd()`](https://jed709.github.io/bayesroc/reference/dpsd.md) : Dual
+  Process Signal Detection Model
+- [`evsd()`](https://jed709.github.io/bayesroc/reference/evsd.md) :
+  Equal Variance Signal Detection Model
+- [`fit_broc()`](https://jed709.github.io/bayesroc/reference/fit_broc.md)
+  : Compile and Fit a Bayesian ROC Model
+- [`get_broc_prior()`](https://jed709.github.io/bayesroc/reference/get_broc_prior.md)
+  : Preview the Priors for an SDT Model
+- [`get_numpyro_config()`](https://jed709.github.io/bayesroc/reference/get_numpyro_config.md)
+  : Extract the Generated NumPyro (JAX) Config
+- [`get_stan_code()`](https://jed709.github.io/bayesroc/reference/get_stan_code.md)
+  : Extract Generated Stan Code
+- [`get_stan_data()`](https://jed709.github.io/bayesroc/reference/get_stan_data.md)
+  : Extract Stan Data List
+- [`hilford_2002`](https://jed709.github.io/bayesroc/reference/hilford_2002.md)
+  : Hilford et al. (2002) source-discrimination data
+- [`install_jax_backend()`](https://jed709.github.io/bayesroc/reference/install_jax_backend.md)
+  : Install the JAX/NumPyro backend into a managed venv
+- [`jax_python()`](https://jed709.github.io/bayesroc/reference/jax_python.md)
+  : Resolve the Python executable used by the JAX backend
+- [`link_logit()`](https://jed709.github.io/bayesroc/reference/link_logit.md)
+  : Logistic Link Function
+- [`link_probit()`](https://jed709.github.io/bayesroc/reference/link_probit.md)
+  : Probit Link Function (default)
+- [`load_broc_fit()`](https://jed709.github.io/bayesroc/reference/load_broc_fit.md)
+  : Load a previously-saved broc_fit
+- [`loo(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/loo.broc_fit.md)
+  : LOO-CV for Fitted SDT Models
+- [`mixture()`](https://jed709.github.io/bayesroc/reference/mixture.md)
+  : Mixture Signal Detection Model
+- [`plot(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/plot.broc_fit.md)
+  : Plot Model Parameters
+- [`plot_roc_curve()`](https://jed709.github.io/bayesroc/reference/plot_roc_curve.md)
+  : Plot Model-Implied ROC Curves
+- [`posterior_epred(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/posterior_epred.broc_fit.md)
+  : Posterior expected response value
+- [`posterior_linpred(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/posterior_linpred.broc_fit.md)
+  : Posterior draws of a linear predictor (dpar)
+- [`pp_check(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/pp_check.broc_fit.md)
+  : Posterior Predictive Check for SDT Models
+- [`predict(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/predict.broc_fit.md)
+  : Posterior Predictions from a Fitted Bayesian ROC Model
+- [`print(`*`<brf>`*`)`](https://jed709.github.io/bayesroc/reference/print.brf.md)
+  : Print method for brf objects
+- [`print(`*`<broc_family>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_family.md)
+  : Print method for a bayesroc family
+- [`print(`*`<broc_link>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_link.md)
+  : Print method for a bayesroc link
+- [`print(`*`<broc_model>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_model.md)
+  : Print Method for SDT Model
+- [`print(`*`<broc_prior>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_prior.md)
+  : Print Method for Prior
+- [`print(`*`<broc_prior_list>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_prior_list.md)
+  : Print Method for Prior List
+- [`print(`*`<broc_prior_table>`*`)`](https://jed709.github.io/bayesroc/reference/print.broc_prior_table.md)
+  : Print method for get_broc_prior output
+- [`print(`*`<prior_lookup>`*`)`](https://jed709.github.io/bayesroc/reference/print.prior_lookup.md)
+  : Print Method for Prior Lookup
+- [`prm09`](https://jed709.github.io/bayesroc/reference/prm09.md) :
+  Pratte et al. (2010) word recognition memory data
+- [`resp()`](https://jed709.github.io/bayesroc/reference/resp.md) :
+  resp() – Multi-response marker for bivariate/CDP models
+- [`rotello_2005`](https://jed709.github.io/bayesroc/reference/rotello_2005.md)
+  : Rotello et al. (2005) Remember/Know data
+- [`save_broc_fit()`](https://jed709.github.io/bayesroc/reference/save_broc_fit.md)
+  : Save a fitted broc_fit to disk
+- [`set_jax_python()`](https://jed709.github.io/bayesroc/reference/set_jax_python.md)
+  : Override the Python executable used by the JAX backend
+- [`source_mixture()`](https://jed709.github.io/bayesroc/reference/source_mixture.md)
+  : Source Mixture Signal Detection Model
+- [`summary(`*`<broc_fit>`*`)`](https://jed709.github.io/bayesroc/reference/summary.broc_fit.md)
+  : Summarize a Fitted SDT Model
+- [`uvsd()`](https://jed709.github.io/bayesroc/reference/uvsd.md) :
+  Unequal Variance Signal Detection Model
+- [`vrdp2d()`](https://jed709.github.io/bayesroc/reference/vrdp2d.md) :
+  Two-Dimensional Variable Recollection Dual Process Model
+- [`whitridge_2024`](https://jed709.github.io/bayesroc/reference/whitridge_2024.md)
+  : Whitridge et al. (2024) recognition memory data
+- [`yonelinas_1999`](https://jed709.github.io/bayesroc/reference/yonelinas_1999.md)
+  : Yonelinas (1999) source-memory data
+
+# Articles
+
+### All vignettes
+
+- [Analyzing univariate recognition data with
+  bayesroc](https://jed709.github.io/bayesroc/articles/univariate-recognition.md):
