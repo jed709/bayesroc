@@ -125,17 +125,19 @@ present, the NumPyro backend is CPU-only, but GPU support may be added in future
 
 ## Bundled datasets
 
-bayesroc ships four datasets:
+bayesroc ships five datasets:
 
 | Dataset | Format | Use |
 |---|---|---|
 | `prm09` | trial-level, 46,495 × 5 (97 subjects, 480 items, 6-point confidence) | Pratte et al. (2010) — hierarchical univariate models |
+| `whitridge_2024` | trial-level, 7,560 × 6 (42 subjects, 360 items, 6-point confidence) | Whitridge et al. (2024) — hierarchical univariate models with within-subject effects |
 | `yonelinas_1999` | aggregated counts, 108 × 4 (3 item types × 6×6 detect/source ratings) | Yonelinas (1999) — item/source judgements for bivariate SDT models (`bivariate_gaussian`, `bivariate_dp`, `vrdp2d`) |
 | `hilford_2002` | aggregated counts, 12 × 3 (2 sources × 6 ratings) | Hilford et al. (2002) — `source_mixture()` models |
 | `rotello_2005` | aggregated counts, 44 × 5 | Rotello et al. (2005) — Remember/Know data for `cdp()` |
 
 ```r
 data(prm09)
+data(whitridge_2024)
 data(yonelinas_1999)
 data(hilford_2002)
 data(rotello_2005)
