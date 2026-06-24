@@ -1,0 +1,138 @@
+name: R-CMD-check
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  R-CMD-check:
+    runs-on: ${{ matrix.config.os }}
+
+    name: ${{ matrix.config.os }} (R ${{ matrix.config.r }})
+
+    # Use bash on all OSes so `R CMD INSTALL ...` works on Windows too
+    # (default Windows shell is PowerShell, which mis-parses it).
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {os: ubuntu-latest,  r: 'release'}
+          - {os: windows-latest, r: 'release'}
+          - {os: macos-latest,   r: 'release'}
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      R_KEEP_PKG_SOURCE: yes
+      # Cache cmdstan + the bayesroc-managed JAX venv across runs.
+      CMDSTAN_VERSION: '2.38.0'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ matrix.config.r }}
+          http-user-agent: ${{ matrix.config.http-user-agent }}
+          use-public-rspm: true
+          # cmdstanr is not on CRAN; add the stan-dev r-universe so the dependency
+          # solve can resolve it. (This is the correct action for extra repos.)
+          extra-repositories: 'https://stan-dev.r-universe.dev'
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::rcmdcheck
+            any::testthat
+            any::cmdstanr
+            any::posterior
+            any::ggplot2
+            any::ggdist
+            any::loo
+            any::mgcv
+          needs: check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Ensure system python can create venvs (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          # The managed JAX venv must be built from the SYSTEM python3, NOT setup-python's
+          # toolcache build. That build has no rpath, so when LD_LIBRARY_PATH isn't its
+          # own lib dir it loads the system 3.12.3 libpython -- producing a venv whose
+          # 3.12.13 _ctypes.so needs _PyErr_SetLocaleString, a symbol the 3.12.3 libpython
+          # lacks -> `import jax` fails. The system python yields a self-consistent venv
+          # that imports under any LD_LIBRARY_PATH. Make sure it can create venvs.
+          if ! /usr/bin/python3 -c 'import ensurepip' 2>/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq python3-venv
+          fi
+
+      - name: Cache CmdStan
+        id: cache-cmdstan
+        uses: actions/cache@v4
+        with:
+          path: ~/.cmdstan
+          key: cmdstan-${{ matrix.config.os }}-${{ env.CMDSTAN_VERSION }}-v1
+
+      - name: Install CmdStan
+        if: steps.cache-cmdstan.outputs.cache-hit != 'true'
+        run: |
+          Rscript -e 'cmdstanr::check_cmdstan_toolchain(fix = TRUE)'
+          Rscript -e 'cmdstanr::install_cmdstan(version = Sys.getenv("CMDSTAN_VERSION"), cores = 2)'
+
+      - name: Verify CmdStan path
+        run: Rscript -e 'cat("cmdstan_path:", cmdstanr::cmdstan_path(), "\n")'
+
+      - name: Cache JAX venv
+        id: cache-jax
+        uses: actions/cache@v4
+        with:
+          # tools::R_user_dir("bayesroc","data"): ~/.local/share/R/bayesroc on Linux;
+          # on Windows it varies by R version (AppData\Roaming\R\data\... in current R,
+          # AppData\Local\... in older R) -- cache both candidate locations.
+          path: |
+            ~/.local/share/R/bayesroc
+            ~/Library/Application Support/org.R-project.R/R/bayesroc
+            ~/AppData/Roaming/R/data/R/bayesroc
+            ~/AppData/Local/R/bayesroc/bayesroc/data
+          key: jax-${{ matrix.config.os }}-jax092-numpyro2001-v5
+
+      - name: "Install JAX backend (option B: in CI)"
+        if: steps.cache-jax.outputs.cache-hit != 'true'
+        run: |
+          # Build + install bayesroc first so install_jax_backend() is callable
+          R CMD INSTALL --no-multiarch --with-keep.source .
+          # On ubuntu, build the venv from the SYSTEM python3 (see ensure-venv step):
+          # setup-python's no-rpath toolcache build yields a libpython-skewed venv.
+          # mac/win auto-discover a consistent python and are already fine.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            Rscript -e 'bayesroc::install_jax_backend(python = "/usr/bin/python3", quiet = FALSE)'
+          else
+            Rscript -e 'bayesroc::install_jax_backend(quiet = FALSE)'
+          fi
+
+      - name: Build + install bayesroc
+        run: R CMD INSTALL --no-multiarch --with-keep.source .
+
+      - name: Verify JAX backend
+        run: Rscript -e 'res <- bayesroc::check_jax_backend(); stopifnot(res$status %in% c("ok", "compat_warning"))'
+
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          upload-snapshots: true
+          # Skip vignette build (we don't have any yet) and emit notes-as-failure
+          # for newly-introduced check warnings.
+          args: 'c("--no-manual", "--no-vignettes", "--as-cran")'
+          error-on: '"warning"'
+        env:
+          # Tell tests to stay fast on CI
+          BAYESROC_TEST_FAST: 'true'

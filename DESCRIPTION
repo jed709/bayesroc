@@ -1,0 +1,35 @@
+Package: bayesroc
+Title: Bayesian ROC-Based Signal Detection Theory Models
+Version: 0.1.0
+Authors@R: person("Jedidiah", "Whitridge", role = c("aut", "cre"),
+                   email = "jww828@mun.ca")
+Description: Generates Stan or NumPyro code from R formula syntax for Bayesian
+    ordinal signal detection models. Fits models via 'cmdstanr' or JAX/NumPyro
+    backends.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    stats,
+    utils,
+    cmdstanr,
+    posterior,
+    processx,
+    jsonlite,
+    loo,
+    mgcv,
+    bayesplot,
+    rstantools
+Suggests:
+    ggplot2,
+    ggdist,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+Additional_repositories: https://stan-dev.r-universe.dev

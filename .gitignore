@@ -1,0 +1,51 @@
+# R session / build artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Renviron
+*.Rcheck/
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled
+*.o
+*.so
+*.dll
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+
+# JAX FFI prebuilt artifacts (cross-platform builds happen on user machines)
+inst/jax_ffi/*.dll
+inst/jax_ffi/*.so
+inst/jax_ffi/*.dylib
+
+# Local dev / scratch — kept out of public repo
+dev-notes/
+bench_stan/
+benchmarks/
+ddm_pilot/
+debug_bounded_jax/
+test_lr_*.py
+test_bivariate_cumulative.R
+test_config.rds
+test_vrdp2d_config.json
+yon_long.csv
+session_*.md
+WARNINGS_AUDIT.md
+
+# Scratch from PDF/data extraction and bivariate_dp dev
+_cohen.txt
+_yonelinas*.txt
+_extract_pdf*.py
+biv_dp_*.stan
+biv_dp_*.cpp
+
+# Top-level scratch / audit artifacts (analysis scripts, saved verification fits)
+/_*

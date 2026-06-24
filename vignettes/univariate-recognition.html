@@ -1,0 +1,1769 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+
+
+<title>Analyzing univariate recognition data with bayesroc</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">Analyzing univariate recognition data with
+bayesroc</h1>
+
+
+
+<div id="fitting-and-summarizing-a-basic-model" class="section level2">
+<h2>Fitting and summarizing a basic model</h2>
+<p>This tutorial demonstrates how the <code>bayesroc</code> package can
+be used to analyze recognition data from a simple cognitive experiment.
+Here, we will use the data for Experiment 1B from Whitridge et
+al. (2024). This dataset is shipped by the package. We first load the
+package and the dataset:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(bayesroc)</span>
+<span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="fu">data</span>(<span class="st">&quot;whitridge_2024&quot;</span>)</span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a><span class="fu">str</span>(whitridge_2024)</span>
+<span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a><span class="co">#&gt; &#39;data.frame&#39;:    7560 obs. of  6 variables:</span></span>
+<span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a><span class="co">#&gt;  $ participant: int  26 26 26 26 26 26 26 26 26 26 ...</span></span>
+<span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a><span class="co">#&gt;  $ words      : chr  &quot;CONGRESS&quot; &quot;BENEFIT&quot; &quot;CRIME&quot; &quot;TREATMENT&quot; ...</span></span>
+<span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a><span class="co">#&gt;  $ scale_wf   : num  -1.053 -0.616 0.641 -0.383 -0.373 ...</span></span>
+<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a><span class="co">#&gt;  $ condition  : Factor w/ 4 levels &quot;new&quot;,&quot;read&quot;,&quot;sing&quot;,..: 3 1 1 3 1 1 2 4 1 2 ...</span></span>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a><span class="co">#&gt;  $ old        : int  1 0 0 1 0 0 1 1 0 1 ...</span></span>
+<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a><span class="co">#&gt;  $ conf       : int  6 3 2 6 3 2 2 5 5 3 ...</span></span></code></pre></div>
+<p>We have several variables we may want to include in the models we
+build: <code>conf</code> contains the confidence ratings on a 6-point
+scale, <code>old</code> indicates whether items were targets or lures,
+<code>condition</code> indicates how the item was studied (i.e., by
+speaking it aloud, singing it, or reading it silently),
+<code>scale_wf</code> gives the scaled SUBTLEX word frequency of the
+item (Brysbaert &amp; New, 2009), and <code>participant</code> and
+<code>words</code> are subject- and item-level indicators. We start with
+a basic equal variance model that includes fixed effects for
+<code>condition</code> and random effects by subjects and items. We
+first specify a formula using the <code>brf()</code> function, which
+requires ratings, the old/new indicator, and any predictors we want to
+include. The primary formula is constructed with the form
+<code>rating | is_old ~ predictors</code> and is applied to
+<code>dprime</code> (or <code>mu</code> for <code>cumulative</code>
+families). Other model parameters require additional formulas:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>f<span class="fl">.1</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>words),</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  criterion <span class="sc">~</span> <span class="dv">1</span> <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">evsd</span>()</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>)</span></code></pre></div>
+<p>Here, we remove the intercept on <code>dprime</code> for
+interpretability. Because the criteria depend only on the lure
+distribution and <code>condition</code> only applies to targets, we
+specify only intercepts in the <code>criterion</code> formula. We can
+then pass the formula and the data to the <code>broc()</code> function
+to construct a model:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>m<span class="fl">.1</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.1</span>,</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>           <span class="at">data =</span> whitridge_2024,</span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>           <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a><span class="fu">print</span>(m<span class="fl">.1</span>)</span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a><span class="co">#&gt; bayesroc model</span></span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a><span class="co">#&gt; ==============</span></span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a><span class="co">#&gt; Family: evsd </span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a><span class="co">#&gt; Formula:</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; bayesroc model formula</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; Response: conf </span></span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt; Condition variable: old (old/new)</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt; Encoding-only variables: condition </span></span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a><span class="co">#&gt; d&#39; (dprime):</span></span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a><span class="co">#&gt;   Fixed: ~ 0 + condition </span></span>
+<span id="cb3-19"><a href="#cb3-19" tabindex="-1"></a><span class="co">#&gt;   Random:</span></span>
+<span id="cb3-20"><a href="#cb3-20" tabindex="-1"></a><span class="co">#&gt;     (0 + condition | participant)</span></span>
+<span id="cb3-21"><a href="#cb3-21" tabindex="-1"></a><span class="co">#&gt;     (0 + condition | words)</span></span>
+<span id="cb3-22"><a href="#cb3-22" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-23"><a href="#cb3-23" tabindex="-1"></a><span class="co">#&gt; Criterion:</span></span>
+<span id="cb3-24"><a href="#cb3-24" tabindex="-1"></a><span class="co">#&gt;   Fixed: ~ 1 (intercept only)</span></span>
+<span id="cb3-25"><a href="#cb3-25" tabindex="-1"></a><span class="co">#&gt;   Random:</span></span>
+<span id="cb3-26"><a href="#cb3-26" tabindex="-1"></a><span class="co">#&gt;     (1 | participant)</span></span>
+<span id="cb3-27"><a href="#cb3-27" tabindex="-1"></a><span class="co">#&gt;     (1 | words)</span></span>
+<span id="cb3-28"><a href="#cb3-28" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-29"><a href="#cb3-29" tabindex="-1"></a><span class="co">#&gt; Data dimensions:</span></span>
+<span id="cb3-30"><a href="#cb3-30" tabindex="-1"></a><span class="co">#&gt;   N = 7560 </span></span>
+<span id="cb3-31"><a href="#cb3-31" tabindex="-1"></a><span class="co">#&gt;   K = 6 </span></span>
+<span id="cb3-32"><a href="#cb3-32" tabindex="-1"></a><span class="co">#&gt;   P_dprime = 3</span></span>
+<span id="cb3-33"><a href="#cb3-33" tabindex="-1"></a><span class="co">#&gt;   P_criterion = 1</span></span></code></pre></div>
+<p>Similar to the above point, the <code>encoding_vars</code> argument
+is used to indicate that <code>condition</code> can only apply to
+targets, which is a common design within cognitive studies. If we failed
+to specify that <code>condition</code> was an encoding variable, the
+model would estimate several meaningless parameters (e.g.,
+<code>dprime</code> for lures) which also enter the random effects and
+contaminate the covariance structure by altering the implied prior.
+Thus, <code>encoding_vars</code> should always be used for manipulations
+that apply only to targets.</p>
+<p>Once we have constructed a model, we can run MCMC sampling using the
+<code>fit_broc</code> function. Here, we retain most of the default
+settings but use the NumPyro backend for speed:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>fit<span class="fl">.1</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.1</span>,</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>)</span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.1</span>)</span>
+<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a><span class="co">#&gt; Family: evsd </span></span>
+<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.64</span></span>
+<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-17"><a href="#cb4-17" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb4-18"><a href="#cb4-18" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb4-19"><a href="#cb4-19" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-20"><a href="#cb4-20" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb4-21"><a href="#cb4-21" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-22"><a href="#cb4-22" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.724 0.071 0.608 0.842 1.000     5126     6253</span></span>
+<span id="cb4-23"><a href="#cb4-23" tabindex="-1"></a><span class="co">#&gt;   conditionsing    1.300 0.078 1.174 1.428 1.000     4924     5680</span></span>
+<span id="cb4-24"><a href="#cb4-24" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    1.365 0.090 1.217 1.511 1.000     5324     6435</span></span>
+<span id="cb4-25"><a href="#cb4-25" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-26"><a href="#cb4-26" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb4-27"><a href="#cb4-27" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-28"><a href="#cb4-28" tabindex="-1"></a><span class="co">#&gt;  intercept    0.761 0.083 0.627 0.899 1.001     2423     3168</span></span>
+<span id="cb4-29"><a href="#cb4-29" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-30"><a href="#cb4-30" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb4-31"><a href="#cb4-31" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-32"><a href="#cb4-32" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.367 0.121 -1.567 -1.167 1.003     2760     4089</span></span>
+<span id="cb4-33"><a href="#cb4-33" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.515 0.150 -1.768 -1.273 1.001     3011     4230</span></span>
+<span id="cb4-34"><a href="#cb4-34" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.186 0.094 -1.341 -1.033 1.001     3015     4885</span></span>
+<span id="cb4-35"><a href="#cb4-35" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.199 0.157 -1.461 -0.945 1.004     1499     2281</span></span>
+<span id="cb4-36"><a href="#cb4-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-37"><a href="#cb4-37" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb4-38"><a href="#cb4-38" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb4-39"><a href="#cb4-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-40"><a href="#cb4-40" tabindex="-1"></a><span class="co">#&gt; intercept:</span></span>
+<span id="cb4-41"><a href="#cb4-41" tabindex="-1"></a><span class="co">#&gt;  threshold estimate    sd  lower upper</span></span>
+<span id="cb4-42"><a href="#cb4-42" tabindex="-1"></a><span class="co">#&gt;          1    0.149 0.104 -0.059 0.352</span></span>
+<span id="cb4-43"><a href="#cb4-43" tabindex="-1"></a><span class="co">#&gt;          2    0.454 0.087  0.281 0.628</span></span>
+<span id="cb4-44"><a href="#cb4-44" tabindex="-1"></a><span class="co">#&gt;          3    0.761 0.083  0.597 0.928</span></span>
+<span id="cb4-45"><a href="#cb4-45" tabindex="-1"></a><span class="co">#&gt;          4    1.018 0.075  0.869 1.170</span></span>
+<span id="cb4-46"><a href="#cb4-46" tabindex="-1"></a><span class="co">#&gt;          5    1.240 0.083  1.081 1.409</span></span>
+<span id="cb4-47"><a href="#cb4-47" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-48"><a href="#cb4-48" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb4-49"><a href="#cb4-49" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb4-50"><a href="#cb4-50" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-51"><a href="#cb4-51" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb4-52"><a href="#cb4-52" tabindex="-1"></a><span class="co">#&gt;           level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-53"><a href="#cb4-53" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.349 0.059 0.259 0.451 1.000     5029     5371</span></span>
+<span id="cb4-54"><a href="#cb4-54" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.401 0.061 0.310 0.507 1.000     5706     6013</span></span>
+<span id="cb4-55"><a href="#cb4-55" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.476 0.068 0.374 0.593 1.000     5783     6693</span></span>
+<span id="cb4-56"><a href="#cb4-56" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-57"><a href="#cb4-57" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb4-58"><a href="#cb4-58" tabindex="-1"></a><span class="co">#&gt;           level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-59"><a href="#cb4-59" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.425 0.062 0.322 0.525 1.001     2747     3941</span></span>
+<span id="cb4-60"><a href="#cb4-60" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.405 0.059 0.308 0.501 1.001     3383     4888</span></span>
+<span id="cb4-61"><a href="#cb4-61" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.496 0.062 0.393 0.599 1.000     3241     5227</span></span>
+<span id="cb4-62"><a href="#cb4-62" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-63"><a href="#cb4-63" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb4-64"><a href="#cb4-64" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-65"><a href="#cb4-65" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.977 0.116 0.801 1.180 1.000     3288     4860</span></span>
+<span id="cb4-66"><a href="#cb4-66" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.548 0.073 0.439 0.679 1.001     5085     5998</span></span>
+<span id="cb4-67"><a href="#cb4-67" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.500 0.060 0.411 0.608 1.000     3985     5511</span></span>
+<span id="cb4-68"><a href="#cb4-68" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.698 0.089 0.563 0.854 1.000     5132     6204</span></span>
+<span id="cb4-69"><a href="#cb4-69" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.890 0.125 0.704 1.108 1.000     4907     5383</span></span>
+<span id="cb4-70"><a href="#cb4-70" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-71"><a href="#cb4-71" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb4-72"><a href="#cb4-72" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-73"><a href="#cb4-73" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.252 0.061 0.149 0.349 1.002     2425     3087</span></span>
+<span id="cb4-74"><a href="#cb4-74" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.275 0.047 0.197 0.352 1.000     5852     5851</span></span>
+<span id="cb4-75"><a href="#cb4-75" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.253 0.027 0.210 0.297 1.002     2145     3661</span></span>
+<span id="cb4-76"><a href="#cb4-76" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.304 0.059 0.203 0.399 1.003     2896     4843</span></span>
+<span id="cb4-77"><a href="#cb4-77" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.277 0.060 0.179 0.375 1.000     5644     5612</span></span>
+<span id="cb4-78"><a href="#cb4-78" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-79"><a href="#cb4-79" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb4-80"><a href="#cb4-80" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb4-81"><a href="#cb4-81" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-82"><a href="#cb4-82" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb4-83"><a href="#cb4-83" tabindex="-1"></a><span class="co">#&gt;                            pair estimate    sd lower upper  rhat ess_bulk</span></span>
+<span id="cb4-84"><a href="#cb4-84" tabindex="-1"></a><span class="co">#&gt;   conditionread ~ conditionsing    0.841 0.101 0.650 0.969 1.003     3161</span></span>
+<span id="cb4-85"><a href="#cb4-85" tabindex="-1"></a><span class="co">#&gt;  conditionread ~ conditionspeak    0.675 0.142 0.412 0.876 1.002     2384</span></span>
+<span id="cb4-86"><a href="#cb4-86" tabindex="-1"></a><span class="co">#&gt;  conditionsing ~ conditionspeak    0.854 0.085 0.692 0.963 1.002     3615</span></span>
+<span id="cb4-87"><a href="#cb4-87" tabindex="-1"></a><span class="co">#&gt;  ess_tail</span></span>
+<span id="cb4-88"><a href="#cb4-88" tabindex="-1"></a><span class="co">#&gt;      4155</span></span>
+<span id="cb4-89"><a href="#cb4-89" tabindex="-1"></a><span class="co">#&gt;      3285</span></span>
+<span id="cb4-90"><a href="#cb4-90" tabindex="-1"></a><span class="co">#&gt;      5873</span></span>
+<span id="cb4-91"><a href="#cb4-91" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-92"><a href="#cb4-92" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb4-93"><a href="#cb4-93" tabindex="-1"></a><span class="co">#&gt;                            pair estimate    sd lower upper  rhat ess_bulk</span></span>
+<span id="cb4-94"><a href="#cb4-94" tabindex="-1"></a><span class="co">#&gt;   conditionread ~ conditionsing    0.549 0.174 0.250 0.824 1.002     1445</span></span>
+<span id="cb4-95"><a href="#cb4-95" tabindex="-1"></a><span class="co">#&gt;  conditionread ~ conditionspeak    0.457 0.166 0.180 0.726 1.001     1376</span></span>
+<span id="cb4-96"><a href="#cb4-96" tabindex="-1"></a><span class="co">#&gt;  conditionsing ~ conditionspeak    0.763 0.130 0.529 0.948 1.003     1288</span></span>
+<span id="cb4-97"><a href="#cb4-97" tabindex="-1"></a><span class="co">#&gt;  ess_tail</span></span>
+<span id="cb4-98"><a href="#cb4-98" tabindex="-1"></a><span class="co">#&gt;      1965</span></span>
+<span id="cb4-99"><a href="#cb4-99" tabindex="-1"></a><span class="co">#&gt;      1875</span></span>
+<span id="cb4-100"><a href="#cb4-100" tabindex="-1"></a><span class="co">#&gt;      2484</span></span>
+<span id="cb4-101"><a href="#cb4-101" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-102"><a href="#cb4-102" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb4-103"><a href="#cb4-103" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-104"><a href="#cb4-104" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.579 0.121  0.364  0.756 1.001     4165     5588</span></span>
+<span id="cb4-105"><a href="#cb4-105" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.027 0.147 -0.216  0.265 1.002     2543     3877</span></span>
+<span id="cb4-106"><a href="#cb4-106" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.518 0.129  0.286  0.712 1.002     3451     4891</span></span>
+<span id="cb4-107"><a href="#cb4-107" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.564 0.115  0.362  0.735 1.000     4760     5650</span></span>
+<span id="cb4-108"><a href="#cb4-108" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.011 0.160 -0.253  0.278 1.001     2204     4423</span></span>
+<span id="cb4-109"><a href="#cb4-109" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.490 0.141  0.238  0.703 1.001     3275     4422</span></span>
+<span id="cb4-110"><a href="#cb4-110" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.110 0.159 -0.158  0.370 1.000     4637     5690</span></span>
+<span id="cb4-111"><a href="#cb4-111" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.455 0.132 -0.650 -0.222 1.000     5651     6371</span></span>
+<span id="cb4-112"><a href="#cb4-112" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.052 0.159 -0.305  0.214 1.000     4572     6077</span></span>
+<span id="cb4-113"><a href="#cb4-113" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.300 0.153  0.034  0.539 1.000     5091     7069</span></span>
+<span id="cb4-114"><a href="#cb4-114" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-115"><a href="#cb4-115" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb4-116"><a href="#cb4-116" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb4-117"><a href="#cb4-117" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.392 0.223  0.010  0.748 1.001     1239     2173</span></span>
+<span id="cb4-118"><a href="#cb4-118" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.206 0.216 -0.575  0.143 1.004      648      936</span></span>
+<span id="cb4-119"><a href="#cb4-119" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.403 0.238 -0.009  0.784 1.003     1562     3596</span></span>
+<span id="cb4-120"><a href="#cb4-120" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.417 0.238  0.007  0.786 1.001     1812     2819</span></span>
+<span id="cb4-121"><a href="#cb4-121" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.701 0.147 -0.912 -0.432 1.004     1165     2280</span></span>
+<span id="cb4-122"><a href="#cb4-122" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.510 0.202  0.163  0.821 1.002     1604     3766</span></span>
+<span id="cb4-123"><a href="#cb4-123" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.684 0.172  0.357  0.917 1.001     3799     5583</span></span>
+<span id="cb4-124"><a href="#cb4-124" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.462 0.168 -0.725 -0.178 1.000     3740     5306</span></span>
+<span id="cb4-125"><a href="#cb4-125" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.730 0.141 -0.923 -0.461 1.000     5397     6788</span></span>
+<span id="cb4-126"><a href="#cb4-126" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.483 0.224  0.086  0.822 1.000     5329     6117</span></span></code></pre></div>
+<p>The summary of the fitted model object contains estimates, CIs, and
+diagnostics for all parameters. Note that for thresholds, there are K-1
+correlated random intercepts per grouping level. To ensure monotonicity,
+thresholds are constructed as a midpoint (i.e., threshold 3 for K = 6)
+and log-scale offsets. When no continuous covariates are specified,
+<code>summary.broc_fit()</code> reconstructs the natural scale
+population-level thresholds. If we also want to put the threshold
+correlations on a more interpretable scale, we can pass an additional
+argument to our summary call:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.1</span>,</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>        <span class="at">threshold_natural =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt; Family: evsd </span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.64</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.724 0.071 0.608 0.842 1.000     5126     6253</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a><span class="co">#&gt;   conditionsing    1.300 0.078 1.174 1.428 1.000     4924     5680</span></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    1.365 0.090 1.217 1.511 1.000     5324     6435</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a><span class="co">#&gt;  intercept    0.761 0.083 0.627 0.899 1.001     2423     3168</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-25"><a href="#cb5-25" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.367 0.121 -1.567 -1.167 1.003     2760     4089</span></span>
+<span id="cb5-26"><a href="#cb5-26" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.515 0.150 -1.768 -1.273 1.001     3011     4230</span></span>
+<span id="cb5-27"><a href="#cb5-27" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.186 0.094 -1.341 -1.033 1.001     3015     4885</span></span>
+<span id="cb5-28"><a href="#cb5-28" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.199 0.157 -1.461 -0.945 1.004     1499     2281</span></span>
+<span id="cb5-29"><a href="#cb5-29" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-30"><a href="#cb5-30" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb5-31"><a href="#cb5-31" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb5-32"><a href="#cb5-32" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-33"><a href="#cb5-33" tabindex="-1"></a><span class="co">#&gt; intercept:</span></span>
+<span id="cb5-34"><a href="#cb5-34" tabindex="-1"></a><span class="co">#&gt;  threshold estimate    sd  lower upper</span></span>
+<span id="cb5-35"><a href="#cb5-35" tabindex="-1"></a><span class="co">#&gt;          1    0.149 0.104 -0.059 0.352</span></span>
+<span id="cb5-36"><a href="#cb5-36" tabindex="-1"></a><span class="co">#&gt;          2    0.454 0.087  0.281 0.628</span></span>
+<span id="cb5-37"><a href="#cb5-37" tabindex="-1"></a><span class="co">#&gt;          3    0.761 0.083  0.597 0.928</span></span>
+<span id="cb5-38"><a href="#cb5-38" tabindex="-1"></a><span class="co">#&gt;          4    1.018 0.075  0.869 1.170</span></span>
+<span id="cb5-39"><a href="#cb5-39" tabindex="-1"></a><span class="co">#&gt;          5    1.240 0.083  1.081 1.409</span></span>
+<span id="cb5-40"><a href="#cb5-40" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-41"><a href="#cb5-41" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb5-42"><a href="#cb5-42" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb5-43"><a href="#cb5-43" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-44"><a href="#cb5-44" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb5-45"><a href="#cb5-45" tabindex="-1"></a><span class="co">#&gt;           level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-46"><a href="#cb5-46" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.349 0.059 0.259 0.451 1.000     5029     5371</span></span>
+<span id="cb5-47"><a href="#cb5-47" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.401 0.061 0.310 0.507 1.000     5706     6013</span></span>
+<span id="cb5-48"><a href="#cb5-48" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.476 0.068 0.374 0.593 1.000     5783     6693</span></span>
+<span id="cb5-49"><a href="#cb5-49" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-50"><a href="#cb5-50" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb5-51"><a href="#cb5-51" tabindex="-1"></a><span class="co">#&gt;           level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-52"><a href="#cb5-52" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.425 0.062 0.322 0.525 1.001     2747     3941</span></span>
+<span id="cb5-53"><a href="#cb5-53" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.405 0.059 0.308 0.501 1.001     3383     4888</span></span>
+<span id="cb5-54"><a href="#cb5-54" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.496 0.062 0.393 0.599 1.000     3241     5227</span></span>
+<span id="cb5-55"><a href="#cb5-55" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-56"><a href="#cb5-56" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb5-57"><a href="#cb5-57" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-58"><a href="#cb5-58" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.977 0.116 0.801 1.180 1.000     3288     4860</span></span>
+<span id="cb5-59"><a href="#cb5-59" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.548 0.073 0.439 0.679 1.001     5085     5998</span></span>
+<span id="cb5-60"><a href="#cb5-60" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.500 0.060 0.411 0.608 1.000     3985     5511</span></span>
+<span id="cb5-61"><a href="#cb5-61" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.698 0.089 0.563 0.854 1.000     5132     6204</span></span>
+<span id="cb5-62"><a href="#cb5-62" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.890 0.125 0.704 1.108 1.000     4907     5383</span></span>
+<span id="cb5-63"><a href="#cb5-63" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-64"><a href="#cb5-64" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb5-65"><a href="#cb5-65" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-66"><a href="#cb5-66" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.252 0.061 0.149 0.349 1.002     2425     3087</span></span>
+<span id="cb5-67"><a href="#cb5-67" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.275 0.047 0.197 0.352 1.000     5852     5851</span></span>
+<span id="cb5-68"><a href="#cb5-68" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.253 0.027 0.210 0.297 1.002     2145     3661</span></span>
+<span id="cb5-69"><a href="#cb5-69" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.304 0.059 0.203 0.399 1.003     2896     4843</span></span>
+<span id="cb5-70"><a href="#cb5-70" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.277 0.060 0.179 0.375 1.000     5644     5612</span></span>
+<span id="cb5-71"><a href="#cb5-71" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-72"><a href="#cb5-72" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb5-73"><a href="#cb5-73" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb5-74"><a href="#cb5-74" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-75"><a href="#cb5-75" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb5-76"><a href="#cb5-76" tabindex="-1"></a><span class="co">#&gt;                            pair estimate    sd lower upper  rhat ess_bulk</span></span>
+<span id="cb5-77"><a href="#cb5-77" tabindex="-1"></a><span class="co">#&gt;   conditionread ~ conditionsing    0.841 0.101 0.650 0.969 1.003     3161</span></span>
+<span id="cb5-78"><a href="#cb5-78" tabindex="-1"></a><span class="co">#&gt;  conditionread ~ conditionspeak    0.675 0.142 0.412 0.876 1.002     2384</span></span>
+<span id="cb5-79"><a href="#cb5-79" tabindex="-1"></a><span class="co">#&gt;  conditionsing ~ conditionspeak    0.854 0.085 0.692 0.963 1.002     3615</span></span>
+<span id="cb5-80"><a href="#cb5-80" tabindex="-1"></a><span class="co">#&gt;  ess_tail</span></span>
+<span id="cb5-81"><a href="#cb5-81" tabindex="-1"></a><span class="co">#&gt;      4155</span></span>
+<span id="cb5-82"><a href="#cb5-82" tabindex="-1"></a><span class="co">#&gt;      3285</span></span>
+<span id="cb5-83"><a href="#cb5-83" tabindex="-1"></a><span class="co">#&gt;      5873</span></span>
+<span id="cb5-84"><a href="#cb5-84" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-85"><a href="#cb5-85" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb5-86"><a href="#cb5-86" tabindex="-1"></a><span class="co">#&gt;                            pair estimate    sd lower upper  rhat ess_bulk</span></span>
+<span id="cb5-87"><a href="#cb5-87" tabindex="-1"></a><span class="co">#&gt;   conditionread ~ conditionsing    0.549 0.174 0.250 0.824 1.002     1445</span></span>
+<span id="cb5-88"><a href="#cb5-88" tabindex="-1"></a><span class="co">#&gt;  conditionread ~ conditionspeak    0.457 0.166 0.180 0.726 1.001     1376</span></span>
+<span id="cb5-89"><a href="#cb5-89" tabindex="-1"></a><span class="co">#&gt;  conditionsing ~ conditionspeak    0.763 0.130 0.529 0.948 1.003     1288</span></span>
+<span id="cb5-90"><a href="#cb5-90" tabindex="-1"></a><span class="co">#&gt;  ess_tail</span></span>
+<span id="cb5-91"><a href="#cb5-91" tabindex="-1"></a><span class="co">#&gt;      1965</span></span>
+<span id="cb5-92"><a href="#cb5-92" tabindex="-1"></a><span class="co">#&gt;      1875</span></span>
+<span id="cb5-93"><a href="#cb5-93" tabindex="-1"></a><span class="co">#&gt;      2484</span></span>
+<span id="cb5-94"><a href="#cb5-94" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-95"><a href="#cb5-95" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb5-96"><a href="#cb5-96" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-97"><a href="#cb5-97" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.579 0.121  0.364  0.756 1.001     4165     5588</span></span>
+<span id="cb5-98"><a href="#cb5-98" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.027 0.147 -0.216  0.265 1.002     2543     3877</span></span>
+<span id="cb5-99"><a href="#cb5-99" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.518 0.129  0.286  0.712 1.002     3451     4891</span></span>
+<span id="cb5-100"><a href="#cb5-100" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.564 0.115  0.362  0.735 1.000     4760     5650</span></span>
+<span id="cb5-101"><a href="#cb5-101" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.011 0.160 -0.253  0.278 1.001     2204     4423</span></span>
+<span id="cb5-102"><a href="#cb5-102" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.490 0.141  0.238  0.703 1.001     3275     4422</span></span>
+<span id="cb5-103"><a href="#cb5-103" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.110 0.159 -0.158  0.370 1.000     4637     5690</span></span>
+<span id="cb5-104"><a href="#cb5-104" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.455 0.132 -0.650 -0.222 1.000     5651     6371</span></span>
+<span id="cb5-105"><a href="#cb5-105" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.052 0.159 -0.305  0.214 1.000     4572     6077</span></span>
+<span id="cb5-106"><a href="#cb5-106" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.300 0.153  0.034  0.539 1.000     5091     7069</span></span>
+<span id="cb5-107"><a href="#cb5-107" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-108"><a href="#cb5-108" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb5-109"><a href="#cb5-109" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb5-110"><a href="#cb5-110" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.392 0.223  0.010  0.748 1.001     1239     2173</span></span>
+<span id="cb5-111"><a href="#cb5-111" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.206 0.216 -0.575  0.143 1.004      648      936</span></span>
+<span id="cb5-112"><a href="#cb5-112" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.403 0.238 -0.009  0.784 1.003     1562     3596</span></span>
+<span id="cb5-113"><a href="#cb5-113" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.417 0.238  0.007  0.786 1.001     1812     2819</span></span>
+<span id="cb5-114"><a href="#cb5-114" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.701 0.147 -0.912 -0.432 1.004     1165     2280</span></span>
+<span id="cb5-115"><a href="#cb5-115" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.510 0.202  0.163  0.821 1.002     1604     3766</span></span>
+<span id="cb5-116"><a href="#cb5-116" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.684 0.172  0.357  0.917 1.001     3799     5583</span></span>
+<span id="cb5-117"><a href="#cb5-117" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.462 0.168 -0.725 -0.178 1.000     3740     5306</span></span>
+<span id="cb5-118"><a href="#cb5-118" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.730 0.141 -0.923 -0.461 1.000     5397     6788</span></span>
+<span id="cb5-119"><a href="#cb5-119" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.483 0.224  0.086  0.822 1.000     5329     6117</span></span>
+<span id="cb5-120"><a href="#cb5-120" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-121"><a href="#cb5-121" tabindex="-1"></a><span class="co">#&gt; NATURAL-SCALE THRESHOLD CORRELATIONS</span></span>
+<span id="cb5-122"><a href="#cb5-122" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb5-123"><a href="#cb5-123" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-124"><a href="#cb5-124" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb5-125"><a href="#cb5-125" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd lower upper</span></span>
+<span id="cb5-126"><a href="#cb5-126" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.877 0.016 0.844 0.906</span></span>
+<span id="cb5-127"><a href="#cb5-127" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.710 0.033 0.643 0.772</span></span>
+<span id="cb5-128"><a href="#cb5-128" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.455 0.058 0.337 0.562</span></span>
+<span id="cb5-129"><a href="#cb5-129" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.235 0.065 0.104 0.359</span></span>
+<span id="cb5-130"><a href="#cb5-130" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.926 0.015 0.893 0.952</span></span>
+<span id="cb5-131"><a href="#cb5-131" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.741 0.038 0.661 0.809</span></span>
+<span id="cb5-132"><a href="#cb5-132" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.591 0.048 0.491 0.680</span></span>
+<span id="cb5-133"><a href="#cb5-133" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4    0.894 0.019 0.852 0.928</span></span>
+<span id="cb5-134"><a href="#cb5-134" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5    0.757 0.033 0.688 0.818</span></span>
+<span id="cb5-135"><a href="#cb5-135" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.909 0.017 0.873 0.938</span></span>
+<span id="cb5-136"><a href="#cb5-136" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-137"><a href="#cb5-137" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb5-138"><a href="#cb5-138" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd lower upper</span></span>
+<span id="cb5-139"><a href="#cb5-139" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.974 0.016 0.936 0.996</span></span>
+<span id="cb5-140"><a href="#cb5-140" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.941 0.030 0.872 0.985</span></span>
+<span id="cb5-141"><a href="#cb5-141" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.846 0.062 0.702 0.945</span></span>
+<span id="cb5-142"><a href="#cb5-142" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.731 0.104 0.496 0.898</span></span>
+<span id="cb5-143"><a href="#cb5-143" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.980 0.012 0.950 0.996</span></span>
+<span id="cb5-144"><a href="#cb5-144" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.906 0.044 0.801 0.971</span></span>
+<span id="cb5-145"><a href="#cb5-145" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.810 0.082 0.622 0.938</span></span>
+<span id="cb5-146"><a href="#cb5-146" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4    0.943 0.031 0.864 0.987</span></span>
+<span id="cb5-147"><a href="#cb5-147" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5    0.865 0.068 0.700 0.962</span></span>
+<span id="cb5-148"><a href="#cb5-148" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.963 0.027 0.889 0.994</span></span></code></pre></div>
+<p>We can also pass the fitted model to other useful functions, such as
+<code>plot_roc_curve()</code> or <code>pp_check.broc_fit()</code>:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="fu">plot_roc_curve</span>(fit<span class="fl">.1</span>,</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>               <span class="at">group =</span> <span class="st">&#39;condition&#39;</span>)</span></code></pre></div>
+<div class="float">
+<img src="figures/unnamed-chunk-6-1.png" alt="plot of chunk unnamed-chunk-6" />
+<div class="figcaption">plot of chunk unnamed-chunk-6</div>
+</div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">pp_check</span>(fit<span class="fl">.1</span>,</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>         <span class="at">type =</span> <span class="st">&#39;bars_grouped&#39;</span>,</span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>         <span class="at">group =</span> <span class="st">&#39;condition&#39;</span>)</span></code></pre></div>
+<div class="float">
+<img src="figures/unnamed-chunk-6-2.png" alt="plot of chunk unnamed-chunk-6" />
+<div class="figcaption">plot of chunk unnamed-chunk-6</div>
+</div>
+</div>
+<div id="prior-adjustment-model-comparison-and-smooth-terms" class="section level2">
+<h2>Prior adjustment, model comparison, and smooth terms</h2>
+<p>To explore other capabilities of the package, we can expand our model
+by adding a continuous covariate. To do so, we first specify a new
+formula. Encoding variables can also be specified in the model
+formula:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>f<span class="fl">.2</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="sc">+</span>condition<span class="sc">:</span>scale_wf<span class="dv">-1</span> <span class="sc">+</span> </span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>    (condition<span class="sc">+</span>condition<span class="sc">:</span>scale_wf<span class="dv">-1</span><span class="sc">|</span>participant) <span class="sc">+</span> </span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>    (condition<span class="dv">-1</span><span class="sc">|</span>words),</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>  criterion <span class="sc">~</span> scale_wf <span class="sc">+</span> (scale_wf<span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">evsd</span>(),</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>  <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span></span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a>)</span></code></pre></div>
+<p>We probably want to adjust the default priors here. We can view the
+default priors and coefficient names for a model before constructing it
+by passing the formula and data to <code>get_broc_prior()</code>, and we
+can then specify the priors we want to override:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a><span class="fu">get_broc_prior</span>(f<span class="fl">.2</span>, </span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>               whitridge_2024)</span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a><span class="co">#&gt;    class       dpar                    coef       group                prior</span></span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a><span class="co">#&gt; 1      b     dprime           conditionread        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-5"><a href="#cb9-5" tabindex="-1"></a><span class="co">#&gt; 2      b     dprime           conditionsing        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-6"><a href="#cb9-6" tabindex="-1"></a><span class="co">#&gt; 3      b     dprime          conditionspeak        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-7"><a href="#cb9-7" tabindex="-1"></a><span class="co">#&gt; 4      b     dprime  conditionread:scale_wf        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-8"><a href="#cb9-8" tabindex="-1"></a><span class="co">#&gt; 5      b     dprime  conditionsing:scale_wf        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-9"><a href="#cb9-9" tabindex="-1"></a><span class="co">#&gt; 6      b     dprime conditionspeak:scale_wf        &lt;NA&gt;         normal(1, 1)</span></span>
+<span id="cb9-10"><a href="#cb9-10" tabindex="-1"></a><span class="co">#&gt; 7      b thresh_mid             (Intercept)        &lt;NA&gt;       normal(0, 1.5)</span></span>
+<span id="cb9-11"><a href="#cb9-11" tabindex="-1"></a><span class="co">#&gt; 8      b thresh_mid                scale_wf        &lt;NA&gt;       normal(0, 1.5)</span></span>
+<span id="cb9-12"><a href="#cb9-12" tabindex="-1"></a><span class="co">#&gt; 9      b   log_gaps        gap1_(Intercept)        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-13"><a href="#cb9-13" tabindex="-1"></a><span class="co">#&gt; 10     b   log_gaps           gap1_scale_wf        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-14"><a href="#cb9-14" tabindex="-1"></a><span class="co">#&gt; 11     b   log_gaps        gap2_(Intercept)        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-15"><a href="#cb9-15" tabindex="-1"></a><span class="co">#&gt; 12     b   log_gaps           gap2_scale_wf        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-16"><a href="#cb9-16" tabindex="-1"></a><span class="co">#&gt; 13     b   log_gaps        gap3_(Intercept)        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-17"><a href="#cb9-17" tabindex="-1"></a><span class="co">#&gt; 14     b   log_gaps           gap3_scale_wf        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-18"><a href="#cb9-18" tabindex="-1"></a><span class="co">#&gt; 15     b   log_gaps        gap4_(Intercept)        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-19"><a href="#cb9-19" tabindex="-1"></a><span class="co">#&gt; 16     b   log_gaps           gap4_scale_wf        &lt;NA&gt;         normal(0, 1)</span></span>
+<span id="cb9-20"><a href="#cb9-20" tabindex="-1"></a><span class="co">#&gt; 17    sd     dprime           conditionread participant       normal(0, 0.5)</span></span>
+<span id="cb9-21"><a href="#cb9-21" tabindex="-1"></a><span class="co">#&gt; 18    sd     dprime           conditionsing participant       normal(0, 0.5)</span></span>
+<span id="cb9-22"><a href="#cb9-22" tabindex="-1"></a><span class="co">#&gt; 19    sd     dprime          conditionspeak participant       normal(0, 0.5)</span></span>
+<span id="cb9-23"><a href="#cb9-23" tabindex="-1"></a><span class="co">#&gt; 20    sd     dprime  conditionread:scale_wf participant       normal(0, 0.5)</span></span>
+<span id="cb9-24"><a href="#cb9-24" tabindex="-1"></a><span class="co">#&gt; 21    sd     dprime  conditionsing:scale_wf participant       normal(0, 0.5)</span></span>
+<span id="cb9-25"><a href="#cb9-25" tabindex="-1"></a><span class="co">#&gt; 22    sd     dprime conditionspeak:scale_wf participant       normal(0, 0.5)</span></span>
+<span id="cb9-26"><a href="#cb9-26" tabindex="-1"></a><span class="co">#&gt; 23    sd     dprime           conditionread       words       normal(0, 0.5)</span></span>
+<span id="cb9-27"><a href="#cb9-27" tabindex="-1"></a><span class="co">#&gt; 24    sd     dprime           conditionsing       words       normal(0, 0.5)</span></span>
+<span id="cb9-28"><a href="#cb9-28" tabindex="-1"></a><span class="co">#&gt; 25    sd     dprime          conditionspeak       words       normal(0, 0.5)</span></span>
+<span id="cb9-29"><a href="#cb9-29" tabindex="-1"></a><span class="co">#&gt; 26    sd  criterion             (Intercept) participant       normal(0, 0.5)</span></span>
+<span id="cb9-30"><a href="#cb9-30" tabindex="-1"></a><span class="co">#&gt; 27    sd  criterion                scale_wf participant       normal(0, 0.5)</span></span>
+<span id="cb9-31"><a href="#cb9-31" tabindex="-1"></a><span class="co">#&gt; 28    sd  criterion             (Intercept)       words       normal(0, 0.5)</span></span>
+<span id="cb9-32"><a href="#cb9-32" tabindex="-1"></a><span class="co">#&gt; 29   cor     dprime                    &lt;NA&gt; participant lkj_corr_cholesky(1)</span></span>
+<span id="cb9-33"><a href="#cb9-33" tabindex="-1"></a><span class="co">#&gt; 30   cor     dprime                    &lt;NA&gt;       words lkj_corr_cholesky(1)</span></span>
+<span id="cb9-34"><a href="#cb9-34" tabindex="-1"></a><span class="co">#&gt; 31   cor  criterion                    &lt;NA&gt; participant lkj_corr_cholesky(1)</span></span>
+<span id="cb9-35"><a href="#cb9-35" tabindex="-1"></a><span class="co">#&gt; 32   cor  criterion                    &lt;NA&gt;       words lkj_corr_cholesky(1)</span></span>
+<span id="cb9-36"><a href="#cb9-36" tabindex="-1"></a><span class="co">#&gt;     source</span></span>
+<span id="cb9-37"><a href="#cb9-37" tabindex="-1"></a><span class="co">#&gt; 1  default</span></span>
+<span id="cb9-38"><a href="#cb9-38" tabindex="-1"></a><span class="co">#&gt; 2  default</span></span>
+<span id="cb9-39"><a href="#cb9-39" tabindex="-1"></a><span class="co">#&gt; 3  default</span></span>
+<span id="cb9-40"><a href="#cb9-40" tabindex="-1"></a><span class="co">#&gt; 4  default</span></span>
+<span id="cb9-41"><a href="#cb9-41" tabindex="-1"></a><span class="co">#&gt; 5  default</span></span>
+<span id="cb9-42"><a href="#cb9-42" tabindex="-1"></a><span class="co">#&gt; 6  default</span></span>
+<span id="cb9-43"><a href="#cb9-43" tabindex="-1"></a><span class="co">#&gt; 7  default</span></span>
+<span id="cb9-44"><a href="#cb9-44" tabindex="-1"></a><span class="co">#&gt; 8  default</span></span>
+<span id="cb9-45"><a href="#cb9-45" tabindex="-1"></a><span class="co">#&gt; 9  default</span></span>
+<span id="cb9-46"><a href="#cb9-46" tabindex="-1"></a><span class="co">#&gt; 10 default</span></span>
+<span id="cb9-47"><a href="#cb9-47" tabindex="-1"></a><span class="co">#&gt; 11 default</span></span>
+<span id="cb9-48"><a href="#cb9-48" tabindex="-1"></a><span class="co">#&gt; 12 default</span></span>
+<span id="cb9-49"><a href="#cb9-49" tabindex="-1"></a><span class="co">#&gt; 13 default</span></span>
+<span id="cb9-50"><a href="#cb9-50" tabindex="-1"></a><span class="co">#&gt; 14 default</span></span>
+<span id="cb9-51"><a href="#cb9-51" tabindex="-1"></a><span class="co">#&gt; 15 default</span></span>
+<span id="cb9-52"><a href="#cb9-52" tabindex="-1"></a><span class="co">#&gt; 16 default</span></span>
+<span id="cb9-53"><a href="#cb9-53" tabindex="-1"></a><span class="co">#&gt; 17 default</span></span>
+<span id="cb9-54"><a href="#cb9-54" tabindex="-1"></a><span class="co">#&gt; 18 default</span></span>
+<span id="cb9-55"><a href="#cb9-55" tabindex="-1"></a><span class="co">#&gt; 19 default</span></span>
+<span id="cb9-56"><a href="#cb9-56" tabindex="-1"></a><span class="co">#&gt; 20 default</span></span>
+<span id="cb9-57"><a href="#cb9-57" tabindex="-1"></a><span class="co">#&gt; 21 default</span></span>
+<span id="cb9-58"><a href="#cb9-58" tabindex="-1"></a><span class="co">#&gt; 22 default</span></span>
+<span id="cb9-59"><a href="#cb9-59" tabindex="-1"></a><span class="co">#&gt; 23 default</span></span>
+<span id="cb9-60"><a href="#cb9-60" tabindex="-1"></a><span class="co">#&gt; 24 default</span></span>
+<span id="cb9-61"><a href="#cb9-61" tabindex="-1"></a><span class="co">#&gt; 25 default</span></span>
+<span id="cb9-62"><a href="#cb9-62" tabindex="-1"></a><span class="co">#&gt; 26 default</span></span>
+<span id="cb9-63"><a href="#cb9-63" tabindex="-1"></a><span class="co">#&gt; 27 default</span></span>
+<span id="cb9-64"><a href="#cb9-64" tabindex="-1"></a><span class="co">#&gt; 28 default</span></span>
+<span id="cb9-65"><a href="#cb9-65" tabindex="-1"></a><span class="co">#&gt; 29 default</span></span>
+<span id="cb9-66"><a href="#cb9-66" tabindex="-1"></a><span class="co">#&gt; 30 default</span></span>
+<span id="cb9-67"><a href="#cb9-67" tabindex="-1"></a><span class="co">#&gt; 31 default</span></span>
+<span id="cb9-68"><a href="#cb9-68" tabindex="-1"></a><span class="co">#&gt; 32 default</span></span>
+<span id="cb9-69"><a href="#cb9-69" tabindex="-1"></a>m.<span class="fl">2.</span>priors <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb9-70"><a href="#cb9-70" tabindex="-1"></a>  <span class="fu">broc_prior</span>(<span class="st">&#39;normal(0, 0.5)&#39;</span>, </span>
+<span id="cb9-71"><a href="#cb9-71" tabindex="-1"></a>             <span class="at">class =</span> <span class="st">&#39;b&#39;</span>, </span>
+<span id="cb9-72"><a href="#cb9-72" tabindex="-1"></a>             <span class="at">dpar =</span> <span class="st">&#39;dprime&#39;</span>, </span>
+<span id="cb9-73"><a href="#cb9-73" tabindex="-1"></a>             <span class="at">coef =</span> <span class="st">&#39;conditionread:scale_wf&#39;</span>),</span>
+<span id="cb9-74"><a href="#cb9-74" tabindex="-1"></a>  <span class="fu">broc_prior</span>(<span class="st">&#39;normal(0, 0.5)&#39;</span>, </span>
+<span id="cb9-75"><a href="#cb9-75" tabindex="-1"></a>             <span class="at">class =</span> <span class="st">&#39;b&#39;</span>, </span>
+<span id="cb9-76"><a href="#cb9-76" tabindex="-1"></a>             <span class="at">dpar =</span> <span class="st">&#39;dprime&#39;</span>, </span>
+<span id="cb9-77"><a href="#cb9-77" tabindex="-1"></a>             <span class="at">coef =</span> <span class="st">&#39;conditionsing:scale_wf&#39;</span>),</span>
+<span id="cb9-78"><a href="#cb9-78" tabindex="-1"></a>  <span class="fu">broc_prior</span>(<span class="st">&#39;normal(0, 0.5)&#39;</span>, </span>
+<span id="cb9-79"><a href="#cb9-79" tabindex="-1"></a>             <span class="at">class =</span> <span class="st">&#39;b&#39;</span>, </span>
+<span id="cb9-80"><a href="#cb9-80" tabindex="-1"></a>             <span class="at">dpar =</span> <span class="st">&#39;dprime&#39;</span>, </span>
+<span id="cb9-81"><a href="#cb9-81" tabindex="-1"></a>             <span class="at">coef =</span> <span class="st">&#39;conditionspeak:scale_wf&#39;</span>)</span>
+<span id="cb9-82"><a href="#cb9-82" tabindex="-1"></a>)</span></code></pre></div>
+<p>We can then construct the model including our priors and run
+sampling:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a>m<span class="fl">.2</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.2</span>,</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>            <span class="at">priors =</span> m.<span class="fl">2.</span>priors,</span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024)</span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a>fit<span class="fl">.2</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.2</span>,</span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>)</span>
+<span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb10-10"><a href="#cb10-10" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-11"><a href="#cb10-11" tabindex="-1"></a></span>
+<span id="cb10-12"><a href="#cb10-12" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.2</span>)</span>
+<span id="cb10-13"><a href="#cb10-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-14"><a href="#cb10-14" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb10-15"><a href="#cb10-15" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb10-16"><a href="#cb10-16" tabindex="-1"></a><span class="co">#&gt; Family: evsd </span></span>
+<span id="cb10-17"><a href="#cb10-17" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb10-18"><a href="#cb10-18" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.65</span></span>
+<span id="cb10-19"><a href="#cb10-19" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-20"><a href="#cb10-20" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb10-21"><a href="#cb10-21" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb10-22"><a href="#cb10-22" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-23"><a href="#cb10-23" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb10-24"><a href="#cb10-24" tabindex="-1"></a><span class="co">#&gt;                parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-25"><a href="#cb10-25" tabindex="-1"></a><span class="co">#&gt;            conditionread    0.723 0.070  0.609  0.839 1.000     4492     5585</span></span>
+<span id="cb10-26"><a href="#cb10-26" tabindex="-1"></a><span class="co">#&gt;            conditionsing    1.304 0.077  1.180  1.433 1.000     4670     5467</span></span>
+<span id="cb10-27"><a href="#cb10-27" tabindex="-1"></a><span class="co">#&gt;           conditionspeak    1.369 0.088  1.227  1.518 1.000     5017     5641</span></span>
+<span id="cb10-28"><a href="#cb10-28" tabindex="-1"></a><span class="co">#&gt;   conditionread:scale_wf   -0.031 0.050 -0.113  0.050 1.000     9344     6580</span></span>
+<span id="cb10-29"><a href="#cb10-29" tabindex="-1"></a><span class="co">#&gt;   conditionsing:scale_wf   -0.188 0.047 -0.265 -0.111 1.001    10630     6711</span></span>
+<span id="cb10-30"><a href="#cb10-30" tabindex="-1"></a><span class="co">#&gt;  conditionspeak:scale_wf   -0.167 0.053 -0.254 -0.082 1.000     9880     6353</span></span>
+<span id="cb10-31"><a href="#cb10-31" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-32"><a href="#cb10-32" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb10-33"><a href="#cb10-33" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-34"><a href="#cb10-34" tabindex="-1"></a><span class="co">#&gt;  intercept    0.764 0.081  0.633  0.898 1.002     2449     3883</span></span>
+<span id="cb10-35"><a href="#cb10-35" tabindex="-1"></a><span class="co">#&gt;   scale_wf   -0.074 0.026 -0.117 -0.031 1.000    12031     6712</span></span>
+<span id="cb10-36"><a href="#cb10-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-37"><a href="#cb10-37" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb10-38"><a href="#cb10-38" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-39"><a href="#cb10-39" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.363 0.116 -1.555 -1.177 1.000     3227     5274</span></span>
+<span id="cb10-40"><a href="#cb10-40" tabindex="-1"></a><span class="co">#&gt;   log_gap[1,scale_wf]    0.017 0.041 -0.050  0.084 1.001    14523     6318</span></span>
+<span id="cb10-41"><a href="#cb10-41" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.511 0.148 -1.759 -1.279 1.000     3005     4488</span></span>
+<span id="cb10-42"><a href="#cb10-42" tabindex="-1"></a><span class="co">#&gt;   log_gap[2,scale_wf]    0.017 0.046 -0.060  0.091 1.001    14398     6122</span></span>
+<span id="cb10-43"><a href="#cb10-43" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.183 0.093 -1.338 -1.034 1.000     3397     5027</span></span>
+<span id="cb10-44"><a href="#cb10-44" tabindex="-1"></a><span class="co">#&gt;   log_gap[3,scale_wf]    0.090 0.036  0.031  0.148 1.001    13791     6173</span></span>
+<span id="cb10-45"><a href="#cb10-45" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.194 0.155 -1.451 -0.943 1.001     1284     2140</span></span>
+<span id="cb10-46"><a href="#cb10-46" tabindex="-1"></a><span class="co">#&gt;   log_gap[4,scale_wf]    0.076 0.032  0.025  0.129 1.000    13429     6445</span></span>
+<span id="cb10-47"><a href="#cb10-47" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-48"><a href="#cb10-48" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb10-49"><a href="#cb10-49" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb10-50"><a href="#cb10-50" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-51"><a href="#cb10-51" tabindex="-1"></a><span class="co">#&gt; (Skipped - criterion has continuous predictors. Interpret fixed effects directly.)</span></span>
+<span id="cb10-52"><a href="#cb10-52" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-53"><a href="#cb10-53" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb10-54"><a href="#cb10-54" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb10-55"><a href="#cb10-55" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-56"><a href="#cb10-56" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb10-57"><a href="#cb10-57" tabindex="-1"></a><span class="co">#&gt;                    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-58"><a href="#cb10-58" tabindex="-1"></a><span class="co">#&gt;            conditionread    0.344 0.058 0.255 0.445 1.000     4924     5781</span></span>
+<span id="cb10-59"><a href="#cb10-59" tabindex="-1"></a><span class="co">#&gt;            conditionsing    0.389 0.059 0.297 0.492 1.001     5227     6033</span></span>
+<span id="cb10-60"><a href="#cb10-60" tabindex="-1"></a><span class="co">#&gt;           conditionspeak    0.463 0.066 0.363 0.579 1.001     5340     6551</span></span>
+<span id="cb10-61"><a href="#cb10-61" tabindex="-1"></a><span class="co">#&gt;   conditionread:scale_wf    0.111 0.055 0.021 0.201 1.001     2961     3508</span></span>
+<span id="cb10-62"><a href="#cb10-62" tabindex="-1"></a><span class="co">#&gt;   conditionsing:scale_wf    0.070 0.049 0.006 0.161 1.001     3169     4774</span></span>
+<span id="cb10-63"><a href="#cb10-63" tabindex="-1"></a><span class="co">#&gt;  conditionspeak:scale_wf    0.087 0.054 0.009 0.183 1.002     3174     4407</span></span>
+<span id="cb10-64"><a href="#cb10-64" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-65"><a href="#cb10-65" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb10-66"><a href="#cb10-66" tabindex="-1"></a><span class="co">#&gt;           level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-67"><a href="#cb10-67" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.431 0.061 0.330 0.529 1.001     2843     4841</span></span>
+<span id="cb10-68"><a href="#cb10-68" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.383 0.061 0.284 0.484 1.000     3271     5038</span></span>
+<span id="cb10-69"><a href="#cb10-69" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.488 0.063 0.384 0.592 1.001     3058     4792</span></span>
+<span id="cb10-70"><a href="#cb10-70" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-71"><a href="#cb10-71" tabindex="-1"></a><span class="co">#&gt; criterion | participant)[thresh1:(Intercept:</span></span>
+<span id="cb10-72"><a href="#cb10-72" tabindex="-1"></a><span class="co">#&gt;                level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-73"><a href="#cb10-73" tabindex="-1"></a><span class="co">#&gt;  thresh1:(Intercept)    0.953 0.114 0.776 1.148 1.000     2848     5028</span></span>
+<span id="cb10-74"><a href="#cb10-74" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-75"><a href="#cb10-75" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb10-76"><a href="#cb10-76" tabindex="-1"></a><span class="co">#&gt;             level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-77"><a href="#cb10-77" tabindex="-1"></a><span class="co">#&gt;  thresh1:scale_wf    0.537 0.071 0.429 0.660 1.001     5289     6069</span></span>
+<span id="cb10-78"><a href="#cb10-78" tabindex="-1"></a><span class="co">#&gt;  thresh2:scale_wf    0.680 0.086 0.548 0.828 1.001     5657     6151</span></span>
+<span id="cb10-79"><a href="#cb10-79" tabindex="-1"></a><span class="co">#&gt;  thresh3:scale_wf    0.402 0.305 0.032 0.998 1.000     7291     4007</span></span>
+<span id="cb10-80"><a href="#cb10-80" tabindex="-1"></a><span class="co">#&gt;  thresh4:scale_wf    0.399 0.296 0.031 0.963 1.000     6495     4103</span></span>
+<span id="cb10-81"><a href="#cb10-81" tabindex="-1"></a><span class="co">#&gt;  thresh5:scale_wf    0.395 0.298 0.035 0.977 1.000     6770     4238</span></span>
+<span id="cb10-82"><a href="#cb10-82" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-83"><a href="#cb10-83" tabindex="-1"></a><span class="co">#&gt; criterion | participant)[thresh2:(Intercept:</span></span>
+<span id="cb10-84"><a href="#cb10-84" tabindex="-1"></a><span class="co">#&gt;                level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-85"><a href="#cb10-85" tabindex="-1"></a><span class="co">#&gt;  thresh2:(Intercept)    0.495 0.060 0.405 0.602 1.000     3442     4836</span></span>
+<span id="cb10-86"><a href="#cb10-86" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-87"><a href="#cb10-87" tabindex="-1"></a><span class="co">#&gt; criterion | participant)[thresh3:(Intercept:</span></span>
+<span id="cb10-88"><a href="#cb10-88" tabindex="-1"></a><span class="co">#&gt;                level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-89"><a href="#cb10-89" tabindex="-1"></a><span class="co">#&gt;  thresh3:(Intercept)    0.872 0.120 0.689 1.078 1.001     4404     6204</span></span>
+<span id="cb10-90"><a href="#cb10-90" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-91"><a href="#cb10-91" tabindex="-1"></a><span class="co">#&gt; criterion | participant)[thresh4:(Intercept:</span></span>
+<span id="cb10-92"><a href="#cb10-92" tabindex="-1"></a><span class="co">#&gt;                level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-93"><a href="#cb10-93" tabindex="-1"></a><span class="co">#&gt;  thresh4:(Intercept)    0.404 0.298 0.036 0.983 1.001     6681     3985</span></span>
+<span id="cb10-94"><a href="#cb10-94" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-95"><a href="#cb10-95" tabindex="-1"></a><span class="co">#&gt; criterion | participant)[thresh5:(Intercept:</span></span>
+<span id="cb10-96"><a href="#cb10-96" tabindex="-1"></a><span class="co">#&gt;                level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-97"><a href="#cb10-97" tabindex="-1"></a><span class="co">#&gt;  thresh5:(Intercept)    0.400 0.306 0.032 0.993 1.000     6935     4500</span></span>
+<span id="cb10-98"><a href="#cb10-98" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-99"><a href="#cb10-99" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb10-100"><a href="#cb10-100" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-101"><a href="#cb10-101" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.238 0.066 0.123 0.339 1.001     1533     1553</span></span>
+<span id="cb10-102"><a href="#cb10-102" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.260 0.048 0.182 0.338 1.001     5995     6178</span></span>
+<span id="cb10-103"><a href="#cb10-103" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.253 0.027 0.210 0.297 1.001     2622     4559</span></span>
+<span id="cb10-104"><a href="#cb10-104" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.309 0.059 0.210 0.405 1.001     2981     5048</span></span>
+<span id="cb10-105"><a href="#cb10-105" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.274 0.061 0.172 0.374 1.000     5400     4704</span></span>
+<span id="cb10-106"><a href="#cb10-106" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-107"><a href="#cb10-107" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb10-108"><a href="#cb10-108" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb10-109"><a href="#cb10-109" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-110"><a href="#cb10-110" tabindex="-1"></a><span class="co">#&gt; dprime | participant:</span></span>
+<span id="cb10-111"><a href="#cb10-111" tabindex="-1"></a><span class="co">#&gt;                                              pair estimate    sd  lower upper</span></span>
+<span id="cb10-112"><a href="#cb10-112" tabindex="-1"></a><span class="co">#&gt;                     conditionread ~ conditionsing    0.744 0.122  0.514 0.912</span></span>
+<span id="cb10-113"><a href="#cb10-113" tabindex="-1"></a><span class="co">#&gt;                    conditionread ~ conditionspeak    0.588 0.152  0.314 0.810</span></span>
+<span id="cb10-114"><a href="#cb10-114" tabindex="-1"></a><span class="co">#&gt;            conditionread ~ conditionread:scale_wf   -0.293 0.296 -0.737 0.234</span></span>
+<span id="cb10-115"><a href="#cb10-115" tabindex="-1"></a><span class="co">#&gt;            conditionread ~ conditionsing:scale_wf    0.025 0.335 -0.538 0.566</span></span>
+<span id="cb10-116"><a href="#cb10-116" tabindex="-1"></a><span class="co">#&gt;           conditionread ~ conditionspeak:scale_wf   -0.227 0.323 -0.709 0.358</span></span>
+<span id="cb10-117"><a href="#cb10-117" tabindex="-1"></a><span class="co">#&gt;                    conditionsing ~ conditionspeak    0.773 0.105  0.576 0.916</span></span>
+<span id="cb10-118"><a href="#cb10-118" tabindex="-1"></a><span class="co">#&gt;            conditionsing ~ conditionread:scale_wf   -0.238 0.287 -0.681 0.262</span></span>
+<span id="cb10-119"><a href="#cb10-119" tabindex="-1"></a><span class="co">#&gt;            conditionsing ~ conditionsing:scale_wf    0.054 0.334 -0.528 0.583</span></span>
+<span id="cb10-120"><a href="#cb10-120" tabindex="-1"></a><span class="co">#&gt;           conditionsing ~ conditionspeak:scale_wf   -0.264 0.318 -0.732 0.318</span></span>
+<span id="cb10-121"><a href="#cb10-121" tabindex="-1"></a><span class="co">#&gt;           conditionspeak ~ conditionread:scale_wf   -0.247 0.290 -0.689 0.263</span></span>
+<span id="cb10-122"><a href="#cb10-122" tabindex="-1"></a><span class="co">#&gt;           conditionspeak ~ conditionsing:scale_wf   -0.069 0.328 -0.599 0.490</span></span>
+<span id="cb10-123"><a href="#cb10-123" tabindex="-1"></a><span class="co">#&gt;          conditionspeak ~ conditionspeak:scale_wf   -0.272 0.322 -0.745 0.321</span></span>
+<span id="cb10-124"><a href="#cb10-124" tabindex="-1"></a><span class="co">#&gt;   conditionread:scale_wf ~ conditionsing:scale_wf    0.070 0.368 -0.561 0.649</span></span>
+<span id="cb10-125"><a href="#cb10-125" tabindex="-1"></a><span class="co">#&gt;  conditionread:scale_wf ~ conditionspeak:scale_wf    0.238 0.354 -0.395 0.763</span></span>
+<span id="cb10-126"><a href="#cb10-126" tabindex="-1"></a><span class="co">#&gt;  conditionsing:scale_wf ~ conditionspeak:scale_wf    0.093 0.370 -0.539 0.671</span></span>
+<span id="cb10-127"><a href="#cb10-127" tabindex="-1"></a><span class="co">#&gt;   rhat ess_bulk ess_tail</span></span>
+<span id="cb10-128"><a href="#cb10-128" tabindex="-1"></a><span class="co">#&gt;  1.000     3598     5256</span></span>
+<span id="cb10-129"><a href="#cb10-129" tabindex="-1"></a><span class="co">#&gt;  1.000     3558     4922</span></span>
+<span id="cb10-130"><a href="#cb10-130" tabindex="-1"></a><span class="co">#&gt;  1.000     8082     6141</span></span>
+<span id="cb10-131"><a href="#cb10-131" tabindex="-1"></a><span class="co">#&gt;  1.000    13478     5758</span></span>
+<span id="cb10-132"><a href="#cb10-132" tabindex="-1"></a><span class="co">#&gt;  1.001    10159     6264</span></span>
+<span id="cb10-133"><a href="#cb10-133" tabindex="-1"></a><span class="co">#&gt;  1.000     4009     5739</span></span>
+<span id="cb10-134"><a href="#cb10-134" tabindex="-1"></a><span class="co">#&gt;  1.000     8808     7026</span></span>
+<span id="cb10-135"><a href="#cb10-135" tabindex="-1"></a><span class="co">#&gt;  1.000    12160     6137</span></span>
+<span id="cb10-136"><a href="#cb10-136" tabindex="-1"></a><span class="co">#&gt;  1.000    10654     6511</span></span>
+<span id="cb10-137"><a href="#cb10-137" tabindex="-1"></a><span class="co">#&gt;  1.001     9015     6734</span></span>
+<span id="cb10-138"><a href="#cb10-138" tabindex="-1"></a><span class="co">#&gt;  1.001    13337     6554</span></span>
+<span id="cb10-139"><a href="#cb10-139" tabindex="-1"></a><span class="co">#&gt;  1.000     9932     7064</span></span>
+<span id="cb10-140"><a href="#cb10-140" tabindex="-1"></a><span class="co">#&gt;  1.001     7722     6625</span></span>
+<span id="cb10-141"><a href="#cb10-141" tabindex="-1"></a><span class="co">#&gt;  1.001     5423     6493</span></span>
+<span id="cb10-142"><a href="#cb10-142" tabindex="-1"></a><span class="co">#&gt;  1.000     6509     6768</span></span>
+<span id="cb10-143"><a href="#cb10-143" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-144"><a href="#cb10-144" tabindex="-1"></a><span class="co">#&gt; dprime | words:</span></span>
+<span id="cb10-145"><a href="#cb10-145" tabindex="-1"></a><span class="co">#&gt;                            pair estimate    sd lower upper  rhat ess_bulk</span></span>
+<span id="cb10-146"><a href="#cb10-146" tabindex="-1"></a><span class="co">#&gt;   conditionread ~ conditionsing    0.584 0.174 0.285 0.854 1.002     1832</span></span>
+<span id="cb10-147"><a href="#cb10-147" tabindex="-1"></a><span class="co">#&gt;  conditionread ~ conditionspeak    0.454 0.167 0.168 0.721 1.001     1695</span></span>
+<span id="cb10-148"><a href="#cb10-148" tabindex="-1"></a><span class="co">#&gt;  conditionsing ~ conditionspeak    0.733 0.140 0.484 0.942 1.001     1251</span></span>
+<span id="cb10-149"><a href="#cb10-149" tabindex="-1"></a><span class="co">#&gt;  ess_tail</span></span>
+<span id="cb10-150"><a href="#cb10-150" tabindex="-1"></a><span class="co">#&gt;      3155</span></span>
+<span id="cb10-151"><a href="#cb10-151" tabindex="-1"></a><span class="co">#&gt;      1979</span></span>
+<span id="cb10-152"><a href="#cb10-152" tabindex="-1"></a><span class="co">#&gt;      2319</span></span>
+<span id="cb10-153"><a href="#cb10-153" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-154"><a href="#cb10-154" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb10-155"><a href="#cb10-155" tabindex="-1"></a><span class="co">#&gt;                                       pair estimate    sd  lower  upper  rhat</span></span>
+<span id="cb10-156"><a href="#cb10-156" tabindex="-1"></a><span class="co">#&gt;     thresh1:(Intercept) ~ thresh1:scale_wf    0.522 0.122  0.307  0.706 1.000</span></span>
+<span id="cb10-157"><a href="#cb10-157" tabindex="-1"></a><span class="co">#&gt;  thresh1:(Intercept) ~ thresh2:(Intercept)    0.031 0.141 -0.202  0.267 1.001</span></span>
+<span id="cb10-158"><a href="#cb10-158" tabindex="-1"></a><span class="co">#&gt;     thresh1:(Intercept) ~ thresh2:scale_wf    0.470 0.127  0.249  0.663 1.000</span></span>
+<span id="cb10-159"><a href="#cb10-159" tabindex="-1"></a><span class="co">#&gt;  thresh1:(Intercept) ~ thresh3:(Intercept)    0.518 0.117  0.311  0.693 1.001</span></span>
+<span id="cb10-160"><a href="#cb10-160" tabindex="-1"></a><span class="co">#&gt;     thresh1:(Intercept) ~ thresh3:scale_wf    0.002 0.304 -0.499  0.504 1.001</span></span>
+<span id="cb10-161"><a href="#cb10-161" tabindex="-1"></a><span class="co">#&gt;  thresh1:(Intercept) ~ thresh4:(Intercept)    0.002 0.299 -0.489  0.495 1.001</span></span>
+<span id="cb10-162"><a href="#cb10-162" tabindex="-1"></a><span class="co">#&gt;     thresh1:(Intercept) ~ thresh4:scale_wf   -0.003 0.302 -0.498  0.492 1.001</span></span>
+<span id="cb10-163"><a href="#cb10-163" tabindex="-1"></a><span class="co">#&gt;  thresh1:(Intercept) ~ thresh5:(Intercept)   -0.001 0.297 -0.487  0.491 1.002</span></span>
+<span id="cb10-164"><a href="#cb10-164" tabindex="-1"></a><span class="co">#&gt;     thresh1:(Intercept) ~ thresh5:scale_wf    0.003 0.298 -0.480  0.490 1.001</span></span>
+<span id="cb10-165"><a href="#cb10-165" tabindex="-1"></a><span class="co">#&gt;     thresh1:scale_wf ~ thresh2:(Intercept)    0.018 0.151 -0.233  0.267 1.004</span></span>
+<span id="cb10-166"><a href="#cb10-166" tabindex="-1"></a><span class="co">#&gt;        thresh1:scale_wf ~ thresh2:scale_wf    0.438 0.138  0.199  0.651 1.000</span></span>
+<span id="cb10-167"><a href="#cb10-167" tabindex="-1"></a><span class="co">#&gt;     thresh1:scale_wf ~ thresh3:(Intercept)    0.091 0.151 -0.155  0.339 1.000</span></span>
+<span id="cb10-168"><a href="#cb10-168" tabindex="-1"></a><span class="co">#&gt;        thresh1:scale_wf ~ thresh3:scale_wf   -0.001 0.301 -0.495  0.492 1.001</span></span>
+<span id="cb10-169"><a href="#cb10-169" tabindex="-1"></a><span class="co">#&gt;     thresh1:scale_wf ~ thresh4:(Intercept)    0.001 0.294 -0.478  0.487 1.001</span></span>
+<span id="cb10-170"><a href="#cb10-170" tabindex="-1"></a><span class="co">#&gt;        thresh1:scale_wf ~ thresh4:scale_wf   -0.001 0.302 -0.493  0.500 1.002</span></span>
+<span id="cb10-171"><a href="#cb10-171" tabindex="-1"></a><span class="co">#&gt;     thresh1:scale_wf ~ thresh5:(Intercept)    0.001 0.302 -0.495  0.506 1.000</span></span>
+<span id="cb10-172"><a href="#cb10-172" tabindex="-1"></a><span class="co">#&gt;        thresh1:scale_wf ~ thresh5:scale_wf    0.001 0.297 -0.484  0.493 1.000</span></span>
+<span id="cb10-173"><a href="#cb10-173" tabindex="-1"></a><span class="co">#&gt;     thresh2:(Intercept) ~ thresh2:scale_wf   -0.414 0.132 -0.616 -0.184 1.001</span></span>
+<span id="cb10-174"><a href="#cb10-174" tabindex="-1"></a><span class="co">#&gt;  thresh2:(Intercept) ~ thresh3:(Intercept)   -0.044 0.148 -0.289  0.200 1.000</span></span>
+<span id="cb10-175"><a href="#cb10-175" tabindex="-1"></a><span class="co">#&gt;     thresh2:(Intercept) ~ thresh3:scale_wf    0.001 0.295 -0.493  0.490 1.000</span></span>
+<span id="cb10-176"><a href="#cb10-176" tabindex="-1"></a><span class="co">#&gt;  thresh2:(Intercept) ~ thresh4:(Intercept)    0.001 0.303 -0.500  0.498 1.001</span></span>
+<span id="cb10-177"><a href="#cb10-177" tabindex="-1"></a><span class="co">#&gt;     thresh2:(Intercept) ~ thresh4:scale_wf    0.002 0.302 -0.497  0.497 1.002</span></span>
+<span id="cb10-178"><a href="#cb10-178" tabindex="-1"></a><span class="co">#&gt;  thresh2:(Intercept) ~ thresh5:(Intercept)    0.004 0.302 -0.502  0.508 1.001</span></span>
+<span id="cb10-179"><a href="#cb10-179" tabindex="-1"></a><span class="co">#&gt;     thresh2:(Intercept) ~ thresh5:scale_wf    0.000 0.308 -0.506  0.509 1.000</span></span>
+<span id="cb10-180"><a href="#cb10-180" tabindex="-1"></a><span class="co">#&gt;     thresh2:scale_wf ~ thresh3:(Intercept)    0.261 0.145  0.015  0.491 1.001</span></span>
+<span id="cb10-181"><a href="#cb10-181" tabindex="-1"></a><span class="co">#&gt;        thresh2:scale_wf ~ thresh3:scale_wf   -0.000 0.301 -0.495  0.499 1.001</span></span>
+<span id="cb10-182"><a href="#cb10-182" tabindex="-1"></a><span class="co">#&gt;     thresh2:scale_wf ~ thresh4:(Intercept)    0.000 0.299 -0.495  0.491 1.000</span></span>
+<span id="cb10-183"><a href="#cb10-183" tabindex="-1"></a><span class="co">#&gt;        thresh2:scale_wf ~ thresh4:scale_wf   -0.001 0.300 -0.498  0.495 1.001</span></span>
+<span id="cb10-184"><a href="#cb10-184" tabindex="-1"></a><span class="co">#&gt;     thresh2:scale_wf ~ thresh5:(Intercept)   -0.004 0.304 -0.505  0.501 1.001</span></span>
+<span id="cb10-185"><a href="#cb10-185" tabindex="-1"></a><span class="co">#&gt;        thresh2:scale_wf ~ thresh5:scale_wf    0.000 0.296 -0.488  0.492 1.000</span></span>
+<span id="cb10-186"><a href="#cb10-186" tabindex="-1"></a><span class="co">#&gt;     thresh3:(Intercept) ~ thresh3:scale_wf    0.004 0.306 -0.507  0.507 1.000</span></span>
+<span id="cb10-187"><a href="#cb10-187" tabindex="-1"></a><span class="co">#&gt;  thresh3:(Intercept) ~ thresh4:(Intercept)   -0.004 0.309 -0.511  0.506 1.000</span></span>
+<span id="cb10-188"><a href="#cb10-188" tabindex="-1"></a><span class="co">#&gt;     thresh3:(Intercept) ~ thresh4:scale_wf   -0.004 0.305 -0.503  0.504 1.001</span></span>
+<span id="cb10-189"><a href="#cb10-189" tabindex="-1"></a><span class="co">#&gt;  thresh3:(Intercept) ~ thresh5:(Intercept)   -0.000 0.294 -0.492  0.483 1.002</span></span>
+<span id="cb10-190"><a href="#cb10-190" tabindex="-1"></a><span class="co">#&gt;     thresh3:(Intercept) ~ thresh5:scale_wf   -0.001 0.301 -0.497  0.496 1.000</span></span>
+<span id="cb10-191"><a href="#cb10-191" tabindex="-1"></a><span class="co">#&gt;     thresh3:scale_wf ~ thresh4:(Intercept)    0.002 0.304 -0.499  0.506 1.001</span></span>
+<span id="cb10-192"><a href="#cb10-192" tabindex="-1"></a><span class="co">#&gt;        thresh3:scale_wf ~ thresh4:scale_wf   -0.000 0.299 -0.497  0.489 1.001</span></span>
+<span id="cb10-193"><a href="#cb10-193" tabindex="-1"></a><span class="co">#&gt;     thresh3:scale_wf ~ thresh5:(Intercept)    0.002 0.303 -0.491  0.503 1.001</span></span>
+<span id="cb10-194"><a href="#cb10-194" tabindex="-1"></a><span class="co">#&gt;        thresh3:scale_wf ~ thresh5:scale_wf    0.001 0.304 -0.507  0.494 1.000</span></span>
+<span id="cb10-195"><a href="#cb10-195" tabindex="-1"></a><span class="co">#&gt;     thresh4:(Intercept) ~ thresh4:scale_wf   -0.006 0.300 -0.501  0.494 1.001</span></span>
+<span id="cb10-196"><a href="#cb10-196" tabindex="-1"></a><span class="co">#&gt;  thresh4:(Intercept) ~ thresh5:(Intercept)   -0.013 0.303 -0.507  0.485 1.001</span></span>
+<span id="cb10-197"><a href="#cb10-197" tabindex="-1"></a><span class="co">#&gt;     thresh4:(Intercept) ~ thresh5:scale_wf    0.000 0.299 -0.492  0.489 1.000</span></span>
+<span id="cb10-198"><a href="#cb10-198" tabindex="-1"></a><span class="co">#&gt;     thresh4:scale_wf ~ thresh5:(Intercept)    0.003 0.298 -0.486  0.492 1.001</span></span>
+<span id="cb10-199"><a href="#cb10-199" tabindex="-1"></a><span class="co">#&gt;        thresh4:scale_wf ~ thresh5:scale_wf   -0.003 0.300 -0.496  0.492 1.000</span></span>
+<span id="cb10-200"><a href="#cb10-200" tabindex="-1"></a><span class="co">#&gt;     thresh5:(Intercept) ~ thresh5:scale_wf   -0.001 0.302 -0.487  0.504 1.001</span></span>
+<span id="cb10-201"><a href="#cb10-201" tabindex="-1"></a><span class="co">#&gt;  ess_bulk ess_tail</span></span>
+<span id="cb10-202"><a href="#cb10-202" tabindex="-1"></a><span class="co">#&gt;      4124     5540</span></span>
+<span id="cb10-203"><a href="#cb10-203" tabindex="-1"></a><span class="co">#&gt;      2433     4113</span></span>
+<span id="cb10-204"><a href="#cb10-204" tabindex="-1"></a><span class="co">#&gt;      3592     5239</span></span>
+<span id="cb10-205"><a href="#cb10-205" tabindex="-1"></a><span class="co">#&gt;      4839     6033</span></span>
+<span id="cb10-206"><a href="#cb10-206" tabindex="-1"></a><span class="co">#&gt;     19766     5150</span></span>
+<span id="cb10-207"><a href="#cb10-207" tabindex="-1"></a><span class="co">#&gt;     19123     4380</span></span>
+<span id="cb10-208"><a href="#cb10-208" tabindex="-1"></a><span class="co">#&gt;     17611     5425</span></span>
+<span id="cb10-209"><a href="#cb10-209" tabindex="-1"></a><span class="co">#&gt;     19285     5303</span></span>
+<span id="cb10-210"><a href="#cb10-210" tabindex="-1"></a><span class="co">#&gt;     19777     5492</span></span>
+<span id="cb10-211"><a href="#cb10-211" tabindex="-1"></a><span class="co">#&gt;      2039     3749</span></span>
+<span id="cb10-212"><a href="#cb10-212" tabindex="-1"></a><span class="co">#&gt;      3623     5620</span></span>
+<span id="cb10-213"><a href="#cb10-213" tabindex="-1"></a><span class="co">#&gt;      4547     5930</span></span>
+<span id="cb10-214"><a href="#cb10-214" tabindex="-1"></a><span class="co">#&gt;     17099     5290</span></span>
+<span id="cb10-215"><a href="#cb10-215" tabindex="-1"></a><span class="co">#&gt;     17974     5573</span></span>
+<span id="cb10-216"><a href="#cb10-216" tabindex="-1"></a><span class="co">#&gt;     20196     4794</span></span>
+<span id="cb10-217"><a href="#cb10-217" tabindex="-1"></a><span class="co">#&gt;     18556     5119</span></span>
+<span id="cb10-218"><a href="#cb10-218" tabindex="-1"></a><span class="co">#&gt;     19186     5697</span></span>
+<span id="cb10-219"><a href="#cb10-219" tabindex="-1"></a><span class="co">#&gt;      5098     5759</span></span>
+<span id="cb10-220"><a href="#cb10-220" tabindex="-1"></a><span class="co">#&gt;      5288     6278</span></span>
+<span id="cb10-221"><a href="#cb10-221" tabindex="-1"></a><span class="co">#&gt;     19464     5372</span></span>
+<span id="cb10-222"><a href="#cb10-222" tabindex="-1"></a><span class="co">#&gt;     16929     5712</span></span>
+<span id="cb10-223"><a href="#cb10-223" tabindex="-1"></a><span class="co">#&gt;     17468     5073</span></span>
+<span id="cb10-224"><a href="#cb10-224" tabindex="-1"></a><span class="co">#&gt;     18691     5084</span></span>
+<span id="cb10-225"><a href="#cb10-225" tabindex="-1"></a><span class="co">#&gt;     19589     5596</span></span>
+<span id="cb10-226"><a href="#cb10-226" tabindex="-1"></a><span class="co">#&gt;      4740     5895</span></span>
+<span id="cb10-227"><a href="#cb10-227" tabindex="-1"></a><span class="co">#&gt;     17964     5795</span></span>
+<span id="cb10-228"><a href="#cb10-228" tabindex="-1"></a><span class="co">#&gt;     17237     5352</span></span>
+<span id="cb10-229"><a href="#cb10-229" tabindex="-1"></a><span class="co">#&gt;     16624     6095</span></span>
+<span id="cb10-230"><a href="#cb10-230" tabindex="-1"></a><span class="co">#&gt;     18171     5967</span></span>
+<span id="cb10-231"><a href="#cb10-231" tabindex="-1"></a><span class="co">#&gt;     17555     5645</span></span>
+<span id="cb10-232"><a href="#cb10-232" tabindex="-1"></a><span class="co">#&gt;     18973     5934</span></span>
+<span id="cb10-233"><a href="#cb10-233" tabindex="-1"></a><span class="co">#&gt;     17783     5821</span></span>
+<span id="cb10-234"><a href="#cb10-234" tabindex="-1"></a><span class="co">#&gt;     18650     6192</span></span>
+<span id="cb10-235"><a href="#cb10-235" tabindex="-1"></a><span class="co">#&gt;     14506     5190</span></span>
+<span id="cb10-236"><a href="#cb10-236" tabindex="-1"></a><span class="co">#&gt;     17310     6083</span></span>
+<span id="cb10-237"><a href="#cb10-237" tabindex="-1"></a><span class="co">#&gt;      5578     6138</span></span>
+<span id="cb10-238"><a href="#cb10-238" tabindex="-1"></a><span class="co">#&gt;      5421     5910</span></span>
+<span id="cb10-239"><a href="#cb10-239" tabindex="-1"></a><span class="co">#&gt;      5691     5761</span></span>
+<span id="cb10-240"><a href="#cb10-240" tabindex="-1"></a><span class="co">#&gt;      5323     5631</span></span>
+<span id="cb10-241"><a href="#cb10-241" tabindex="-1"></a><span class="co">#&gt;      4419     5116</span></span>
+<span id="cb10-242"><a href="#cb10-242" tabindex="-1"></a><span class="co">#&gt;      4792     5299</span></span>
+<span id="cb10-243"><a href="#cb10-243" tabindex="-1"></a><span class="co">#&gt;      4987     5949</span></span>
+<span id="cb10-244"><a href="#cb10-244" tabindex="-1"></a><span class="co">#&gt;      4392     5488</span></span>
+<span id="cb10-245"><a href="#cb10-245" tabindex="-1"></a><span class="co">#&gt;      4239     5840</span></span>
+<span id="cb10-246"><a href="#cb10-246" tabindex="-1"></a><span class="co">#&gt;      3432     5676</span></span>
+<span id="cb10-247"><a href="#cb10-247" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb10-248"><a href="#cb10-248" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb10-249"><a href="#cb10-249" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb10-250"><a href="#cb10-250" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.330 0.253 -0.100  0.725 1.000     1078     1797</span></span>
+<span id="cb10-251"><a href="#cb10-251" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.170 0.229 -0.563  0.190 1.001      638      859</span></span>
+<span id="cb10-252"><a href="#cb10-252" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.369 0.253 -0.067  0.761 1.001     1380     2586</span></span>
+<span id="cb10-253"><a href="#cb10-253" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.373 0.260 -0.073  0.771 1.001     1371     2627</span></span>
+<span id="cb10-254"><a href="#cb10-254" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.689 0.156 -0.909 -0.404 1.003      980     1878</span></span>
+<span id="cb10-255"><a href="#cb10-255" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.518 0.204  0.159  0.827 1.002     1483     3395</span></span>
+<span id="cb10-256"><a href="#cb10-256" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.661 0.186  0.315  0.912 1.000     2963     5722</span></span>
+<span id="cb10-257"><a href="#cb10-257" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.466 0.168 -0.730 -0.175 1.002     3380     4874</span></span>
+<span id="cb10-258"><a href="#cb10-258" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.718 0.148 -0.923 -0.446 1.000     4751     6197</span></span>
+<span id="cb10-259"><a href="#cb10-259" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.485 0.229  0.088  0.829 1.000     5231     6533</span></span></code></pre></div>
+<p>We can create a quick plot of fixed effects on <code>dprime</code>
+using the <code>plot.broc_fit</code> method:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a><span class="fu">plot</span>(fit<span class="fl">.2</span>, <span class="at">type =</span> <span class="st">&#39;dots&#39;</span>)</span></code></pre></div>
+<div class="float">
+<img src="figures/unnamed-chunk-10-1.png" alt="plot of chunk unnamed-chunk-10" />
+<div class="figcaption">plot of chunk unnamed-chunk-10</div>
+</div>
+<p>And we can compare the two models we’ve fit via PSIS-LOO (Vehtari et
+al., 2017):</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a>loo<span class="fl">.1</span> <span class="ot">&lt;-</span> <span class="fu">loo</span>(fit<span class="fl">.1</span>,</span>
+<span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a>             <span class="at">cores =</span> <span class="dv">10</span>)</span>
+<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a>loo<span class="fl">.2</span> <span class="ot">&lt;-</span> <span class="fu">loo</span>(fit<span class="fl">.2</span>,</span>
+<span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a>             <span class="at">cores =</span> <span class="dv">10</span>)</span>
+<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="fu">loo_compare</span>(loo<span class="fl">.1</span>, loo<span class="fl">.2</span>)</span>
+<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co">#&gt;        elpd_diff se_diff</span></span>
+<span id="cb12-7"><a href="#cb12-7" tabindex="-1"></a><span class="co">#&gt; model2  0.0       0.0   </span></span>
+<span id="cb12-8"><a href="#cb12-8" tabindex="-1"></a><span class="co">#&gt; model1 -6.3       6.1</span></span></code></pre></div>
+<p>The <code>loo.broc_fit()</code> method supports multicore computation
+(even for Windows users) via PSOCK clusters. Other functions like
+<code>predict.broc_fit()</code> and <code>pp_check.broc_fit()</code>,
+among others, also support this. It is highly recommended to use as many
+cores as possible when dealing with PSIS-LOO computation or prediction
+for large models.</p>
+<p>As an exercise, we could also try modeling word frequency as a smooth
+term rather than a linear effect. <code>bayesroc</code> interfaces with
+the <code>mgcv</code> package (Wood, 2011) to accomplish this. To avoid
+creating an extremely heavy model for an example, we only use a simple
+population-level smooth term on <code>dprime</code>, but the package
+supports any smooth term that can be constructed using the
+<code>s()</code> or <code>t2()</code> functions from <code>mgcv</code>
+on any parameter.</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" tabindex="-1"></a>f<span class="fl">.3</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb13-2"><a href="#cb13-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="dv">-1</span><span class="sc">+</span><span class="fu">s</span>(scale_wf, <span class="at">by =</span> condition) <span class="sc">+</span> </span>
+<span id="cb13-3"><a href="#cb13-3" tabindex="-1"></a>    (condition<span class="dv">-1</span><span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>words),</span>
+<span id="cb13-4"><a href="#cb13-4" tabindex="-1"></a>  criterion <span class="sc">~</span> scale_wf <span class="sc">+</span> (scale_wf<span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb13-5"><a href="#cb13-5" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">evsd</span>(),</span>
+<span id="cb13-6"><a href="#cb13-6" tabindex="-1"></a>  <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span></span>
+<span id="cb13-7"><a href="#cb13-7" tabindex="-1"></a>)</span>
+<span id="cb13-8"><a href="#cb13-8" tabindex="-1"></a>m.<span class="fl">3.</span>priors <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb13-9"><a href="#cb13-9" tabindex="-1"></a>  <span class="fu">broc_prior</span>(<span class="st">&#39;std_normal()&#39;</span>, <span class="at">class =</span> <span class="st">&#39;sds&#39;</span>)</span>
+<span id="cb13-10"><a href="#cb13-10" tabindex="-1"></a>)</span>
+<span id="cb13-11"><a href="#cb13-11" tabindex="-1"></a>m<span class="fl">.3</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.3</span>,</span>
+<span id="cb13-12"><a href="#cb13-12" tabindex="-1"></a>            <span class="at">priors =</span> m.<span class="fl">3.</span>priors,</span>
+<span id="cb13-13"><a href="#cb13-13" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024)</span>
+<span id="cb13-14"><a href="#cb13-14" tabindex="-1"></a>fit<span class="fl">.3</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb13-15"><a href="#cb13-15" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.3</span>,</span>
+<span id="cb13-16"><a href="#cb13-16" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb13-17"><a href="#cb13-17" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb13-18"><a href="#cb13-18" tabindex="-1"></a>)</span>
+<span id="cb13-19"><a href="#cb13-19" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb13-20"><a href="#cb13-20" tabindex="-1"></a><span class="co">#&gt; </span></span></code></pre></div>
+<p>We can visualize the conditional smooths from this model and
+investigate whether the smooth term improved out-of-sample
+prediction:</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" tabindex="-1"></a><span class="fu">plot</span>(<span class="fu">conditional_smooths</span>(fit<span class="fl">.3</span>))</span></code></pre></div>
+<div class="float">
+<img src="figures/unnamed-chunk-13-1.png" alt="plot of chunk unnamed-chunk-13" />
+<div class="figcaption">plot of chunk unnamed-chunk-13</div>
+</div>
+<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a>loo<span class="fl">.3</span> <span class="ot">&lt;-</span> <span class="fu">loo</span>(fit<span class="fl">.3</span>,</span>
+<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a>             <span class="at">cores =</span> <span class="dv">10</span>)</span>
+<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a><span class="fu">loo_compare</span>(loo<span class="fl">.1</span>, loo<span class="fl">.2</span>, loo<span class="fl">.3</span>)</span>
+<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a><span class="co">#&gt;        elpd_diff se_diff</span></span>
+<span id="cb15-5"><a href="#cb15-5" tabindex="-1"></a><span class="co">#&gt; model3  0.0       0.0   </span></span>
+<span id="cb15-6"><a href="#cb15-6" tabindex="-1"></a><span class="co">#&gt; model2 -2.1       2.9   </span></span>
+<span id="cb15-7"><a href="#cb15-7" tabindex="-1"></a><span class="co">#&gt; model1 -8.4       5.5</span></span></code></pre></div>
+</div>
+<div id="other-signal-detection-model-families" class="section level2">
+<h2>Other signal detection model families</h2>
+<p>As a final exercise, we return to the original condition-only model
+and consider other model families supported by <code>bayesroc</code>. We
+can fit the unequal variance signal detection model by changing the
+family argument and specifying an additional formula for the
+<code>sigma</code> parameter. Given that <code>dprime</code> and
+<code>sigma</code> are typically correlated, we introduce
+<code>|p|</code> and <code>|w|</code> indicators in the formula to allow
+for correlated random effects across parameters:</p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" tabindex="-1"></a>f<span class="fl">.4</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb16-2"><a href="#cb16-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb16-3"><a href="#cb16-3" tabindex="-1"></a>  sigma <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb16-4"><a href="#cb16-4" tabindex="-1"></a>  criterion <span class="sc">~</span> <span class="dv">1</span> <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb16-5"><a href="#cb16-5" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">uvsd</span>()</span>
+<span id="cb16-6"><a href="#cb16-6" tabindex="-1"></a>)</span>
+<span id="cb16-7"><a href="#cb16-7" tabindex="-1"></a>m<span class="fl">.4</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.4</span>,</span>
+<span id="cb16-8"><a href="#cb16-8" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024,</span>
+<span id="cb16-9"><a href="#cb16-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
+<span id="cb16-10"><a href="#cb16-10" tabindex="-1"></a>fit<span class="fl">.4</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb16-11"><a href="#cb16-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.4</span>,</span>
+<span id="cb16-12"><a href="#cb16-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb16-13"><a href="#cb16-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb16-14"><a href="#cb16-14" tabindex="-1"></a>)</span>
+<span id="cb16-15"><a href="#cb16-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb16-16"><a href="#cb16-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-17"><a href="#cb16-17" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.4</span>)</span>
+<span id="cb16-18"><a href="#cb16-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-19"><a href="#cb16-19" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb16-20"><a href="#cb16-20" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb16-21"><a href="#cb16-21" tabindex="-1"></a><span class="co">#&gt; Family: uvsd </span></span>
+<span id="cb16-22"><a href="#cb16-22" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb16-23"><a href="#cb16-23" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.68</span></span>
+<span id="cb16-24"><a href="#cb16-24" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-25"><a href="#cb16-25" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb16-26"><a href="#cb16-26" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb16-27"><a href="#cb16-27" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-28"><a href="#cb16-28" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb16-29"><a href="#cb16-29" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-30"><a href="#cb16-30" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.778 0.080 0.647 0.911 1.001     5800     6440</span></span>
+<span id="cb16-31"><a href="#cb16-31" tabindex="-1"></a><span class="co">#&gt;   conditionsing    1.442 0.094 1.292 1.597 1.000     6009     6644</span></span>
+<span id="cb16-32"><a href="#cb16-32" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    1.515 0.108 1.339 1.696 1.000     6823     6338</span></span>
+<span id="cb16-33"><a href="#cb16-33" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-34"><a href="#cb16-34" tabindex="-1"></a><span class="co">#&gt; SIGMA (log):</span></span>
+<span id="cb16-35"><a href="#cb16-35" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-36"><a href="#cb16-36" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.175 0.059 0.081 0.274 1.000     7143     6132</span></span>
+<span id="cb16-37"><a href="#cb16-37" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.229 0.055 0.138 0.317 1.000     7762     6678</span></span>
+<span id="cb16-38"><a href="#cb16-38" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.207 0.056 0.115 0.298 1.001     8306     5278</span></span>
+<span id="cb16-39"><a href="#cb16-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-40"><a href="#cb16-40" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb16-41"><a href="#cb16-41" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-42"><a href="#cb16-42" tabindex="-1"></a><span class="co">#&gt;  intercept    0.790 0.089 0.644 0.935 1.003     2437     3640</span></span>
+<span id="cb16-43"><a href="#cb16-43" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-44"><a href="#cb16-44" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb16-45"><a href="#cb16-45" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-46"><a href="#cb16-46" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.249 0.120 -1.447 -1.054 1.001     2738     4773</span></span>
+<span id="cb16-47"><a href="#cb16-47" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.373 0.153 -1.625 -1.127 1.001     3197     4923</span></span>
+<span id="cb16-48"><a href="#cb16-48" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.089 0.097 -1.250 -0.934 1.000     2859     4237</span></span>
+<span id="cb16-49"><a href="#cb16-49" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.114 0.155 -1.371 -0.866 1.002     1472     2488</span></span>
+<span id="cb16-50"><a href="#cb16-50" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-51"><a href="#cb16-51" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb16-52"><a href="#cb16-52" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb16-53"><a href="#cb16-53" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-54"><a href="#cb16-54" tabindex="-1"></a><span class="co">#&gt; intercept:</span></span>
+<span id="cb16-55"><a href="#cb16-55" tabindex="-1"></a><span class="co">#&gt;  threshold estimate    sd  lower upper</span></span>
+<span id="cb16-56"><a href="#cb16-56" tabindex="-1"></a><span class="co">#&gt;          1    0.120 0.110 -0.100 0.327</span></span>
+<span id="cb16-57"><a href="#cb16-57" tabindex="-1"></a><span class="co">#&gt;          2    0.452 0.092  0.270 0.631</span></span>
+<span id="cb16-58"><a href="#cb16-58" tabindex="-1"></a><span class="co">#&gt;          3    0.790 0.089  0.615 0.966</span></span>
+<span id="cb16-59"><a href="#cb16-59" tabindex="-1"></a><span class="co">#&gt;          4    1.079 0.083  0.914 1.245</span></span>
+<span id="cb16-60"><a href="#cb16-60" tabindex="-1"></a><span class="co">#&gt;          5    1.335 0.094  1.152 1.526</span></span>
+<span id="cb16-61"><a href="#cb16-61" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-62"><a href="#cb16-62" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb16-63"><a href="#cb16-63" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb16-64"><a href="#cb16-64" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-65"><a href="#cb16-65" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb16-66"><a href="#cb16-66" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-67"><a href="#cb16-67" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.962 0.116 0.781 1.167 1.002     3006     4531</span></span>
+<span id="cb16-68"><a href="#cb16-68" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.540 0.073 0.432 0.669 1.001     4927     5924</span></span>
+<span id="cb16-69"><a href="#cb16-69" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.536 0.065 0.439 0.652 1.002     3699     5351</span></span>
+<span id="cb16-70"><a href="#cb16-70" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.697 0.089 0.561 0.855 1.001     5866     5777</span></span>
+<span id="cb16-71"><a href="#cb16-71" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.903 0.126 0.715 1.124 1.001     5050     5828</span></span>
+<span id="cb16-72"><a href="#cb16-72" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-73"><a href="#cb16-73" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb16-74"><a href="#cb16-74" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-75"><a href="#cb16-75" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.237 0.068 0.120 0.340 1.002     1513     1267</span></span>
+<span id="cb16-76"><a href="#cb16-76" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.259 0.048 0.180 0.335 1.000     5845     5876</span></span>
+<span id="cb16-77"><a href="#cb16-77" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.292 0.029 0.246 0.340 1.000     2415     4826</span></span>
+<span id="cb16-78"><a href="#cb16-78" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.307 0.062 0.201 0.405 1.000     2821     4120</span></span>
+<span id="cb16-79"><a href="#cb16-79" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.261 0.062 0.160 0.361 1.000     5856     5586</span></span>
+<span id="cb16-80"><a href="#cb16-80" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-81"><a href="#cb16-81" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb16-82"><a href="#cb16-82" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb16-83"><a href="#cb16-83" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-84"><a href="#cb16-84" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb16-85"><a href="#cb16-85" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-86"><a href="#cb16-86" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.570 0.123  0.349  0.753 1.000     4244     5110</span></span>
+<span id="cb16-87"><a href="#cb16-87" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.041 0.150 -0.202  0.291 1.001     2742     3888</span></span>
+<span id="cb16-88"><a href="#cb16-88" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.516 0.132  0.283  0.715 1.001     3407     5463</span></span>
+<span id="cb16-89"><a href="#cb16-89" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.570 0.117  0.358  0.743 1.000     4561     5440</span></span>
+<span id="cb16-90"><a href="#cb16-90" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.054 0.162 -0.218  0.323 1.003     2085     3971</span></span>
+<span id="cb16-91"><a href="#cb16-91" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.486 0.143  0.229  0.699 1.001     3397     5375</span></span>
+<span id="cb16-92"><a href="#cb16-92" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.108 0.161 -0.165  0.369 1.001     4209     5562</span></span>
+<span id="cb16-93"><a href="#cb16-93" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.416 0.136 -0.624 -0.175 1.000     5448     6128</span></span>
+<span id="cb16-94"><a href="#cb16-94" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.027 0.160 -0.282  0.241 1.001     5538     5635</span></span>
+<span id="cb16-95"><a href="#cb16-95" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.298 0.153  0.035  0.536 1.001     5166     5945</span></span>
+<span id="cb16-96"><a href="#cb16-96" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-97"><a href="#cb16-97" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb16-98"><a href="#cb16-98" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb16-99"><a href="#cb16-99" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.392 0.244 -0.038  0.770 1.003      854     1759</span></span>
+<span id="cb16-100"><a href="#cb16-100" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.183 0.222 -0.560  0.168 1.002      617     1267</span></span>
+<span id="cb16-101"><a href="#cb16-101" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.362 0.258 -0.078  0.775 1.001     1403     2884</span></span>
+<span id="cb16-102"><a href="#cb16-102" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.400 0.257 -0.063  0.780 1.002     1330     2266</span></span>
+<span id="cb16-103"><a href="#cb16-103" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.671 0.155 -0.897 -0.395 1.001      806     1673</span></span>
+<span id="cb16-104"><a href="#cb16-104" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.473 0.214  0.093  0.800 1.002     1534     2879</span></span>
+<span id="cb16-105"><a href="#cb16-105" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.653 0.187  0.302  0.907 1.001     3416     4655</span></span>
+<span id="cb16-106"><a href="#cb16-106" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.361 0.175 -0.640 -0.067 1.001     3773     5566</span></span>
+<span id="cb16-107"><a href="#cb16-107" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.683 0.161 -0.908 -0.396 1.000     5800     7046</span></span>
+<span id="cb16-108"><a href="#cb16-108" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.441 0.239  0.019  0.804 1.000     5835     6424</span></span>
+<span id="cb16-109"><a href="#cb16-109" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-110"><a href="#cb16-110" tabindex="-1"></a><span class="co">#&gt; cross | p_participant:</span></span>
+<span id="cb16-111"><a href="#cb16-111" tabindex="-1"></a><span class="co">#&gt;                                          pair estimate    sd  lower upper  rhat</span></span>
+<span id="cb16-112"><a href="#cb16-112" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionsing    0.713 0.138  0.452 0.902 1.001</span></span>
+<span id="cb16-113"><a href="#cb16-113" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionread ~ dprime:conditionspeak    0.577 0.162  0.285 0.809 1.001</span></span>
+<span id="cb16-114"><a href="#cb16-114" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ sigma:conditionread    0.336 0.295 -0.194 0.763 1.000</span></span>
+<span id="cb16-115"><a href="#cb16-115" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ sigma:conditionsing   -0.065 0.355 -0.631 0.537 1.001</span></span>
+<span id="cb16-116"><a href="#cb16-116" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ sigma:conditionspeak    0.016 0.343 -0.556 0.579 1.000</span></span>
+<span id="cb16-117"><a href="#cb16-117" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionsing ~ dprime:conditionspeak    0.760 0.115  0.545 0.915 1.001</span></span>
+<span id="cb16-118"><a href="#cb16-118" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ sigma:conditionread    0.347 0.277 -0.159 0.753 1.000</span></span>
+<span id="cb16-119"><a href="#cb16-119" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ sigma:conditionsing   -0.013 0.350 -0.579 0.568 1.000</span></span>
+<span id="cb16-120"><a href="#cb16-120" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ sigma:conditionspeak   -0.111 0.336 -0.644 0.474 1.001</span></span>
+<span id="cb16-121"><a href="#cb16-121" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ sigma:conditionread    0.207 0.281 -0.276 0.647 1.000</span></span>
+<span id="cb16-122"><a href="#cb16-122" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ sigma:conditionsing   -0.028 0.351 -0.608 0.552 1.000</span></span>
+<span id="cb16-123"><a href="#cb16-123" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ sigma:conditionspeak    0.055 0.337 -0.521 0.593 1.000</span></span>
+<span id="cb16-124"><a href="#cb16-124" tabindex="-1"></a><span class="co">#&gt;     sigma:conditionread ~ sigma:conditionsing    0.002 0.370 -0.606 0.608 1.000</span></span>
+<span id="cb16-125"><a href="#cb16-125" tabindex="-1"></a><span class="co">#&gt;    sigma:conditionread ~ sigma:conditionspeak   -0.057 0.366 -0.643 0.560 1.000</span></span>
+<span id="cb16-126"><a href="#cb16-126" tabindex="-1"></a><span class="co">#&gt;    sigma:conditionsing ~ sigma:conditionspeak    0.006 0.376 -0.613 0.624 1.000</span></span>
+<span id="cb16-127"><a href="#cb16-127" tabindex="-1"></a><span class="co">#&gt;  ess_bulk ess_tail</span></span>
+<span id="cb16-128"><a href="#cb16-128" tabindex="-1"></a><span class="co">#&gt;      4044     5532</span></span>
+<span id="cb16-129"><a href="#cb16-129" tabindex="-1"></a><span class="co">#&gt;      3485     4402</span></span>
+<span id="cb16-130"><a href="#cb16-130" tabindex="-1"></a><span class="co">#&gt;      5574     5524</span></span>
+<span id="cb16-131"><a href="#cb16-131" tabindex="-1"></a><span class="co">#&gt;     13939     6440</span></span>
+<span id="cb16-132"><a href="#cb16-132" tabindex="-1"></a><span class="co">#&gt;      9829     5867</span></span>
+<span id="cb16-133"><a href="#cb16-133" tabindex="-1"></a><span class="co">#&gt;      4216     5775</span></span>
+<span id="cb16-134"><a href="#cb16-134" tabindex="-1"></a><span class="co">#&gt;      6763     6104</span></span>
+<span id="cb16-135"><a href="#cb16-135" tabindex="-1"></a><span class="co">#&gt;     13204     6600</span></span>
+<span id="cb16-136"><a href="#cb16-136" tabindex="-1"></a><span class="co">#&gt;      9839     6574</span></span>
+<span id="cb16-137"><a href="#cb16-137" tabindex="-1"></a><span class="co">#&gt;      8526     5976</span></span>
+<span id="cb16-138"><a href="#cb16-138" tabindex="-1"></a><span class="co">#&gt;     12454     6529</span></span>
+<span id="cb16-139"><a href="#cb16-139" tabindex="-1"></a><span class="co">#&gt;     10555     6465</span></span>
+<span id="cb16-140"><a href="#cb16-140" tabindex="-1"></a><span class="co">#&gt;      7727     7384</span></span>
+<span id="cb16-141"><a href="#cb16-141" tabindex="-1"></a><span class="co">#&gt;      6890     6817</span></span>
+<span id="cb16-142"><a href="#cb16-142" tabindex="-1"></a><span class="co">#&gt;      6098     6856</span></span>
+<span id="cb16-143"><a href="#cb16-143" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb16-144"><a href="#cb16-144" tabindex="-1"></a><span class="co">#&gt; cross | w_words:</span></span>
+<span id="cb16-145"><a href="#cb16-145" tabindex="-1"></a><span class="co">#&gt;                                          pair estimate    sd  lower upper  rhat</span></span>
+<span id="cb16-146"><a href="#cb16-146" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionsing    0.555 0.173  0.254 0.818 1.001</span></span>
+<span id="cb16-147"><a href="#cb16-147" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionread ~ dprime:conditionspeak    0.463 0.170  0.169 0.732 1.003</span></span>
+<span id="cb16-148"><a href="#cb16-148" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ sigma:conditionread    0.475 0.249  0.007 0.817 1.000</span></span>
+<span id="cb16-149"><a href="#cb16-149" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ sigma:conditionsing    0.022 0.327 -0.534 0.554 1.000</span></span>
+<span id="cb16-150"><a href="#cb16-150" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ sigma:conditionspeak    0.063 0.359 -0.549 0.639 1.000</span></span>
+<span id="cb16-151"><a href="#cb16-151" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionsing ~ dprime:conditionspeak    0.727 0.126  0.501 0.909 1.005</span></span>
+<span id="cb16-152"><a href="#cb16-152" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ sigma:conditionread    0.315 0.259 -0.147 0.715 1.001</span></span>
+<span id="cb16-153"><a href="#cb16-153" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ sigma:conditionsing   -0.071 0.323 -0.606 0.462 1.000</span></span>
+<span id="cb16-154"><a href="#cb16-154" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ sigma:conditionspeak    0.120 0.359 -0.499 0.678 1.000</span></span>
+<span id="cb16-155"><a href="#cb16-155" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ sigma:conditionread    0.230 0.249 -0.189 0.628 1.001</span></span>
+<span id="cb16-156"><a href="#cb16-156" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ sigma:conditionsing   -0.111 0.309 -0.603 0.420 1.001</span></span>
+<span id="cb16-157"><a href="#cb16-157" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ sigma:conditionspeak    0.132 0.363 -0.501 0.692 1.000</span></span>
+<span id="cb16-158"><a href="#cb16-158" tabindex="-1"></a><span class="co">#&gt;     sigma:conditionread ~ sigma:conditionsing    0.004 0.352 -0.591 0.584 1.001</span></span>
+<span id="cb16-159"><a href="#cb16-159" tabindex="-1"></a><span class="co">#&gt;    sigma:conditionread ~ sigma:conditionspeak    0.009 0.369 -0.595 0.612 1.000</span></span>
+<span id="cb16-160"><a href="#cb16-160" tabindex="-1"></a><span class="co">#&gt;    sigma:conditionsing ~ sigma:conditionspeak    0.015 0.372 -0.594 0.623 1.000</span></span>
+<span id="cb16-161"><a href="#cb16-161" tabindex="-1"></a><span class="co">#&gt;  ess_bulk ess_tail</span></span>
+<span id="cb16-162"><a href="#cb16-162" tabindex="-1"></a><span class="co">#&gt;      1958     3553</span></span>
+<span id="cb16-163"><a href="#cb16-163" tabindex="-1"></a><span class="co">#&gt;      1581     2926</span></span>
+<span id="cb16-164"><a href="#cb16-164" tabindex="-1"></a><span class="co">#&gt;      3387     4767</span></span>
+<span id="cb16-165"><a href="#cb16-165" tabindex="-1"></a><span class="co">#&gt;      5293     5707</span></span>
+<span id="cb16-166"><a href="#cb16-166" tabindex="-1"></a><span class="co">#&gt;      9350     6383</span></span>
+<span id="cb16-167"><a href="#cb16-167" tabindex="-1"></a><span class="co">#&gt;      2090     4236</span></span>
+<span id="cb16-168"><a href="#cb16-168" tabindex="-1"></a><span class="co">#&gt;      3493     4721</span></span>
+<span id="cb16-169"><a href="#cb16-169" tabindex="-1"></a><span class="co">#&gt;      4978     5298</span></span>
+<span id="cb16-170"><a href="#cb16-170" tabindex="-1"></a><span class="co">#&gt;      8512     6618</span></span>
+<span id="cb16-171"><a href="#cb16-171" tabindex="-1"></a><span class="co">#&gt;      4435     5127</span></span>
+<span id="cb16-172"><a href="#cb16-172" tabindex="-1"></a><span class="co">#&gt;      6486     5174</span></span>
+<span id="cb16-173"><a href="#cb16-173" tabindex="-1"></a><span class="co">#&gt;      8339     6418</span></span>
+<span id="cb16-174"><a href="#cb16-174" tabindex="-1"></a><span class="co">#&gt;      3724     5646</span></span>
+<span id="cb16-175"><a href="#cb16-175" tabindex="-1"></a><span class="co">#&gt;      8008     6918</span></span>
+<span id="cb16-176"><a href="#cb16-176" tabindex="-1"></a><span class="co">#&gt;      6136     6742</span></span></code></pre></div>
+<p>As is typical, our estimates of <code>sigma</code> are larger than
+one and our estimates of <code>dprime</code> have increased relative to
+our initial equal variance model. Fitting other types of signal
+detection models follows the same general logic. For example, fitting
+the basic equal variance version of the dual process signal detection
+model (DPSD; Yonelinas, 1994) can be done by specifying the correct
+family and adding a formula for <code>lambda</code>, which represents
+the probability of recollection for this family:</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" tabindex="-1"></a>f<span class="fl">.5</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb17-2"><a href="#cb17-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb17-3"><a href="#cb17-3" tabindex="-1"></a>  lambda <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb17-4"><a href="#cb17-4" tabindex="-1"></a>  criterion <span class="sc">~</span> <span class="dv">1</span> <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb17-5"><a href="#cb17-5" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">dpsd</span>()</span>
+<span id="cb17-6"><a href="#cb17-6" tabindex="-1"></a>)</span>
+<span id="cb17-7"><a href="#cb17-7" tabindex="-1"></a>m<span class="fl">.5</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.5</span>,</span>
+<span id="cb17-8"><a href="#cb17-8" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024,</span>
+<span id="cb17-9"><a href="#cb17-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
+<span id="cb17-10"><a href="#cb17-10" tabindex="-1"></a>fit<span class="fl">.5</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb17-11"><a href="#cb17-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.5</span>,</span>
+<span id="cb17-12"><a href="#cb17-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb17-13"><a href="#cb17-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb17-14"><a href="#cb17-14" tabindex="-1"></a>)</span>
+<span id="cb17-15"><a href="#cb17-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb17-16"><a href="#cb17-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-17"><a href="#cb17-17" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.5</span>)</span>
+<span id="cb17-18"><a href="#cb17-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-19"><a href="#cb17-19" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb17-20"><a href="#cb17-20" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb17-21"><a href="#cb17-21" tabindex="-1"></a><span class="co">#&gt; Family: dpsd </span></span>
+<span id="cb17-22"><a href="#cb17-22" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb17-23"><a href="#cb17-23" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.72</span></span>
+<span id="cb17-24"><a href="#cb17-24" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-25"><a href="#cb17-25" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb17-26"><a href="#cb17-26" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb17-27"><a href="#cb17-27" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-28"><a href="#cb17-28" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb17-29"><a href="#cb17-29" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-30"><a href="#cb17-30" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.400 0.060 0.301 0.498 1.000     4217     4781</span></span>
+<span id="cb17-31"><a href="#cb17-31" tabindex="-1"></a><span class="co">#&gt;   conditionsing    0.983 0.096 0.833 1.145 1.002     1964     4394</span></span>
+<span id="cb17-32"><a href="#cb17-32" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    0.947 0.102 0.788 1.123 1.001     2618     4761</span></span>
+<span id="cb17-33"><a href="#cb17-33" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-34"><a href="#cb17-34" tabindex="-1"></a><span class="co">#&gt; LAMBDA (logit):</span></span>
+<span id="cb17-35"><a href="#cb17-35" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-36"><a href="#cb17-36" tabindex="-1"></a><span class="co">#&gt;   conditionread   -2.231 0.285 -2.728 -1.794 1.000     7387     6430</span></span>
+<span id="cb17-37"><a href="#cb17-37" tabindex="-1"></a><span class="co">#&gt;   conditionsing   -1.301 0.249 -1.738 -0.923 1.000     4656     5273</span></span>
+<span id="cb17-38"><a href="#cb17-38" tabindex="-1"></a><span class="co">#&gt;  conditionspeak   -1.156 0.258 -1.600 -0.760 1.000     4645     5356</span></span>
+<span id="cb17-39"><a href="#cb17-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-40"><a href="#cb17-40" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb17-41"><a href="#cb17-41" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-42"><a href="#cb17-42" tabindex="-1"></a><span class="co">#&gt;  intercept    0.796 0.089 0.653 0.945 1.003     2007     3337</span></span>
+<span id="cb17-43"><a href="#cb17-43" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-44"><a href="#cb17-44" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb17-45"><a href="#cb17-45" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-46"><a href="#cb17-46" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.174 0.118 -1.368 -0.982 1.002     2143     4398</span></span>
+<span id="cb17-47"><a href="#cb17-47" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.150 0.166 -1.425 -0.878 1.000     2749     4581</span></span>
+<span id="cb17-48"><a href="#cb17-48" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.068 0.096 -1.228 -0.914 1.002     2501     3811</span></span>
+<span id="cb17-49"><a href="#cb17-49" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.125 0.153 -1.383 -0.883 1.002     1260     2325</span></span>
+<span id="cb17-50"><a href="#cb17-50" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-51"><a href="#cb17-51" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb17-52"><a href="#cb17-52" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb17-53"><a href="#cb17-53" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-54"><a href="#cb17-54" tabindex="-1"></a><span class="co">#&gt; intercept:</span></span>
+<span id="cb17-55"><a href="#cb17-55" tabindex="-1"></a><span class="co">#&gt;  threshold estimate    sd  lower upper</span></span>
+<span id="cb17-56"><a href="#cb17-56" tabindex="-1"></a><span class="co">#&gt;          1    0.122 0.110 -0.094 0.334</span></span>
+<span id="cb17-57"><a href="#cb17-57" tabindex="-1"></a><span class="co">#&gt;          2    0.451 0.091  0.272 0.634</span></span>
+<span id="cb17-58"><a href="#cb17-58" tabindex="-1"></a><span class="co">#&gt;          3    0.796 0.089  0.623 0.975</span></span>
+<span id="cb17-59"><a href="#cb17-59" tabindex="-1"></a><span class="co">#&gt;          4    1.107 0.085  0.942 1.280</span></span>
+<span id="cb17-60"><a href="#cb17-60" tabindex="-1"></a><span class="co">#&gt;          5    1.428 0.109  1.223 1.651</span></span>
+<span id="cb17-61"><a href="#cb17-61" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-62"><a href="#cb17-62" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb17-63"><a href="#cb17-63" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb17-64"><a href="#cb17-64" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-65"><a href="#cb17-65" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb17-66"><a href="#cb17-66" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-67"><a href="#cb17-67" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.947 0.115 0.773 1.151 1.001     2927     4576</span></span>
+<span id="cb17-68"><a href="#cb17-68" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.534 0.072 0.426 0.660 1.000     4432     6299</span></span>
+<span id="cb17-69"><a href="#cb17-69" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.544 0.066 0.444 0.662 1.003     3192     4818</span></span>
+<span id="cb17-70"><a href="#cb17-70" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.674 0.090 0.540 0.833 1.001     5020     5605</span></span>
+<span id="cb17-71"><a href="#cb17-71" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.988 0.137 0.782 1.232 1.001     4869     6260</span></span>
+<span id="cb17-72"><a href="#cb17-72" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-73"><a href="#cb17-73" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb17-74"><a href="#cb17-74" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-75"><a href="#cb17-75" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.208 0.074 0.070 0.319 1.002     1141     1039</span></span>
+<span id="cb17-76"><a href="#cb17-76" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.216 0.051 0.134 0.300 1.001     3885     3866</span></span>
+<span id="cb17-77"><a href="#cb17-77" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.329 0.029 0.281 0.377 1.000     1810     4167</span></span>
+<span id="cb17-78"><a href="#cb17-78" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.270 0.073 0.141 0.381 1.004     1740     2150</span></span>
+<span id="cb17-79"><a href="#cb17-79" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.163 0.081 0.029 0.298 1.000     2406     3367</span></span>
+<span id="cb17-80"><a href="#cb17-80" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-81"><a href="#cb17-81" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb17-82"><a href="#cb17-82" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb17-83"><a href="#cb17-83" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-84"><a href="#cb17-84" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb17-85"><a href="#cb17-85" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-86"><a href="#cb17-86" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.542 0.128  0.316  0.732 1.000     3105     4852</span></span>
+<span id="cb17-87"><a href="#cb17-87" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.020 0.150 -0.224  0.266 1.001     2184     3619</span></span>
+<span id="cb17-88"><a href="#cb17-88" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.492 0.136  0.253  0.697 1.002     3016     4288</span></span>
+<span id="cb17-89"><a href="#cb17-89" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.570 0.114  0.367  0.740 1.000     4637     6101</span></span>
+<span id="cb17-90"><a href="#cb17-90" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.120 0.160 -0.150  0.376 1.005     1454     3333</span></span>
+<span id="cb17-91"><a href="#cb17-91" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.475 0.146  0.221  0.695 1.000     3184     5088</span></span>
+<span id="cb17-92"><a href="#cb17-92" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.119 0.160 -0.149  0.379 1.002     3973     5237</span></span>
+<span id="cb17-93"><a href="#cb17-93" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.356 0.145 -0.583 -0.106 1.000     4249     5740</span></span>
+<span id="cb17-94"><a href="#cb17-94" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5    0.086 0.158 -0.180  0.342 1.000     4850     5691</span></span>
+<span id="cb17-95"><a href="#cb17-95" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.288 0.156  0.021  0.530 1.000     4405     5847</span></span>
+<span id="cb17-96"><a href="#cb17-96" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-97"><a href="#cb17-97" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb17-98"><a href="#cb17-98" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb17-99"><a href="#cb17-99" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.288 0.286 -0.213  0.729 1.004      890     1788</span></span>
+<span id="cb17-100"><a href="#cb17-100" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.100 0.228 -0.485  0.261 1.004      430      795</span></span>
+<span id="cb17-101"><a href="#cb17-101" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.307 0.292 -0.203  0.763 1.003     1379     2091</span></span>
+<span id="cb17-102"><a href="#cb17-102" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.272 0.348 -0.360  0.771 1.000     2595     4463</span></span>
+<span id="cb17-103"><a href="#cb17-103" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.604 0.184 -0.880 -0.286 1.008      411      984</span></span>
+<span id="cb17-104"><a href="#cb17-104" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.389 0.253 -0.050  0.773 1.002     1750     3536</span></span>
+<span id="cb17-105"><a href="#cb17-105" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.424 0.321 -0.198  0.848 1.000     3953     5174</span></span>
+<span id="cb17-106"><a href="#cb17-106" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.257 0.204 -0.575  0.084 1.001     4836     6239</span></span>
+<span id="cb17-107"><a href="#cb17-107" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.432 0.298 -0.837  0.136 1.000     5843     5834</span></span>
+<span id="cb17-108"><a href="#cb17-108" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.305 0.335 -0.307  0.789 1.000     5618     5951</span></span>
+<span id="cb17-109"><a href="#cb17-109" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-110"><a href="#cb17-110" tabindex="-1"></a><span class="co">#&gt; cross | p_participant:</span></span>
+<span id="cb17-111"><a href="#cb17-111" tabindex="-1"></a><span class="co">#&gt;                                           pair estimate    sd  lower upper</span></span>
+<span id="cb17-112"><a href="#cb17-112" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ dprime:conditionsing    0.348 0.294 -0.199 0.770</span></span>
+<span id="cb17-113"><a href="#cb17-113" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionspeak    0.079 0.311 -0.441 0.583</span></span>
+<span id="cb17-114"><a href="#cb17-114" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionread    0.353 0.279 -0.143 0.777</span></span>
+<span id="cb17-115"><a href="#cb17-115" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionsing    0.322 0.291 -0.194 0.759</span></span>
+<span id="cb17-116"><a href="#cb17-116" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ lambda:conditionspeak    0.430 0.272 -0.078 0.809</span></span>
+<span id="cb17-117"><a href="#cb17-117" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ dprime:conditionspeak    0.505 0.238  0.061 0.836</span></span>
+<span id="cb17-118"><a href="#cb17-118" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionread    0.534 0.213  0.150 0.841</span></span>
+<span id="cb17-119"><a href="#cb17-119" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionsing    0.408 0.258 -0.043 0.791</span></span>
+<span id="cb17-120"><a href="#cb17-120" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ lambda:conditionspeak    0.501 0.236  0.061 0.830</span></span>
+<span id="cb17-121"><a href="#cb17-121" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionread    0.365 0.224 -0.021 0.710</span></span>
+<span id="cb17-122"><a href="#cb17-122" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionsing    0.488 0.226  0.075 0.814</span></span>
+<span id="cb17-123"><a href="#cb17-123" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ lambda:conditionspeak    0.334 0.252 -0.099 0.733</span></span>
+<span id="cb17-124"><a href="#cb17-124" tabindex="-1"></a><span class="co">#&gt;    lambda:conditionread ~ lambda:conditionsing    0.663 0.184  0.313 0.906</span></span>
+<span id="cb17-125"><a href="#cb17-125" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionread ~ lambda:conditionspeak    0.587 0.188  0.243 0.856</span></span>
+<span id="cb17-126"><a href="#cb17-126" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionsing ~ lambda:conditionspeak    0.601 0.210  0.208 0.878</span></span>
+<span id="cb17-127"><a href="#cb17-127" tabindex="-1"></a><span class="co">#&gt;   rhat ess_bulk ess_tail</span></span>
+<span id="cb17-128"><a href="#cb17-128" tabindex="-1"></a><span class="co">#&gt;  1.000     2163     3112</span></span>
+<span id="cb17-129"><a href="#cb17-129" tabindex="-1"></a><span class="co">#&gt;  1.000     1897     2653</span></span>
+<span id="cb17-130"><a href="#cb17-130" tabindex="-1"></a><span class="co">#&gt;  1.004     1530     2524</span></span>
+<span id="cb17-131"><a href="#cb17-131" tabindex="-1"></a><span class="co">#&gt;  1.001     1870     3541</span></span>
+<span id="cb17-132"><a href="#cb17-132" tabindex="-1"></a><span class="co">#&gt;  1.001     1791     2369</span></span>
+<span id="cb17-133"><a href="#cb17-133" tabindex="-1"></a><span class="co">#&gt;  1.001     2904     3082</span></span>
+<span id="cb17-134"><a href="#cb17-134" tabindex="-1"></a><span class="co">#&gt;  1.000     2183     2778</span></span>
+<span id="cb17-135"><a href="#cb17-135" tabindex="-1"></a><span class="co">#&gt;  1.001     3365     5210</span></span>
+<span id="cb17-136"><a href="#cb17-136" tabindex="-1"></a><span class="co">#&gt;  1.001     3114     3728</span></span>
+<span id="cb17-137"><a href="#cb17-137" tabindex="-1"></a><span class="co">#&gt;  1.000     4202     6141</span></span>
+<span id="cb17-138"><a href="#cb17-138" tabindex="-1"></a><span class="co">#&gt;  1.000     5019     6279</span></span>
+<span id="cb17-139"><a href="#cb17-139" tabindex="-1"></a><span class="co">#&gt;  1.000     4613     6016</span></span>
+<span id="cb17-140"><a href="#cb17-140" tabindex="-1"></a><span class="co">#&gt;  1.000     4529     4923</span></span>
+<span id="cb17-141"><a href="#cb17-141" tabindex="-1"></a><span class="co">#&gt;  1.000     4847     6667</span></span>
+<span id="cb17-142"><a href="#cb17-142" tabindex="-1"></a><span class="co">#&gt;  1.000     4152     5102</span></span>
+<span id="cb17-143"><a href="#cb17-143" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb17-144"><a href="#cb17-144" tabindex="-1"></a><span class="co">#&gt; cross | w_words:</span></span>
+<span id="cb17-145"><a href="#cb17-145" tabindex="-1"></a><span class="co">#&gt;                                           pair estimate    sd  lower upper</span></span>
+<span id="cb17-146"><a href="#cb17-146" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ dprime:conditionsing    0.156 0.351 -0.452 0.697</span></span>
+<span id="cb17-147"><a href="#cb17-147" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionspeak    0.067 0.366 -0.557 0.652</span></span>
+<span id="cb17-148"><a href="#cb17-148" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionread    0.132 0.355 -0.489 0.695</span></span>
+<span id="cb17-149"><a href="#cb17-149" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionsing    0.074 0.361 -0.524 0.655</span></span>
+<span id="cb17-150"><a href="#cb17-150" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ lambda:conditionspeak    0.134 0.347 -0.464 0.681</span></span>
+<span id="cb17-151"><a href="#cb17-151" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ dprime:conditionspeak    0.308 0.309 -0.280 0.746</span></span>
+<span id="cb17-152"><a href="#cb17-152" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionread    0.451 0.205  0.096 0.767</span></span>
+<span id="cb17-153"><a href="#cb17-153" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionsing    0.011 0.308 -0.470 0.549</span></span>
+<span id="cb17-154"><a href="#cb17-154" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ lambda:conditionspeak    0.566 0.210  0.183 0.861</span></span>
+<span id="cb17-155"><a href="#cb17-155" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionread    0.203 0.295 -0.316 0.655</span></span>
+<span id="cb17-156"><a href="#cb17-156" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionsing    0.171 0.341 -0.429 0.701</span></span>
+<span id="cb17-157"><a href="#cb17-157" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ lambda:conditionspeak    0.299 0.301 -0.249 0.745</span></span>
+<span id="cb17-158"><a href="#cb17-158" tabindex="-1"></a><span class="co">#&gt;    lambda:conditionread ~ lambda:conditionsing    0.372 0.287 -0.156 0.778</span></span>
+<span id="cb17-159"><a href="#cb17-159" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionread ~ lambda:conditionspeak    0.585 0.167  0.289 0.832</span></span>
+<span id="cb17-160"><a href="#cb17-160" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionsing ~ lambda:conditionspeak    0.456 0.296 -0.109 0.837</span></span>
+<span id="cb17-161"><a href="#cb17-161" tabindex="-1"></a><span class="co">#&gt;   rhat ess_bulk ess_tail</span></span>
+<span id="cb17-162"><a href="#cb17-162" tabindex="-1"></a><span class="co">#&gt;  1.003      424      943</span></span>
+<span id="cb17-163"><a href="#cb17-163" tabindex="-1"></a><span class="co">#&gt;  1.004     1234     3052</span></span>
+<span id="cb17-164"><a href="#cb17-164" tabindex="-1"></a><span class="co">#&gt;  1.004      374      801</span></span>
+<span id="cb17-165"><a href="#cb17-165" tabindex="-1"></a><span class="co">#&gt;  1.005     1085     3218</span></span>
+<span id="cb17-166"><a href="#cb17-166" tabindex="-1"></a><span class="co">#&gt;  1.007      373      746</span></span>
+<span id="cb17-167"><a href="#cb17-167" tabindex="-1"></a><span class="co">#&gt;  1.001     3052     5279</span></span>
+<span id="cb17-168"><a href="#cb17-168" tabindex="-1"></a><span class="co">#&gt;  1.005      987     2627</span></span>
+<span id="cb17-169"><a href="#cb17-169" tabindex="-1"></a><span class="co">#&gt;  1.001     2146     3654</span></span>
+<span id="cb17-170"><a href="#cb17-170" tabindex="-1"></a><span class="co">#&gt;  1.005      776     2208</span></span>
+<span id="cb17-171"><a href="#cb17-171" tabindex="-1"></a><span class="co">#&gt;  1.006     1036     2499</span></span>
+<span id="cb17-172"><a href="#cb17-172" tabindex="-1"></a><span class="co">#&gt;  1.004     1393     3611</span></span>
+<span id="cb17-173"><a href="#cb17-173" tabindex="-1"></a><span class="co">#&gt;  1.003     1338     2380</span></span>
+<span id="cb17-174"><a href="#cb17-174" tabindex="-1"></a><span class="co">#&gt;  1.002     2347     3853</span></span>
+<span id="cb17-175"><a href="#cb17-175" tabindex="-1"></a><span class="co">#&gt;  1.000     2350     3984</span></span>
+<span id="cb17-176"><a href="#cb17-176" tabindex="-1"></a><span class="co">#&gt;  1.002     1573     2566</span></span></code></pre></div>
+<p>Adding a formula for sigma to <code>f.5</code> would allow us to fit
+the superset DPSD model (Onyper et al., 2010). The
+<code>mixture()</code> family again follows the same logic. To fit the
+simplified “contamination” mixture model (DeCarlo, 2002), where
+unattended target items are fixed at Normal(0, 1), a formula on
+<code>lambda</code> is all that is required. For this model,
+<code>lambda</code> represents the probability of attending to
+targets.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" tabindex="-1"></a>f<span class="fl">.6</span> <span class="ot">&lt;-</span> <span class="fu">brf</span>(</span>
+<span id="cb18-2"><a href="#cb18-2" tabindex="-1"></a>  conf <span class="sc">|</span> old <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb18-3"><a href="#cb18-3" tabindex="-1"></a>  lambda <span class="sc">~</span> condition<span class="dv">-1</span> <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>p<span class="sc">|</span>participant) <span class="sc">+</span> (condition<span class="dv">-1</span><span class="sc">|</span>w<span class="sc">|</span>words),</span>
+<span id="cb18-4"><a href="#cb18-4" tabindex="-1"></a>  criterion <span class="sc">~</span> <span class="dv">1</span> <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>participant) <span class="sc">+</span> (<span class="dv">1</span><span class="sc">|</span>words),</span>
+<span id="cb18-5"><a href="#cb18-5" tabindex="-1"></a>  <span class="at">family =</span> <span class="fu">mixture</span>()</span>
+<span id="cb18-6"><a href="#cb18-6" tabindex="-1"></a>)</span>
+<span id="cb18-7"><a href="#cb18-7" tabindex="-1"></a>m<span class="fl">.6</span> <span class="ot">&lt;-</span> <span class="fu">broc</span>(<span class="at">formula =</span> f<span class="fl">.6</span>,</span>
+<span id="cb18-8"><a href="#cb18-8" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024,</span>
+<span id="cb18-9"><a href="#cb18-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
+<span id="cb18-10"><a href="#cb18-10" tabindex="-1"></a>fit<span class="fl">.6</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
+<span id="cb18-11"><a href="#cb18-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.6</span>,</span>
+<span id="cb18-12"><a href="#cb18-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
+<span id="cb18-13"><a href="#cb18-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
+<span id="cb18-14"><a href="#cb18-14" tabindex="-1"></a>)</span>
+<span id="cb18-15"><a href="#cb18-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
+<span id="cb18-16"><a href="#cb18-16" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-17"><a href="#cb18-17" tabindex="-1"></a><span class="fu">summary</span>(fit<span class="fl">.6</span>)</span>
+<span id="cb18-18"><a href="#cb18-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-19"><a href="#cb18-19" tabindex="-1"></a><span class="co">#&gt; bayesroc model summary</span></span>
+<span id="cb18-20"><a href="#cb18-20" tabindex="-1"></a><span class="co">#&gt; ======================</span></span>
+<span id="cb18-21"><a href="#cb18-21" tabindex="-1"></a><span class="co">#&gt; Family: mixture </span></span>
+<span id="cb18-22"><a href="#cb18-22" tabindex="-1"></a><span class="co">#&gt; N: 7560 | K: 6 | Chains: 4 x 2000 </span></span>
+<span id="cb18-23"><a href="#cb18-23" tabindex="-1"></a><span class="co">#&gt; Sampler: 0 divergent | 0 max-treedepth | min E-BFMI 0.73</span></span>
+<span id="cb18-24"><a href="#cb18-24" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-25"><a href="#cb18-25" tabindex="-1"></a><span class="co">#&gt; FIXED EFFECTS</span></span>
+<span id="cb18-26"><a href="#cb18-26" tabindex="-1"></a><span class="co">#&gt; -------------</span></span>
+<span id="cb18-27"><a href="#cb18-27" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-28"><a href="#cb18-28" tabindex="-1"></a><span class="co">#&gt; DPRIME:</span></span>
+<span id="cb18-29"><a href="#cb18-29" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-30"><a href="#cb18-30" tabindex="-1"></a><span class="co">#&gt;   conditionread    1.363 0.198 1.053 1.708 1.002     1542     2750</span></span>
+<span id="cb18-31"><a href="#cb18-31" tabindex="-1"></a><span class="co">#&gt;   conditionsing    1.771 0.138 1.551 2.002 1.003     2249     3942</span></span>
+<span id="cb18-32"><a href="#cb18-32" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    1.782 0.147 1.546 2.030 1.001     3329     5595</span></span>
+<span id="cb18-33"><a href="#cb18-33" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-34"><a href="#cb18-34" tabindex="-1"></a><span class="co">#&gt; LAMBDA (logit):</span></span>
+<span id="cb18-35"><a href="#cb18-35" tabindex="-1"></a><span class="co">#&gt;       parameter estimate    sd  lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-36"><a href="#cb18-36" tabindex="-1"></a><span class="co">#&gt;   conditionread    0.216 0.360 -0.368 0.812 1.002     1819     3722</span></span>
+<span id="cb18-37"><a href="#cb18-37" tabindex="-1"></a><span class="co">#&gt;   conditionsing    1.510 0.304  1.049 2.034 1.002     3479     5641</span></span>
+<span id="cb18-38"><a href="#cb18-38" tabindex="-1"></a><span class="co">#&gt;  conditionspeak    1.773 0.359  1.239 2.404 1.001     3560     5940</span></span>
+<span id="cb18-39"><a href="#cb18-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-40"><a href="#cb18-40" tabindex="-1"></a><span class="co">#&gt; CRITERION THRESH MID:</span></span>
+<span id="cb18-41"><a href="#cb18-41" tabindex="-1"></a><span class="co">#&gt;  parameter estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-42"><a href="#cb18-42" tabindex="-1"></a><span class="co">#&gt;  intercept    0.787 0.091 0.637 0.934 1.003     2016     3525</span></span>
+<span id="cb18-43"><a href="#cb18-43" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-44"><a href="#cb18-44" tabindex="-1"></a><span class="co">#&gt; CRITERION GAPS:</span></span>
+<span id="cb18-45"><a href="#cb18-45" tabindex="-1"></a><span class="co">#&gt;             parameter estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-46"><a href="#cb18-46" tabindex="-1"></a><span class="co">#&gt;  log_gap[1,intercept]   -1.227 0.121 -1.427 -1.029 1.001     2499     4053</span></span>
+<span id="cb18-47"><a href="#cb18-47" tabindex="-1"></a><span class="co">#&gt;  log_gap[2,intercept]   -1.362 0.151 -1.616 -1.120 1.000     2751     4547</span></span>
+<span id="cb18-48"><a href="#cb18-48" tabindex="-1"></a><span class="co">#&gt;  log_gap[3,intercept]   -1.071 0.098 -1.235 -0.914 1.001     2499     3960</span></span>
+<span id="cb18-49"><a href="#cb18-49" tabindex="-1"></a><span class="co">#&gt;  log_gap[4,intercept]   -1.106 0.155 -1.370 -0.858 1.002     1376     2553</span></span>
+<span id="cb18-50"><a href="#cb18-50" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-51"><a href="#cb18-51" tabindex="-1"></a><span class="co">#&gt; POPULATION THRESHOLDS</span></span>
+<span id="cb18-52"><a href="#cb18-52" tabindex="-1"></a><span class="co">#&gt; ---------------------</span></span>
+<span id="cb18-53"><a href="#cb18-53" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-54"><a href="#cb18-54" tabindex="-1"></a><span class="co">#&gt; intercept:</span></span>
+<span id="cb18-55"><a href="#cb18-55" tabindex="-1"></a><span class="co">#&gt;  threshold estimate    sd  lower upper</span></span>
+<span id="cb18-56"><a href="#cb18-56" tabindex="-1"></a><span class="co">#&gt;          1    0.107 0.112 -0.117 0.321</span></span>
+<span id="cb18-57"><a href="#cb18-57" tabindex="-1"></a><span class="co">#&gt;          2    0.442 0.094  0.253 0.627</span></span>
+<span id="cb18-58"><a href="#cb18-58" tabindex="-1"></a><span class="co">#&gt;          3    0.787 0.091  0.609 0.968</span></span>
+<span id="cb18-59"><a href="#cb18-59" tabindex="-1"></a><span class="co">#&gt;          4    1.082 0.085  0.916 1.251</span></span>
+<span id="cb18-60"><a href="#cb18-60" tabindex="-1"></a><span class="co">#&gt;          5    1.341 0.096  1.157 1.533</span></span>
+<span id="cb18-61"><a href="#cb18-61" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-62"><a href="#cb18-62" tabindex="-1"></a><span class="co">#&gt; RANDOM EFFECTS (Standard Deviations)</span></span>
+<span id="cb18-63"><a href="#cb18-63" tabindex="-1"></a><span class="co">#&gt; ------------------------------------</span></span>
+<span id="cb18-64"><a href="#cb18-64" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-65"><a href="#cb18-65" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb18-66"><a href="#cb18-66" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-67"><a href="#cb18-67" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.951 0.116 0.775 1.156 1.001     2743     4711</span></span>
+<span id="cb18-68"><a href="#cb18-68" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.538 0.072 0.431 0.662 1.000     4285     6438</span></span>
+<span id="cb18-69"><a href="#cb18-69" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.551 0.067 0.454 0.669 1.003     3679     4879</span></span>
+<span id="cb18-70"><a href="#cb18-70" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.688 0.089 0.555 0.844 1.001     5184     6062</span></span>
+<span id="cb18-71"><a href="#cb18-71" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.893 0.126 0.705 1.116 1.001     4044     5663</span></span>
+<span id="cb18-72"><a href="#cb18-72" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-73"><a href="#cb18-73" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb18-74"><a href="#cb18-74" tabindex="-1"></a><span class="co">#&gt;    level estimate    sd lower upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-75"><a href="#cb18-75" tabindex="-1"></a><span class="co">#&gt;  thresh1    0.218 0.069 0.094 0.325 1.001     1544     1942</span></span>
+<span id="cb18-76"><a href="#cb18-76" tabindex="-1"></a><span class="co">#&gt;  thresh2    0.246 0.049 0.166 0.325 1.000     5448     5415</span></span>
+<span id="cb18-77"><a href="#cb18-77" tabindex="-1"></a><span class="co">#&gt;  thresh3    0.301 0.030 0.252 0.349 1.002     1910     4383</span></span>
+<span id="cb18-78"><a href="#cb18-78" tabindex="-1"></a><span class="co">#&gt;  thresh4    0.292 0.063 0.184 0.392 1.002     2549     3352</span></span>
+<span id="cb18-79"><a href="#cb18-79" tabindex="-1"></a><span class="co">#&gt;  thresh5    0.253 0.061 0.152 0.353 1.000     5436     5548</span></span>
+<span id="cb18-80"><a href="#cb18-80" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-81"><a href="#cb18-81" tabindex="-1"></a><span class="co">#&gt; CORRELATIONS</span></span>
+<span id="cb18-82"><a href="#cb18-82" tabindex="-1"></a><span class="co">#&gt; ------------</span></span>
+<span id="cb18-83"><a href="#cb18-83" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-84"><a href="#cb18-84" tabindex="-1"></a><span class="co">#&gt; criterion | participant:</span></span>
+<span id="cb18-85"><a href="#cb18-85" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-86"><a href="#cb18-86" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.565 0.124  0.345  0.747 1.000     3397     4930</span></span>
+<span id="cb18-87"><a href="#cb18-87" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3    0.049 0.149 -0.197  0.299 1.001     2300     3708</span></span>
+<span id="cb18-88"><a href="#cb18-88" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.514 0.131  0.283  0.710 1.001     2892     4880</span></span>
+<span id="cb18-89"><a href="#cb18-89" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.568 0.117  0.359  0.740 1.000     4208     5389</span></span>
+<span id="cb18-90"><a href="#cb18-90" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3    0.083 0.158 -0.185  0.342 1.006     1852     3730</span></span>
+<span id="cb18-91"><a href="#cb18-91" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.477 0.141  0.225  0.693 1.001     3043     5248</span></span>
+<span id="cb18-92"><a href="#cb18-92" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.102 0.163 -0.167  0.366 1.000     3311     4904</span></span>
+<span id="cb18-93"><a href="#cb18-93" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.417 0.133 -0.624 -0.183 1.000     4881     6261</span></span>
+<span id="cb18-94"><a href="#cb18-94" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.041 0.160 -0.299  0.222 1.000     4773     5610</span></span>
+<span id="cb18-95"><a href="#cb18-95" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.290 0.156  0.021  0.534 1.001     4065     5844</span></span>
+<span id="cb18-96"><a href="#cb18-96" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-97"><a href="#cb18-97" tabindex="-1"></a><span class="co">#&gt; criterion | words:</span></span>
+<span id="cb18-98"><a href="#cb18-98" tabindex="-1"></a><span class="co">#&gt;               pair estimate    sd  lower  upper  rhat ess_bulk ess_tail</span></span>
+<span id="cb18-99"><a href="#cb18-99" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh2    0.352 0.258 -0.098  0.751 1.010      740     1413</span></span>
+<span id="cb18-100"><a href="#cb18-100" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh3   -0.182 0.227 -0.568  0.186 1.013      480     1048</span></span>
+<span id="cb18-101"><a href="#cb18-101" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh4    0.346 0.270 -0.117  0.769 1.002     1412     2325</span></span>
+<span id="cb18-102"><a href="#cb18-102" tabindex="-1"></a><span class="co">#&gt;  thresh1 ~ thresh5    0.329 0.275 -0.160  0.745 1.006     1093     2703</span></span>
+<span id="cb18-103"><a href="#cb18-103" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh3   -0.672 0.156 -0.898 -0.391 1.007      654     1711</span></span>
+<span id="cb18-104"><a href="#cb18-104" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh4    0.467 0.218  0.085  0.799 1.001     1612     3549</span></span>
+<span id="cb18-105"><a href="#cb18-105" tabindex="-1"></a><span class="co">#&gt;  thresh2 ~ thresh5    0.623 0.204  0.239  0.899 1.001     2451     4499</span></span>
+<span id="cb18-106"><a href="#cb18-106" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh4   -0.399 0.176 -0.680 -0.102 1.001     3888     5701</span></span>
+<span id="cb18-107"><a href="#cb18-107" tabindex="-1"></a><span class="co">#&gt;  thresh3 ~ thresh5   -0.734 0.145 -0.927 -0.471 1.000     5630     6340</span></span>
+<span id="cb18-108"><a href="#cb18-108" tabindex="-1"></a><span class="co">#&gt;  thresh4 ~ thresh5    0.400 0.250 -0.039  0.780 1.000     5112     6729</span></span>
+<span id="cb18-109"><a href="#cb18-109" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-110"><a href="#cb18-110" tabindex="-1"></a><span class="co">#&gt; cross | p_participant:</span></span>
+<span id="cb18-111"><a href="#cb18-111" tabindex="-1"></a><span class="co">#&gt;                                           pair estimate    sd  lower upper</span></span>
+<span id="cb18-112"><a href="#cb18-112" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ dprime:conditionsing    0.521 0.249  0.068 0.857</span></span>
+<span id="cb18-113"><a href="#cb18-113" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionspeak    0.410 0.248 -0.025 0.774</span></span>
+<span id="cb18-114"><a href="#cb18-114" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionread    0.248 0.318 -0.307 0.739</span></span>
+<span id="cb18-115"><a href="#cb18-115" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionsing    0.416 0.294 -0.123 0.823</span></span>
+<span id="cb18-116"><a href="#cb18-116" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ lambda:conditionspeak    0.317 0.300 -0.213 0.759</span></span>
+<span id="cb18-117"><a href="#cb18-117" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ dprime:conditionspeak    0.555 0.203  0.186 0.842</span></span>
+<span id="cb18-118"><a href="#cb18-118" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionread    0.493 0.265  0.003 0.847</span></span>
+<span id="cb18-119"><a href="#cb18-119" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionsing    0.298 0.295 -0.227 0.755</span></span>
+<span id="cb18-120"><a href="#cb18-120" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ lambda:conditionspeak    0.480 0.270 -0.026 0.841</span></span>
+<span id="cb18-121"><a href="#cb18-121" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionread    0.434 0.253 -0.021 0.799</span></span>
+<span id="cb18-122"><a href="#cb18-122" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionsing    0.467 0.257 -0.007 0.824</span></span>
+<span id="cb18-123"><a href="#cb18-123" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ lambda:conditionspeak    0.230 0.306 -0.294 0.709</span></span>
+<span id="cb18-124"><a href="#cb18-124" tabindex="-1"></a><span class="co">#&gt;    lambda:conditionread ~ lambda:conditionsing    0.374 0.309 -0.197 0.805</span></span>
+<span id="cb18-125"><a href="#cb18-125" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionread ~ lambda:conditionspeak    0.292 0.306 -0.266 0.752</span></span>
+<span id="cb18-126"><a href="#cb18-126" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionsing ~ lambda:conditionspeak    0.368 0.313 -0.213 0.801</span></span>
+<span id="cb18-127"><a href="#cb18-127" tabindex="-1"></a><span class="co">#&gt;   rhat ess_bulk ess_tail</span></span>
+<span id="cb18-128"><a href="#cb18-128" tabindex="-1"></a><span class="co">#&gt;  1.001     1908     2350</span></span>
+<span id="cb18-129"><a href="#cb18-129" tabindex="-1"></a><span class="co">#&gt;  1.001     1920     3203</span></span>
+<span id="cb18-130"><a href="#cb18-130" tabindex="-1"></a><span class="co">#&gt;  1.000     3111     4503</span></span>
+<span id="cb18-131"><a href="#cb18-131" tabindex="-1"></a><span class="co">#&gt;  1.001     4082     4609</span></span>
+<span id="cb18-132"><a href="#cb18-132" tabindex="-1"></a><span class="co">#&gt;  1.000     3269     4538</span></span>
+<span id="cb18-133"><a href="#cb18-133" tabindex="-1"></a><span class="co">#&gt;  1.001     3180     5010</span></span>
+<span id="cb18-134"><a href="#cb18-134" tabindex="-1"></a><span class="co">#&gt;  1.001     2845     4026</span></span>
+<span id="cb18-135"><a href="#cb18-135" tabindex="-1"></a><span class="co">#&gt;  1.000     5538     6208</span></span>
+<span id="cb18-136"><a href="#cb18-136" tabindex="-1"></a><span class="co">#&gt;  1.000     4838     4778</span></span>
+<span id="cb18-137"><a href="#cb18-137" tabindex="-1"></a><span class="co">#&gt;  1.001     3671     4701</span></span>
+<span id="cb18-138"><a href="#cb18-138" tabindex="-1"></a><span class="co">#&gt;  1.000     4940     5576</span></span>
+<span id="cb18-139"><a href="#cb18-139" tabindex="-1"></a><span class="co">#&gt;  1.000     5284     6245</span></span>
+<span id="cb18-140"><a href="#cb18-140" tabindex="-1"></a><span class="co">#&gt;  1.001     3290     5683</span></span>
+<span id="cb18-141"><a href="#cb18-141" tabindex="-1"></a><span class="co">#&gt;  1.001     3899     5321</span></span>
+<span id="cb18-142"><a href="#cb18-142" tabindex="-1"></a><span class="co">#&gt;  1.001     4041     6148</span></span>
+<span id="cb18-143"><a href="#cb18-143" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb18-144"><a href="#cb18-144" tabindex="-1"></a><span class="co">#&gt; cross | w_words:</span></span>
+<span id="cb18-145"><a href="#cb18-145" tabindex="-1"></a><span class="co">#&gt;                                           pair estimate    sd  lower upper</span></span>
+<span id="cb18-146"><a href="#cb18-146" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ dprime:conditionsing    0.565 0.197  0.212 0.847</span></span>
+<span id="cb18-147"><a href="#cb18-147" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ dprime:conditionspeak    0.478 0.187  0.154 0.761</span></span>
+<span id="cb18-148"><a href="#cb18-148" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionread    0.206 0.353 -0.426 0.728</span></span>
+<span id="cb18-149"><a href="#cb18-149" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionread ~ lambda:conditionsing    0.187 0.342 -0.416 0.710</span></span>
+<span id="cb18-150"><a href="#cb18-150" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionread ~ lambda:conditionspeak    0.162 0.354 -0.465 0.701</span></span>
+<span id="cb18-151"><a href="#cb18-151" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ dprime:conditionspeak    0.661 0.162  0.369 0.884</span></span>
+<span id="cb18-152"><a href="#cb18-152" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionread    0.242 0.362 -0.415 0.763</span></span>
+<span id="cb18-153"><a href="#cb18-153" tabindex="-1"></a><span class="co">#&gt;    dprime:conditionsing ~ lambda:conditionsing    0.061 0.348 -0.512 0.634</span></span>
+<span id="cb18-154"><a href="#cb18-154" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionsing ~ lambda:conditionspeak    0.190 0.360 -0.457 0.730</span></span>
+<span id="cb18-155"><a href="#cb18-155" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionread    0.207 0.353 -0.435 0.720</span></span>
+<span id="cb18-156"><a href="#cb18-156" tabindex="-1"></a><span class="co">#&gt;   dprime:conditionspeak ~ lambda:conditionsing    0.273 0.333 -0.340 0.754</span></span>
+<span id="cb18-157"><a href="#cb18-157" tabindex="-1"></a><span class="co">#&gt;  dprime:conditionspeak ~ lambda:conditionspeak    0.121 0.352 -0.489 0.675</span></span>
+<span id="cb18-158"><a href="#cb18-158" tabindex="-1"></a><span class="co">#&gt;    lambda:conditionread ~ lambda:conditionsing    0.090 0.376 -0.564 0.680</span></span>
+<span id="cb18-159"><a href="#cb18-159" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionread ~ lambda:conditionspeak    0.053 0.376 -0.586 0.649</span></span>
+<span id="cb18-160"><a href="#cb18-160" tabindex="-1"></a><span class="co">#&gt;   lambda:conditionsing ~ lambda:conditionspeak    0.118 0.374 -0.529 0.696</span></span>
+<span id="cb18-161"><a href="#cb18-161" tabindex="-1"></a><span class="co">#&gt;   rhat ess_bulk ess_tail</span></span>
+<span id="cb18-162"><a href="#cb18-162" tabindex="-1"></a><span class="co">#&gt;  1.004     1550     2256</span></span>
+<span id="cb18-163"><a href="#cb18-163" tabindex="-1"></a><span class="co">#&gt;  1.007     1090     1528</span></span>
+<span id="cb18-164"><a href="#cb18-164" tabindex="-1"></a><span class="co">#&gt;  1.000     5820     5774</span></span>
+<span id="cb18-165"><a href="#cb18-165" tabindex="-1"></a><span class="co">#&gt;  1.001     4108     5614</span></span>
+<span id="cb18-166"><a href="#cb18-166" tabindex="-1"></a><span class="co">#&gt;  1.001     7331     6274</span></span>
+<span id="cb18-167"><a href="#cb18-167" tabindex="-1"></a><span class="co">#&gt;  1.002     1151     1584</span></span>
+<span id="cb18-168"><a href="#cb18-168" tabindex="-1"></a><span class="co">#&gt;  1.001     2741     5354</span></span>
+<span id="cb18-169"><a href="#cb18-169" tabindex="-1"></a><span class="co">#&gt;  1.001     4744     6238</span></span>
+<span id="cb18-170"><a href="#cb18-170" tabindex="-1"></a><span class="co">#&gt;  1.000     5981     6158</span></span>
+<span id="cb18-171"><a href="#cb18-171" tabindex="-1"></a><span class="co">#&gt;  1.003     2591     4767</span></span>
+<span id="cb18-172"><a href="#cb18-172" tabindex="-1"></a><span class="co">#&gt;  1.001     2982     4558</span></span>
+<span id="cb18-173"><a href="#cb18-173" tabindex="-1"></a><span class="co">#&gt;  1.001     7474     6468</span></span>
+<span id="cb18-174"><a href="#cb18-174" tabindex="-1"></a><span class="co">#&gt;  1.001     3797     5698</span></span>
+<span id="cb18-175"><a href="#cb18-175" tabindex="-1"></a><span class="co">#&gt;  1.000     5347     6547</span></span>
+<span id="cb18-176"><a href="#cb18-176" tabindex="-1"></a><span class="co">#&gt;  1.001     4657     6364</span></span></code></pre></div>
+<p>The mixture family is flexible. Although this variant assumes that
+unattended targets are treated like lures, specifying a formula for
+<code>dprime2</code> allows the mean of the unattended distribution to
+vary. This can be combined with formulas on <code>sigma</code> and
+<code>sigma2</code> for unequal variance mixture models, and with
+<code>dprime_L</code>, <code>lambda_L</code>, and <code>sigma_L</code>
+to allow the lure distribution to be a mixture of no-signal and higher
+signal items.</p>
+</div>
+<div id="references" class="section level2">
+<h2>References</h2>
+<p>Brysbaert, M., &amp; New, B. (2009). Moving beyond Kučera and
+Francis: A critical evaluation of current word frequency norms and the
+introduction of a new and improved word frequency measure for American
+English. <em>Behavior Research Methods</em>, <em>41</em>, 977–990. <a href="https://doi.org/10.3758/BRM.41.4.977" class="uri">https://doi.org/10.3758/BRM.41.4.977</a></p>
+<p>DeCarlo, L. T. (2002). Signal detection theory with finite mixture
+distributions: Theoretical developments with applications to recognition
+memory. <em>Psychological Review</em>, <em>109</em>(4), 710–721.</p>
+<p>Onyper, S. V., Zhang, Y. X., &amp; Howard, M. W. (2010). Some-or-none
+recollection: Evidence from item and source memory. <em>Journal of
+Experimental Psychology: General</em>, <em>139</em>(2), 341–364.</p>
+<p>Vehtari, A., Gelman, A., &amp; Gabry, J. (2017). Practical Bayesian
+model evaluation using leave-one-out cross-validation and WAIC.
+<em>Statistics and Computing</em>, <em>27</em>, 1413–1432. <a href="https://doi.org/10.1007/s11222-016-9696-4" class="uri">https://doi.org/10.1007/s11222-016-9696-4</a></p>
+<p>Whitridge, J. W., Huff, M. J., Ozubko, J. D., Bürkner, P.-C., Lahey,
+C. D., &amp; Fawcett, J. M. (2024). Singing does not necessarily improve
+memory more than reading aloud. <em>Experimental Psychology</em>,
+<em>71</em>(1), 33–50. <a href="https://doi.org/10.1027/1618-3169/a000614" class="uri">https://doi.org/10.1027/1618-3169/a000614</a></p>
+<p>Wood, S. N. (2011). Fast stable restricted maximum likelihood and
+marginal likelihood estimation of semiparametric generalized linear
+models. <em>Journal of the Royal Statistical Society: Series B
+(Statistical Methodology)</em>, <em>73</em>, 3–36. <a href="https://doi.org/10.1111/j.1467-9868.2010.00749.x" class="uri">https://doi.org/10.1111/j.1467-9868.2010.00749.x</a></p>
+<p>Yonelinas, A. P. (1994). Receiver-operating characteristics in
+recognition memory: Evidence for a dual-process model. <em>Journal of
+Experimental Psychology: Learning, Memory, and Cognition</em>,
+<em>20</em>(6), 1341–1354.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>
