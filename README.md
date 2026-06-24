@@ -92,7 +92,7 @@ m <- broc(brf(resp | cond ~ 1 + (1|s|sub),
 fit <- fit_broc(m, backend = "stan")
 ```
 
-See the [vignette]([vignettes/univariate-recognition.Rmd](https://jed709.github.io/bayesroc/articles/univariate-recognition.html) for an in-depth example.
+See the [vignette](https://jed709.github.io/bayesroc/articles/univariate-recognition.html) for an in-depth example.
 
 ### Backends and speed
 
