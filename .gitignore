@@ -28,6 +28,9 @@ inst/jax_ffi/*.dylib
 
 # Local dev / scratch — kept out of public repo
 dev-notes/
+data-raw/
+*.Rproj
+vignettes/*.Rmd.orig
 bench_stan/
 benchmarks/
 ddm_pilot/
