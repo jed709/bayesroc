@@ -52,3 +52,4 @@ biv_dp_*.cpp
 
 # Top-level scratch / audit artifacts (analysis scripts, saved verification fits)
 /_*
+docs/

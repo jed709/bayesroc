@@ -5,6 +5,8 @@ to Stan (via [`cmdstanr`](https://mc-stan.org/cmdstanr/)) or [`NumPyro`](https:/
 and supports multiple univariate and bivariate model families with fixed and
 random effects on any model parameter.
 
+Docs and the getting-started vignette: <https://jed709.github.io/bayesroc/>
+
 ## Installation
 
 bayesroc is not yet on CRAN. Install from GitHub:
