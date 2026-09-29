@@ -142,6 +142,7 @@ install_jax_backend <- function(dir = jax_backend_dir(),
   if (!ok) stop("Install completed but jax/numpyro import failed.", call. = FALSE)
 
   Sys.setenv(BAYESROC_PYTHON = abs_keep_symlink(venv_py))
+  .bvn_ffi_lib(abs_keep_symlink(venv_py), rebuild = TRUE, quiet = quiet)
 
   if (!quiet) message("\nDone. The JAX backend will use this venv from now on.")
   invisible(abs_keep_symlink(venv_py))

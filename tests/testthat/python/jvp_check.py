@@ -2,6 +2,8 @@ import json
 import os
 import sys
 
+os.environ.pop("BAYESROC_BVN_FFI", None)
+
 import numpy as np
 
 sys.path.insert(0, sys.argv[1])
@@ -12,16 +14,15 @@ jax.config.update("jax_enable_x64", True)
 import numpyro_backend as nb
 
 
-def _dir_fd(f, args, i, v, h):
-    ap = list(args); am = list(args)
-    ap[i] = args[i] + h * v
-    am[i] = args[i] - h * v
-    return (np.asarray(f(*ap)) - np.asarray(f(*am))) / (2.0 * h)
 
-
-def check(f, args, cont_idx, seed=0, h=1e-6):
+def check(f, args, cont_idx, seed=0):
+    """Custom-JVP primal vs the plain value, and custom-JVP tangent vs autodiff of the
+    undecorated value function (f.fun). Run without BAYESROC_BVN_FFI so f.fun is pure JAX."""
     rng = np.random.default_rng(seed)
     plain = np.asarray(f(*args))
+    if not hasattr(f, "fun"):
+        return {"custom_jvp": False, "primal_abs": float("nan"), "tangent_abs": float("nan"),
+                "tangent_rel": float("nan"), "finite": bool(np.all(np.isfinite(plain)))}
     worst_primal = 0.0
     worst_tan = 0.0
     worst_abs = 0.0
@@ -32,11 +33,11 @@ def check(f, args, cont_idx, seed=0, h=1e-6):
         tangents[i] = v
         primal, tan = jax.jvp(f, tuple(args), tuple(tangents))
         worst_primal = max(worst_primal, float(np.max(np.abs(np.asarray(primal) - plain))))
-        fd = _dir_fd(f, args, i, v, h)
-        err = np.abs(np.asarray(tan) - fd)
+        ref = np.asarray(jax.jvp(f.fun, tuple(args), tuple(tangents))[1])
+        err = np.abs(np.asarray(tan) - ref)
         worst_abs = max(worst_abs, float(np.max(err)))
-        worst_tan = max(worst_tan, float(np.max(err / np.maximum(np.abs(fd), 1.0))))
-    return {"primal_abs": worst_primal, "tangent_abs": worst_abs, "tangent_rel": worst_tan,
+        worst_tan = max(worst_tan, float(np.max(err / np.maximum(np.abs(ref), 1.0))))
+    return {"custom_jvp": True, "primal_abs": worst_primal, "tangent_abs": worst_abs, "tangent_rel": worst_tan,
             "finite": bool(np.all(np.isfinite(plain)))}
 
 

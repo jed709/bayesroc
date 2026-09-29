@@ -500,9 +500,11 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
 
   nuts_f32 <- identical(sampler, "nuts") && identical(control$precision, "f32")
 
+  bvn_lib <- .bvn_ffi_lib(python)
   runner_script <- file.path(tmp_dir, "run_fit.py")
   writeLines(c(
     "import sys, os, json",
+    if (!is.null(bvn_lib)) paste0("os.environ['BAYESROC_BVN_FFI'] = ", deparse(bvn_lib)),
     paste0("os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=", device_count, "'"),
     if (nuts_f32) "os.environ['BAYESROC_ENABLE_X64'] = '0'  # NUTS float32 mode",
     paste0("sys.path.insert(0, ", deparse(dirname(py_script)), ")"),
