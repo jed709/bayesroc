@@ -59,8 +59,8 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
 #'
 #' Parses random effects and builds the necessary structures.
 #' Now supports both:
-#' - Simple categorical: uses index arrays for fast lookup (beta[idx])
-#' - General case: uses full Z matrices (Z[n,] * u[s,]')
+#' - Simple categorical: uses index arrays for fast lookup (`beta[idx]`)
+#' - General case: uses full Z matrices (`Z[n,] * u[s,]'`)
 #'
 #' @param re_terms Random effects formula component
 #' @param data Full data frame

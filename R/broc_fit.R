@@ -420,7 +420,7 @@ print.broc_fit <- function(x, ...) {
 
 #' Convert NumPyro samples to posterior::draws_array
 #'
-#' Takes named list of arrays (each shape [chains, draws, ...]) and converts
+#' Takes named list of arrays (each shape `[chains, draws, ...]`) and converts
 #' to a posterior::draws_array with Stan-style bracket naming.
 #'
 #' @param samples Named list of arrays from NumPyro MCMC

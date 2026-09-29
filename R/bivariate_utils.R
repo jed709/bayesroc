@@ -387,7 +387,7 @@ compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
 # Univariate Cell Probability
 # =============================================================================
 
-#' Univariate cell probability: P(thresh[k-1] < X <= thresh[k])
+#' Univariate cell probability: `P(thresh[k-1] < X <= thresh[k])`
 #'
 #' @param resp Integer response (1..K)
 #' @param K Number of categories

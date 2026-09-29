@@ -191,8 +191,8 @@ pp_check.broc_fit <- function(object, type = c("bars", "bars_grouped", "dens_ove
 
 #' Sample total predicted counts per category via multinomial sampling
 #'
-#' For each posterior draw s and data row n, draws counts[n] responses from
-#' the categorical distribution probs[s,n,], then sums across rows to get
+#' For each posterior draw s and data row n, draws `counts[n]` responses from
+#' the categorical distribution `probs[s, n, ]`, then sums across rows to get
 #' total predicted counts per category.
 #'
 #' @param probs S x N x K array of category probabilities

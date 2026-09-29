@@ -37,7 +37,7 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
 #' - All random effects for this parameter use encoding with term_idx (not Z matrix)
 #' - The fixed effect dimension matches the random effect dimension
 #' 
-#' This allows using beta[idx] instead of X[n,] * beta for faster sampling.
+#' This allows using `beta[idx]` instead of `X[n,] * beta` for faster sampling.
 #' @noRd
 is_simple_encoding <- function(fixed_info, random_info) {
   if (!isTRUE(fixed_info$has_encoding)) return(FALSE)

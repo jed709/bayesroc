@@ -3049,7 +3049,7 @@ emit_crit_re_gap <- function(L, crit_re_idx, re, group, target, thresh_k_1based)
 #' For all families, this emits code that produces:
 #' - total_lp accumulation
 #' - k_lo, k_hi (threshold indices used for cell boundaries)
-#' - d_thresh_lo, d_thresh_hi: d_lp/d_thresh[k_lo] and d_lp/d_thresh[k_hi]
+#' - d_thresh_lo, d_thresh_hi: `d_lp/d_thresh[k_lo]` and `d_lp/d_thresh[k_hi]`
 #'   (direct derivatives w.r.t. the threshold values, no further scaling needed)
 #'
 #' For dpsdt/mixture, also emits d_mu_raw, d_lambda_raw, d_sigma_raw, etc.
