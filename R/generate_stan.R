@@ -1366,7 +1366,7 @@ generate_link_cdf_wrapper <- function(link) {
     return('
   // Complementary log-log link (Gumbel-min CDF)
   real link_cdf(real x) {
-    real xc = fmin(fmax(x, -30.0), 3.5);
+    real xc = fmin(x, 700.0);
     return -expm1(-exp(xc));
   }')
   } else {

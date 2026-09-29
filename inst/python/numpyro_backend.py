@@ -167,17 +167,17 @@ def parse_prior(prior_str, dim=None):
 # Link Functions
 # =============================================================================
 
-_CLOGLOG_LO, _CLOGLOG_HI = -30.0, 3.5
+_CLOGLOG_HI = 700.0
 
 
 def _cloglog_cdf(x):
     """Gumbel-min (smallest extreme value) CDF: F(x) = 1 - exp(-exp(x))."""
-    return -jnp.expm1(-jnp.exp(jnp.clip(x, _CLOGLOG_LO, _CLOGLOG_HI)))
+    return -jnp.expm1(-jnp.exp(jnp.minimum(x, _CLOGLOG_HI)))
 
 
 def _cloglog_pdf(x):
     """Gumbel-min density: f(x) = exp(x - exp(x))."""
-    xc = jnp.clip(x, _CLOGLOG_LO, _CLOGLOG_HI)
+    xc = jnp.minimum(x, _CLOGLOG_HI)
     return jnp.exp(xc - jnp.exp(xc))
 
 

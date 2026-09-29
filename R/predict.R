@@ -37,6 +37,7 @@ link_cdf_r <- function(x, link_name) {
   switch(link_name,
     probit = pnorm(x),
     logit  = plogis(x),
+    cloglog = -expm1(-exp(pmin(x, 700))),
     stop("Unknown link: ", link_name)
   )
 }
