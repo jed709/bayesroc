@@ -21,3 +21,16 @@ test_that("install_jax_backend() errors when overwrite = FALSE on existing venv"
   skip_if_not(file.exists(bayesroc:::managed_venv_python()))
   expect_error(install_jax_backend(overwrite = FALSE), "already exists")
 })
+
+test_that("XLA compile cache lives under R_user_dir and can be disabled or moved", {
+  old <- options(bayesroc.xla_cache = NULL)
+  on.exit(options(old))
+  expect_identical(.xla_cache_dir(),
+                   normalizePath(file.path(tools::R_user_dir("bayesroc", "cache"), "xla"),
+                                 winslash = "/", mustWork = FALSE))
+  options(bayesroc.xla_cache = FALSE)
+  expect_identical(.xla_cache_dir(), "0")
+  d <- tempfile("xla")
+  options(bayesroc.xla_cache = d)
+  expect_identical(.xla_cache_dir(), normalizePath(d, winslash = "/", mustWork = FALSE))
+})

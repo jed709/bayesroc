@@ -32,10 +32,8 @@ if os.environ.get("BAYESROC_ENABLE_X64", "1") == "0":
 _FLOAT = jnp.float64 if jax.config.jax_enable_x64 else jnp.float32
 
 _cache = os.environ.get("BAYESROC_XLA_CACHE", "")
-if _cache != "0":
+if _cache and _cache != "0":
     try:
-        if not _cache:
-            _cache = os.path.join(os.path.expanduser("~"), ".cache", "bayesroc_xla")
         os.makedirs(_cache, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", _cache)
         jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)

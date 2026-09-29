@@ -1981,7 +1981,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   via `reduce_sum`. Only used when the model was built with `threads = TRUE`.
 #' @param backend Inference backend: `"stan"` (default, via cmdstanr) or `"jax"`
 #'   (via NumPyro). The JAX backend requires a configured Python environment
-#'   (see [install_jax_backend()]).
+#'   (see [install_jax_backend()]). It caches compiled XLA programs under
+#'   `tools::R_user_dir("bayesroc", "cache")`; set
+#'   `options(bayesroc.xla_cache = FALSE)` to disable the cache or to a path to
+#'   move it.
 #' @param python Optional path to the Python executable for the JAX backend.
 #'   `NULL` (default) uses the managed environment (see [install_jax_backend()]).
 #' @param progress_bar If `TRUE` (default), show the sampler progress bar.

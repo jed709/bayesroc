@@ -82,7 +82,10 @@ via \code{reduce_sum}. Only used when the model was built with \code{threads = T
 
 \item{backend}{Inference backend: \code{"stan"} (default, via cmdstanr) or \code{"jax"}
 (via NumPyro). The JAX backend requires a configured Python environment
-(see \code{\link[=install_jax_backend]{install_jax_backend()}}).}
+(see \code{\link[=install_jax_backend]{install_jax_backend()}}). It caches compiled XLA programs under
+\code{tools::R_user_dir("bayesroc", "cache")}; set
+\code{options(bayesroc.xla_cache = FALSE)} to disable the cache or to a path to
+move it.}
 
 \item{python}{Optional path to the Python executable for the JAX backend.
 \code{NULL} (default) uses the managed environment (see \code{\link[=install_jax_backend]{install_jax_backend()}}).}
