@@ -163,12 +163,37 @@ def parse_prior(prior_str, dim=None):
 # Link Functions
 # =============================================================================
 
+_CLOGLOG_LO, _CLOGLOG_HI = -30.0, 3.5
+
+
+def _cloglog_cdf(x):
+    """Gumbel-min (smallest extreme value) CDF: F(x) = 1 - exp(-exp(x))."""
+    return -jnp.expm1(-jnp.exp(jnp.clip(x, _CLOGLOG_LO, _CLOGLOG_HI)))
+
+
+def _cloglog_pdf(x):
+    """Gumbel-min density: f(x) = exp(x - exp(x))."""
+    xc = jnp.clip(x, _CLOGLOG_LO, _CLOGLOG_HI)
+    return jnp.exp(xc - jnp.exp(xc))
+
+
+def _link_fns(link_name):
+    """(CDF, PDF) pair for a latent-distribution link."""
+    if link_name == "logit":
+        return jax_expit, lambda x: jax_expit(x) * (1.0 - jax_expit(x))
+    if link_name == "cloglog":
+        return _cloglog_cdf, _cloglog_pdf
+    return _Phi, _phi
+
+
 def link_cdf(x, link_name):
-    """CDF for the link function (probit or logit)."""
+    """CDF for the link function (probit, logit, or cloglog)."""
     if link_name == "probit":
         return jax_norm.cdf(x)
     elif link_name == "logit":
         return jax_expit(x)
+    elif link_name == "cloglog":
+        return _cloglog_cdf(x)
     else:
         raise ValueError(f"Unknown link: {link_name}")
 
@@ -380,7 +405,7 @@ def _Phi(x):
 # Fully-vectorized batch loglik (no vmap)
 # =============================================================================
 
-def _make_fused_batch_loglik(K, gap_link_is_softplus, use_logit=False):
+def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
     """Fully-vectorized batch log-likelihood with custom JVP.
 
     Operates on entire [N]-shaped arrays directly (no per-observation vmap).
@@ -392,12 +417,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, use_logit=False):
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    if use_logit:
-        _CDF = jax_expit
-        _PDF = lambda x: jax_expit(x) * (1.0 - jax_expit(x))
-    else:
-        _CDF = _Phi
-        _PDF = _phi
+    _CDF, _PDF = _link_fns(link_name)
 
     # --- Precompute static structures (Python-time, not trace-time) ---
 
@@ -515,7 +535,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, use_logit=False):
     return _batch_fused
 
 
-def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, use_logit=False):
+def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
     """Fully-vectorized batch log-likelihood for DPSDT with custom JVP.
 
     DPSDT: P = lambda * I(y==K) + (1-lambda) * cell_p.
@@ -526,12 +546,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, use_logit=False):
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    if use_logit:
-        _CDF = jax_expit
-        _PDF = lambda x: jax_expit(x) * (1.0 - jax_expit(x))
-    else:
-        _CDF = _Phi
-        _PDF = _phi
+    _CDF, _PDF = _link_fns(link_name)
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -653,7 +668,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, use_logit=False):
     return _batch_fused
 
 
-def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, use_logit=False):
+def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"):
     """Fully-vectorized batch log-likelihood for mixture with custom JVP.
 
     Mixture: P = lambda * p1(mu1,sig1) + (1-lambda) * p2(mu2,sig2).
@@ -664,12 +679,7 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, use_logit=False):
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    if use_logit:
-        _CDF = jax_expit
-        _PDF = lambda x: jax_expit(x) * (1.0 - jax_expit(x))
-    else:
-        _CDF = _Phi
-        _PDF = _phi
+    _CDF, _PDF = _link_fns(link_name)
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -812,7 +822,7 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, use_logit=False):
     return _batch_fused
 
 
-def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, use_logit=False):
+def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="probit"):
     """Fully-vectorized batch log-likelihood for source_mixture with custom JVP.
 
     Source mixture: P = lambda * p_att(d_attended) + (1-lambda) * p_noise(mu=0).
@@ -823,12 +833,7 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, use_logit=F
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    if use_logit:
-        _CDF = jax_expit
-        _PDF = lambda x: jax_expit(x) * (1.0 - jax_expit(x))
-    else:
-        _CDF = _Phi
-        _PDF = _phi
+    _CDF, _PDF = _link_fns(link_name)
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -2537,7 +2542,7 @@ def fused_loglik_cdp(y, rk, is_old, old_idx, is_old_resp, K, J,
                               thresh_mid, gaps_per_obs)
 
 
-def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", use_logit=False):
+def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for evsdt/uvsdt.
 
     Args:
@@ -2548,7 +2553,7 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", u
         thresh_mid: [N] effective mid-anchor (pop + crit RE)
         gaps: [n_gaps, N] effective log-gaps (pop + crit RE), or [n_gaps] if shared
         gap_link: "log" or "softplus"
-        use_logit: if True, use logistic link instead of probit
+        link_name: latent-distribution link ("probit", "logit", or "cloglog")
     """
     N = y.shape[0]
     n_gaps = K - 2
@@ -2559,14 +2564,14 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", u
     else:
         gaps_per_obs = gaps.T
 
-    key = ("batch_simple", int(K), bool(is_softplus), bool(use_logit))
+    key = ("batch_simple", int(K), bool(is_softplus), str(link_name))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_loglik(int(K), bool(is_softplus), bool(use_logit))
+        _fused_cache[key] = _make_fused_batch_loglik(int(K), bool(is_softplus), str(link_name))
     return _fused_cache[key](y, mu, sigma_val, thresh_mid, gaps_per_obs)
 
 
 def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
-                       gap_link="log", has_sigma=False, use_logit=False):
+                       gap_link="log", has_sigma=False, link_name="probit"):
     """Fully-vectorized fused log-likelihood for DPSDT (old items only)."""
     N = y.shape[0]
     n_gaps = K - 2
@@ -2577,14 +2582,14 @@ def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
     else:
         gaps_per_obs = gaps.T
 
-    key = ("batch_dpsdt", int(K), bool(is_softplus), bool(use_logit))
+    key = ("batch_dpsdt", int(K), bool(is_softplus), str(link_name))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_dpsdt_loglik(int(K), bool(is_softplus), bool(use_logit))
+        _fused_cache[key] = _make_fused_batch_dpsdt_loglik(int(K), bool(is_softplus), str(link_name))
     return _fused_cache[key](y, mu, sigma_val, lambda_val, thresh_mid, gaps_per_obs)
 
 
 def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
-                         thresh_mid, gaps, gap_link="log", use_logit=False):
+                         thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for mixture (old items only)."""
     N = y.shape[0]
     n_gaps = K - 2
@@ -2595,15 +2600,15 @@ def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
     else:
         gaps_per_obs = gaps.T
 
-    key = ("batch_mixture", int(K), bool(is_softplus), bool(use_logit))
+    key = ("batch_mixture", int(K), bool(is_softplus), str(link_name))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_mixture_loglik(int(K), bool(is_softplus), bool(use_logit))
+        _fused_cache[key] = _make_fused_batch_mixture_loglik(int(K), bool(is_softplus), str(link_name))
     return _fused_cache[key](y, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
                              thresh_mid, gaps_per_obs)
 
 
 def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
-                                gap_link="log", use_logit=False):
+                                gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for source_mixture."""
     N = y.shape[0]
     n_gaps = K - 2
@@ -2614,9 +2619,9 @@ def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
     else:
         gaps_per_obs = gaps.T
 
-    key = ("batch_source_mixture", int(K), bool(is_softplus), bool(use_logit))
+    key = ("batch_source_mixture", int(K), bool(is_softplus), str(link_name))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_source_mixture_loglik(int(K), bool(is_softplus), bool(use_logit))
+        _fused_cache[key] = _make_fused_batch_source_mixture_loglik(int(K), bool(is_softplus), str(link_name))
     return _fused_cache[key](y, d_attended, lambda_val, thresh_mid, gaps_per_obs)
 
 
@@ -2643,14 +2648,13 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     # --- Fused JVP path ---
     has_fused_inputs = (thresh_mid is not None and log_gaps is not None)
     is_simple = family_name in ("evsdt", "uvsdt", "cumulative")
-    is_logit = (link_name == "logit")
 
     if is_simple and has_fused_inputs and lambda_val is None:
         mu_per_obs = jnp.where(is_old == 1, mu_signal, mu_noise)
         sd_per_obs = jnp.where(is_old == 1, sd_signal, sd_noise)
         log_lik = fused_loglik_simple(y, K, mu_per_obs, sd_per_obs,
                                        thresh_mid, log_gaps, gap_link,
-                                       use_logit=is_logit)
+                                       link_name=link_name)
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -2661,10 +2665,10 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
         has_sigma = (sigma is not None)
         ll_old = fused_loglik_dpsdt(y, K, mu_signal, sd_signal, lambda_val,
                                      thresh_mid, log_gaps, gap_link,
-                                     has_sigma=has_sigma, use_logit=is_logit)
+                                     has_sigma=has_sigma, link_name=link_name)
         ll_new = fused_loglik_simple(y, K, mu_noise, sd_noise,
                                       thresh_mid, log_gaps, gap_link,
-                                      use_logit=is_logit)
+                                      link_name=link_name)
         log_lik = jnp.where(is_old == 1, ll_old, ll_new)
         if counts is not None:
             log_lik = log_lik * counts
@@ -2676,18 +2680,18 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
         ll_old = fused_loglik_mixture(y, K, mu_signal, sd_signal,
                                        _dprime2, _sigma2, lambda_val,
                                        thresh_mid, log_gaps, gap_link,
-                                       use_logit=is_logit)
+                                       link_name=link_name)
 
         if dprime_L is not None and lambda_L is not None:
             sd_L_val = sigma_L if sigma_L is not None else jnp.ones(N)
             ll_new = fused_loglik_mixture(y, K, -dprime_L, sd_L_val,
                                            mu_noise, sd_noise, lambda_L,
                                            thresh_mid, log_gaps, gap_link,
-                                           use_logit=is_logit)
+                                           link_name=link_name)
         else:
             ll_new = fused_loglik_simple(y, K, mu_noise, sd_noise,
                                           thresh_mid, log_gaps, gap_link,
-                                          use_logit=is_logit)
+                                          link_name=link_name)
 
         log_lik = jnp.where(is_old == 1, ll_old, ll_new)
         if counts is not None:
@@ -2704,7 +2708,7 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
 
             log_lik = fused_loglik_source_mixture(y, K, d_attended, lam,
                                                     thresh_mid, log_gaps, gap_link,
-                                                    use_logit=is_logit)
+                                                    link_name=link_name)
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik

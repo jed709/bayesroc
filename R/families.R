@@ -49,6 +49,21 @@ link_logit <- function() {
   structure(list(name = "logit"), class = "broc_link")
 }
 
+#' Complementary log-log link (Gumbel-min latent distribution)
+#'
+#' Extreme-value SDT: latent strength follows a Gumbel distribution of event
+#' minima, F(x) = 1 - exp(-exp(x)). Discriminability is a pure location shift,
+#' so an asymmetric (slope < 1) zROC arises without an unequal-variance term.
+#' Orientation matters: this is Gumbel-MIN, not Gumbel-max.
+#'
+#' @return A `broc_link` object to pass to a family's `link` argument.
+#' @references Meyer-Grant, Kellen, Harding & Singmann (2026), Psychological
+#'   Review. doi:10.1037/rev0000615
+#' @export
+link_cloglog <- function() {
+  structure(list(name = "cloglog"), class = "broc_link")
+}
+
 #' Print method for a bayesroc link
 #' @param x The object to print.
 #' @param ... Ignored.
@@ -108,7 +123,7 @@ print.broc_link <- function(x, ...) {
 #' @export
 evsd <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(
@@ -168,7 +183,7 @@ evsd <- function(link = link_probit()) {
 #' @export
 uvsd <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(
@@ -232,7 +247,7 @@ uvsd <- function(link = link_probit()) {
 #' @export
 dpsd <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(
@@ -323,7 +338,7 @@ dpsd <- function(link = link_probit()) {
 #' @export
 mixture <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(
@@ -402,7 +417,7 @@ mixture <- function(link = link_probit()) {
 #' @export
 cumulative <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(

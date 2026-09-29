@@ -1362,6 +1362,13 @@ generate_link_cdf_wrapper <- function(link) {
   real link_cdf(real x) {
     return inv_logit(x);
   }')
+  } else if (link_name == "cloglog") {
+    return('
+  // Complementary log-log link (Gumbel-min CDF)
+  real link_cdf(real x) {
+    real xc = fmin(fmax(x, -30.0), 3.5);
+    return -expm1(-exp(xc));
+  }')
   } else {
     stop("Unknown link function: ", link_name)
   }

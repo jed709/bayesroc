@@ -25,6 +25,7 @@ generate_batch_cpp <- function(model_data, family) {
   params <- collect_batch_params(model_data, family_name)
 
   link_name <- if (is.list(family) && !is.null(family$link)) family$link$name else "probit"
+  if (identical(link_name, "cloglog")) return(NULL)
   params$.link_name <- link_name
 
   sig <- build_batch_signature(model_data, family_name, params)
