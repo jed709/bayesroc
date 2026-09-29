@@ -460,6 +460,9 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         jax.ffi.register_ffi_target("bayesroc_bvn_rect", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnRect), platform="cpu")
         jax.ffi.register_ffi_target("bayesroc_bvn_cdf", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf), platform="cpu")
+        jax.ffi.register_ffi_target("bayesroc_vrdp2d", jax.ffi.pycapsule(_bvn_lib.BayesrocVrdp2d), platform="cpu")
+        jax.ffi.register_ffi_target("bayesroc_bvn_cdf2", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf2), platform="cpu")
+        jax.ffi.register_ffi_target("bayesroc_bvn_cdf4", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf4), platform="cpu")
         _BVN_FFI = True
     except Exception as _e:
         print(f"bayesroc: native bivariate-normal kernel failed to load ({_e}); using the JAX equivalent",
@@ -475,6 +478,58 @@ def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
         sd = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
         return tuple(jax.ffi.ffi_call("bayesroc_bvn_rect", (sd,) * 6, vmap_method="broadcast_all")(*args))
     return _dw_rect_grads_jax(*args)
+
+
+def _bvn_cdf_multi(pairs, extras, rho):
+    """_bvn_cdf for (h, k) pairs sharing rho, plus accurate marginals. Returns, per pair,
+    (P, dP/dh, dP/dk, dP/drho, Q(h), Phi'(h), Q(k), Phi'(k)) and, per extra x, (Q(x), Phi'(x)),
+    where Q is the tail mass min(Phi, 1 - Phi). One native call when available."""
+    n, m = len(pairs), len(extras)
+    arrs = jnp.broadcast_arrays(*[jnp.asarray(a) for pair in pairs for a in pair],
+                                *[jnp.asarray(x) for x in extras], jnp.asarray(rho))
+    hs = arrs[0:2 * n:2]
+    ks = arrs[1:2 * n:2]
+    xs = arrs[2 * n:2 * n + m]
+    r = arrs[-1]
+    if _BVN_FFI and r.dtype == jnp.float64 and (n, m) in ((2, 1), (4, 2)):
+        sd = jax.ShapeDtypeStruct(r.shape, jnp.float64)
+        out = jax.ffi.ffi_call(f"bayesroc_bvn_cdf{n}", (sd,) * (8 * n + 2 * m),
+                               vmap_method="broadcast_all")(*hs, *ks, *xs, r)
+        return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
+                                                                 for j in range(m)]
+    res = []
+    for h, k in zip(hs, ks):
+        p, dh, dk, dr = _dw_cdf_grads_jax(h, k, r)
+        _, dPh, Qh = _acc_phi_and_deriv(h)
+        _, dPk, Qk = _acc_phi_and_deriv(k)
+        res.append((p, dh, dk, dr, Qh, dPh, Qk, dPk))
+    ext = []
+    for x in xs:
+        _, dPx, Qx = _acc_phi_and_deriv(x)
+        ext.append((Qx, dPx))
+    return res, ext
+
+
+def _phi_from_q(x, q):
+    return jnp.where(x >= 0, 1.0 - q, q)
+
+
+def _band_from_q(z_lo, z_hi, q_lo, q_hi):
+    return jnp.where(z_lo >= 0, q_lo - q_hi, _phi_from_q(z_hi, q_hi) - _phi_from_q(z_lo, q_lo))
+
+
+def _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
+                   dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S):
+    """vrdp2d log p and its partials (dprime_F, dprime_R, source_d, lambda, sigma_item,
+    sigma_S, c1_hi, c1_lo, c2_hi, c2_lo) in one native pass; None when unavailable."""
+    if not _BVN_FFI or jnp.asarray(c1_hi).dtype != jnp.float64:
+        return None
+    f = lambda a: jnp.asarray(a, dtype=jnp.float64)
+    args = [f(c1_hi), f(c1_lo), f(c2_hi), f(c2_lo), f(has1_hi), f(has1_lo), f(has2_hi), f(has2_lo),
+            f(dprime_F), f(dprime_R), f(source_d), f(lambda_val), f(sigma_item), f(sigma_S)]
+    args = jnp.broadcast_arrays(*args)
+    sd = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
+    return tuple(jax.ffi.ffi_call("bayesroc_vrdp2d", (sd,) * 11, vmap_method="broadcast_all")(*args))
 
 
 def _bvn_cdf(h, k, rho):
@@ -1749,6 +1804,10 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
         has1_hi = (r1 < K1 - 1); has1_lo = (r1 > 0)
         has2_hi = (r2 < K2 - 1); has2_lo = (r2 > 0)
 
+        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
+                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
+        if nat is not None:
+            return nat[0]
         z1_fam_hi = jnp.where(has1_hi, (c1_hi - dprime_F) * inv_si, INF)
         z1_fam_lo = jnp.where(has1_lo, (c1_lo - dprime_F) * inv_si, -INF)
         z2_hi     = jnp.where(has2_hi,  c2_hi,                       INF)
@@ -1802,6 +1861,21 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
         c1_hi = c1[obs_idx, k1_hi]; c1_lo = c1[obs_idx, k1_lo]
         c2_hi = c2[obs_idx, k2_hi]; c2_lo = c2[obs_idx, k2_lo]
 
+        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
+                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
+        if nat is not None:
+            (val, d_lp_d_dpF, d_lp_d_dpR, d_lp_d_sd, d_lp_d_lambda, d_lp_d_si, d_lp_d_sS,
+             d_t1_k_hi, d_t1_k_lo, d_t2_k_hi, d_t2_k_lo) = nat
+            d_lp_d_gaps1 = _batch_gap_grads(d_t1_k_hi, d_t1_k_lo, k1_hi, k1_lo,
+                                            has1_hi, has1_lo, gd1, gap_mask1_np)
+            d_lp_d_gaps2 = _batch_gap_grads(d_t2_k_hi, d_t2_k_lo, k2_hi, k2_lo,
+                                            has2_hi, has2_lo, gd2, gap_mask2_np)
+            tangent_out = (
+                d_lp_d_dpF * d_dprime_F + d_lp_d_dpR * d_dprime_R + d_lp_d_sd * d_source_d +
+                d_lp_d_lambda * d_lambda + d_lp_d_si * d_sigma_item + d_lp_d_sS * d_sigma_S +
+                (d_t1_k_hi + d_t1_k_lo) * d_thresh1_mid + jnp.sum(d_lp_d_gaps1 * d_gaps1, axis=1) +
+                (d_t2_k_hi + d_t2_k_lo) * d_thresh2_mid + jnp.sum(d_lp_d_gaps2 * d_gaps2, axis=1))
+            return val, tangent_out
         z1_fam_hi = jnp.where(has1_hi, (c1_hi - dprime_F) * inv_si,  INF)
         z1_fam_lo = jnp.where(has1_lo, (c1_lo - dprime_F) * inv_si, -INF)
         z2_hi     = jnp.where(has2_hi,  c2_hi,                       INF)
@@ -1914,8 +1988,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
 
     _INV_2PI = 1.0 / (2.0 * np.pi)
 
-    def _bvn_derivs_batch(z1, z2, rho_v):
-        return _bvn_cdf(z1, z2, rho_v)[1:]
 
     def _softclamp(x):
         return jax.nn.softplus(_KK_CDP * x) / _KK_CDP
@@ -1945,11 +2017,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         z_hi = (tau_hi - mu_M) / jnp.clip(sigma_M, 1e-10)
         z_tau1 = (tau_first - mu_M) / jnp.clip(sigma_M, 1e-10)
 
-        p_band = _acc_phi_diff(z_lo, z_hi)[0]
 
         if n_rkg == 2:
-            bv_cR_hi = _bvn_cdf(z_cR, z_hi, rho)[0]
-            bv_cR_lo = _bvn_cdf(z_cR, z_lo, rho)[0]
+            (c0, c1_), (e_tau,) = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_tau1], rho)
+            bv_cR_hi, bv_cR_lo = c0[0], c1_[0]
+            p_band = _band_from_q(z_lo, z_hi, c1_[6], c0[6])
+            p_new = _phi_from_q(z_tau1, e_tau[0])
             p_K_strip = bv_cR_hi - bv_cR_lo
             p_R = jnp.clip(p_band - p_K_strip, 1e-20)
             p_K = jnp.clip(p_K_strip, 1e-20)
@@ -1963,19 +2036,20 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             z_s_hi = (s_hi - mu_R) / jnp.clip(sigma_R, 1e-10)
             z_s_lo = (s_lo - mu_R) / jnp.clip(sigma_R, 1e-10)
 
-            bv_cR_hi = _bvn_cdf(z_cR, z_hi, rho)[0]
-            bv_cR_lo = _bvn_cdf(z_cR, z_lo, rho)[0]
-            bv_s_hi = _bvn_cdf(z_s_hi, z_hi, rho)[0]
-            bv_s_lo = _bvn_cdf(z_s_lo, z_lo, rho)[0]
+            (c0, c1_, c2_, c3_), (e_ckf, e_tau) = _bvn_cdf_multi(
+                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_tau1], rho)
+            bv_cR_hi, bv_cR_lo, bv_s_hi, bv_s_lo = c0[0], c1_[0], c2_[0], c3_[0]
+            p_band = _band_from_q(z_lo, z_hi, c1_[6], c0[6])
+            p_new = _phi_from_q(z_tau1, e_tau[0])
 
             p_R_raw = p_band - (bv_cR_hi - bv_cR_lo)
 
-            Phi_zcR = _acc_Phi(z_cR)
-            Phi_zcKF = _acc_Phi(z_cK_F)
+            Phi_zcR = _phi_from_q(z_cR, c0[4])
+            Phi_zcKF = _phi_from_q(z_cK_F, e_ckf[0])
             G_hi = jnp.where(case1_hi, Phi_zcR * Phi_zcKF,
-                             _acc_Phi(z_s_hi) * Phi_zcKF + bv_cR_hi - bv_s_hi)
+                             _phi_from_q(z_s_hi, c2_[4]) * Phi_zcKF + bv_cR_hi - bv_s_hi)
             G_lo = jnp.where(case1_lo, Phi_zcR * Phi_zcKF,
-                             _acc_Phi(z_s_lo) * Phi_zcKF + bv_cR_lo - bv_s_lo)
+                             _phi_from_q(z_s_lo, c3_[4]) * Phi_zcKF + bv_cR_lo - bv_s_lo)
 
             p_G_raw = G_hi - G_lo
             p_K_raw = p_band - p_R_raw - p_G_raw
@@ -1985,7 +2059,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_K = _softclamp(p_K_raw)
             p_rk = jnp.where(rk == 1, p_R, jnp.where(rk == 2, p_K, p_G))
 
-        p_new = _acc_Phi(z_tau1)
         prob = jnp.where(is_old_resp_val == 1, p_rk, p_new)
         return jnp.log(jnp.clip(prob, 1e-20))
 
@@ -2030,15 +2103,23 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         z_lo = (tau_lo - mu_M) * inv_sM
         z_tau1 = (tau_first - mu_M) * inv_sM
 
-        p_band = _acc_phi_diff(z_lo, z_hi)[0]
 
-        d_bvCRhi_z1, d_bvCRhi_z2, d_bvCRhi_rho = _bvn_derivs_batch(z_cR, z_hi, rho)
-        d_bvCRlo_z1, d_bvCRlo_z2, d_bvCRlo_rho = _bvn_derivs_batch(z_cR, z_lo, rho)
+        if n_rkg == 2:
+            cdfs, (e_tau,) = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_tau1], rho)
+        else:
+            z_s_hi = (jnp.fmin(c_R, tau_hi - c_K) - mu_R) * inv_sR
+            z_s_lo = (jnp.fmin(c_R, tau_lo - c_K) - mu_R) * inv_sR
+            z_cK_F = (c_K - mu_F) * inv_sF
+            cdfs, (e_ckf, e_tau) = _bvn_cdf_multi(
+                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_tau1], rho)
+        bv_cR_hi, d_bvCRhi_z1, d_bvCRhi_z2, d_bvCRhi_rho = cdfs[0][:4]
+        bv_cR_lo, d_bvCRlo_z1, d_bvCRlo_z2, d_bvCRlo_rho = cdfs[1][:4]
+        p_band = _band_from_q(z_lo, z_hi, cdfs[1][6], cdfs[0][6])
 
-        phi_hi = _acc_phi_deriv(z_hi)
-        phi_lo = _acc_phi_deriv(z_lo)
-        phi_tau1 = _acc_phi_deriv(z_tau1)
-        p_new = _acc_Phi(z_tau1)
+        phi_hi = cdfs[0][7]
+        phi_lo = cdfs[1][7]
+        phi_tau1 = e_tau[1]
+        p_new = _phi_from_q(z_tau1, e_tau[0])
 
         is_old_resp = (is_old_resp_val == 1)
         is_new_resp = ~is_old_resp
@@ -2050,8 +2131,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         drho_dsF = -sigma_R * sigma_F / jnp.clip(sM3, 1e-20)
 
         if n_rkg == 2:
-            bv_cR_hi = _bvn_cdf(z_cR, z_hi, rho)[0]
-            bv_cR_lo = _bvn_cdf(z_cR, z_lo, rho)[0]
             p_K_strip = bv_cR_hi - bv_cR_lo
             p_R = jnp.clip(p_band - p_K_strip, 1e-20)
             p_K = jnp.clip(p_K_strip, 1e-20)
@@ -2103,17 +2182,15 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             z_s_hi = (s_hi - mu_R) * inv_sR
             z_s_lo = (s_lo - mu_R) * inv_sR
 
-            bv_cR_hi = _bvn_cdf(z_cR, z_hi, rho)[0]
-            bv_cR_lo = _bvn_cdf(z_cR, z_lo, rho)[0]
-            bv_s_hi = _bvn_cdf(z_s_hi, z_hi, rho)[0]
-            bv_s_lo = _bvn_cdf(z_s_lo, z_lo, rho)[0]
+            bv_s_hi, d_bvShi_z1, d_bvShi_z2, d_bvShi_rho = cdfs[2][:4]
+            bv_s_lo, d_bvSlo_z1, d_bvSlo_z2, d_bvSlo_rho = cdfs[3][:4]
 
             p_R_raw = p_band - (bv_cR_hi - bv_cR_lo)
 
-            Phi_zcR = _acc_Phi(z_cR)
-            Phi_zcKF = _acc_Phi(z_cK_F)
-            Phi_zs_hi = _acc_Phi(z_s_hi)
-            Phi_zs_lo = _acc_Phi(z_s_lo)
+            Phi_zcR = _phi_from_q(z_cR, cdfs[0][4])
+            Phi_zcKF = _phi_from_q(z_cK_F, e_ckf[0])
+            Phi_zs_hi = _phi_from_q(z_s_hi, cdfs[2][4])
+            Phi_zs_lo = _phi_from_q(z_s_lo, cdfs[3][4])
 
             G_hi = jnp.where(case1_hi, Phi_zcR * Phi_zcKF,
                              Phi_zs_hi * Phi_zcKF + bv_cR_hi - bv_s_hi)
@@ -2144,13 +2221,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             eff_dpG = dlp_dpG - dlp_dpK
             eff_dpBand = dlp_dpK
 
-            d_bvShi_z1, d_bvShi_z2, d_bvShi_rho = _bvn_derivs_batch(z_s_hi, z_hi, rho)
-            d_bvSlo_z1, d_bvSlo_z2, d_bvSlo_rho = _bvn_derivs_batch(z_s_lo, z_lo, rho)
 
-            phi_zcR = _acc_phi_deriv(z_cR)
-            phi_zcKF = _acc_phi_deriv(z_cK_F)
-            phi_zs_hi = _acc_phi_deriv(z_s_hi)
-            phi_zs_lo = _acc_phi_deriv(z_s_lo)
+            phi_zcR = cdfs[0][5]
+            phi_zcKF = e_ckf[1]
+            phi_zs_hi = cdfs[2][5]
+            phi_zs_lo = cdfs[3][5]
 
             dGhi_dtau = jnp.where(case1_hi, 0.0,
                 phi_zs_hi * inv_sR * Phi_zcKF + d_bvCRhi_z2 * inv_sM
