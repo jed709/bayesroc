@@ -1,42 +1,18 @@
 # =============================================================================
-# JAX backend management -- managed venv at tools::R_user_dir("bayesroc", "data")
 # =============================================================================
-# These functions give bayesroc the same UX shape as cmdstanr for setting up
-# the JAX/NumPyro backend:
-#
-#   bayesroc::check_jax_backend()   -> diagnose what's there, what's needed
-#   bayesroc::install_jax_backend() -> create an isolated, version-pinned venv
-#   bayesroc::jax_python()          -> query the resolved Python path
-#   bayesroc::set_jax_python()      -> override the path explicitly
-#
-# The managed venv lives in tools::R_user_dir("bayesroc", "data")/venv. The
-# cmdstanr analogue is ~/.cmdstan/. Pinning is essential: jax 0.10.x and
-# numpyro 0.20.x are mutually broken (numpyro imports a JAX symbol jax 0.10
-# removed). The latest known-good combination is baked into JAX_VERSION_PIN /
-# NUMPYRO_VERSION_PIN below, which install_jax_backend() defaults to and
-# check_jax_backend() validates against.
 
-# Pinned versions known to work together. Bump these as numpyro releases
-# catch up to jax.
 JAX_VERSION_PIN     <- "0.9.2"
 NUMPYRO_VERSION_PIN <- "0.20.1"
 
-# Whitelist of compatible (jax, numpyro) pairs that check_jax_backend treats
-# as "good". Any pair not in this list with both packages installed gets a
-# warning recommending install_jax_backend().
 .JAX_COMPAT_WHITELIST <- list(
   c(jax = "0.9.2", numpyro = "0.20.1"),
   c(jax = "0.9.2", numpyro = "0.20.0")
 )
 
-
-# Per-user R location (tools::R_user_dir) where install_jax_backend() writes its
-# managed venv.
 #' @noRd
 jax_backend_dir <- function() {
   tools::R_user_dir("bayesroc", "data")
 }
-
 
 #' Path to the Python executable inside the managed venv
 #'
@@ -55,7 +31,6 @@ managed_venv_python <- function(dir = jax_backend_dir()) {
   }
 }
 
-
 #' Absolutize a path while preserving a final symlink
 #'
 #' A venv's `bin/python` is a symlink to the base interpreter. `normalizePath()`
@@ -67,7 +42,6 @@ abs_keep_symlink <- function(p) {
   file.path(normalizePath(dirname(p), winslash = "/", mustWork = FALSE),
             basename(p))
 }
-
 
 #' Install the JAX/NumPyro backend into a managed venv
 #'
@@ -111,7 +85,6 @@ install_jax_backend <- function(dir = jax_backend_dir(),
     unlink(venv_dir, recursive = TRUE, force = TRUE)
   }
 
-  # Find a system Python to bootstrap the venv
   if (is.null(python)) {
     python <- find_system_python()
   }
@@ -137,8 +110,6 @@ install_jax_backend <- function(dir = jax_backend_dir(),
 
   if (!quiet) message(sprintf("Installing jax==%s + numpyro==%s",
                               jax_version, numpyro_version))
-  # Capture stderr to a temp file (stdout still streams live) so a failed
-  # install reports *why*, not just an exit code.
   err_file <- tempfile("pip_err_")
   res <- system2(venv_py, c(
     "-m", "pip", "install",
@@ -161,7 +132,6 @@ install_jax_backend <- function(dir = jax_backend_dir(),
   }
   unlink(err_file)
 
-  # Verify
   ok <- tryCatch({
     out <- system2(venv_py, c("-c",
       shQuote("import jax, numpyro; print(jax.__version__, numpyro.__version__)")),
@@ -171,14 +141,11 @@ install_jax_backend <- function(dir = jax_backend_dir(),
   }, error = function(e) FALSE)
   if (!ok) stop("Install completed but jax/numpyro import failed.", call. = FALSE)
 
-  # Cache the path so future fit_broc() calls find it first. Keep the venv
-  # symlink intact -- resolving it points at the base interpreter (no jax).
   Sys.setenv(BAYESROC_PYTHON = abs_keep_symlink(venv_py))
 
   if (!quiet) message("\nDone. The JAX backend will use this venv from now on.")
   invisible(abs_keep_symlink(venv_py))
 }
-
 
 #' Resolve the Python executable used by the JAX backend
 #'
@@ -206,7 +173,6 @@ jax_python <- function() {
   found
 }
 
-
 #' Override the Python executable used by the JAX backend
 #'
 #' Sets `BAYESROC_PYTHON` for the current R session. Future
@@ -225,7 +191,6 @@ set_jax_python <- function(python) {
   Sys.setenv(BAYESROC_PYTHON = python)
   invisible(python)
 }
-
 
 #' Diagnose the JAX backend setup
 #'
@@ -256,7 +221,6 @@ check_jax_backend <- function() {
     return(invisible(result))
   }
 
-  # Try to read versions
   out <- tryCatch(
     system2(py, c("-c",
       shQuote("import sys\ntry:\n  import jax;     j = jax.__version__\nexcept Exception: j = ''\ntry:\n  import numpyro; n = numpyro.__version__\nexcept Exception: n = ''\nprint(j); print(n)")),
@@ -293,7 +257,6 @@ check_jax_backend <- function() {
     return(invisible(result))
   }
 
-  # Both present -- check compatibility
   pair <- c(jax = jax_v, numpyro = numpyro_v)
   whitelisted <- any(vapply(.JAX_COMPAT_WHITELIST,
                             function(p) identical(p[c("jax", "numpyro")], pair),
@@ -321,7 +284,6 @@ check_jax_backend <- function() {
   invisible(result)
 }
 
-
 # =============================================================================
 # Internal helpers
 # =============================================================================
@@ -340,10 +302,6 @@ find_system_python <- function() {
       if (!is.null(ver) && ver >= "3.10") return(unname(p))
     }
   }
-  # PATH found nothing usable -- fall back to the same common-location search
-  # the fitting backend uses (conda / pyenv / Homebrew / named venvs). This runs
-  # ONLY when the PATH loop above came up empty, so the normal PATH-based install
-  # is completely unaffected.
   for (p in .python_candidate_paths()) {
     ver <- python_version(p)
     if (!is.null(ver) && ver >= "3.10") return(unname(p))

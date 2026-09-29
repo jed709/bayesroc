@@ -4,7 +4,6 @@
 #' and decomposing them via mgcv::smooth2random() into unpenalized (fixed)
 #' and penalized (random) components.
 
-
 #' Sanitize Smooth Label for Variable Naming
 #'
 #' Converts mgcv smooth labels like "s(age)" to valid Stan/Python variable
@@ -14,10 +13,8 @@
 #' @return Sanitized string suitable for use in variable names
 #' @noRd
 sanitize_smooth_label <- function(label) {
-  # Remove all non-alphanumeric characters
   gsub("[^a-zA-Z0-9]", "", label)
 }
-
 
 #' Build Smooth Term Structures
 #'
@@ -42,25 +39,20 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
   for (i in seq_along(smooth_specs)) {
     term_str <- trimws(smooth_specs[i])
 
-    # Evaluate the smooth specification in an environment with mgcv's s() and t2()
     sm_env <- new.env(parent = baseenv())
     sm_env$s <- mgcv::s
     sm_env$t2 <- mgcv::t2
     spec <- eval(parse(text = term_str), envir = sm_env)
 
-    # Determine smooth function name
     sfun <- sub("\\s*\\(.*", "", term_str)
 
-    # Check if this smooth involves encoding variables
     by_var_name <- if (!is.null(spec$by) && spec$by != "NA") spec$by else NULL
     smooth_vars <- c(spec$term, by_var_name)
     has_encoding <- !is.null(encoding_vars) && any(encoding_vars %in% smooth_vars)
 
     if (has_encoding && !is.null(is_old_var)) {
-      # Build on old items only, then zero-pad for new items
       old_idx <- which(data[[is_old_var]] == 1)
       old_data <- data[old_idx, , drop = FALSE]
-      # Drop unused factor levels in old subset
       for (v in smooth_vars) {
         if (!is.null(v) && v %in% names(old_data) && is.factor(old_data[[v]])) {
           old_data[[v]] <- droplevels(old_data[[v]])
@@ -71,7 +63,6 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
       sm_data <- sm_prepare_data(spec, data)
     }
 
-    # Build basis via mgcv::smoothCon
     sm <- mgcv::smoothCon(
       spec, data = sm_data,
       knots = NULL,
@@ -79,16 +70,11 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
       diagonal.penalty = TRUE
     )
 
-    # sm is a list -- multiple elements when by-variable is a factor
-    # Use the base label (first element) for the overall smooth
     label <- sm[[1]]$label
-    # For by-factor smooths, each component has its own label (e.g., s(age):condA)
-    # so bylevel need not be appended separately
     san_label <- sanitize_smooth_label(label)
     covars <- spec$term
     by_var <- if (!is.null(spec$by) && spec$by != "NA") spec$by else NA
 
-    # Determine by-levels
     bylevels <- NULL
     if (!is.na(by_var)) {
       bls <- vapply(sm, function(s) {
@@ -99,16 +85,13 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
       }
     }
 
-    # Process each component (one per by-level, or one if no by-factor)
     N_full <- nrow(data)
     components <- list()
     for (j in seq_along(sm)) {
       re <- mgcv::smooth2random(sm[[j]], names(sm_data), type = 2)
 
-      # Unpenalized part (null space of penalty)
       Xs <- re$Xf
       if (NCOL(Xs) > 0) {
-        # Generate column names
         comp_label <- sm[[j]]$label
         Xs_colnames <- paste0("sXs", comp_label, "_", seq_len(ncol(Xs)))
         colnames(Xs) <- Xs_colnames
@@ -116,14 +99,12 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
         Xs_colnames <- character(0)
       }
 
-      # Penalized parts (one Zs matrix per penalty component)
       Zs_list <- re$rand
       Zs_dims <- vapply(Zs_list, ncol, integer(1))
       if (length(Zs_list) == 0) {
         Zs_dims <- integer(0)
       }
 
-      # Zero-pad for encoding variables (expand old-only matrices to full N)
       if (has_encoding && !is.null(is_old_var)) {
         if (NCOL(Xs) > 0) {
           Xs_full <- matrix(0, nrow = N_full, ncol = ncol(Xs))
@@ -139,7 +120,6 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
       }
 
       bylevel <- if (length(sm[[j]]$by.level)) sm[[j]]$by.level else NULL
-      # Each component gets its own sanitized label (includes bylevel for by-factor smooths)
       comp_san_label <- sanitize_smooth_label(sm[[j]]$label)
 
       components[[j]] <- list(
@@ -169,7 +149,6 @@ build_smooth_terms <- function(smooth_specs, data, encoding_vars = NULL, is_old_
   results
 }
 
-
 #' Prepare Data for smoothCon
 #'
 #' Strips terms attribute and ensures factor-like variables are proper factors.
@@ -192,7 +171,6 @@ sm_prepare_data <- function(spec, data) {
   data
 }
 
-
 #' Build Smooth Prediction Basis for New Data
 #'
 #' Uses cached smoothCon objects and smooth2random transformation info to
@@ -206,28 +184,22 @@ build_smooth_prediction_basis <- function(component, newdata) {
   sm_obj <- component$sm_obj
   re_obj <- component$re_obj
 
-  # Get full prediction basis for new data
   X <- mgcv::PredictMat(sm_obj, newdata)
 
-  # Apply smooth2random transformation
   if (!is.null(re_obj$trans.U)) {
     X <- X %*% re_obj$trans.U
   }
 
   if (is.null(re_obj$trans.D)) {
-    # No penalization -- everything is unpenalized
     Xs <- X
     Zs_list <- list()
   } else {
-    # Scale columns
     X <- t(t(X) * re_obj$trans.D)
 
-    # Reorder columns
     X[, re_obj$rind] <- X[, re_obj$pen.ind != 0]
     pen.ind <- re_obj$pen.ind
     pen.ind[re_obj$rind] <- pen.ind[pen.ind > 0]
 
-    # Separate fixed and random parts
     Xs <- X[, which(re_obj$pen.ind == 0), drop = FALSE]
     Zs_list <- list()
     for (k in seq_along(re_obj$rand)) {
@@ -237,14 +209,12 @@ build_smooth_prediction_basis <- function(component, newdata) {
     names(Zs_list) <- names(re_obj$rand)
   }
 
-  # Preserve column names
   if (NCOL(Xs) > 0) {
     colnames(Xs) <- component$Xs_colnames
   }
 
   list(Xs = Xs, Zs_list = Zs_list)
 }
-
 
 #' Penalized smooth basis for newdata rows in a NEW by-level (unseen in training)
 #'
@@ -261,4 +231,37 @@ build_new_bylevel_basis <- function(ref_component, newdata, by_var, new_level) {
   Zs_list <- build_smooth_prediction_basis(ref_component, nd)$Zs_list
   keep <- as.character(newdata[[by_var]]) == new_level
   lapply(Zs_list, function(Z) { if (NROW(Z)) Z[!keep, ] <- 0; Z })
+}
+
+#' Append a smooth's unpenalized (null-space) columns to a criterion structure
+#'
+#' Ordinary parameters get this from the generic loop in `build_model_data()`;
+#' criterion and criterion2 are built separately and need the same treatment so
+#' the null space (the linear trend for the default thin-plate basis) enters the
+#' design matrix rather than being dropped.
+#' @noRd
+append_smooth_null_space <- function(crit, smooth_info) {
+  for (sm in smooth_info) {
+    for (comp in sm$components) {
+      if (NCOL(comp$Xs) > 0) {
+        crit$X <- cbind(crit$X, comp$Xs)
+        crit$coef_names <- colnames(crit$X)
+        crit$n_coef <- ncol(crit$X)
+        crit$is_intercept_only <- FALSE
+      }
+    }
+  }
+  crit
+}
+
+#' Drop smooth null-space column names from a set of coefficient names
+#'
+#' `predict()` rebuilds criterion design matrices from the stored coefficient
+#' names and then appends each smooth's null-space columns, so those columns
+#' must not be requested twice.
+#' @noRd
+drop_smooth_null_space_names <- function(coef_names) {
+  if (is.null(coef_names)) return(coef_names)
+  keep <- !grepl("^sXs", coef_names)
+  coef_names[keep]
 }

@@ -1,4 +1,3 @@
-# Tests for posterior_linpred / posterior_epred / allow_new_levels.
 
 test_that("posterior_linpred returns S x N matrix", {
   skip_if_no_cmdstan()
@@ -21,7 +20,6 @@ test_that("posterior_linpred applies link transform (sigma post-exp)", {
   fit <- fit_broc(m, backend = "stan", refresh = 0,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   s <- posterior_linpred(fit, dpar = "sigma", ndraws = 50, seed = 1)
-  # sigma should be positive (post-exp), not on the linear (log) scale
   expect_true(all(s > 0))
 })
 

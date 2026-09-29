@@ -1,16 +1,3 @@
-# Predict/likelihood consistency ("bridge") tests.
-#
-# The per-observation log-likelihood saved by each backend uses the validated
-# likelihood code; predict()'s per-family probs_*() are an independent
-# reimplementation of the same cell math. For the OBSERVED response of every
-# trial/draw the predicted cell probability must equal exp(log_lik). This is a
-# strong, family-agnostic check that anchors predict() to the likelihood and
-# guards against the bivariate_dp / bounded predict bugs fixed in this package.
-#
-# Each test also checks:
-#   * sum-to-1 of the per-cell probabilities, and
-#   * epred == mean(posterior_predict) (grand mean) -- a cross-check of the
-#     sampling path (predict type="prediction") against the cell-prob path.
 
 .bridge_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 250 else 1000
 .bridge_chains <- 2
@@ -21,11 +8,10 @@
            iter_sampling = .bridge_iter)
 }
 
-# bridge + sum-to-1 + epred==mean(predict), for univariate or bivariate fits.
 .predict_checks <- function(fit) {
   model <- attr(fit, "broc_model")
   sd <- model$stan_data
-  ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))  # S x N
+  ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))
   pr <- predict(fit, type = "response", summary = FALSE, cores = 2)
   S <- nrow(ll); N <- ncol(ll)
   bivar <- length(dim(pr)) == 4L
@@ -50,7 +36,7 @@
   ck <- .predict_checks(fit)
   expect_lt(ck$bridge, 1e-4)
   expect_lt(ck$sum1, 1e-6)
-  expect_lt(ck$epred_pp, 0.1)   # grand-mean MC tolerance
+  expect_lt(ck$epred_pp, 0.1)
 }
 
 .biv_f <- function(...) {
@@ -58,7 +44,6 @@
       rho ~ 1, ...)
 }
 
-# Small univariate fixture (recognition ratings with subject intercepts).
 .fixture_uvsd <- function(seed = 7, n_subj = 6, n_per = 80) {
   set.seed(seed)
   K <- 6; thr <- c(-1.2, -0.5, 0.1, 0.8, 1.6)
@@ -77,7 +62,6 @@ test_that("bridge: uvsd + RE, incl. epred and allow_new_levels", {
                 family = uvsd()), d, batch_likelihood = TRUE)
   fit <- .fit_bridge(m)
   .expect_predict_ok(fit)
-  # allow_new_levels: predict on a novel subject runs and yields valid probs.
   nd <- transform(d[1:20, ], sub = 9999L)
   prn <- predict(fit, newdata = nd, type = "response", summary = FALSE,
                  allow_new_levels = TRUE, seed = 1)

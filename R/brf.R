@@ -17,7 +17,6 @@ resp <- function(response1, response2) {
   stop("resp() should only be used inside brf() formulas, not called directly.")
 }
 
-
 #' Compose a Multi-Parameter SDT Model Formula
 #'
 #' Formula specification for bayesroc models. The first argument is the formula
@@ -60,7 +59,6 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
                  counts = NULL, cor_threshold = NULL, threads = NULL,
                  gap_link = NULL) {
 
-  # Validate primary formula
   if (!inherits(formula, "formula")) {
     stop("First argument to brf() must be a formula.")
   }
@@ -69,7 +67,6 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
     stop("First argument to brf() must be a two-sided formula (response ~ predictors).")
   }
 
-  # Process additional formulas from ...
   dots <- list(...)
   params <- list()
 
@@ -86,25 +83,20 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
            "Got one-sided formula: ", deparse(f))
     }
 
-    # Extract LHS as parameter name
     param_name <- trimws(deparse(f[[2]]))
 
-    # Validate it's a simple name (no operators, no function calls)
     if (!grepl("^[a-zA-Z_][a-zA-Z0-9_]*$", param_name)) {
       stop("LHS of secondary formula must be a simple parameter name, got: '", param_name, "'")
     }
 
-    # Check for duplicates
     if (param_name %in% names(params)) {
       stop("Duplicate parameter name in brf(): '", param_name, "'")
     }
 
-    # Store as one-sided formula (just the RHS)
     rhs_formula <- as.formula(paste("~", paste(deparse(f[[3]]), collapse = " ")), env = environment(f))
     params[[param_name]] <- rhs_formula
   }
 
-  # Validate family if provided
   if (!is.null(family) && !inherits(family, "broc_family")) {
     stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), ",
          "bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), ",
@@ -125,7 +117,6 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
   class(result) <- "brf"
   result
 }
-
 
 #' Print method for brf objects
 #' @param x An brf object

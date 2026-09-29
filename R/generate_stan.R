@@ -16,14 +16,10 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
     sep = "\n"
   )
 
-  # Softplus gap link: replace exp() with log1p_exp() (Stan's softplus)
-  # and rename parameter/variable names accordingly
   if (identical(model_data$gap_link, "softplus")) {
     code <- gsub("beta_log_gaps", "beta_raw_gaps", code)
     code <- gsub("log_gaps_prior", "raw_gaps_prior", code)
     code <- gsub("Log-gaps", "Raw-gaps (softplus)", code)
-    # Replace gap transformation: exp(X) -> log1p_exp(X) for gap variables
-    # The pattern is: + exp(log_gap) or - exp(log_gap)
     code <- gsub("exp(log_gap)", "log1p_exp(raw_gap)", code, fixed = TRUE)
     code <- gsub("real log_gap", "real raw_gap", code, fixed = TRUE)
     code <- gsub("log_gap +=", "raw_gap +=", code, fixed = TRUE)
@@ -33,7 +29,6 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
   class(code) <- c("stan_code", "character")
   code
 }
-
 
 #' Check if a parameter has a simple encoding pattern
 #' 
@@ -45,25 +40,20 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
 #' This allows using beta[idx] instead of X[n,] * beta for faster sampling.
 #' @noRd
 is_simple_encoding <- function(fixed_info, random_info) {
-  # Must have encoding in fixed effects
   if (!isTRUE(fixed_info$has_encoding)) return(FALSE)
   
-  # Must have at least one random effect
   if (is.null(random_info) || length(random_info) == 0) return(FALSE)
   
-  # All random effects must be encoding with matching dimensions and not using Z matrix
   for (group in names(random_info)) {
     re <- random_info[[group]]
     if (!isTRUE(re$is_encoding)) return(FALSE)
     if (is.null(re$term_idx)) return(FALSE)
     if (isTRUE(re$use_z_matrix)) return(FALSE)
-    # Dimensions should match (n_coef for fixed, dim for random)
     if (re$dim != fixed_info$n_coef) return(FALSE)
   }
   
   TRUE
 }
-
 
 generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   family_name <- if (is.list(family)) family$family else family
@@ -72,11 +62,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   
   lines <- c("functions {")
   
-  # Generate the CDF wrapper function based on link
   cdf_code <- generate_link_cdf_wrapper(link)
   lines <- c(lines, cdf_code)
   
-  # Cumulative likelihood (simple ordinal regression - no is_old)
   if (family_name == "cumulative") {
     lines <- c(lines, '
   real cumulative_lpmf(int y, real mu, int K, vector thresh) {
@@ -90,11 +78,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       return log(fmax(p_upper - p_lower, 1e-20));
     }
   }')
-    # Threading: add partial_log_lik before closing functions block
     if (isTRUE(model_data$threads) && is.null(batch_info)) {
       lines <- c(lines, "", generate_partial_log_lik(model_data, family))
     }
-    # Batch likelihood: add function declaration (implemented in C++ user header)
     if (!is.null(batch_info)) {
       lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl)
       if (isTRUE(model_data$threads)) {
@@ -105,7 +91,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return(paste(lines, collapse = "\n"))
   }
   
-  # EVSDT likelihood (used by all SDT families for new items)
   lines <- c(lines, '
   real evsdt_lpmf(int y, real dprime, real is_old, int K, vector thresh) {
     real mu = is_old * dprime;
@@ -121,7 +106,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }')
   
-  # UVSDT likelihood - only include if sigma is actually varying
   if (family_name %in% c("uvsdt", "dpsdt", "mixture") && model_data$has_sigma) {
     lines <- c(lines, '
   real uvsdt_lpmf(int y, real dprime, real sigma, real is_old, int K, vector thresh) {
@@ -140,7 +124,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
   }
   
-  # DPSDT likelihood
   if (family_name == "dpsdt") {
     if (model_data$has_sigma) {
       lines <- c(lines, '
@@ -193,7 +176,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Mixture SDT likelihood
   if (family_name == "mixture") {
     sigma_fixed <- !model_data$has_sigma
     sigma2_fixed <- !model_data$has_sigma2
@@ -244,7 +226,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
     }
     
-    # Lure mixture function: new items are also a mixture
     if (isTRUE(model_data$has_lure_mixture)) {
       if (model_data$has_sigma_L) {
         lines <- c(lines, '
@@ -286,13 +267,11 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Source mixture SDT likelihood (for source discrimination)
   if (family_name == "source_mixture") {
     has_dprime_B <- isTRUE(model_data$has_dprime_B)
     has_lambda_B <- isTRUE(model_data$has_lambda_B)
     
     if (has_dprime_B && has_lambda_B) {
-      # General model: separate dprime and lambda for each source
       lines <- c(lines, '
   // Source mixture SDT - General model (separate d and lambda for each source)
   real source_mixture_lpmf(int y, int source, real dprime_A, real dprime_B, 
@@ -326,7 +305,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
   }')
     } else if (has_dprime_B) {
-      # dprime_B is free but lambda_B = lambda (equal attention)
       lines <- c(lines, '
   // Source mixture SDT - Equal attention model (lambda_B = lambda)
   real source_mixture_lpmf(int y, int source, real dprime_A, real dprime_B, 
@@ -351,7 +329,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
   }')
     } else if (has_lambda_B) {
-      # lambda_B is free but dprime_B = -dprime (symmetric discrimination)
       lines <- c(lines, '
   // Source mixture SDT - Symmetric d model (dprime_B = -dprime)
   real source_mixture_lpmf(int y, int source, real dprime, real lambda_A, 
@@ -384,7 +361,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
   }')
     } else {
-      # Fully symmetric model: dprime_B = -dprime, lambda_B = lambda
       lines <- c(lines, '
   // Source mixture SDT - Fully symmetric model (dprime_B = -dprime, lambda_B = lambda)
   real source_mixture_lpmf(int y, int source, real dprime, real lambda, int K, vector thresh) {
@@ -411,7 +387,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Bivariate SDT/DP functions (for source monitoring with joint detection/discrimination)
   if (family_name %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")) {
     lines <- c(lines, '
   // Bivariate normal CDF using Owens T function
@@ -521,7 +496,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }')
 
-    # Add compute_bounded_prob function when bounded = TRUE
     if (isTRUE(model_data$bounded)) {
       lines <- c(lines, '
   // Bounded bivariate probability: conditional source mean clamped at 0
@@ -667,7 +641,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return log(fmax(p, 1e-20));
   }')
 
-    # Add varying source criteria version if needed
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines, '
   // Bivariate SDT with source criteria varying by item response level
@@ -697,7 +670,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
     }
 
-    # Add bounded lpmf variants when bounded = TRUE
     if (isTRUE(model_data$bounded)) {
       lines <- c(lines, '
   // Bounded bivariate SDT log-likelihood: new items use standard, old items use bounded
@@ -759,7 +731,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       }
     }
 
-    # Add new_source_criteria = "shared" lpmf variants
     if (identical(model_data$new_source_criteria, "shared")) {
       if (!isTRUE(model_data$bounded)) {
         lines <- c(lines, '
@@ -824,9 +795,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
 
-  # Bivariate DP-specific functions
   if (family_name == "bivariate_dp") {
-    # univariate_cell_prob for marginal source probability in p2
     lines <- c(lines, '
   real univariate_cell_prob(int resp, int K, real mu, real sigma, vector thresh) {
     if (resp == 1) return Phi((thresh[1] - mu) / sigma);
@@ -834,7 +803,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     else return Phi((thresh[resp] - mu) / sigma) - Phi((thresh[resp-1] - mu) / sigma);
   }')
 
-    # Bounded marginal source probability (for BBDP)
     if (isTRUE(model_data$bounded)) {
       lines <- c(lines, '
   // Bounded marginal source probability for p2 component (item recollected, source from familiarity)
@@ -883,16 +851,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
     }
 
-    # BDP / BBDP lpmf: non-varying source criteria
-    # Per Starns, Rotello & Hautus (2014), the unbounded BDP and bounded BBDP
-    # differ in (a) whether familiarity uses standard vs bounded bivariate
-    # densities (compute_bivariate_prob vs compute_bounded_prob), and
-    # (b) the per-source mu2/rho assignment convention. In the bounded
-    # convention, source A is anchored at the negative end of the source
-    # axis (mu2_A = -discrim_A, rho = -rho_A) with discrim_A and rho_A as
-    # positive magnitudes from log/logistic links; source B is at the
-    # positive end with no negation. In the unbounded convention, discrim
-    # and rho are signed (identity / Fisher-z links) and used directly.
     bounded <- isTRUE(model_data$bounded)
     biv_fn <- if (bounded) "compute_bounded_prob" else "compute_bivariate_prob"
     marg_fn <- if (bounded) "compute_bounded_marginal_source" else "univariate_cell_prob"
@@ -953,7 +911,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       '\n      p2 = R_I_eff * (1.0 - R_S_eff) * univariate_cell_prob(y2, K2, mu2, sigma2, c2);'
     }))
 
-    # Varying source criteria version
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines, sprintf('
   // Bivariate DP with varying source criteria
@@ -1004,7 +961,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       }))
     }
 
-    # new_source_criteria = "shared" variant
     if (identical(model_data$new_source_criteria, "shared")) {
       lines <- c(lines, sprintf('
   // Bivariate DP with varying source criteria + shared new-response thresholds
@@ -1063,7 +1019,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
 
-  # Bivariate cumulative lpmf (simple: no item_type branching, sigma=1)
   if (family_name == "bivariate_cumulative") {
     lines <- c(lines, '
   real bivariate_cumulative_lpmf_custom(int y1, int y2, int K1, int K2,
@@ -1074,7 +1029,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
   }
 
-  # CDP functions (for Remember/Know paradigms)
   if (family_name == "cdp") {
     lines <- c(lines, '
   // Bivariate normal CDF using Owens T function (shared with bivariate_sdt)
@@ -1121,7 +1075,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     return fmax(p_band - binormal_strip_upper(z_cR, z_tau_lo, z_tau_hi, rho), 1e-20);
   }')
 
-    # R/K/G functions (only emitted when n_rkg == 3)
     if (isTRUE(model_data$stan_data$n_rkg == 3)) {
       lines <- c(lines, '
   // G(c) = P(R <= c_R, F <= c_K, M < c) -- unified formula (Guess-first approach)
@@ -1200,7 +1153,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
 
-  # 2D-VRDP functions (for conjoint item-source recognition)
   if (family_name == "vrdp2d") {
     lines <- c(lines, '
   // Bivariate normal CDF using Owens T function (same as bivariate_sdt)
@@ -1378,16 +1330,12 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }')
   }
   
-  # Threading: add partial_log_lik before closing functions block
-  # When batch + threading: use the batch partial wrapper instead of the standard one
   if (isTRUE(model_data$threads) && is.null(batch_info)) {
     lines <- c(lines, "", generate_partial_log_lik(model_data, family))
   }
 
-  # Batch likelihood: add function declaration (implemented in C++ user header)
   if (!is.null(batch_info)) {
     lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl)
-    # If threading, add the batch partial_log_lik wrapper (replaces the standard one)
     if (isTRUE(model_data$threads)) {
       lines <- c(lines, "", batch_info$stan_partial)
     }
@@ -1396,7 +1344,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   lines <- c(lines, "}")
   paste(lines, collapse = "\n")
 }
-
 
 #' Generate link CDF wrapper function
 #' @noRd
@@ -1420,7 +1367,6 @@ generate_link_cdf_wrapper <- function(link) {
   }
 }
 
-
 generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   family_name <- if (is.list(family)) family$family else family
   is_cumulative <- family_name == "cumulative"
@@ -1430,7 +1376,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   is_vrdp2d <- family_name == "vrdp2d"
 
   if (is_bivariate || is_vrdp2d) {
-    # Bivariate SDT and 2D-VRDP have same data structure
     lines <- c(
       "data {",
       "  int<lower=1> N;",
@@ -1443,7 +1388,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
         "  array[K1] int<lower=0, upper=1> is_new_response;  // 1=new response, 0=old response"
     )
   } else if (is_cdp) {
-    # CDP model structure
     J <- model_data$stan_data$J
     n_new <- model_data$stan_data$n_new
     lines <- c(
@@ -1467,21 +1411,17 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "  array[N] int<lower=1, upper=K> y;"
     )
     
-    # For source_mixture, use source instead of is_old
     if (is_source_mixture) {
       lines <- c(lines, "  array[N] int<lower=0, upper=1> source;  // 0 = A, 1 = B")
     } else if (!is_cumulative) {
-      # Only include is_old for SDT families (not cumulative)
       lines <- c(lines, "  array[N] real is_old;")
     }
   }
   
-  # Counts for aggregated data
   if (isTRUE(model_data$has_counts)) {
     lines <- c(lines, "  array[N] int<lower=1> counts;  // Aggregation counts")
   }
   
-  # Dprime fixed effects (skip if no fixed effects, e.g., cumulative with only random effects)
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
   if (has_dprime_fixed) {
     lines <- c(lines, "",
@@ -1515,7 +1455,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$has_lambda_B)) {
     lines <- c(lines, "", "  int<lower=1> P_lambda_B;", "  matrix[N, P_lambda_B] X_lambda_B;")
   }
-  # Bivariate SDT parameters (skip discrim data if no fixed effects, e.g., bivariate_cumulative)
   has_discrim_fixed <- isTRUE(model_data$has_discrim_fixed) || (isTRUE(model_data$has_discrim) && is.null(model_data$has_discrim_fixed))
   if (isTRUE(model_data$has_discrim) && has_discrim_fixed) {
     lines <- c(lines, "", "  int<lower=1> P_discrim;", "  matrix[N, P_discrim] X_discrim;")
@@ -1566,7 +1505,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
                "  int<lower=1> P_criterion2;", "  matrix[N, P_criterion2] X_criterion2;")
   }
   
-  # Grouping factors
   all_groups <- get_all_groups(model_data)
   if (length(all_groups) > 0) {
     lines <- c(lines, "", "  // Random effect grouping factors")
@@ -1577,7 +1515,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Term indices (for fast index-based RE lookup)
   term_indices <- get_all_term_indices(model_data)
   if (length(term_indices) > 0) {
     lines <- c(lines, "", "  // Term indices for varying slopes")
@@ -1588,7 +1525,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Z matrices (for general RE structures)
   z_matrices <- get_all_z_matrices(model_data)
   if (length(z_matrices) > 0) {
     lines <- c(lines, "", "  // Random effect design matrices")
@@ -1597,24 +1533,20 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Threading support: grainsize for reduce_sum
   if (isTRUE(model_data$threads)) {
     lines <- c(lines, "", "  // Threading (reduce_sum)",
                "  int grainsize;")
   }
 
-  # Smooth term data declarations (Zs matrices and dimension integers)
   lines <- c(lines, generate_smooth_data_declarations(model_data))
 
   lines <- c(lines, "}")
   paste(lines, collapse = "\n")
 }
 
-
 generate_transformed_data_block_v2 <- function(model_data, family) {
   lines <- c("transformed data {")
   
-  # Include bivariate parameters and CDP parameters in the list
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
@@ -1636,7 +1568,6 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion2 RE dimensions (for bivariate_sdt)
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
@@ -1651,14 +1582,12 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
     lines <- c(lines, sprintf("  int D_cross_%s_%s = %d;", cor_id, cc$group, cc$total_dim))
   }
 
-  # Mid-anchor threshold indices
   family_name_td <- if (is.list(family)) family$family else family
   is_bivariate_td <- family_name_td %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")
   is_vrdp2d_td <- family_name_td == "vrdp2d"
   is_cdp_td <- family_name_td == "cdp"
 
   if (is_bivariate_td || is_vrdp2d_td) {
-    # Compute mid-anchor indices from R-side data to avoid Stan int-division warnings
     K1_val <- model_data$K
     lines <- c(lines, sprintf("  int mid_thresh1 = %d;  // mid-anchor for detection thresholds", K1_val %/% 2))
     if (isTRUE(model_data$has_criterion2)) {
@@ -1673,9 +1602,6 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
     lines <- c(lines, sprintf("  int mid_thresh = %d;  // mid-anchor for thresholds", K_val %/% 2))
   }
 
-
-
-  # Threading support: seq_n index array for reduce_sum slicing
   if (isTRUE(model_data$threads)) {
     lines <- c(lines, "",
                "  // Observation index array for reduce_sum",
@@ -1687,7 +1613,6 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
   paste(lines, collapse = "\n")
 }
 
-
 generate_parameters_block_v2 <- function(model_data, family) {
   priors <- model_data$priors
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
@@ -1698,8 +1623,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
 
   lines <- c("parameters {")
   
-  # For mixture with both dprime and dprime2 free, use ordered constraint
-  # The ordered constraint applies to each column of the design matrix
   if (model_data$needs_ordered_dprime) {
     lines <- c(lines,
                "  // Ordered constraint for identifiability: dprime > dprime2 for each predictor",
@@ -1711,7 +1634,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion thresholds - use K1 for bivariate/vrdp2d, J for CDP, K otherwise
   family_name <- if (is.list(family)) family$family else family
   is_cdp <- family_name == "cdp"
   
@@ -1736,7 +1658,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
   if (isTRUE(model_data$has_dprime_B)) lines <- c(lines, "  vector[P_dprime_B] beta_dprime_B;")
   if (isTRUE(model_data$has_lambda_B)) lines <- c(lines, "  vector[P_lambda_B] beta_lambda_B;")
   
-  # Bivariate SDT parameters
   if (isTRUE(model_data$has_discrim) && has_discrim_fixed) lines <- c(lines, "  vector[P_discrim] beta_discrim;")
   if (isTRUE(model_data$has_discrim_B)) lines <- c(lines, "  vector[P_discrim_B] beta_discrim_B;")
   if (isTRUE(model_data$has_sigma_B)) lines <- c(lines, "  vector[P_sigma_B] beta_sigma_B;")
@@ -1757,12 +1678,9 @@ generate_parameters_block_v2 <- function(model_data, family) {
   if (isTRUE(model_data$has_lambda_L)) lines <- c(lines, "  vector[P_lambda_L] beta_lambda_L;  // Lure mixture prob (logit scale)")
   if (isTRUE(model_data$has_criterion2)) {
     if (isTRUE(model_data$varying_source_criteria)) {
-      # K1 sets of source thresholds (one per item response level)
-      # Each set has K2-1 thresholds parameterized as mid-anchor + log-gaps
       lines <- c(lines,
                  "  vector[K1] beta_thresh_mid_2_varying;  // Mid-anchor source threshold for each item level",
                  "  matrix[K1, K2-2] beta_log_gaps_2_varying;  // Log-gaps for each item level")
-      # If new_source_criteria = "shared", add separate threshold params for new items
       if (identical(model_data$new_source_criteria, "shared")) {
         lines <- c(lines,
                    "  real beta_thresh_mid_2_new;  // Mid-anchor source threshold for new items (shared)",
@@ -1775,7 +1693,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # RE params - include bivariate parameters and CDP parameters
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
@@ -1790,7 +1707,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion RE
   cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
@@ -1806,7 +1722,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion2 RE (for bivariate_sdt)
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
@@ -1829,7 +1744,6 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Cross-parameter RE
   for (cor_id in names(model_data$cross_cor)) {
     cc <- model_data$cross_cor[[cor_id]]
     dim_var <- sprintf("D_cross_%s_%s", cor_id, cc$group)
@@ -1839,13 +1753,11 @@ generate_parameters_block_v2 <- function(model_data, family) {
                sprintf("  cholesky_factor_corr[%s] L_corr_cross_%s_%s;", dim_var, cor_id, cc$group))
   }
 
-  # Smooth term parameters
   lines <- c(lines, generate_smooth_param_declarations(model_data))
 
   lines <- c(lines, "}")
   paste(lines, collapse = "\n")
 }
-
 
 generate_re_params_v2 <- function(param_name, group, re) {
   if (re$dim == 1) {
@@ -1863,11 +1775,9 @@ generate_re_params_v2 <- function(param_name, group, re) {
   }
 }
 
-
 generate_transformed_parameters_block_v2 <- function(model_data, family) {
   lines <- c("transformed parameters {")
   
-  # If using ordered constraint, extract beta_dprime and beta_dprime2
   if (model_data$needs_ordered_dprime) {
     lines <- c(lines,
                "  // Extract dprime and dprime2 from ordered constraint",
@@ -1880,13 +1790,7 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
                "")
   }
   
-  # NOTE: fixed effects are intentionally NOT precomputed here anymore.
-  # Putting vector[N] in transformed parameters creates O(N) autodiff variables
-  # that dramatically slow down gradient computation.
-  # Instead, X[n,] * beta is computed inside the loop, which is slower per-iteration
-  # but doesn't create persistent autodiff overhead.
   
-  # Random effects transformations only (include bivariate and CDP parameters)
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
@@ -1911,7 +1815,6 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
           "  matrix[N_%s, %s] u_criterion_%s = u_criterion_%s_raw * diag_pre_multiply(sigma_criterion_%s, L_corr_criterion_%s)';",
           group, dim_var, group, group, group, group))
       } else {
-        # Diagonal: each column scaled independently (no Cholesky)
         lines <- c(lines, sprintf(
           "  matrix[N_%s, %s] u_criterion_%s;", group, dim_var, group))
         lines <- c(lines, sprintf(
@@ -1921,7 +1824,6 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion2 RE transforms (for bivariate_sdt)
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
@@ -1970,13 +1872,11 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
     }
   }
 
-  # Smooth transformed parameters: zs = sds * zs_raw
   lines <- c(lines, generate_smooth_transformed_params(model_data))
 
   lines <- c(lines, "}")
   paste(lines, collapse = "\n")
 }
-
 
 generate_re_transform_v2 <- function(param_name, group, re) {
   if (re$dim == 1) {
@@ -1987,14 +1887,12 @@ generate_re_transform_v2 <- function(param_name, group, re) {
     sprintf("  matrix[N_%s, %s] u_%s_%s = u_%s_%s_raw * diag_pre_multiply(sigma_%s_%s, L_corr_%s_%s)';",
             group, dim_var, param_name, group, param_name, group, param_name, group, param_name, group)
   } else {
-    # Uncorrelated (||): diagonal scaling
     dim_var <- sprintf("D_%s_%s", param_name, group)
     c(sprintf("  matrix[N_%s, %s] u_%s_%s;", group, dim_var, param_name, group),
       sprintf("  for (d in 1:%s) u_%s_%s[, d] = u_%s_%s_raw[, d] * sigma_%s_%s[d];",
               dim_var, param_name, group, param_name, group, param_name, group))
   }
 }
-
 
 #' Build shared argument lists for reduce_sum partial_log_lik
 #'
@@ -2033,7 +1931,6 @@ build_reduce_sum_args <- function(model_data, family) {
     add("data array[] real is_old", "is_old")
   }
 
-  # Counts
   if (isTRUE(model_data$has_counts)) {
     add("data array[] int counts", "counts")
   }
@@ -2074,14 +1971,11 @@ build_reduce_sum_args <- function(model_data, family) {
     add("data matrix X_dprime2", "X_dprime2")
     add("vector beta_dprime2", "beta_dprime2")
   } else if (model_data$needs_ordered_dprime && model_data$has_dprime2) {
-    # Ordered dprime: X_dprime2 exists as data, beta_dprime2 already added above
     add("data matrix X_dprime2", "X_dprime2")
   }
 
-  # Criterion always present
   add("data matrix X_criterion", "X_criterion")
 
-  # Threshold parameters (not data -- these are parameters)
   add("vector beta_thresh_mid", "beta_thresh_mid")
   if (model_data$K > 2) {
     add("matrix beta_log_gaps", "beta_log_gaps")
@@ -2095,7 +1989,6 @@ build_reduce_sum_args <- function(model_data, family) {
   for (pname in param_list) {
     if (isTRUE(model_data[[paste0("has_", pname)]])) {
       add(sprintf("data matrix X_%s", pname), sprintf("X_%s", pname))
-      # Per-bin params are matrices, not vectors
       if (isTRUE(model_data[[paste0("per_bin_", pname)]])) {
         add(sprintf("matrix beta_%s", pname), sprintf("beta_%s", pname))
       } else {
@@ -2104,7 +1997,6 @@ build_reduce_sum_args <- function(model_data, family) {
     }
   }
 
-  # Criterion2 threshold parameters
   if (isTRUE(model_data$has_criterion2)) {
     if (isTRUE(model_data$varying_source_criteria)) {
       add("vector beta_thresh_mid_2_varying", "beta_thresh_mid_2_varying")
@@ -2112,8 +2004,6 @@ build_reduce_sum_args <- function(model_data, family) {
       if (identical(model_data$new_source_criteria, "shared")) {
         add("real beta_thresh_mid_2_new", "beta_thresh_mid_2_new")
         add("vector beta_log_gaps_2_new", "beta_log_gaps_2_new")
-        # is_new_response (data) is read at the call site; reduce_sum functions
-        # cannot see global data, so it must be threaded through explicitly.
         add("data array[] int is_new_response", "is_new_response")
       }
     } else {
@@ -2124,13 +2014,11 @@ build_reduce_sum_args <- function(model_data, family) {
   }
 
   # --- Random effects ---
-  # Grouping factor arrays
   all_groups <- get_all_groups(model_data)
   for (group in all_groups) {
     add(sprintf("data array[] int %s", group), group)
   }
 
-  # RE vectors/matrices (the transformed u_* variables)
   all_re_params <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                       "lambda2", "lambda2_B",
@@ -2153,7 +2041,6 @@ build_reduce_sum_args <- function(model_data, family) {
     }
   }
 
-  # Criterion RE
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (!is.null(re$cor_id)) {
@@ -2164,7 +2051,6 @@ build_reduce_sum_args <- function(model_data, family) {
     add(sprintf("matrix %s", var_name), var_name)
   }
 
-  # Criterion2 RE
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
@@ -2181,19 +2067,16 @@ build_reduce_sum_args <- function(model_data, family) {
     }
   }
 
-  # Term indices
   term_indices <- get_all_term_indices(model_data)
   for (ti in term_indices) {
     add(sprintf("data array[] int %s", ti$idx_name), ti$idx_name)
   }
 
-  # Z matrices
   z_matrices <- get_all_z_matrices(model_data)
   for (zm in z_matrices) {
     add(sprintf("data matrix %s", zm$name), zm$name)
   }
 
-  # Smooth term data (Zs matrices) and parameters (s_ = sds * zs)
   if (!is.null(model_data$smooth_data)) {
     for (pname in names(model_data$smooth_data)) {
       for (sm in model_data$smooth_data[[pname]]) {
@@ -2212,7 +2095,6 @@ build_reduce_sum_args <- function(model_data, family) {
   list(declarations = decls, names = nms)
 }
 
-
 #' Generate the partial_log_lik function for reduce_sum threading
 #'
 #' Wraps the existing per-observation likelihood code in a Stan function
@@ -2222,10 +2104,8 @@ build_reduce_sum_args <- function(model_data, family) {
 generate_partial_log_lik <- function(model_data, family) {
   family_name <- if (is.list(family)) family$family else family
 
-  # Build argument list
   args <- build_reduce_sum_args(model_data, family)
 
-  # Function header
   sig_args <- paste(args$declarations, collapse = ",\n      ")
   lines <- c(
     "  // Partial log-likelihood for reduce_sum threading",
@@ -2236,12 +2116,10 @@ generate_partial_log_lik <- function(model_data, family) {
     "      int n = seq_n_slice[i];"
   )
 
-  # Generate the per-observation likelihood code (same as the for loop body)
   ll_lines <- generate_likelihood_code(model_data, family_name)
 
-  # Replace "target +=" with "lp +=" and adjust indentation (add 4 more spaces)
   ll_lines <- gsub("target \\+=", "lp +=", ll_lines)
-  ll_lines <- paste0("  ", ll_lines)  # extra indent for being inside the function + loop
+  ll_lines <- paste0("  ", ll_lines)
 
   lines <- c(lines, ll_lines)
   lines <- c(lines, "    }",
@@ -2251,10 +2129,6 @@ generate_partial_log_lik <- function(model_data, family) {
   lines
 }
 
-
-# Translate a JAX-style prior string to Stan syntax. Stan has no half_* density
-# (the <lower=0> constraint makes a symmetric prior half) and names the Laplace
-# `double_exponential`. Identity for everything else. Stan path only.
 to_stan_prior <- function(prior) {
   if (length(prior) != 1 || is.na(prior) || !nzchar(prior)) return(prior)
   m <- regmatches(prior, regexec("^\\s*([A-Za-z_]+)\\s*\\((.*)\\)\\s*$", prior))[[1]]
@@ -2272,23 +2146,19 @@ to_stan_prior <- function(prior) {
 
 generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   family_name <- if (is.list(family)) family$family else family
-  pl <- model_data$prior_lookup  # prior_lookup object
+  pl <- model_data$prior_lookup
   pl[] <- rapply(pl, to_stan_prior, classes = "character", how = "replace")
 
   lines <- c("model {")
   
-  # Helper to generate fixed effect priors (handles coef-specific priors)
   generate_fixed_priors <- function(dpar, coef_names, beta_name) {
-    # Check if there are any coefficient-specific priors for this dpar
     coef_priors <- pl$b_coef[grepl(paste0("^", dpar, "_"), names(pl$b_coef))]
     
     if (length(coef_priors) == 0) {
-      # No coef-specific priors - use vectorized prior
       prior <- get_fixed_prior(pl, dpar)
       return(sprintf("  %s ~ %s;", beta_name, prior))
     }
     
-    # Has coef-specific priors - need element-wise
     prior_lines <- character(0)
     default_prior <- get_fixed_prior(pl, dpar)
     
@@ -2309,7 +2179,6 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     prior_lines
   }
   
-  # Fixed effects priors
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
   
   if (model_data$needs_ordered_dprime) {
@@ -2330,14 +2199,11 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
       lines <- c(lines, generate_fixed_priors("dprime2", dprime2_coefs, "beta_dprime2"))
     }
   }
-  # If no dprime fixed effects (cumulative with only random effects), skip beta_dprime priors
   
   gaps_prior_key <- if (identical(model_data$gap_link, "softplus")) "raw_gaps" else "log_gaps"
   thresh_mid_prior <- get_fixed_prior(pl, "thresh_mid")
   lines <- c(lines, sprintf("  beta_thresh_mid ~ %s;", thresh_mid_prior))
   if (model_data$K > 2) {
-    # Per-gap fixed-effect priors. Resolution: user-specified
-    # `coef = "[k]"` overrides the dpar-level default per row of beta_log_gaps.
     n_gaps <- model_data$K - 2L
     base_prior <- get_fixed_prior(pl, gaps_prior_key)
     per_gap <- vapply(seq_len(n_gaps), function(k)
@@ -2373,7 +2239,6 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     lines <- c(lines, generate_fixed_priors("lambda_B", lambda_B_coefs, "beta_lambda_B"))
   }
   
-  # Bivariate SDT fixed effects priors
   has_discrim_fixed_model <- isTRUE(model_data$has_discrim_fixed) || (isTRUE(model_data$has_discrim) && is.null(model_data$has_discrim_fixed))
   if (isTRUE(model_data$has_discrim) && has_discrim_fixed_model) {
     discrim_coefs <- model_data$discrim_fixed$coef_names
@@ -2460,7 +2325,6 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # RE priors - using prior_lookup (include bivariate and CDP parameters)
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
@@ -2473,20 +2337,16 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
       if (is.null(re$cor_id)) {
         cor_prior <- get_cor_prior(pl, pname, group)
         
-        # Check whether coefficient-level SD priors are needed
         level_names <- re$level_names
         if (is.null(level_names) || length(level_names) == 0) {
           level_names <- "(Intercept)"
         }
         
-        # Get prior for each coefficient
         coef_priors <- sapply(level_names, function(coef) get_sd_prior(pl, pname, group, coef))
         
         if (length(unique(coef_priors)) == 1) {
-          # All same prior - use vector syntax
           lines <- c(lines, sprintf("  sigma_%s_%s ~ %s;", pname, group, coef_priors[1]))
         } else {
-          # Different priors - apply element-wise
           for (i in seq_along(coef_priors)) {
             lines <- c(lines, sprintf("  sigma_%s_%s[%d] ~ %s;", pname, group, i, coef_priors[i]))
           }
@@ -2506,14 +2366,12 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Criterion RE priors
   cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
       cor_prior <- get_cor_prior(pl, "criterion", group)
       
-      # Check whether coefficient-level SD priors are needed
       level_names <- re$level_names
       if (is.null(level_names)) {
         n_thresh <- re$dim
@@ -2538,12 +2396,11 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Criterion2 RE priors (for bivariate_sdt)
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
       if (is.null(re$cor_id)) {
-        sd_prior <- get_sd_prior(pl, "criterion", group)  # Use criterion priors
+        sd_prior <- get_sd_prior(pl, "criterion", group)
         cor_prior <- get_cor_prior(pl, "criterion", group)
         
         lines <- c(lines,
@@ -2560,12 +2417,10 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  # Cross RE priors - need element-wise SD priors for each parameter in the block
   for (cor_id in names(model_data$cross_cor)) {
     cc <- model_data$cross_cor[[cor_id]]
     cor_prior <- get_cor_prior(pl, "cross", cc$group)
     
-    # Generate element-wise SD priors based on which parameters are in the block
     sd_lines <- character(0)
     idx <- 1
     for (member in cc$members) {
@@ -2593,19 +2448,14 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
                sprintf("  L_corr_cross_%s_%s ~ %s;", cor_id, cc$group, cor_prior))
   }
   
-  # Smooth term priors
   lines <- c(lines, generate_smooth_priors(model_data))
 
-  # Likelihood
   if (!is.null(batch_info) && isTRUE(model_data$threads)) {
-    # Batch + threading: reduce_sum calls batch function on observation slices
     lines <- c(lines, "", batch_info$stan_call_threaded)
   } else if (!is.null(batch_info)) {
-    # Batch without threading: single function call
     lines <- c(lines, "", "  // Batch C++ likelihood (single autodiff node)",
                batch_info$stan_call)
   } else if (isTRUE(model_data$threads)) {
-    # Threading: emit reduce_sum call (y is sliced, rest are shared)
     args <- build_reduce_sum_args(model_data, family)
     arg_names <- paste(args$names, collapse = ",\n      ")
     lines <- c(lines, "",
@@ -2622,52 +2472,41 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   paste(lines, collapse = "\n")
 }
 
-
-
-
 generate_likelihood_code <- function(model_data, family_name) {
   lines <- character(0)
 
-  # Check for any encoding variables
   has_encoding_params <- isTRUE(model_data$dprime_fixed$has_encoding) ||
     isTRUE(model_data$lambda_fixed$has_encoding) ||
     isTRUE(model_data$sigma_fixed$has_encoding)
 
-  # Bivariate cumulative has a simple structure (no item_type, no sigma)
   if (family_name == "bivariate_cumulative") {
     lines <- c(lines, generate_bivariate_cumulative_likelihood_code(model_data))
     return(lines)
   }
 
-  # Bivariate SDT has a completely different structure
   if (family_name == "bivariate_sdt") {
     lines <- c(lines, generate_bivariate_likelihood_code(model_data))
     return(lines)
   }
 
-  # Bivariate DP has its own structure (extends bivariate_sdt with lambda/lambda2)
   if (family_name == "bivariate_dp") {
     lines <- c(lines, generate_bivariate_dp_likelihood_code(model_data))
     return(lines)
   }
 
-  # VRDP2D has its own structure
   if (family_name == "vrdp2d") {
     lines <- c(lines, generate_vrdp2d_likelihood_code(model_data))
     return(lines)
   }
   
-  # CDP has its own structure
   if (family_name == "cdp") {
     lines <- c(lines, generate_cdp_likelihood_code(model_data))
     return(lines)
   }
 
-  # For models with encoding variables or lure mixture, use the optimized if/else structure
   if ((has_encoding_params || isTRUE(model_data$has_lure_mixture)) && family_name %in% c("mixture", "dpsdt")) {
     lines <- c(lines, generate_likelihood_with_encoding_branch(model_data, family_name))
   } else {
-    # Standard structure for models without encoding
     lines <- c(lines, generate_param_lp("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
     
     if (model_data$has_sigma) {
@@ -2694,7 +2533,6 @@ generate_likelihood_code <- function(model_data, family_name) {
       lines <- c(lines, "    real sigma2_val = exp(sigma2_n);")
     }
     
-    # Source mixture specific parameters
     if (isTRUE(model_data$has_dprime_B)) {
       lines <- c(lines, generate_param_lp("dprime_B", model_data$dprime_B_fixed, model_data$dprime_B_random, model_data$smooth_data[["dprime_B"]]))
       lines <- c(lines, "    real dprime_B_val = dprime_B_n;")
@@ -2712,27 +2550,21 @@ generate_likelihood_code <- function(model_data, family_name) {
   lines
 }
 
-
 #' Generate likelihood code for bivariate cumulative ordinal model
 #' @noRd
 generate_bivariate_cumulative_likelihood_code <- function(model_data) {
   lines <- character(0)
 
-  # mu1 (dprime) linear predictor
   lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
 
-  # mu2 (discrim) linear predictor
   lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
 
-  # rho linear predictor + Fisher z transform
   lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random))
   lines <- c(lines, "    real rho_val = tanh(rho_n);  // Fisher z to correlation")
 
-  # Threshold vectors for both dimensions
-  lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))  # Dim 1 thresholds
-  lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))  # Dim 2 thresholds
+  lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))
+  lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))
 
-  # Likelihood call
   has_counts <- isTRUE(model_data$has_counts)
   ll_expr <- "bivariate_cumulative_lpmf_custom(y[n], y2[n], K1, K2, dprime_n, discrim_n, thresh1, thresh2, rho_val)"
 
@@ -2745,16 +2577,13 @@ generate_bivariate_cumulative_likelihood_code <- function(model_data) {
   lines
 }
 
-
 #' Generate likelihood code for bivariate SDT
 #' @noRd
 generate_bivariate_likelihood_code <- function(model_data) {
   lines <- character(0)
   
-  # Detection dimension (dprime)
   lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
   
-  # dprime_B (for Source B detection)
   if (isTRUE(model_data$has_dprime_B)) {
     lines <- c(lines, generate_param_lp_bivariate("dprime_B", model_data$dprime_B_fixed, model_data$dprime_B_random))
     lines <- c(lines, "    real dprime_B_val = dprime_B_n;")
@@ -2762,16 +2591,8 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real dprime_B_val = dprime_n;  // constrained equal to dprime")
   }
   
-  # Discrimination dimension (discrim)
   lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
   
-  # discrim_B (for Source B discrimination)
-  # Symmetric default differs by bounded mode:
-  #   bounded:   discrim_B_val = discrim_n (same positive magnitude; lpmf
-  #              negates A and uses B directly to place A on negative axis,
-  #              B on positive)
-  #   unbounded: discrim_B_val = -discrim_n (opposite sign; lpmf uses both
-  #              directly so symmetric mirror requires opposite signs)
   if (isTRUE(model_data$has_discrim_B)) {
     lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random))
     lines <- c(lines, "    real discrim_B_val = discrim_B_n;")
@@ -2781,7 +2602,6 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real discrim_B_val = -discrim_n;  // unbounded symmetric: mirror across origin")
   }
   
-  # Sigma parameters (detection dimension)
   if (isTRUE(model_data$has_sigma)) {
     lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random))
     lines <- c(lines, "    real sigma1_A_val = exp(sigma_n);")
@@ -2798,7 +2618,6 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma1_B_val = 1;  // fixed")
   }
   
-  # Sigma2 parameters (discrimination dimension)
   if (isTRUE(model_data$has_sigma2)) {
     lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random))
     lines <- c(lines, "    real sigma2_A_val = exp(sigma2_n);")
@@ -2815,13 +2634,9 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma2_B_val = 1;  // fixed")
   }
   
-  # Rho parameters (correlations on Fisher z scale)
   lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random))
   lines <- c(lines, "    real rho_A_val = tanh(rho_n);  // Fisher z to correlation")
   
-  # rho_B symmetric default differs by bounded:
-  #   bounded:   rho_B_val = rho_A_val (same positive magnitude, lpmf places signs)
-  #   unbounded: rho_B_val = -rho_A_val (mirror correlation across origin)
   if (isTRUE(model_data$has_rho_B)) {
     lines <- c(lines, generate_param_lp_bivariate("rho_B", model_data$rho_B_fixed, model_data$rho_B_random))
     lines <- c(lines, "    real rho_B_val = tanh(rho_B_n);")
@@ -2838,21 +2653,18 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real rho_N_val = 0;  // fixed at 0 for new items")
   }
   
-  # Threshold vectors for both dimensions
-  lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))  # Detection thresholds
+  lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))
   
   varying_source_criteria <- isTRUE(model_data$varying_source_criteria)
 
   if (varying_source_criteria) {
-    # K1 sets of source thresholds (only for "old" levels if guessing, all levels otherwise)
     lines <- c(lines, generate_thresh_code_vrdp2d_varying(model_data))
   } else {
-    lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))  # Discrimination thresholds
+    lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))
   }
 
   new_shared <- identical(model_data$new_source_criteria, "shared")
 
-  # Build shared new-item source thresholds if needed (mid-anchor)
   if (new_shared) {
     lines <- c(lines,
       "    // Shared source thresholds for new items (mid-anchor)",
@@ -2867,13 +2679,10 @@ generate_bivariate_likelihood_code <- function(model_data) {
       "    }")
   }
 
-  # Likelihood call
   has_counts <- isTRUE(model_data$has_counts)
   bounded <- isTRUE(model_data$bounded)
 
-  # Bounded models require positive dprime, discrim and rho in (0,1)
   if (bounded) {
-    # Apply exp() to dprime for positivity: mu_I > 0
     dprime_idx <- grep("real dprime_n = ", lines, fixed = TRUE)
     if (length(dprime_idx) > 0) {
       lines[dprime_idx] <- gsub(
@@ -2887,7 +2696,6 @@ generate_bivariate_likelihood_code <- function(model_data) {
       lines[dprime_B_idx] <- "    real dprime_B_val = exp(dprime_B_n);  // log link: mu_I_B > 0 (bounded)"
     }
 
-    # Apply exp() to discrim for positivity: mu_S > 0
     discrim_idx <- grep("real discrim_n = ", lines, fixed = TRUE)
     if (length(discrim_idx) > 0) {
       lines[discrim_idx] <- gsub(
@@ -2901,7 +2709,6 @@ generate_bivariate_likelihood_code <- function(model_data) {
       lines[discrim_B_idx] <- "    real discrim_B_val = exp(discrim_B_n);  // log link: mu_S_B > 0 (bounded)"
     }
 
-    # Apply inv_logit() to rho for (0,1) constraint
     rho_idx <- grep("real rho_A_val = tanh(rho_n)", lines, fixed = TRUE)
     if (length(rho_idx) > 0) {
       lines[rho_idx] <- "    real rho_A_val = inv_logit(rho_n);  // logistic link: rho_A in (0,1) (bounded)"
@@ -2912,7 +2719,6 @@ generate_bivariate_likelihood_code <- function(model_data) {
     }
   }
 
-  # Select lpmf function name based on bounded x varying x new_shared
   if (new_shared && bounded) {
     lpmf_name <- "bivariate_sdt_varying_bounded_new_shared_lpmf_custom"
     thresh_arg <- "thresh1, thresh2_varying, thresh2_new, is_new_response"
@@ -2950,36 +2756,20 @@ generate_bivariate_likelihood_code <- function(model_data) {
   lines
 }
 
-
 #' Generate likelihood code for bivariate DP model
 #' @noRd
 generate_bivariate_dp_likelihood_code <- function(model_data) {
-  # Reuse the bivariate_sdt likelihood code for all shared params
   lines <- generate_bivariate_likelihood_code(model_data)
 
-  # Remove the last lines (the target += ... statement and blank line before it)
-  # Replace the lpmf call with the bivariate_dp version
-  # Find and remove the target line
   target_idx <- grep("target \\+=", lines)
   if (length(target_idx) > 0) {
-    # Remove from the blank line before target to the target line
     remove_start <- max(1, target_idx[length(target_idx)] - 1)
     lines <- lines[1:(remove_start - 1)]
   }
 
-  # NOTE: link transforms for dprime/discrim/rho are handled inside
-  # `generate_bivariate_likelihood_code` based on `model_data$bounded`.
-  # Bounded BDP gets exp/inv_logit (positivity / [0,1] constraints); unbounded
-  # BDP keeps the identity / Fisher-z links from the shared emission. No
-  # additional transforms are applied here.
-
-  # Add lambda and lambda2 parameter extraction
   lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random))
   lines <- c(lines, "    real R_I = inv_logit(lambda_n);")
 
-  # lambda_B (R_I for source B): only emit when model_data$has_lambda_B is TRUE
-  # (set in broc_model.R for bivariate_dp). source_mixture also uses has_lambda_B
-  # but has its own likelihood path; only bivariate_dp is handled here.
   if (isTRUE(model_data$has_lambda_B)) {
     lines <- c(lines, generate_param_lp_bivariate("lambda_B", model_data$lambda_B_fixed, model_data$lambda_B_random))
     lines <- c(lines, "    real R_I_B = inv_logit(lambda_B_n);")
@@ -2997,7 +2787,6 @@ generate_bivariate_dp_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real R_S_B = R_S;  // constrained equal to lambda2")
   }
 
-  # Select BDP lpmf name
   has_counts <- isTRUE(model_data$has_counts)
   varying <- isTRUE(model_data$varying_source_criteria)
   new_shared <- identical(model_data$new_source_criteria, "shared")
@@ -3031,25 +2820,21 @@ generate_bivariate_dp_likelihood_code <- function(model_data) {
   lines
 }
 
-
 #' Generate likelihood code for CDP model
 #' @noRd
 generate_cdp_likelihood_code <- function(model_data) {
   lines <- character(0)
   
-  # Recollection mean (mu_R) - mapped from dprime
   lines <- c(lines, generate_param_lp("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
   lines <- c(lines, "    real mu_R = dprime_n;")
   
-  # Familiarity mean (mu_F) - mapped from dprime2
   if (model_data$has_dprime2) {
     lines <- c(lines, generate_param_lp("dprime2", model_data$dprime2_fixed, model_data$dprime2_random, model_data$smooth_data[["dprime2"]]))
     lines <- c(lines, "    real mu_F = dprime2_n;")
   } else {
-    lines <- c(lines, "    real mu_F = 0;")  # Fixed at 0 if not estimated
+    lines <- c(lines, "    real mu_F = 0;")
   }
   
-  # sigma_R - mapped from sigma
   if (model_data$has_sigma) {
     lines <- c(lines, generate_param_lp("sigma", model_data$sigma_fixed, model_data$sigma_random, model_data$smooth_data[["sigma"]]))
     lines <- c(lines, "    real sigma_R = exp(sigma_n);")
@@ -3057,7 +2842,6 @@ generate_cdp_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma_R = 1;")
   }
   
-  # sigma_F - mapped from sigma2
   if (model_data$has_sigma2) {
     lines <- c(lines, generate_param_lp("sigma2", model_data$sigma2_fixed, model_data$sigma2_random, model_data$smooth_data[["sigma2"]]))
     lines <- c(lines, "    real sigma_F = exp(sigma2_n);")
@@ -3065,22 +2849,19 @@ generate_cdp_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma_F = 1;")
   }
   
-  # rec_crit (recollection criterion)
   if (isTRUE(model_data$has_rec_crit)) {
     lines <- c(lines, generate_param_lp("rec_crit", model_data$rec_crit_fixed, model_data$rec_crit_random, model_data$smooth_data[["rec_crit"]]))
     lines <- c(lines, "    real c_R = rec_crit_n;")
   } else {
-    lines <- c(lines, "    real c_R = 1.5;")  # Default if not estimated
+    lines <- c(lines, "    real c_R = 1.5;")
   }
 
-  # know_crit (know criterion for R/K/G)
   n_rkg <- model_data$stan_data$n_rkg
   if (isTRUE(model_data$has_know_crit)) {
     lines <- c(lines, generate_param_lp("know_crit", model_data$know_crit_fixed, model_data$know_crit_random, model_data$smooth_data[["know_crit"]]))
     lines <- c(lines, "    real c_K = know_crit_n;")
   }
 
-  # Compute derived CDP parameters
   lines <- c(lines, "",
              "    // Derived CDP parameters",
              "    real mu_M = mu_R + mu_F;  // Memory strength mean for targets",
@@ -3091,13 +2872,10 @@ generate_cdp_likelihood_code <- function(model_data) {
              "    real sigma_M_l = sqrt(2.0);",
              "    real rho_l = 1.0 / sqrt(2.0);")
 
-  # Build thresholds using log-gaps parameterization
   lines <- c(lines, "", generate_thresh_code_cdp(model_data))
 
-  # CDP likelihood - use local ll variable for counts support
   has_counts <- isTRUE(model_data$has_counts)
 
-  # Common preamble: find old_idx
   lines <- c(lines, "",
              "    // CDP likelihood",
              "    real ll;",
@@ -3196,8 +2974,6 @@ generate_cdp_likelihood_code <- function(model_data) {
   lines
 }
 
-
-
 #' Generate likelihood code for 2D-VRDP model
 #' @noRd
 generate_vrdp2d_likelihood_code <- function(model_data) {
@@ -3205,19 +2981,15 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
   
   varying_source_criteria <- isTRUE(model_data$varying_source_criteria)
   
-  # dprime (d'_F - familiarity strength)
   lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
   lines <- c(lines, "    real dprime_F = dprime_n;")
   
-  # dprime2 (d'_R - recollection boost)
   lines <- c(lines, generate_param_lp_bivariate("dprime2", model_data$dprime2_fixed, model_data$dprime2_random))
   lines <- c(lines, "    real dprime_R = dprime2_n;")
   
-  # discrim (d'_S - source discriminability for Source A)
   lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
   lines <- c(lines, "    real dprime_S = discrim_n;")
   
-  # discrim_B (d'_S_B - source discriminability for Source B)
   if (isTRUE(model_data$has_discrim_B)) {
     lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random))
     lines <- c(lines, "    real dprime_S_B = discrim_B_n;")
@@ -3225,11 +2997,9 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real dprime_S_B = -dprime_S;  // symmetric: d'_S_B = -d'_S")
   }
   
-  # lambda (R - recollection probability)
   lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random))
   lines <- c(lines, "    real R = inv_logit(lambda_n);")
   
-  # sigma (sigma_item - SD on item dimension for old items)
   if (isTRUE(model_data$has_sigma)) {
     lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random))
     lines <- c(lines, "    real sigma_item = exp(sigma_n);")
@@ -3237,7 +3007,6 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma_item = 1;  // fixed")
   }
   
-  # sigma2 (sigma_S - source SD for recollected items)
   if (isTRUE(model_data$has_sigma2)) {
     lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random))
     lines <- c(lines, "    real sigma_S = exp(sigma2_n);")
@@ -3245,23 +3014,17 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma_S = 1;  // fixed")
   }
   
-  # Item thresholds (always K1-1)
   lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))
   
-  # Source thresholds - either constant or varying by item response
   if (varying_source_criteria) {
-    # Generate K1 sets of source thresholds, indexed by item response
     lines <- c(lines, generate_thresh_code_vrdp2d_varying(model_data))
   } else {
-    # Single set of source thresholds
     lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))
   }
   
-  # Likelihood call
   has_counts <- isTRUE(model_data$has_counts)
   
   if (varying_source_criteria) {
-    # Use thresh2_varying which is indexed by item response
     ll_expr <- paste0(
       "vrdp2d_varying_lpmf_custom(y[n], y2[n], item_type[n], K1, K2,\n",
       "                                  dprime_F, dprime_R, dprime_S, dprime_S_B,\n",
@@ -3286,23 +3049,17 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
   lines
 }
 
-
 #' Generate threshold code for vrdp2d with varying source criteria
 #' @noRd
 generate_thresh_code_vrdp2d_varying <- function(model_data) {
-  # For varying source criteria, source thresholds vary by item response level
-  # All K1 levels get source thresholds, using mid-anchor parameterization
 
   varying_re_mode <- if (!is.null(model_data$varying_re)) model_data$varying_re else "shared"
 
-  # Check for RE on criterion2
   has_re <- !is.null(model_data$criterion2) && !is.null(model_data$criterion2$random) &&
     length(model_data$criterion2$random) > 0
 
-  # Get RE variable names for later use
   re_info <- NULL
   if (has_re) {
-    # Use first group (most common case: single grouping factor)
     group <- names(model_data$criterion2$random)[1]
     re <- model_data$criterion2$random[[group]]
     re_var_name <- if (!is.null(re$cor_id)) {
@@ -3320,7 +3077,6 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
     "      // Build source thresholds for item response level k1"
   )
 
-  # === Mid-anchor threshold for this bin ===
   mid_thresh_line <- sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[k1]")
 
   if (has_re) {
@@ -3344,7 +3100,6 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
   }
   lines <- c(lines, mid_thresh_line)
 
-  # === Upper gaps: mid+1 to K2-1 ===
   if (has_re && varying_re_mode == "full") {
     lines <- c(lines,
                "      for (k2 in (mid_thresh2+1):(K2-1)) {",
@@ -3358,7 +3113,6 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
                "      }")
   }
 
-  # === Lower gaps: mid-1 down to 1 ===
   if (has_re && varying_re_mode == "full") {
     lines <- c(lines,
                "      for (k2_down in 1:(mid_thresh2-1)) {",
@@ -3379,7 +3133,6 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
   lines
 }
 
-
 #' Generate threshold code for CDP model
 #' @noRd
 generate_thresh_code_cdp <- function(model_data) {
@@ -3388,7 +3141,6 @@ generate_thresh_code_cdp <- function(model_data) {
 
   is_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
-  # Helper: generate RE contribution for a given threshold position
   gen_re_cdp <- function(target, k_expr) {
     re_lines <- character(0)
     if (!is.null(crit$random)) {
@@ -3413,7 +3165,6 @@ generate_thresh_code_cdp <- function(model_data) {
   lines <- c("    // Build thresholds (tau) using mid-anchor + log-gaps parameterization",
              sprintf("    vector[J] tau;"))
 
-  # === Mid-anchor threshold ===
   if (is_intercept_only) {
     lines <- c(lines, "    tau[mid_thresh_cdp] = beta_thresh_mid[1];")
   } else {
@@ -3421,7 +3172,6 @@ generate_thresh_code_cdp <- function(model_data) {
   }
   lines <- c(lines, gen_re_cdp("tau[mid_thresh_cdp]", "mid_thresh_cdp"))
 
-  # Criterion smooth contribution for CDP
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -3434,7 +3184,6 @@ generate_thresh_code_cdp <- function(model_data) {
     }
   }
 
-  # === Upper gaps: mid+1 to J ===
   lines <- c(lines,
              "    for (j in (mid_thresh_cdp+1):J) {")
 
@@ -3456,7 +3205,6 @@ generate_thresh_code_cdp <- function(model_data) {
       }
     }
   }
-  # CDP criterion smooth per-gap (upper)
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -3470,7 +3218,6 @@ generate_thresh_code_cdp <- function(model_data) {
   }
   lines <- c(lines, "      tau[j] = tau[j-1] + exp(log_gap);", "    }")
 
-  # === Lower gaps: mid-1 down to 1 ===
   lines <- c(lines,
              "    for (j_down in 1:(mid_thresh_cdp-1)) {",
              "      int j = mid_thresh_cdp - j_down;")
@@ -3493,7 +3240,6 @@ generate_thresh_code_cdp <- function(model_data) {
       }
     }
   }
-  # CDP criterion smooth per-gap (lower)
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -3509,7 +3255,6 @@ generate_thresh_code_cdp <- function(model_data) {
 
   lines
 }
-
 
 #' Generate threshold code for bivariate SDT (two sets of thresholds)
 #' @noRd
@@ -3540,7 +3285,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
 
   is_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
-  # Helper: generate RE contribution for a given threshold position
   gen_re_biv <- function(target, k_expr) {
     re_lines <- character(0)
     if (!is.null(crit$random)) {
@@ -3570,7 +3314,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
 
   lines <- c(sprintf("    vector[%s-1] %s;", K_var, thresh_name))
 
-  # === Mid-anchor threshold ===
   if (is_intercept_only) {
     lines <- c(lines, sprintf("    %s[%s] = %s[1];", thresh_name, mid_var, beta_thresh))
   } else {
@@ -3578,7 +3321,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
   }
   lines <- c(lines, gen_re_biv(sprintf("%s[%s]", thresh_name, mid_var), mid_var))
 
-  # Criterion/criterion2 smooth contribution for bivariate (mid-anchor: row 1)
   smooth_key <- if (dimension == 1) "criterion" else "criterion2"
   if (!is.null(model_data$smooth_data[[smooth_key]])) {
     for (sm in model_data$smooth_data[[smooth_key]]) {
@@ -3592,7 +3334,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
     }
   }
 
-  # === Upper gaps: mid+1 to K-1 ===
   lines <- c(lines, sprintf("    for (k in (%s+1):(%s-1)) {", mid_var, K_var))
 
   if (is_intercept_only) {
@@ -3601,7 +3342,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
     lines <- c(lines, sprintf("      real log_gap = X_%s[n, ] * %s[k - %s, ]';", crit_name, beta_log_gaps, mid_var))
   }
   lines <- c(lines, gen_re_biv("log_gap", "k"))
-  # Bivariate criterion smooth per-gap (upper)
   if (!is.null(model_data$smooth_data[[smooth_key]])) {
     for (sm in model_data$smooth_data[[smooth_key]]) {
       for (comp in sm$components) {
@@ -3615,7 +3355,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
   }
   lines <- c(lines, sprintf("      %s[k] = %s[k-1] + exp(log_gap);", thresh_name, thresh_name), "    }")
 
-  # === Lower gaps: mid-1 down to 1 ===
   lines <- c(lines, sprintf("    for (k_down in 1:(%s-1)) {", mid_var),
              sprintf("      int k = %s - k_down;", mid_var))
 
@@ -3625,7 +3364,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
     lines <- c(lines, sprintf("      real log_gap = X_%s[n, ] * %s[%s - 1 - %s + k_down, ]';", crit_name, beta_log_gaps, K_var, mid_var))
   }
   lines <- c(lines, gen_re_biv("log_gap", "k"))
-  # Bivariate criterion smooth per-gap (lower)
   if (!is.null(model_data$smooth_data[[smooth_key]])) {
     for (sm in model_data$smooth_data[[smooth_key]]) {
       for (comp in sm$components) {
@@ -3641,7 +3379,6 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
 
   lines
 }
-
 
 #' Generate parameter linear predictor for bivariate SDT (no is_old branching)
 #' @noRd
@@ -3670,7 +3407,6 @@ generate_param_lp_bivariate <- function(param_name, fixed_info, random_info) {
         z_name <- paste0("Z_", param_name, "_", group)
         lines <- c(lines, sprintf("    %s_n += %s[n, ] * %s[%s[n], ]';", param_name, z_name, var_name, group))
       } else if (re$dim == 1) {
-        # Scalar random effect: u is a vector
         if (!is.null(re$term_idx)) {
           idx_var <- paste0("idx_", param_name, "_", group)
           lines <- c(lines, sprintf("    if (%s[n] > 0) %s_n += %s[%s[n]];", idx_var, param_name, var_name, group))
@@ -3678,7 +3414,6 @@ generate_param_lp_bivariate <- function(param_name, fixed_info, random_info) {
           lines <- c(lines, sprintf("    %s_n += %s[%s[n]];", param_name, var_name, group))
         }
       } else if (!is.null(re$term_idx)) {
-        # Multi-dimensional index-based lookup: u is a matrix
         idx_var <- paste0("idx_", param_name, "_", group)
         lines <- c(lines, sprintf("    if (%s[n] > 0) %s_n += %s[%s[n], %s[n]];", idx_var, param_name, var_name, group, idx_var))
       }
@@ -3688,7 +3423,6 @@ generate_param_lp_bivariate <- function(param_name, fixed_info, random_info) {
   lines
 }
 
-
 #' Generate likelihood with branching for encoding variables
 #' This avoids computing dprime/lambda for new items
 #' @noRd
@@ -3696,13 +3430,10 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
   lines <- character(0)
   has_counts <- isTRUE(model_data$has_counts)
   
-  # Thresholds are computed for ALL items (same as handwritten)
   lines <- c(lines, generate_thresh_code(model_data))
   
-  # Branch on is_old
   lines <- c(lines, "", "    if (is_old[n] == 1) {")
   
-  # Compute encoding parameters ONLY for old items
   lines <- c(lines, generate_param_lp_old_only("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
   
   if (model_data$has_sigma) {
@@ -3724,7 +3455,6 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
     lines <- c(lines, "      real sigma2_val = exp(sigma2_n);")
   }
   
-  # Likelihood for old items
   count_mult <- if (has_counts) "counts[n] * " else ""
   
   if (family_name == "dpsdt") {
@@ -3735,7 +3465,6 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
     }
   } else if (family_name == "mixture") {
     if (model_data$has_lambda) {
-      # Signal mixture: old items are a mixture of two states
       sigma_fixed <- !model_data$has_sigma
       sigma2_fixed <- !model_data$has_sigma2
 
@@ -3750,7 +3479,6 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
                                   count_mult, sigma_val, dprime2_arg, sigma2_val))
       }
     } else {
-      # No signal mixture (lure-only): old items use UVSDT or EVSDT
       if (model_data$has_sigma) {
         lines <- c(lines, sprintf("      target += %suvsdt_lpmf(y[n] | dprime_n, sigma_val, 1, K, thresh);", count_mult))
       } else {
@@ -3759,10 +3487,8 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
     }
   }
   
-  # Else branch for new items
   if (isTRUE(model_data$has_lure_mixture)) {
     lines <- c(lines, "    } else {")
-    # Compute lure mixture parameters for new items
     lines <- c(lines, generate_param_lp_old_only("dprime_L", model_data$dprime_L_fixed, model_data$dprime_L_random, model_data$smooth_data[["dprime_L"]]))
     if (isTRUE(model_data$has_sigma_L)) {
       lines <- c(lines, generate_param_lp_old_only("sigma_L", model_data$sigma_L_fixed, model_data$sigma_L_random, model_data$smooth_data[["sigma_L"]]))
@@ -3786,34 +3512,27 @@ generate_likelihood_with_encoding_branch <- function(model_data, family_name) {
   lines
 }
 
-
 #' Generate parameter linear predictor for old items only (no is_old check)
 #' Uses direct indexing when possible for faster sampling
 #' @noRd
 generate_param_lp_old_only <- function(param_name, fixed_info, random_info, smooth_info = NULL) {
   lines <- character(0)
 
-  # Check whether the fast direct indexing pattern applies
   use_direct_indexing <- is_simple_encoding(fixed_info, random_info)
 
   if (use_direct_indexing) {
-    # Fast path: use beta[c] + u[s, c] + u[i, c] pattern
-    # Get condition index variable from first random effect
     first_group <- names(random_info)[1]
     idx_var <- paste0("idx_", param_name, "_", first_group)
 
-    # Start with fixed effect using direct index
     lines <- c(lines, sprintf("      int c_%s = %s[n];", param_name, idx_var))
     lines <- c(lines, sprintf("      real %s_n = beta_%s[c_%s];", param_name, param_name, param_name))
 
-    # Add random effects using the same condition index
     for (group in names(random_info)) {
       re <- random_info[[group]]
       var_name <- if (!is.null(re$cor_id)) sprintf("u_%s_%s_from_%s", param_name, group, re$cor_id) else sprintf("u_%s_%s", param_name, group)
       lines <- c(lines, sprintf("      %s_n += %s[%s[n], c_%s];", param_name, var_name, group, param_name))
     }
   } else {
-    # General path: use design matrix multiplication for fixed effects
     lines <- c(lines, sprintf("      real %s_n = X_%s[n, ] * beta_%s;", param_name, param_name, param_name))
 
     if (!is.null(random_info)) {
@@ -3822,11 +3541,9 @@ generate_param_lp_old_only <- function(param_name, fixed_info, random_info, smoo
         var_name <- if (!is.null(re$cor_id)) sprintf("u_%s_%s_from_%s", param_name, group, re$cor_id) else sprintf("u_%s_%s", param_name, group)
 
         if (isTRUE(re$use_z_matrix)) {
-          # Use Z matrix multiplication
           z_name <- paste0("Z_", param_name, "_", group)
           lines <- c(lines, sprintf("      %s_n += %s[n, ] * %s[%s[n], ]';", param_name, z_name, var_name, group))
         } else if (re$dim == 1) {
-          # Scalar random effect: u is a vector
           if (!is.null(re$term_idx)) {
             idx_var <- paste0("idx_", param_name, "_", group)
             lines <- c(lines, sprintf("      if (%s[n] > 0) %s_n += %s[%s[n]];", idx_var, param_name, var_name, group))
@@ -3834,7 +3551,6 @@ generate_param_lp_old_only <- function(param_name, fixed_info, random_info, smoo
             lines <- c(lines, sprintf("      %s_n += %s[%s[n]];", param_name, var_name, group))
           }
         } else if (!is.null(re$term_idx)) {
-          # Multi-dimensional index-based lookup: u is a matrix
           idx_var <- paste0("idx_", param_name, "_", group)
           lines <- c(lines, sprintf("      if (%s[n] > 0) %s_n += %s[%s[n], %s[n]];", idx_var, param_name, var_name, group, idx_var))
         }
@@ -3842,7 +3558,6 @@ generate_param_lp_old_only <- function(param_name, fixed_info, random_info, smoo
     }
   }
 
-  # Add smooth penalized contributions: Zs * s (where s = sds * zs)
   if (!is.null(smooth_info)) {
     for (sm in smooth_info) {
       for (j in seq_along(sm$components)) {
@@ -3860,18 +3575,14 @@ generate_param_lp_old_only <- function(param_name, fixed_info, random_info, smoo
   lines
 }
 
-
 #' Generate parameter linear predictor (standard version for non-encoding params)
 #' @noRd
 generate_param_lp <- function(param_name, fixed_info, random_info, smooth_info = NULL) {
   lines <- character(0)
 
-  # Check if there are fixed effects
   has_fixed <- !is.null(fixed_info) && fixed_info$n_coef > 0
 
-  # Compute fixed effects inline (or initialize to 0 if no fixed effects)
   if (!has_fixed) {
-    # No fixed effects - start at 0 (for cumulative with only random effects)
     lines <- c(lines, sprintf("    real %s_n = 0;", param_name))
   } else if (isTRUE(fixed_info$has_encoding)) {
     lines <- c(lines, sprintf("    real %s_n = 0;", param_name))
@@ -3888,35 +3599,26 @@ generate_param_lp <- function(param_name, fixed_info, random_info, smooth_info =
       var_name <- if (!is.null(re$cor_id)) sprintf("u_%s_%s_from_%s", param_name, group, re$cor_id) else sprintf("u_%s_%s", param_name, group)
 
       if (isTRUE(re$use_z_matrix)) {
-        # Use Z matrix multiplication
         z_name <- paste0("Z_", param_name, "_", group)
         if (re$dim == 1) {
-          # Scalar RE with Z matrix: u is a vector, Z is N x 1
-          # Z[n, 1] * u[group[n]] (scalar * scalar)
           lines <- c(lines, sprintf("    %s_n += %s[n, 1] * %s[%s[n]];", param_name, z_name, var_name, group))
         } else {
-          # Multi-dimensional RE: u is a matrix, standard row-vector multiply
           lines <- c(lines, sprintf("    %s_n += %s[n, ] * %s[%s[n], ]';", param_name, z_name, var_name, group))
         }
       } else if (re$dim == 1) {
-        # Scalar random effect: u is a vector
         if (!is.null(re$term_idx)) {
-          # Has term index -- guard for observations where slope doesn't apply
           idx_var <- paste0("idx_", param_name, "_", group)
           lines <- c(lines, sprintf("    if (%s[n] > 0) %s_n += %s[%s[n]];", idx_var, param_name, var_name, group))
         } else {
-          # Intercept-only random effect (no slopes, no indexing needed)
           lines <- c(lines, sprintf("    %s_n += %s[%s[n]];", param_name, var_name, group))
         }
       } else if (!is.null(re$term_idx)) {
-        # Multi-dimensional index-based lookup: u is a matrix
         idx_var <- paste0("idx_", param_name, "_", group)
         lines <- c(lines, sprintf("    if (%s[n] > 0) %s_n += %s[%s[n], %s[n]];", idx_var, param_name, var_name, group, idx_var))
       }
     }
   }
 
-  # Add smooth penalized contributions: Zs * s (where s = sds * zs)
   if (!is.null(smooth_info)) {
     for (sm in smooth_info) {
       for (j in seq_along(sm$components)) {
@@ -3934,18 +3636,14 @@ generate_param_lp <- function(param_name, fixed_info, random_info, smooth_info =
   lines
 }
 
-
 #' Generate the likelihood function call
 #' @noRd
 generate_likelihood_call <- function(model_data, family_name) {
   has_counts <- isTRUE(model_data$has_counts)
   
-  # Generate the log-likelihood expression
   ll_expr <- if (family_name == "cumulative") {
-    # For cumulative, use mu (which is dprime_n) directly, no is_old
     "cumulative_lpmf(y[n] | dprime_n, K, thresh)"
   } else if (family_name == "source_mixture") {
-    # Source discrimination mixture SDT
     has_dprime_B <- isTRUE(model_data$has_dprime_B)
     has_lambda_B <- isTRUE(model_data$has_lambda_B)
     
@@ -3984,7 +3682,6 @@ generate_likelihood_call <- function(model_data, family_name) {
                 sigma_val, dprime2_arg, sigma2_val)
       }
     } else {
-      # No signal mixture (lure-only): old items use UVSDT or EVSDT
       if (model_data$has_sigma) {
         "uvsdt_lpmf(y[n] | dprime_n, sigma_val, is_old[n], K, thresh)"
       } else {
@@ -3995,7 +3692,6 @@ generate_likelihood_call <- function(model_data, family_name) {
     stop("Unknown family: ", family_name)
   }
   
-  # Wrap with counts multiplier if needed
   if (has_counts) {
     sprintf("    target += counts[n] * %s;", ll_expr)
   } else {
@@ -4003,17 +3699,12 @@ generate_likelihood_call <- function(model_data, family_name) {
   }
 }
 
-
 generate_thresh_code <- function(model_data) {
   crit <- model_data$criterion
   K <- model_data$K
 
-  # Check if criterion is intercept-only (most common case)
   is_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
-  # Helper: generate RE contribution for a given threshold position
-  # thresh_k_expr: Stan expression for the threshold position index (e.g., "mid_thresh", "k")
-  # role: "mid", "gap_up", "gap_down" -- determines how RE column is accessed
   gen_re_lines <- function(target, thresh_k_expr, role = "mid") {
     re_lines <- character(0)
     for (group in names(crit$random)) {
@@ -4039,7 +3730,6 @@ generate_thresh_code <- function(model_data) {
 
   lines <- c("    vector[K-1] thresh;")
 
-  # === Mid-anchor threshold ===
   if (is_intercept_only) {
     lines <- c(lines, "    thresh[mid_thresh] = beta_thresh_mid[1];")
   } else {
@@ -4047,7 +3737,6 @@ generate_thresh_code <- function(model_data) {
   }
   lines <- c(lines, gen_re_lines("thresh[mid_thresh]", "mid_thresh"))
 
-  # Criterion smooth contribution to mid-anchor (row 1 of per-threshold smooth)
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -4061,7 +3750,6 @@ generate_thresh_code <- function(model_data) {
   }
 
   if (K > 2) {
-    # === Upper gaps: mid+1 to K-1 ===
     lines <- c(lines,
                "    for (k in (mid_thresh+1):(K-1)) {")
 
@@ -4071,7 +3759,6 @@ generate_thresh_code <- function(model_data) {
       lines <- c(lines, "      real log_gap = X_criterion[n, ] * beta_log_gaps[k - mid_thresh, ]';")
     }
     lines <- c(lines, gen_re_lines("log_gap", "k"))
-    # Criterion smooth contribution to each gap
     if (!is.null(model_data$smooth_data[["criterion"]])) {
       for (sm in model_data$smooth_data[["criterion"]]) {
         for (comp in sm$components) {
@@ -4085,7 +3772,6 @@ generate_thresh_code <- function(model_data) {
     }
     lines <- c(lines, "      thresh[k] = thresh[k-1] + exp(log_gap);", "    }")
 
-    # === Lower gaps: mid-1 down to 1 ===
     lines <- c(lines,
                "    for (k_down in 1:(mid_thresh-1)) {",
                "      int k = mid_thresh - k_down;")
@@ -4096,14 +3782,12 @@ generate_thresh_code <- function(model_data) {
       lines <- c(lines, "      real log_gap = X_criterion[n, ] * beta_log_gaps[K - 1 - mid_thresh + k_down, ]';")
     }
     lines <- c(lines, gen_re_lines("log_gap", "k"))
-    # Criterion smooth contribution to lower gaps
     if (!is.null(model_data$smooth_data[["criterion"]])) {
       for (sm in model_data$smooth_data[["criterion"]]) {
         for (comp in sm$components) {
           for (ki in seq_along(comp$Zs_list)) {
             zs_name <- paste0("Zs_criterion_", comp$san_label, "_", ki)
             coef_name <- paste0("s_criterion_", comp$san_label, "_", ki)
-            # Gap index in the s_ matrix: n_upper_gaps + k_down (rows after mid and upper gaps)
             lines <- c(lines, sprintf("      log_gap += %s[n, ] * %s[1 + K - 1 - mid_thresh + k_down, ]';", zs_name, coef_name))
           }
         }
@@ -4114,7 +3798,6 @@ generate_thresh_code <- function(model_data) {
 
   lines
 }
-
 
 generate_generated_quantities_block_v2 <- function(model_data, family) {
   family_name <- if (is.list(family)) family$family else family
@@ -4149,7 +3832,6 @@ generate_generated_quantities_block_v2 <- function(model_data, family) {
     }
   }
   
-  # Criterion2 correlations (for bivariate_sdt)
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
@@ -4170,11 +3852,8 @@ generate_generated_quantities_block_v2 <- function(model_data, family) {
   
   lines <- c(lines, "", "  vector[N] log_lik;", "  for (n in 1:N) {")
   ll_code <- generate_likelihood_code(model_data, family_name)
-  # Collapse to single string, replace target += with log_lik[n] =, then split back
   ll_str <- paste(ll_code, collapse = "\n")
   ll_str <- gsub("target \\+= ([^;]+);", "log_lik[n] = \\1;", ll_str)
-  # Strip count multiplier so log_lik[n] is per-trial (not count-weighted).
-  # LOO needs per-observation log-likelihoods; loo_broc() handles expansion.
   ll_str <- gsub("log_lik\\[n\\] = counts\\[n\\] \\* ", "log_lik[n] = ", ll_str)
   ll_code <- strsplit(ll_str, "\n")[[1]]
   lines <- c(lines, ll_code)
@@ -4182,7 +3861,6 @@ generate_generated_quantities_block_v2 <- function(model_data, family) {
   
   paste(lines, collapse = "\n")
 }
-
 
 get_all_groups <- function(model_data) {
   groups <- c(names(model_data$dprime_random), names(model_data$criterion$random))
@@ -4192,7 +3870,6 @@ get_all_groups <- function(model_data) {
   if (model_data$has_sigma2) groups <- c(groups, names(model_data$sigma2_random))
   if (isTRUE(model_data$has_rec_crit)) groups <- c(groups, names(model_data$rec_crit_random))
   if (isTRUE(model_data$has_know_crit)) groups <- c(groups, names(model_data$know_crit_random))
-  # Bivariate/source parameters
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     groups <- c(groups, names(model_data$criterion2$random))
   }
@@ -4202,13 +3879,11 @@ get_all_groups <- function(model_data) {
     re_list <- model_data[[paste0(pname, "_random")]]
     if (!is.null(re_list)) groups <- c(groups, names(re_list))
   }
-  # Cross-parameter correlation groups
   for (cor_id in names(model_data$cross_cor)) {
     groups <- c(groups, model_data$cross_cor[[cor_id]]$group)
   }
   unique(groups)
 }
-
 
 get_all_term_indices <- function(model_data) {
   indices <- list()
@@ -4222,7 +3897,6 @@ get_all_term_indices <- function(model_data) {
     if (is.null(re_list)) next
     for (group in names(re_list)) {
       re <- re_list[[group]]
-      # Only include if using index approach (not Z matrix)
       if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
         idx_name <- paste0("idx_", pname, "_", group)
         dim_name <- paste0("D_idx_", pname, "_", group)
@@ -4233,7 +3907,6 @@ get_all_term_indices <- function(model_data) {
   
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
-    # Only include if using index approach (not Z matrix)
     if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
       idx_name <- paste0("idx_criterion_", group)
       dim_name <- paste0("D_idx_criterion_", group)
@@ -4243,7 +3916,6 @@ get_all_term_indices <- function(model_data) {
   
   indices
 }
-
 
 get_all_z_matrices <- function(model_data) {
   z_matrices <- list()
@@ -4265,19 +3937,16 @@ get_all_z_matrices <- function(model_data) {
     }
   }
   
-  # Criterion random effects
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (isTRUE(re$use_z_matrix)) {
       z_name <- paste0("Z_criterion_", group)
-      # For criterion, Z matrix has n_re_terms columns (e.g., 2 for intercept + slope)
       z_matrices[[z_name]] <- list(name = z_name, dim = re$n_re_terms, param = "criterion", group = group)
     }
   }
   
   z_matrices
 }
-
 
 # ---- Smooth term Stan code generation helpers ----
 
@@ -4323,7 +3992,6 @@ generate_smooth_param_declarations <- function(model_data) {
     nb <- paste0("nbasis_", pname, "_", suffix, "_", k)
     base <- paste0(pname, "_", suffix, "_", k)
     if (n_thresh > 0) {
-      # Per-threshold: vector of sds and matrix of zs
       c(sprintf("  vector<lower=0>[%d] sds_%s;  // per-threshold smooth penalty SDs", n_thresh, base),
         sprintf("  matrix[%d, %s] zs_%s;  // per-threshold standardized smooth coefficients", n_thresh, nb, base))
     } else {
@@ -4340,7 +4008,6 @@ generate_smooth_transformed_params <- function(model_data) {
     base <- paste0(pname, "_", suffix, "_", k)
     nb <- paste0("nbasis_", pname, "_", suffix, "_", k)
     if (n_thresh > 0) {
-      # Per-threshold: s is a matrix [n_thresh, nbasis]
       c(sprintf("  matrix[%d, %s] s_%s;", n_thresh, nb, base),
         sprintf("  for (t in 1:%d) s_%s[t, ] = sds_%s[t] * zs_%s[t, ];", n_thresh, base, base, base))
     } else {
@@ -4366,7 +4033,6 @@ generate_smooth_priors <- function(model_data) {
     }
   })
 }
-
 
 #' @export
 print.stan_code <- function(x, ...) {

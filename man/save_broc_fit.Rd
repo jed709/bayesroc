@@ -9,7 +9,8 @@ save_broc_fit(
   file,
   compress = FALSE,
   verbose = TRUE,
-  include_loglik = NULL
+  include_loglik = NULL,
+  re_store = c("f32", "f64", "int16", "int8")
 )
 }
 \arguments{

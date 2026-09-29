@@ -4,7 +4,6 @@
 #' Uses environment-based S3 class so $draws(), $summary(), etc. work like
 #' CmdStanMCMC's R6 interface.
 
-
 # =============================================================================
 # Constructor
 # =============================================================================
@@ -19,18 +18,19 @@
 #' @param elapsed Elapsed time in seconds (numeric)
 #' @param draws_array For JAX: pre-converted posterior::draws_array (NULL for Stan)
 #' @param max_treedepth Maximum NUTS tree depth used in the fit (default 10).
+#' @param loglik_path Path to the `.npy` log_lik sidecar, or `NULL`
 #' @return An broc_fit object (environment with S3 class)
 #' @keywords internal
 #' @export
 new_broc_fit <- function(backend_fit, model, backend = "stan",
                         num_chains = 4L, iter_sampling = 1000L,
                         elapsed = NULL, draws_array = NULL,
-                        max_treedepth = 10L, save_loglik = TRUE,
-                        diagnostics = NULL) {
+                        max_treedepth = 10L, sampler = "nuts",
+                        save_loglik = TRUE,
+                        diagnostics = NULL, loglik_path = NULL) {
 
   self <- new.env(parent = emptyenv())
 
-  # Store internals
   self$.backend_fit <- backend_fit
   self$.backend <- backend
   self$.num_chains <- as.integer(num_chains)
@@ -38,14 +38,33 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$.elapsed <- elapsed
   self$.draws_array <- draws_array
   self$.max_treedepth <- as.integer(max_treedepth)
+  self$.sampler <- sampler
   self$.save_loglik <- isTRUE(save_loglik)
-  self$.diagnostics <- diagnostics   # precomputed; used when backend_fit absent
+  self$.diagnostics <- diagnostics
+  self$.loglik_path <- loglik_path
 
-  # No live CmdStanMCMC (JAX, or a draws-only reload) -> use the draws_array path.
   use_cmdstan <- backend == "stan" && !is.null(backend_fit)
 
   # ---- draws() ----
   self$draws <- function(variables = NULL, format = "array") {
+    if (identical(variables, "log_lik") && !is.null(self$.loglik_path)) {
+      if (!file.exists(self$.loglik_path)) {
+        stop("The log_lik sidecar '", basename(self$.loglik_path),
+             "' is gone. Refit with save_loglik = TRUE, or use loo = TRUE to ",
+             "compute LOO at fit time.", call. = FALSE)
+      }
+      ll <- .read_loglik_CDN(self$.loglik_path)
+      arr <- aperm(ll, c(2, 1, 3))
+      dimnames(arr) <- list(iteration = NULL, chain = NULL,
+                            variable = paste0("log_lik[",
+                                              seq_len(dim(arr)[3]), "]"))
+      da <- posterior::as_draws_array(arr)
+      return(switch(format,
+                    matrix = posterior::as_draws_matrix(da),
+                    df = posterior::as_draws_df(da),
+                    data.frame = posterior::as_draws_df(da),
+                    da))
+    }
     if (use_cmdstan) {
       if (is.null(variables)) {
         backend_fit$draws(format = format)
@@ -53,18 +72,15 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
         backend_fit$draws(variables = variables, format = format)
       }
     } else {
-      # JAX / draws-only: subset from cached draws_array
       da <- self$.draws_array
       if (!is.null(variables)) {
         all_vars <- posterior::variables(da)
-        # Expand variable prefixes (e.g. "beta_dprime" -> all beta_dprime[...])
         matched <- character(0)
         for (v in variables) {
           exact <- v %in% all_vars
           if (exact) {
             matched <- c(matched, v)
           } else {
-            # Try prefix match (Stan convention: "beta_dprime" matches "beta_dprime[1]", etc.)
             pat <- paste0("^", gsub("\\[", "\\\\[", v), "(\\[|$)")
             hits <- grep(pat, all_vars, value = TRUE)
             matched <- c(matched, hits)
@@ -120,13 +136,26 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
     if (use_cmdstan) {
       backend_fit$diagnostic_summary(...)
     } else if (!is.null(self$.diagnostics)) {
-      self$.diagnostics            # precomputed (draws-only reload)
+      self$.diagnostics
     } else {
-      # JAX: compute from extra_fields
-      # Extra field arrays are [chains, draws]. Process per-chain directly
-      # to avoid column-major flattening issues with as.vector().
       ef <- backend_fit$extra_fields
       nc <- self$.num_chains
+      if (identical(self$.sampler, "drghmc")) {
+        return(list(
+          ebfmi = if (!is.null(ef$energy)) {
+            vapply(seq_len(nc), function(ch) {
+              e <- ef$energy[ch, ]; de <- diff(e)
+              sum(de^2) / sum((e - mean(e))^2)
+            }, numeric(1))
+          } else rep(NA_real_, nc),
+          accept = if (!is.null(ef$accept_prob)) mean(ef$accept_prob) else NA_real_,
+          dr_stage = if (!is.null(ef$dr_stage)) {
+            s <- ef$dr_stage
+            c(s1 = mean(s == 1), s2 = mean(s == 2),
+              s3 = mean(s == 3), rej = mean(s < 0))
+          } else NULL
+        ))
+      }
       list(
         num_divergent = if (!is.null(ef$diverging)) {
           vapply(seq_len(nc), function(ch) sum(as.integer(ef$diverging[ch, ])), integer(1))
@@ -148,23 +177,23 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 
   # ---- loo() ----
   self$loo <- function(variables = "log_lik", cores = 4, ...) {
-    if (use_cmdstan) {
-      backend_fit$loo(variables = variables, cores = cores, ...)
-    } else {
-      if (!requireNamespace("loo", quietly = TRUE)) {
-        stop("Package 'loo' is required for LOO-CV.")
-      }
-      if (identical(variables, "log_lik") && !isTRUE(self$.save_loglik) &&
-          !any(grepl("^log_lik(\\[|$)", posterior::variables(self$.draws_array)))) {
-        stop("This fit was saved with save_loglik = FALSE, so the ",
-             "log-likelihood needed for loo() is not available. Refit with ",
-             "save_loglik = TRUE (the default).", call. = FALSE)
-      }
-      ll <- self$draws(variables = variables, format = "matrix")
-      r_eff <- loo::relative_eff(exp(ll), chain_id = rep(seq_len(self$.num_chains),
-        each = self$.iter_sampling))
-      loo::loo(ll, r_eff = r_eff, cores = cores, ...)
+    if (!requireNamespace("loo", quietly = TRUE)) {
+      stop("Package 'loo' is required for LOO-CV.")
     }
+    if (identical(variables, "log_lik") && !use_cmdstan &&
+        !isTRUE(self$.save_loglik) &&
+        !any(grepl("^log_lik(\\[|$)", posterior::variables(self$.draws_array)))) {
+      stop("This fit was saved with save_loglik = FALSE, so the ",
+           "log-likelihood needed for loo() is not available. Refit with ",
+           "save_loglik = TRUE (the default).", call. = FALSE)
+    }
+    if (identical(variables, "log_lik")) {
+      return(loo.broc_fit(self, cores = cores, ...))
+    }
+    ll <- as.matrix(self$draws(variables = variables, format = "matrix"))
+    r_eff <- loo::relative_eff(exp(ll), chain_id = rep(seq_len(self$.num_chains),
+      each = self$.iter_sampling))
+    loo::loo(ll, r_eff = r_eff, cores = cores, ...)
   }
 
   # ---- num_chains() ----
@@ -184,21 +213,15 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   }
 
   # ---- save_object() ----
-  # Delegates to the top-level save_broc_fit() helper, which extracts a
-  # plain-data bundle rather than serializing the whole environment-based
-  # broc_fit (which captures large closures and can be slow / unstable for
-  # real-scale fits).
   self$save_object <- function(file, ...) {
     save_broc_fit(self, file)
   }
 
-  # Set broc_model attribute for backwards compatibility
   attr(self, "broc_model") <- model
   class(self) <- c("broc_fit", "environment")
 
   self
 }
-
 
 # =============================================================================
 # Save / load
@@ -233,21 +256,32 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' }
 #' @export
 save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
-                          include_loglik = NULL) {
+                          include_loglik = NULL,
+                          re_store = c("f32", "f64", "int16", "int8")) {
   if (!inherits(fit, "broc_fit")) {
     stop("`fit` must be a broc_fit object.", call. = FALSE)
   }
+  re_store <- if (missing(re_store) && !is.null(fit$.re_store)) fit$.re_store else match.arg(re_store)
   backend <- fit$.backend %||% "stan"
   keep_ll <- if (!is.null(include_loglik)) isTRUE(include_loglik)
              else isTRUE(fit$.save_loglik %||% TRUE)
+  persist_side <- isTRUE(include_loglik)
 
   if (verbose) {
     message("Saving broc_fit to ", file, "...")
   }
   t0 <- proc.time()["elapsed"]
 
+  side <- NULL
+  if (persist_side && !is.null(fit$.loglik_path) && file.exists(fit$.loglik_path)) {
+    side <- paste0(tools::file_path_sans_ext(file), "_loglik.npy")
+    if (!identical(normalizePath(fit$.loglik_path, winslash = "/", mustWork = FALSE),
+                   normalizePath(side, winslash = "/", mustWork = FALSE))) {
+      file.copy(fit$.loglik_path, side, overwrite = TRUE)
+    }
+  }
+
   if (!keep_ll) {
-    # Drop log_lik (only used by loo()); store the draws + precomputed diagnostics.
     da <- if (backend == "stan")
             posterior::as_draws_array(fit$.backend_fit$draws())
           else fit$.draws_array
@@ -262,21 +296,19 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       iter_sampling    = fit$.iter_sampling,
       elapsed          = fit$.elapsed,
       max_treedepth    = fit$.max_treedepth %||% 10L,
+      sampler          = fit$.sampler %||% "nuts",
       draws_array      = da,
       save_loglik      = FALSE,
+      loglik_sidecar   = NULL,
       diagnostics      = fit$diagnostic_summary()
     )
   } else {
-    # For Stan: ask cmdstanr to inline the draws into a portable CmdStanMCMC
-    # via its own save_object, then read it back. For JAX: the backend_fit is
-    # already a plain in-memory list with the samples/extra_fields.
     bundle_backend_fit <- if (backend == "stan") {
       tmp <- tempfile(fileext = ".rds")
       on.exit(unlink(tmp), add = TRUE)
       fit$.backend_fit$save_object(file = tmp)
       readRDS(tmp)
     } else {
-      # draws_array (saved below) already holds these draws; drop the duplicate.
       bf <- fit$.backend_fit
       bf$samples <- NULL
       bf
@@ -291,9 +323,16 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       iter_sampling    = fit$.iter_sampling,
       elapsed          = fit$.elapsed,
       max_treedepth    = fit$.max_treedepth %||% 10L,
-      draws_array      = fit$.draws_array,     # NULL for Stan, populated for JAX
-      save_loglik      = TRUE
+      sampler          = fit$.sampler %||% "nuts",
+      draws_array      = fit$.draws_array,
+      save_loglik      = TRUE,
+      loglik_sidecar   = if (is.null(side)) NULL else basename(side)
     )
+  }
+  if (!is.null(bundle$draws_array)) {
+    sp <- .pack_re_draws(bundle$draws_array, re_store)
+    bundle$draws_array <- sp$draws
+    bundle$re_packed <- sp$packed
   }
   class(bundle) <- "broc_fit_saved"
 
@@ -324,15 +363,18 @@ load_broc_fit <- function(file) {
   }
   obj <- readRDS(file)
   if (inherits(obj, "broc_fit")) {
-    # Backwards-compat: very early saves were the env directly.
     return(obj)
   }
-  # Accept the current marker and the legacy `.ord_save_format` one.
   if (!inherits(obj, "broc_fit_saved") ||
       (is.null(obj$.bayesroc_save_format) && is.null(obj$.ord_save_format))) {
     stop("File '", file, "' does not contain a broc_fit_saved bundle ",
          "(got class: ", paste(class(obj), collapse = "/"), ").",
          call. = FALSE)
+  }
+  side <- NULL
+  if (!is.null(obj$loglik_sidecar)) {
+    cand <- file.path(dirname(file), obj$loglik_sidecar)
+    if (file.exists(cand)) side <- cand
   }
   new_broc_fit(
     backend_fit  = obj$backend_fit,
@@ -341,13 +383,14 @@ load_broc_fit <- function(file) {
     num_chains   = obj$num_chains,
     iter_sampling = obj$iter_sampling,
     elapsed      = obj$elapsed,
-    draws_array  = obj$draws_array,
+    draws_array  = .unpack_re_draws(obj$draws_array, obj$re_packed),
     max_treedepth = obj$max_treedepth %||% 10L,
+    sampler      = obj$sampler %||% "nuts",
     save_loglik  = obj$save_loglik %||% TRUE,
-    diagnostics  = obj$diagnostics
+    diagnostics  = obj$diagnostics,
+    loglik_path  = side
   )
 }
-
 
 # =============================================================================
 # Print Method
@@ -371,7 +414,6 @@ print.broc_fit <- function(x, ...) {
   invisible(x)
 }
 
-
 # =============================================================================
 # NumPyro Samples Conversion
 # =============================================================================
@@ -391,7 +433,6 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
     stop("Package 'posterior' is required for JAX backend.")
   }
 
-  # First pass: count total parameters and collect names
   var_names <- character(0)
   for (name in names(samples)) {
     dims <- dim(samples[[name]])
@@ -408,7 +449,6 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
 
   n_params <- length(var_names)
 
-  # Build 3D array directly: [iteration, chain, variable]
   draws_3d <- array(NA_real_, dim = c(n_draws, n_chains, n_params))
   col_idx <- 1L
 
@@ -451,7 +491,6 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
     variable = var_names
   )
 
-  # Set class directly to avoid the copy that as_draws_array() would make
   class(draws_3d) <- c("draws_array", "draws", "array")
   draws_3d
 }

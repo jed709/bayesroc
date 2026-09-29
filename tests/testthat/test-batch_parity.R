@@ -1,10 +1,3 @@
-# Batch (fused C++ analytic-gradient) Stan vs plain (vanilla autodiff) Stan must
-# agree. Plain Stan is the independent autodiff oracle for the hand-derived batch
-# gradients. These tests also guard:
-#   - the batch_likelihood = TRUE default,
-#   - the single-source-of-truth batch gate (generate_batch_cpp's NULL return),
-#     in particular that `cumulative` actually engages the batch path (it was
-#     previously excluded by a redundant second allowlist).
 
 .tol_batch <- 0.03
 
@@ -16,7 +9,6 @@
 .assert_batch_plain_agree <- function(formula, data, vars, tol = .tol_batch) {
   mb <- broc(formula, data = data, batch_likelihood = TRUE)
   mp <- broc(formula, data = data, batch_likelihood = FALSE)
-  # batch must actually engage for these (supported) families, and plain must not
   expect_true(isTRUE(mb$batch_likelihood))
   expect_false(isTRUE(mp$batch_likelihood))
 

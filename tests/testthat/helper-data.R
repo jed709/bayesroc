@@ -1,10 +1,5 @@
 library(bayesroc)
 
-# Shared synthetic-data fixtures for the test suite. Kept tiny so individual
-# fits run in <30s on CI.
-
-# Univariate ordinal SDT data (EVSDT / UVSDT / DPSDT / mixture).
-# 60 old + 60 new = 120 rows, K = 6.
 .fixture_univariate <- function(seed = 1, dprime = 1.0, sigma = 1.0, n_per = 60) {
   set.seed(seed)
   thresh <- c(-1.2, -0.4, 0.3, 1.0, 1.8)
@@ -17,10 +12,6 @@ library(bayesroc)
   )
 }
 
-# Encoding-design recognition data: a within-target encoding manipulation
-# (`condition` = speak/read/sing) that lures cannot have (all lures are "new").
-# Exercises encoding() / encoding_vars. is_old coding is caller-controlled so the
-# same design can be built under treatment (0/1) or centered (-0.5/0.5) coding.
 .fixture_encoding <- function(seed = 3, old_code = 1, new_code = 0, n_per = 40) {
   set.seed(seed)
   thresh <- c(-1.2, -0.4, 0.3, 1.0, 1.8)
@@ -38,9 +29,6 @@ library(bayesroc)
   d
 }
 
-# Crossed subject x item recognition data (for cross-correlated REs, e.g.
-# `(1|s|sub) + (1|i|item)`). 8 subjects x 16 items, each item seen by every
-# subject, balanced old/new. Tiny but exercises the crossed-RE predict path.
 .fixture_crossed <- function(seed = 5, n_sub = 8, n_item = 16) {
   set.seed(seed)
   thresh <- c(-1.2, -0.4, 0.3, 1.0, 1.8)
@@ -55,8 +43,6 @@ library(bayesroc)
   rows
 }
 
-# Bivariate SDT data (bivariate_sdt / bivariate_dp): 3-way item_type
-# (new/A/B), two ordinal responses y1 (detection) and y2 (source).
 .fixture_bivariate_sdt <- function(seed = 2, n_per = 60) {
   set.seed(seed)
   K1 <- 4; K2 <- 4
@@ -74,8 +60,6 @@ library(bayesroc)
   data.frame(y1 = y1, y2 = y2, item_type = it)
 }
 
-# Bivariate cumulative ordinal data (no SDT structure). MASS-free MVN sample
-# via Cholesky.
 .fixture_bivariate_cumulative <- function(seed = 3, n = 200) {
   set.seed(seed)
   rho <- 0.5
@@ -88,13 +72,11 @@ library(bayesroc)
              cond = factor(rep(c("A", "B"), each = n / 2)))
 }
 
-# CDP data — the bundled rotello_2005 dataset is already fit-ready.
 .fixture_cdp <- function() {
   data(rotello_2005, package = "bayesroc", envir = environment())
   get("rotello_2005", envir = environment())
 }
 
-# Source-mixture data (DeCarlo source discrimination)
 .fixture_source_mixture <- function(seed = 4, n_per = 80) {
   set.seed(seed)
   K <- 6

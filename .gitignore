@@ -53,3 +53,6 @@ biv_dp_*.cpp
 # Top-level scratch / audit artifacts (analysis scripts, saved verification fits)
 /_*
 docs/
+
+tools/kernel_grad_check/.tmp/
+tools/kernel_grad_check/*.exe

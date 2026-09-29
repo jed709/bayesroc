@@ -1,6 +1,3 @@
-# Re-export generics from other packages so users can call e.g. `pp_check(fit)`,
-# `loo(fit)`, `posterior_epred(fit)`, `posterior_linpred(fit)` without having to
-# load bayesplot / loo / rstantools alongside bayesroc.
 
 #' @importFrom bayesplot pp_check
 #' @export

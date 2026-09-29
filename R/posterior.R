@@ -62,11 +62,8 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
   is_cumulative <- family_name == "cumulative"
   is_bivariate_cumulative <- family_name == "bivariate_cumulative"
 
-  # Accept user-facing aliases (e.g. cdp "rec"/"fam", cumulative "mu") by
-  # mapping them to internal names before validation.
   dpar <- external_to_internal_param(dpar, family_name)
 
-  # Validate dpar
   valid_dpars <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                    "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B",
@@ -89,7 +86,6 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
 
   # ---- Extract draws ----
   vars_needed <- get_predict_variables(model, include_re = !identical(re_formula, NA))
-  # Also need sigma_RE / L_corr_RE for new-level sampling
   if (allow_new_levels) {
     extra <- get_re_prior_variables(model)
     meta_base <- unique(sub("\\[.*$", "", fit$metadata()$variables))
@@ -103,7 +99,6 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
     S <- ndraws
   }
 
-  # Stash allow_new_levels flag in data_src so compute_re_contribution sees it
   data_src$.allow_new_levels <- isTRUE(allow_new_levels)
 
   # ---- Compute ----
@@ -113,8 +108,6 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
     stop("dpar '", dpar, "' is not part of the fitted model.", call. = FALSE)
   }
 
-  # compute_trial_params transposes internally, so trial_params[[dpar]] is
-  # already S x N -- no further transpose needed.
   out <- trial_params[[dpar]]
 
   if (!summary) return(out)
@@ -128,7 +121,6 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
     upper = apply(out, 2, quantile, probs = probs_upper)
   )
 }
-
 
 #' Posterior expected response value
 #'
@@ -157,7 +149,6 @@ posterior_epred.broc_fit <- function(object, newdata = NULL,
                    ...)
   d <- dim(probs)
   if (length(d) == 4) {
-    # bivariate: probs is S x N x K1 x K2 -- collapse to two epreds
     K1 <- d[3]; K2 <- d[4]
     e1 <- apply(probs, c(1, 2), function(p) sum(rowSums(matrix(p, K1, K2)) * seq_len(K1)))
     e2 <- apply(probs, c(1, 2), function(p) sum(colSums(matrix(p, K1, K2)) * seq_len(K2)))
@@ -175,7 +166,6 @@ posterior_epred.broc_fit <- function(object, newdata = NULL,
     return(rbind(summarize_epred(out$y1, "y1"),
                  summarize_epred(out$y2, "y2")))
   }
-  # Univariate: S x N x K -> S x N
   K <- d[3]
   k_vec <- seq_len(K)
   out <- apply(probs, c(1, 2), function(p) sum(p * k_vec))
@@ -190,17 +180,12 @@ posterior_epred.broc_fit <- function(object, newdata = NULL,
   )
 }
 
-
 # =============================================================================
 # allow_new_levels helpers
 # =============================================================================
 
 #' @noRd
 get_re_prior_variables <- function(model) {
-  # Base names of the prior SD / correlation variables needed to sample
-  # u ~ N(0, sigma) for new RE levels. Returns base names only (de-indexed);
-  # the caller intersects against (de-indexed) fit variables and lets the draws
-  # accessor expand each base to its elements.
   md <- model$model_data
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
@@ -218,7 +203,6 @@ get_re_prior_variables <- function(model) {
     vars
   }
 
-  # Fixed-parameter REs (flat md$<pname>_random)
   re_param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
@@ -233,14 +217,12 @@ get_re_prior_variables <- function(model) {
     vars <- add_re(vars, re_list, stan_pname)
   }
 
-  # Criterion / criterion2 REs are nested (md$criterion$random)
   crit_name <- if (is_cumulative) "cutpoints" else
     if (is_bivariate_cumulative) "cutpoints1" else "criterion"
   if (!is.null(md$criterion$random)) vars <- add_re(vars, md$criterion$random, crit_name)
   crit2_name <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
   if (!is.null(md$criterion2$random)) vars <- add_re(vars, md$criterion2$random, crit2_name)
 
-  # Smooth penalty SDs, for sampling a new by-level smooth from its prior.
   if (!is.null(md$smooth_data)) {
     for (pname in names(md$smooth_data)) {
       for (sm in md$smooth_data[[pname]]) {
@@ -256,11 +238,8 @@ get_re_prior_variables <- function(model) {
   unique(vars)
 }
 
-
 #' @noRd
 rebuild_design_matrices_for_linpred <- function(model, newdata, allow_new_levels) {
-  # Wraps rebuild_design_matrices and turns "new levels found" warnings into
-  # errors when allow_new_levels = FALSE, or suppresses them when TRUE.
   was_warn <- list()
   data_src <- withCallingHandlers(
     rebuild_design_matrices(model, newdata),
@@ -281,11 +260,5 @@ rebuild_design_matrices_for_linpred <- function(model, newdata, allow_new_levels
   data_src
 }
 
-
 # =============================================================================
-# Patches to compute_re_contribution to honor data_src$.allow_new_levels
 # =============================================================================
-# Implementation note: the actual modification of compute_re_contribution
-# lives in predict.R since it's intertwined with the existing RE-lookup loop.
-# This file only provides the user-facing wrappers and the discovery of which
-# extra prior-side variables to pull from the fit.

@@ -1,6 +1,3 @@
-# Guards for fit_broc() sampler arguments that were previously broken or
-# backend-asymmetric: seed reproducibility (Stan seed was never passed to
-# cmdstanr), thinning, and the cmdstanr-only `...` warning on JAX.
 
 .bd1 <- function(f) {
   mean(posterior::as_draws_matrix(f$draws(variables = "beta_dprime[1]"))[, 1])

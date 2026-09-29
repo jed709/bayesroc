@@ -1,4 +1,3 @@
-# Tests for the up-front validation we added in broc().
 
 test_that("broc() errors when data is NULL or wrong class", {
   expect_error(broc(item_resp | is_old ~ 1, family = evsd()),
@@ -26,16 +25,12 @@ test_that("broc() does not flag cross-correlation IDs as missing columns", {
   d <- .fixture_univariate()
   d$subj <- factor(rep(1:6, length.out = nrow(d)))
   d$item <- factor(rep(1:10, length.out = nrow(d)))
-  # `|p|` and `|w|` are brms-style cross-parameter correlation IDs, not data
-  # columns. Should NOT be reported as missing. The subj / item grouping
-  # factors *are* real columns and should pass.
   expect_no_error(
     broc(brf(item_resp | is_old ~ 1 + (1 |p| subj) + (1 |w| item),
              sigma ~ 1 + (1 |p| subj) + (1 |w| item),
              family = uvsd()),
          d)
   )
-  # But a genuine typo on the grouping factor should still be caught
   err <- expect_error(
     broc(brf(item_resp | is_old ~ 1 + (1 |p| subjj),
              family = uvsd()),
@@ -66,29 +61,23 @@ test_that("broc() accepts 0/1 and -0.5/0.5 is_old coding, errors otherwise", {
   d <- .fixture_univariate()
   expect_s3_class(broc(brf(item_resp | is_old ~ 1, family = evsd()), d), "broc_model")
 
-  dc <- d; dc$is_old <- ifelse(d$is_old == 1, 0.5, -0.5)   # centered
+  dc <- d; dc$is_old <- ifelse(d$is_old == 1, 0.5, -0.5)
   expect_s3_class(broc(brf(item_resp | is_old ~ 1, family = evsd()), dc), "broc_model")
 
-  d12 <- d; d12$is_old <- d$is_old + 1L                    # 1/2 -- invalid
+  d12 <- d; d12$is_old <- d$is_old + 1L
   expect_error(broc(brf(item_resp | is_old ~ 1, family = evsd()), d12),
                "0/1.*or.*-0\\.5/0\\.5|coded 0/1")
 
-  dm <- d; dm$is_old <- rep(c(0, 1, 0.5, -0.5), length.out = nrow(d))  # mixed
+  dm <- d; dm$is_old <- rep(c(0, 1, 0.5, -0.5), length.out = nrow(d))
   expect_error(broc(brf(item_resp | is_old ~ 1, family = evsd()), dm),
                "coded 0/1")
 
-  # Factor is_old (e.g. from table()) is read by its labels, not factor codes.
   df <- d; df$is_old <- factor(d$is_old, levels = c(0, 1))
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), df)
   expect_setequal(sort(unique(m$model_data$stan_data$is_old)), c(0, 1))
 })
 
 test_that("centered is_old + encoding_vars recodes consistently (no all-zero d')", {
-  # Regression: centered coding (-0.5/0.5) with encoding factors is recoded to
-  # 0/1. The recode must reach the design-matrix builders (which detect target
-  # rows for encoding()) AND the stored data frame -- otherwise encoding()
-  # silently no-ops, the d' design matrix is all-zero, and the lure-only level
-  # survives as an unidentified nuisance.
   d_ctr <- .fixture_encoding(old_code = 0.5, new_code = -0.5)
   d_01  <- .fixture_encoding(old_code = 1,   new_code = 0)
   f <- brf(item_resp | is_old ~ condition, sigma ~ 1)
@@ -100,13 +89,10 @@ test_that("centered is_old + encoding_vars recodes consistently (no all-zero d')
                batch_likelihood = FALSE)
 
   fx <- m_ctr$model_data$dprime_fixed
-  # Lure-only level dropped, design matrix not collapsed to zero.
   expect_false(any(grepl("new", fx$coef_names)))
   expect_false(all(fx$X == 0))
-  # Recode reaches both the likelihood input and the stored data frame.
   expect_setequal(unique(m_ctr$stan_data$is_old), c(0, 1))
   expect_setequal(unique(m_ctr$data$is_old), c(0, 1))
-  # Centered build is now identical to the treatment-coded build.
   expect_identical(fx$coef_names, m_01$model_data$dprime_fixed$coef_names)
   expect_equal(fx$X, m_01$model_data$dprime_fixed$X)
 })
@@ -128,10 +114,51 @@ test_that("broc() rejects factor/character is_old with non-numeric labels", {
     broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), d),
     "coerced to 0/1|coded 0/1"
   )
-  # A factor whose LABELS are numeric (0/1) is still accepted (coerced by label).
   d2 <- .fixture_univariate()
   d2$is_old <- factor(d2$is_old, levels = c(0, 1))
   expect_no_error(
     broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), d2)
   )
+})
+
+test_that("broc() drops zero-count rows", {
+  d <- .fixture_univariate()
+  agg <- aggregate(list(n = rep(1L, nrow(d))),
+                   by = list(item_resp = d$item_resp, is_old = d$is_old),
+                   FUN = sum)
+  agg$n[1] <- 0L
+  expect_message(
+    m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), agg, counts = "n"),
+    "Dropping 1 row"
+  )
+  expect_equal(m$stan_data$N, nrow(agg) - 1L)
+  expect_true(all(m$stan_data$counts > 0))
+})
+
+test_that("broc() errors when a formula names a parameter the family lacks", {
+  d <- .fixture_univariate()
+  expect_error(
+    broc(brf(item_resp | is_old ~ 1, lambda ~ 1, family = uvsd()), d),
+    "lambda"
+  )
+})
+
+test_that("encoding factor with one surviving level does not crash", {
+  d <- .fixture_encoding()
+  d <- d[d$condition %in% c("new", "speak"), , drop = FALSE]
+  d$condition <- droplevels(d$condition)
+  expect_no_error(
+    broc(brf(item_resp | is_old ~ condition, family = evsd(),
+             encoding_vars = "condition"), d)
+  )
+})
+
+test_that("cumulative default slope prior is centred at 0", {
+  d <- .fixture_univariate()
+  m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()), d)
+  expect_identical(m$model_data$prior_lookup$b[["dprime"]], "normal(0, 1)")
+
+  d2 <- .fixture_univariate()
+  m2 <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d2)
+  expect_identical(m2$model_data$prior_lookup$b[["dprime"]], "normal(1, 1)")
 })

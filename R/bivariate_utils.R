@@ -4,7 +4,6 @@
 #' mirroring the Stan functions in generate_stan.R for use in predict_broc() and
 #' pp_check_broc().
 
-
 # =============================================================================
 # Owen's T Function
 # =============================================================================
@@ -18,7 +17,6 @@
 #' @param a Numeric scalar or vector (same length as h)
 #' @return Numeric vector of Owen's T values
 #' @noRd
-# Precomputed 20-point GL quadrature nodes and weights (module-level constant)
 .gl20_nodes <- c(
   -0.9931285991850949, -0.9639719272779138, -0.9122344282513259,
   -0.8391169718222188, -0.7463319064601508, -0.6360536807265150,
@@ -40,14 +38,12 @@
   0.0176140071391521
 )
 
-
 #' Owen's T function -- fully vectorized over h and a
 #' @noRd
 owens_t_r <- function(h, a) {
   n <- length(h)
   result <- numeric(n)
 
-  # Handle special cases
   zero_a <- a == 0
   inf_h <- is.infinite(h)
   inf_a <- is.infinite(a)
@@ -59,14 +55,12 @@ owens_t_r <- function(h, a) {
     result[mask_inf_a] <- sign(a[mask_inf_a]) * (1 - pnorm(abs(h[mask_inf_a]))) / 2
   }
 
-  # Remaining: finite h and a, a != 0
   todo <- !zero_a & !inf_h & !inf_a
   if (!any(todo)) return(result)
 
   h_t <- h[todo]
   a_t <- a[todo]
 
-  # Split: |a| <= 1 (direct GL) vs |a| > 1 (identity reduction)
   big <- abs(a_t) > 1
   small <- !big
 
@@ -88,7 +82,6 @@ owens_t_r <- function(h, a) {
   result
 }
 
-
 #' Core vectorized Owen's T via GL quadrature (for |a| <= 1)
 #' @param h Numeric vector
 #' @param a Numeric vector (same length, |a| <= 1)
@@ -96,28 +89,20 @@ owens_t_r <- function(h, a) {
 #' @noRd
 owens_t_r_core_vec <- function(h, a) {
   n <- length(h)
-  # GL quadrature nodes/weights transformed to [0, a_i] for each element
-  # mid = a/2, half = a/2, x_ij = mid_i + half_i * node_j
-  mid <- a / 2   # [n]
-  half <- a / 2  # [n]
+  mid <- a / 2
+  half <- a / 2
 
-  # Build [n x 20] matrix of quadrature points: x_ij = mid_i + half_i * node_j
   x_mat <- outer(mid, .gl20_nodes, "+") + outer(half - mid, .gl20_nodes, "*")
-  # Simpler: x_mat[i,j] = half[i] * (1 + nodes[j]) = a[i]/2 + a[i]/2 * nodes[j]
-  x_mat <- outer(half, .gl20_nodes, "*") + mid  # mid + half * nodes
+  x_mat <- outer(half, .gl20_nodes, "*") + mid
 
-  # Weights scaled by half: w_ij = half_i * weight_j
-  w_mat <- outer(half, .gl20_weights, "*")  # [n x 20]
+  w_mat <- outer(half, .gl20_weights, "*")
 
-  # Integrand: exp(-h^2 * (1 + x^2) / 2) / (1 + x^2)
-  h2 <- h^2  # [n]
-  x2 <- x_mat^2  # [n x 20]
-  integrand <- exp(-h2 * (1 + x2) / 2) / (1 + x2)  # [n x 20]
+  h2 <- h^2
+  x2 <- x_mat^2
+  integrand <- exp(-h2 * (1 + x2) / 2) / (1 + x2)
 
-  # Sum: result_i = sum_j(w_ij * integrand_ij) / (2*pi)
   rowSums(w_mat * integrand) / (2 * pi)
 }
-
 
 # =============================================================================
 # Bivariate Normal CDF
@@ -136,7 +121,6 @@ binormal_cdf_r <- function(z1, z2, rho) {
   n <- length(z1)
   result <- numeric(n)
 
-  # Handle infinities
   inf1_neg <- is.infinite(z1) & z1 < 0
   inf1_pos <- is.infinite(z1) & z1 > 0
   inf2_neg <- is.infinite(z2) & z2 < 0
@@ -148,7 +132,6 @@ binormal_cdf_r <- function(z1, z2, rho) {
   if (any(mask_inf1p)) result[mask_inf1p] <- pnorm(z2[mask_inf1p])
   if (any(mask_inf2p)) result[mask_inf2p] <- pnorm(z1[mask_inf2p])
 
-  # Remaining finite cases
   finite <- !is.infinite(z1) & !is.infinite(z2)
   if (!any(finite)) return(result)
 
@@ -156,7 +139,6 @@ binormal_cdf_r <- function(z1, z2, rho) {
   z2f <- z2[finite]
   rhof <- rho[finite]
 
-  # Handle zeros: offset to avoid division by zero
   z1f[z1f == 0] <- 1e-10
   z2f[z2f == 0] <- 1e-10
 
@@ -170,7 +152,6 @@ binormal_cdf_r <- function(z1, z2, rho) {
                     owens_t_r(z1f, a1) - owens_t_r(z2f, a2)
   result
 }
-
 
 # =============================================================================
 # Bivariate Cell Probability (9 cases)
@@ -194,18 +175,15 @@ binormal_cdf_r <- function(z1, z2, rho) {
 compute_bivariate_prob_r <- function(resp1, resp2, K1, K2,
                                       mu1, mu2, sigma1, sigma2,
                                       c1, c2, rho) {
-  # Standardize thresholds
   z1 <- (c1 - mu1) / sigma1
   z2 <- (c2 - mu2) / sigma2
 
-  # Fast path: when rho = 0, bivariate factors into product of univariates
   if (rho == 0) {
     p1 <- univariate_cell_prob_from_z(resp1, K1, z1)
     p2 <- univariate_cell_prob_from_z(resp2, K2, z2)
     return(p1 * p2)
   }
 
-  # 9 cases: corners, edges, interior
   if (resp1 == 1 && resp2 == 1) {
     return(binormal_cdf_r(z1[1], z2[1], rho))
   }
@@ -237,13 +215,11 @@ compute_bivariate_prob_r <- function(resp1, resp2, K1, K2,
              binormal_cdf_r(z2[K2 - 1], z1[resp1], rho) +
              binormal_cdf_r(z1[resp1 - 1], z2[K2 - 1], rho))
   }
-  # Interior
   binormal_cdf_r(z1[resp1], z2[resp2], rho) -
     binormal_cdf_r(z1[resp1], z2[resp2 - 1], rho) -
     binormal_cdf_r(z1[resp1 - 1], z2[resp2], rho) +
     binormal_cdf_r(z1[resp1 - 1], z2[resp2 - 1], rho)
 }
-
 
 #' Helper: univariate cell probability from standardized thresholds
 #' @noRd
@@ -252,7 +228,6 @@ univariate_cell_prob_from_z <- function(resp, K, z) {
   if (resp == K) return(1 - pnorm(z[K - 1]))
   pnorm(z[resp]) - pnorm(z[resp - 1])
 }
-
 
 # =============================================================================
 # Bounded Bivariate Probability
@@ -306,7 +281,6 @@ compute_bounded_prob_r <- function(resp1, resp2, K1, K2,
   } else {
     z_cp <- (cp - mu_I) / sigma_I
 
-    # Below-cp: independent, source ~ N(0, sigma_cond)
     z_ylo_b <- if (resp1 == 1) -8.0 else (c1[resp1 - 1] - mu_I) / sigma_I
     prob_below <- 0.0
     if (resp2 == 1) {
@@ -322,7 +296,6 @@ compute_bounded_prob_r <- function(resp1, resp2, K1, K2,
     }
     prob <- prob + prob_below
 
-    # Above-cp: standard bivariate
     z_yhi_a <- if (resp1 == K1) 8.0 else (c1[resp1] - mu_I) / sigma_I
     z2_a <- (c2 - mu_S) / sigma_S
     prob_above <- 0.0
@@ -355,7 +328,6 @@ compute_bounded_prob_r <- function(resp1, resp2, K1, K2,
   prob
 }
 
-
 # =============================================================================
 # Bounded Marginal Source Probability
 # =============================================================================
@@ -378,7 +350,6 @@ compute_bounded_prob_r <- function(resp1, resp2, K1, K2,
 compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
                                                 sigma_I, sigma_S, rho, c2) {
   if (abs(rho) < 1e-10) {
-    # Independent: marginal source is N(mu_S, sigma_S^2)
     return(univariate_cell_prob_r(resp_src, K2, mu_S, sigma_S, c2))
   }
 
@@ -389,7 +360,6 @@ compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
 
   prob <- 0
 
-  # Below-cp: source ~ N(0, sigma_cond)
   if (resp_src == 1) {
     prob <- prob + p_below * pnorm(c2[1] / sigma_cond)
   } else if (resp_src == K2) {
@@ -398,7 +368,6 @@ compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
     prob <- prob + p_below * (pnorm(c2[resp_src] / sigma_cond) - pnorm(c2[resp_src - 1] / sigma_cond))
   }
 
-  # Above-cp: standard BVN, marginal for source in bin k with item > cp
   z2 <- (c2 - mu_S) / sigma_S
 
   if (resp_src == 1) {
@@ -413,7 +382,6 @@ compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
 
   prob
 }
-
 
 # =============================================================================
 # Univariate Cell Probability
@@ -433,7 +401,6 @@ univariate_cell_prob_r <- function(resp, K, mu, sigma, thresh) {
   if (resp == K) return(1 - pnorm((thresh[K - 1] - mu) / sigma))
   pnorm((thresh[resp] - mu) / sigma) - pnorm((thresh[resp - 1] - mu) / sigma)
 }
-
 
 # =============================================================================
 # CDP Binormal Strip Integrals
@@ -466,9 +433,7 @@ binormal_strip_lower_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
   max(p_band - binormal_strip_upper_r(z_cR, z_tau_lo, z_tau_hi, rho), 1e-20)
 }
 
-
 # --- R/K/G (Remember/Know/Guess) CDP functions ---
-# G(c) approach: computes Guess directly, Know as remainder
 
 #' G(c) = P(R <= c_R, F <= c_K, M < c) -- unified guess probability formula
 #'
@@ -516,25 +481,22 @@ compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, 
   rho <- sigma_R / sigma_M
   z_cR <- (c_R - mu_R) / sigma_R
 
-  # Standardized thresholds
   z_lo <- (tau_lo - mu_M) / sigma_M
   z_hi <- (tau_hi - mu_M) / sigma_M
 
-  # REMEMBER: P(R > c_R, tau_lo < M < tau_hi)
   p_Remember <- (pnorm(z_hi) - binormal_cdf_r(z_cR, z_hi, rho)) -
                 (pnorm(z_lo) - binormal_cdf_r(z_cR, z_lo, rho))
 
-  # GUESS: G(tau_hi) - G(tau_lo) -- computed directly
   p_Guess <- G_cdp_r(tau_hi, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) -
              G_cdp_r(tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K)
 
-  # KNOW: remainder (= P(R <= c_R, band) - Guess)
   p_Band <- pnorm(z_hi) - pnorm(z_lo)
   p_Know <- p_Band - p_Remember - p_Guess
 
-  # Soft clamp: softplus with large kk for negligible distortion + smooth gradients
   kk <- 10000
-  c(log1p(exp(kk * p_Remember)) / kk,
-    log1p(exp(kk * p_Know)) / kk,
-    log1p(exp(kk * p_Guess)) / kk)
+  soft_floor <- function(p) {
+    y <- kk * p
+    (pmax(y, 0) + log1p(exp(-abs(y)))) / kk
+  }
+  c(soft_floor(p_Remember), soft_floor(p_Know), soft_floor(p_Guess))
 }

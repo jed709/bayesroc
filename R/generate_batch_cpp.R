@@ -22,36 +22,25 @@ generate_batch_cpp <- function(model_data, family) {
                   "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "cdp")
   if (!(family_name %in% supported)) return(NULL)
 
-  # (varying_source_criteria and bounded are now supported in batch)
-
-  # Collect structured info about every parameter
-
   params <- collect_batch_params(model_data, family_name)
 
-  # Store link name for logit vs probit dispatch
   link_name <- if (is.list(family) && !is.null(family$link)) family$link$name else "probit"
   params$.link_name <- link_name
 
-  # Build the canonical argument list (drives C++, Stan decl, and Stan call)
   sig <- build_batch_signature(model_data, family_name, params)
 
-  # Generate C++ code
   cpp <- generate_batch_cpp_code(model_data, family_name, params, sig)
 
-  # Generate Stan function declaration (goes in functions{} block)
   stan_decl <- generate_batch_stan_decl(sig)
 
-  # Generate Stan model block call (non-threaded: passes 1, N)
   stan_call <- generate_batch_stan_call(sig, threaded = FALSE)
 
-  # Generate threaded versions
   stan_partial <- generate_batch_partial_log_lik(sig)
   stan_call_threaded <- generate_batch_reduce_sum_call(sig)
 
   list(cpp_code = cpp, stan_decl = stan_decl, stan_call = stan_call,
        stan_partial = stan_partial, stan_call_threaded = stan_call_threaded)
 }
-
 
 # ============================================================================
 # Parameter collection
@@ -62,7 +51,6 @@ generate_batch_cpp <- function(model_data, family) {
 collect_batch_params <- function(model_data, family_name) {
   params <- list()
 
-  # dprime (always present for SDT families and cumulative)
   params$dprime <- list(
     fixed  = model_data$dprime_fixed,
     random = model_data$dprime_random,
@@ -72,7 +60,6 @@ collect_batch_params <- function(model_data, family_name) {
   is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")
   is_cdp <- family_name %in% c("cdp")
 
-  # sigma (UVSDT, or optional in dpsdt/mixture/vrdp2d/bivariate/cdp)
   if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp") && isTRUE(model_data$has_sigma)) {
     params$sigma <- list(
       fixed  = model_data$sigma_fixed,
@@ -81,7 +68,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda (dpsdt, mixture, source_mixture, vrdp2d)
   if (family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d") && isTRUE(model_data$has_lambda)) {
     params$lambda <- list(
       fixed  = model_data$lambda_fixed,
@@ -90,7 +76,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # dprime2 (mixture, vrdp2d, cdp)
   if (family_name %in% c("mixture", "vrdp2d", "cdp") && (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime))) {
     params$dprime2 <- list(
       fixed  = model_data$dprime2_fixed,
@@ -99,7 +84,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # sigma2 (mixture, vrdp2d, cdp)
   if (family_name %in% c("mixture", "vrdp2d", "cdp") && isTRUE(model_data$has_sigma2)) {
     params$sigma2 <- list(
       fixed  = model_data$sigma2_fixed,
@@ -108,7 +92,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # discrim (vrdp2d or bivariate -- source discriminability for source A)
   if ((family_name == "vrdp2d" || is_bivariate) && isTRUE(model_data$has_discrim)) {
     params$discrim <- list(
       fixed  = model_data$discrim_fixed,
@@ -117,7 +100,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # discrim_B (vrdp2d or bivariate -- optional, asymmetric source B)
   if ((family_name == "vrdp2d" || is_bivariate) && isTRUE(model_data$has_discrim_B)) {
     params$discrim_B <- list(
       fixed  = model_data$discrim_B_fixed,
@@ -126,7 +108,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # dprime_B (source_mixture or bivariate)
   if ((family_name == "source_mixture" || is_bivariate) && isTRUE(model_data$has_dprime_B)) {
     params$dprime_B <- list(
       fixed  = model_data$dprime_B_fixed,
@@ -135,7 +116,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda_B (source_mixture or bivariate_dp)
   if (family_name %in% c("source_mixture", "bivariate_dp") && isTRUE(model_data$has_lambda_B)) {
     params$lambda_B <- list(
       fixed  = model_data$lambda_B_fixed,
@@ -144,7 +124,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # dprime_L (lure mixture within mixture family)
   if (family_name == "mixture" && isTRUE(model_data$has_lure_mixture)) {
     params$dprime_L <- list(
       fixed  = model_data$dprime_L_fixed,
@@ -153,7 +132,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # sigma_L (lure mixture)
   if (family_name == "mixture" && isTRUE(model_data$has_sigma_L)) {
     params$sigma_L <- list(
       fixed  = model_data$sigma_L_fixed,
@@ -162,7 +140,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda_L (lure mixture)
   if (family_name == "mixture" && isTRUE(model_data$has_lambda_L)) {
     params$lambda_L <- list(
       fixed  = model_data$lambda_L_fixed,
@@ -173,7 +150,6 @@ collect_batch_params <- function(model_data, family_name) {
 
   # --- Bivariate-specific parameters ---
 
-  # sigma_B (bivariate -- Source B detection SD)
   if (is_bivariate && isTRUE(model_data$has_sigma_B)) {
     params$sigma_B <- list(
       fixed  = model_data$sigma_B_fixed,
@@ -182,7 +158,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # sigma2 (bivariate -- Source A discrimination SD)
   if (is_bivariate && isTRUE(model_data$has_sigma2)) {
     params$sigma2 <- list(
       fixed  = model_data$sigma2_fixed,
@@ -191,7 +166,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # sigma2_B (bivariate -- Source B discrimination SD)
   if (is_bivariate && isTRUE(model_data$has_sigma2_B)) {
     params$sigma2_B <- list(
       fixed  = model_data$sigma2_B_fixed,
@@ -200,16 +174,14 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # rho (bivariate -- correlation for Source A)
   if (is_bivariate && isTRUE(model_data$has_rho)) {
     params$rho <- list(
       fixed  = model_data$rho_fixed,
       random = model_data$rho_random,
-      link   = "tanh"  # Fisher z -> correlation
+      link   = "tanh"
     )
   }
 
-  # rho_B (bivariate -- correlation for Source B)
   if (is_bivariate && isTRUE(model_data$has_rho_B)) {
     params$rho_B <- list(
       fixed  = model_data$rho_B_fixed,
@@ -218,7 +190,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # rho_N (bivariate -- correlation for new items)
   if (is_bivariate && isTRUE(model_data$has_rho_N)) {
     params$rho_N <- list(
       fixed  = model_data$rho_N_fixed,
@@ -227,7 +198,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda (bivariate_dp -- item recollection R_I)
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda)) {
     params$lambda <- list(
       fixed  = model_data$lambda_fixed,
@@ -236,7 +206,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda2 (bivariate_dp -- source recollection R_S)
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda2)) {
     params$lambda2 <- list(
       fixed  = model_data$lambda2_fixed,
@@ -245,7 +214,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # lambda2_B (bivariate_dp -- Source-B source recollection R_S_B; optional)
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda2_B)) {
     params$lambda2_B <- list(
       fixed  = model_data$lambda2_B_fixed,
@@ -254,7 +222,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # rec_crit (cdp -- recollection criterion)
   if (is_cdp && isTRUE(model_data$has_rec_crit)) {
     params$rec_crit <- list(
       fixed  = model_data$rec_crit_fixed,
@@ -263,7 +230,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # know_crit (cdp -- know criterion for R/K/G)
   if (is_cdp && isTRUE(model_data$has_know_crit)) {
     params$know_crit <- list(
       fixed  = model_data$know_crit_fixed,
@@ -272,13 +238,11 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # Criterion
   params$criterion <- list(
     fixed  = model_data$criterion,
     random = model_data$criterion$random
   )
 
-  # Criterion2 (vrdp2d or bivariate -- source dimension thresholds)
   if (family_name == "vrdp2d" || is_bivariate) {
     params$criterion2 <- list(
       fixed  = model_data$criterion2,
@@ -286,7 +250,6 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  # Model-level flags
   params$.family      <- family_name
   params$.has_counts  <- isTRUE(model_data$has_counts)
   params$.has_sigma   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
@@ -294,11 +257,6 @@ collect_batch_params <- function(model_data, family_name) {
   params$.has_dprime2 <- (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime)) && family_name %in% c("mixture", "vrdp2d", "cdp")
   params$.has_sigma2  <- isTRUE(model_data$has_sigma2) && family_name %in% c("mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
   params$.has_dprime_B <- isTRUE(model_data$has_dprime_B) && (family_name == "source_mixture" || is_bivariate)
-  # lambda_B is supported by source_mixture (its original use) and by
-  # bivariate_dp (asymmetric Source-B item recollection). The data/RE
-  # wiring is identical; only the per-row dispatch differs (source_mixture
-  # uses a per-row `source` index; bivariate_dp dispatches on item_type
-  # inside bivariate_dp_cell).
   params$.has_lambda_B <- isTRUE(model_data$has_lambda_B) &&
     family_name %in% c("source_mixture", "bivariate_dp")
   params$.has_lambda_B_dp <- isTRUE(model_data$has_lambda_B) && family_name == "bivariate_dp"
@@ -338,7 +296,6 @@ collect_batch_params <- function(model_data, family_name) {
   params
 }
 
-
 # ============================================================================
 # Signature builder -- single source of truth for argument ordering
 # ============================================================================
@@ -355,7 +312,7 @@ collect_batch_params <- function(model_data, family_name) {
 #' @noRd
 build_batch_signature <- function(model_data, family_name, params) {
   args <- list()
-  tpl_idx <- 0  # counter for unique template names
+  tpl_idx <- 0
 
   # --- helpers ---
   add_data <- function(cpp_type, stan_type, stan_name) {
@@ -382,7 +339,6 @@ build_batch_signature <- function(model_data, family_name, params) {
     )
   }
   add_data_tpl <- function(stan_type, stan_name) {
-    # Data that still needs a template (e.g., design matrices passed as Eigen)
     tpl_idx <<- tpl_idx + 1
     tname <- sprintf("T%d_", tpl_idx)
     cpp_type <- sprintf("const %s&", tname)
@@ -396,7 +352,6 @@ build_batch_signature <- function(model_data, family_name, params) {
     )
   }
 
-  # Track added group index arrays to avoid duplicates
   added_group_idx <- character(0)
   add_group_idx <- function(group) {
     if (!(group %in% added_group_idx)) {
@@ -425,7 +380,6 @@ build_batch_signature <- function(model_data, family_name, params) {
   } else if (!isTRUE(params$.is_cumulative)) {
     add_data("const std::vector<double>&", "array[] real", "is_old_d")
   }
-  # CDP-specific data
   if (is_cdp_family) {
     add_data("const std::vector<int>&",  "array[] int",  "rk")
     if (isTRUE(params$.is_cdp)) {
@@ -438,11 +392,9 @@ build_batch_signature <- function(model_data, family_name, params) {
   if (!has_two_responses) {
     add_data("const int&",               "int",          "K")
     if (!isTRUE(params$.is_cdp)) {
-      # CDP uses mid_thresh_cdp (already added above); others use mid_thresh
       add_data("const int&",             "int",          "mid_thresh")
     }
   }
-  # Threading: start/end observation indices (1-based, inclusive)
   add_data("const int&",                 "int",          "start_idx")
   add_data("const int&",                 "int",          "end_idx")
 
@@ -463,20 +415,16 @@ build_batch_signature <- function(model_data, family_name, params) {
     for (group in names(params$dprime$random)) {
       dp_re_idx <- dp_re_idx + 1
       re <- params$dprime$random[[group]]
-      # group index array (dedup across params sharing same group)
       add_group_idx(group)
-      # Z matrix if needed
       if (isTRUE(re$use_z_matrix)) {
         add_data_tpl("matrix", sprintf("Z_dprime_%s", group))
       }
-      # RE vector/matrix
       var_name <- re_var_name("dprime", group, re$cor_id)
       if (re$dim == 1) {
         add_param("vector", var_name)
       } else {
         add_param("matrix", var_name)
       }
-      # term index if needed
       if (!is.null(re$term_idx)) {
         add_data("const std::vector<int>&",
                  "array[] int",
@@ -953,9 +901,8 @@ build_batch_signature <- function(model_data, family_name, params) {
   # ---- Criterion population (dimension 1 for vrdp2d/bivariate, or standard) ----
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
-  # For CDP, criterion thresholds cover J levels; otherwise K levels
   K_for_crit <- if (has_two_responses) model_data$stan_data$K1
-                else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1  # J thresholds need J+1 "categories"
+                else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1
                 else model_data$K
   if (!is_crit_intercept_only) {
     add_data_tpl("matrix", "X_criterion")
@@ -989,20 +936,17 @@ build_batch_signature <- function(model_data, family_name, params) {
   if (has_two_responses) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     if (varying_sc) {
-      # Varying source criteria: K1 sets of thresholds
       add_param("vector", "beta_thresh_mid_2_varying")
       K2_val <- model_data$stan_data$K2
       if (K2_val > 2) {
         add_param("matrix", "beta_log_gaps_2_varying")
       }
-      # Shared new-item thresholds if applicable
       if (identical(params$.new_source_criteria, "shared")) {
         add_param("real", "beta_thresh_mid_2_new")
         if (K2_val > 2) {
           add_param("vector", "beta_log_gaps_2_new")
         }
       }
-      # Criterion2 REs (if any -- varying mode)
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
           re <- params$criterion2$random[[group]]
@@ -1030,7 +974,6 @@ build_batch_signature <- function(model_data, family_name, params) {
           re <- params$criterion2$random[[group]]
           add_group_idx(group)
           var_name <- re_var_name("criterion2", group, re$cor_id)
-          # dim=1 intercept-only RE is a vector in Stan, multi-dim is a matrix
           crit2_re_type <- if (re$dim == 1) "vector" else "matrix"
           add_param(crit2_re_type, var_name)
 
@@ -1059,7 +1002,7 @@ build_batch_signature <- function(model_data, family_name, params) {
             s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
             add_data_tpl("matrix", zs_name)
             if (n_thresh_sm > 0) {
-              add_param("matrix", s_name)  # [n_thresh, nbasis]
+              add_param("matrix", s_name)
             } else {
               add_param("vector", s_name)
             }
@@ -1082,7 +1025,6 @@ build_batch_signature <- function(model_data, family_name, params) {
   args
 }
 
-
 #' Helper: construct RE variable name
 #' @noRd
 re_var_name <- function(param_name, group, cor_id) {
@@ -1092,7 +1034,6 @@ re_var_name <- function(param_name, group, cor_id) {
     sprintf("u_%s_%s", param_name, group)
   }
 }
-
 
 # ============================================================================
 # Stan declaration generator
@@ -1110,7 +1051,6 @@ generate_batch_stan_decl <- function(sig) {
   sprintf("  real batch_sdt_loglik(\n      %s);", arg_str)
 }
 
-
 # ============================================================================
 # Stan call generator
 # ============================================================================
@@ -1118,7 +1058,6 @@ generate_batch_stan_decl <- function(sig) {
 #' Generate Stan model block call
 #' @noRd
 generate_batch_stan_call <- function(sig, threaded = FALSE) {
-  # Deduplicate: same stan_name should only appear once
   seen <- character(0)
   parts <- character(0)
   for (a in sig) {
@@ -1127,7 +1066,6 @@ generate_batch_stan_call <- function(sig, threaded = FALSE) {
     stan_call_name <- nm
     if (nm == "is_old_d") stan_call_name <- "is_old"
     if (nm == "counts_d") stan_call_name <- "counts"
-    # start_idx/end_idx: use 1/N for non-threaded, start/end for threaded
     if (nm == "start_idx") {
       stan_call_name <- if (threaded) "start" else "1"
     }
@@ -1142,12 +1080,9 @@ generate_batch_stan_call <- function(sig, threaded = FALSE) {
   sprintf("  target += batch_sdt_loglik(\n      %s);", arg_str)
 }
 
-
 #' Generate partial_log_lik wrapper for reduce_sum threading
 #' @noRd
 generate_batch_partial_log_lik <- function(sig) {
-  # Build the parameter declarations for partial_log_lik_lpmf
-  # seq_n is sliced by reduce_sum; everything else (including y) is shared
   shared_decls <- character(0)
   shared_names <- character(0)
   seen <- character(0)
@@ -1168,9 +1103,7 @@ generate_batch_partial_log_lik <- function(sig) {
     shared_names <- c(shared_names, stan_call_name)
   }
 
-  # Build the batch_sdt_loglik call inside the wrapper
   batch_call <- generate_batch_stan_call(sig, threaded = TRUE)
-  # Replace "target +=" with "return" since partial returns a value
   batch_call <- sub("  target \\+=", "    return", batch_call)
 
   decl_str <- paste(shared_decls, collapse = ",\n      ")
@@ -1185,11 +1118,9 @@ generate_batch_partial_log_lik <- function(sig) {
   paste(lines, collapse = "\n")
 }
 
-
 #' Generate reduce_sum call for threaded batch likelihood
 #' @noRd
 generate_batch_reduce_sum_call <- function(sig) {
-  # Arguments to reduce_sum: the shared params (same order as partial_log_lik)
   seen <- character(0)
   parts <- character(0)
 
@@ -1214,7 +1145,6 @@ generate_batch_reduce_sum_call <- function(sig) {
   ), collapse = "\n")
 }
 
-
 # ============================================================================
 # C++ code generator
 # ============================================================================
@@ -1225,7 +1155,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L <- new_line_builder()
 
   # --- Include guard ---
-  # Note: batch_sdt_core.hpp is included via the wrapper header written by fit_broc()
   L$add("#ifndef BATCH_SDT_LOGLIK_HPP")
   L$add("#define BATCH_SDT_LOGLIK_HPP")
   L$add("")
@@ -1252,7 +1181,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   if (length(pstream) > 0) {
     L$add("    std::ostream* pstream__) {")
   } else {
-    # shouldn't happen, but just in case
     L$add("    ) {")
   }
 
@@ -1287,13 +1215,11 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("  const int n_gaps2 = n_thresh2 - 1;")
     L$add("  const int mid2 = mid_thresh2 - 1;")
     L$add("  const int n_upper2 = n_thresh2 - mid2 - 1;")
-    # Aliases for criterion code that uses n_thresh/n_gaps/mid/n_upper
     L$add("  const int n_thresh = n_thresh1;")
     L$add("  const int n_gaps = n_gaps1;")
     L$add("  const int mid = mid1;")
     L$add("  const int n_upper = n_upper1;")
   } else if (isTRUE(params$.is_cdp)) {
-    # CDP: J thresholds (tau), J-1 gaps
     L$add("  const int n_thresh = J;")
     L$add("  const int n_gaps = n_thresh - 1;")
     L$add("  const int mid = mid_thresh_cdp - 1;")
@@ -1337,7 +1263,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   if (has_two_responses) {
     L$add("  Eigen::VectorXd thresh1_n(n_thresh1);")
     L$add("  Eigen::VectorXd thresh2_n(n_thresh2);")
-    # Also alias for criterion code
     L$add("  Eigen::VectorXd& thresh_n = thresh1_n;")
   } else {
     L$add("  Eigen::VectorXd thresh_n(n_thresh);")
@@ -1350,14 +1275,13 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("  Eigen::VectorXd pop_exp_gaps(n_gaps);")
     gap_fn <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap_d(g)))" else "std::exp(pop_gap_d(g))"
     L$add(sprintf("  for (int g = 0; g < n_gaps; ++g) pop_exp_gaps(g) = %s;", gap_fn))
-    if (!is_crit_intercept_only_early) {
-      L$add("  Eigen::VectorXd obs_exp_gaps(n_gaps);  // per-obs exp(gap) for multi-predictor")
+    if (!is_crit_intercept_only_early || !is.null(params$.smooth_data[["criterion"]])) {
+      L$add("  Eigen::VectorXd obs_exp_gaps(n_gaps);  // per-obs exp(gap) for multi-predictor or smooth")
     }
   }
   if (has_two_responses) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     if (varying_sc) {
-      # Pre-compute K1 sets of source thresholds from varying parameters
       gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
       L$add("  // Pre-compute varying source thresholds: thresh2_all[k1][k2]")
       L$add("  Eigen::MatrixXd thresh2_all(K1, n_thresh2);")
@@ -1388,7 +1312,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
         L$add(sprintf("    thresh2_new_vec(k) = thresh2_new_vec(k + 1) - %s;", gap_fn_new))
         L$add("  }")
       }
-      # Pre-compute exp_gaps for gradient backpropagation
       L$add("  Eigen::MatrixXd vary_exp_gaps2(K1, n_gaps2);")
       gap_fn2_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
       L$add("  for (int k1 = 0; k1 < K1; ++k1)")
@@ -1404,6 +1327,12 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
       L$add("  Eigen::VectorXd pop_exp_gaps2(n_gaps2);")
       gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap2_d(g)))" else "std::exp(pop_gap2_d(g))"
       L$add(sprintf("  for (int g = 0; g < n_gaps2; ++g) pop_exp_gaps2(g) = %s;", gap_fn2))
+      crit2_early <- model_data$criterion2
+      is_crit2_int_only_early <- is.null(crit2_early) ||
+        isTRUE(crit2_early$is_intercept_only) || crit2_early$n_coef == 1
+      if (!is_crit2_int_only_early || !is.null(params$.smooth_data[["criterion2"]])) {
+        L$add("  Eigen::VectorXd obs_exp_gaps2(n_gaps2);  // per-obs exp(gap): multi-predictor or smooth")
+      }
     }
   }
   L$add("")
@@ -1427,20 +1356,16 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   }
   L$add("")
 
-  # Group index extraction
   emit_group_indices(L, model_data, family_name, params)
   L$add("")
 
-  # Per-observation parameter computation
   emit_param_computation(L, model_data, family_name, params)
   L$add("")
 
-  # Threshold construction
   emit_thresh_computation(L, model_data, params, has_crit_re)
   if (has_two_responses) {
     L$add("")
     if (isTRUE(params$.varying_source_criteria)) {
-      # Varying source criteria: copy from pre-computed matrix based on yn
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("    // Varying source thresholds: use shared new-response thresholds for 'new' responses, yn-based for 'old' responses")
         L$add("    if (is_new_response[yn - 1] == 1) {")
@@ -1458,7 +1383,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   }
   L$add("")
 
-  # Likelihood
   if (family_name == "vrdp2d") {
     emit_likelihood_vrdp2d(L, params)
   } else if (isTRUE(params$.is_bivariate)) {
@@ -1470,7 +1394,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   }
   L$add("")
 
-  # Gradient accumulation (only in autodiff context -- skip in double context)
   L$add("    if constexpr (is_autodiff) {")
   if (family_name == "vrdp2d") {
     emit_gradient_accumulation_vrdp2d(L, model_data, params, has_crit_re, has_crit2_re)
@@ -1481,7 +1404,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   } else {
     emit_gradient_accumulation(L, model_data, family_name, params, has_crit_re)
   }
-    # Smooth gradient accumulation (all parameters)
     if (!is.null(params$.smooth_data)) {
       smooth_d_vars <- c(dprime = "d_dprime_n", sigma = "d_sigma_n", lambda = "d_lambda_n",
                          dprime2 = "d_dprime2_n", sigma2 = "d_sigma2_n",
@@ -1492,7 +1414,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
                          rho = "d_rho_n", rho_B = "d_rho_B_n", rho_N = "d_rho_N_n",
                          lambda2 = "d_lambda2_n", rec_crit = "d_rec_crit_n", know_crit = "d_know_crit_n")
       for (pname in names(params$.smooth_data)) {
-        # criterion/criterion2 gradients are handled in the threshold propagation
         if (pname %in% c("criterion", "criterion2")) next
         d_var <- smooth_d_vars[[pname]]
         if (!is.null(d_var)) {
@@ -1503,22 +1424,18 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
 
   L$add("    }")
 
-  # Close observation loop
   L$add("  }")
   L$add("")
 
-  # Operand packing
   emit_operand_packing(L, model_data, family_name, params, has_crit_re,
                        has_crit2_re = has_crit2_re)
 
-  # Close function
   L$add("}")
   L$add("")
   L$add("#endif  // BATCH_SDT_LOGLIK_HPP")
 
   L$get()
 }
-
 
 # ============================================================================
 # Line builder helper
@@ -1534,7 +1451,6 @@ new_line_builder <- function() {
   )
 }
 
-
 # ============================================================================
 # Value extraction emitter
 # ============================================================================
@@ -1544,7 +1460,6 @@ new_line_builder <- function() {
 emit_value_extractions <- function(L, model_data, family_name, params) {
   L$add("  // Extract double values from autodiff types")
 
-  # dprime fixed
   has_dp_fixed <- isTRUE(params$.has_dp_fixed)
   if (has_dp_fixed) {
     L$add("  const Eigen::MatrixXd X_dp_d = value_of(X_dprime);")
@@ -1552,7 +1467,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     L$add("  const int P_dp = beta_dp_d.size();")
   }
 
-  # dprime REs
   dp_re_idx <- 0
   if (!is.null(params$dprime$random)) {
     for (group in names(params$dprime$random)) {
@@ -1573,7 +1487,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma fixed + REs
   if (isTRUE(params$.has_sigma)) {
     L$add("  const Eigen::MatrixXd X_sig_d = value_of(X_sigma);")
     L$add("  const Eigen::VectorXd beta_sig_d = value_of(beta_sigma);")
@@ -1600,7 +1513,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda fixed + REs
   if (isTRUE(params$.has_lambda)) {
     L$add("  const Eigen::MatrixXd X_lam_d = value_of(X_lambda);")
     L$add("  const Eigen::VectorXd beta_lam_d = value_of(beta_lambda);")
@@ -1627,7 +1539,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime2 fixed + REs
   if (isTRUE(params$.has_dprime2)) {
     L$add("  const Eigen::MatrixXd X_dp2_d = value_of(X_dprime2);")
     L$add("  const Eigen::VectorXd beta_dp2_d = value_of(beta_dprime2);")
@@ -1654,7 +1565,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma2 fixed + REs
   if (isTRUE(params$.has_sigma2)) {
     L$add("  const Eigen::MatrixXd X_sig2_d = value_of(X_sigma2);")
     L$add("  const Eigen::VectorXd beta_sig2_d = value_of(beta_sigma2);")
@@ -1681,7 +1591,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime_B fixed + REs (source_mixture)
   if (isTRUE(params$.has_dprime_B)) {
     L$add("  const Eigen::MatrixXd X_dpB_d = value_of(X_dprime_B);")
     L$add("  const Eigen::VectorXd beta_dpB_d = value_of(beta_dprime_B);")
@@ -1708,7 +1617,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda_B fixed + REs (source_mixture)
   if (isTRUE(params$.has_lambda_B)) {
     L$add("  const Eigen::MatrixXd X_lamB_d = value_of(X_lambda_B);")
     L$add("  const Eigen::VectorXd beta_lamB_d = value_of(beta_lambda_B);")
@@ -1735,7 +1643,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime_L fixed + REs (lure mixture)
   if (isTRUE(params$.has_dprime_L)) {
     L$add("  const Eigen::MatrixXd X_dpL_d = value_of(X_dprime_L);")
     L$add("  const Eigen::VectorXd beta_dpL_d = value_of(beta_dprime_L);")
@@ -1762,7 +1669,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma_L fixed + REs (lure mixture)
   if (isTRUE(params$.has_sigma_L)) {
     L$add("  const Eigen::MatrixXd X_sigL_d = value_of(X_sigma_L);")
     L$add("  const Eigen::VectorXd beta_sigL_d = value_of(beta_sigma_L);")
@@ -1789,7 +1695,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda_L fixed + REs (lure mixture)
   if (isTRUE(params$.has_lambda_L)) {
     L$add("  const Eigen::MatrixXd X_lamL_d = value_of(X_lambda_L);")
     L$add("  const Eigen::VectorXd beta_lamL_d = value_of(beta_lambda_L);")
@@ -1816,7 +1721,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # discrim fixed + REs (vrdp2d / bivariate)
   has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
   if (isTRUE(params$.has_discrim)) {
     if (has_disc_fixed_cpp) {
@@ -1846,7 +1750,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # discrim_B fixed + REs (vrdp2d)
   if (isTRUE(params$.has_discrim_B)) {
     L$add("  const Eigen::MatrixXd X_discB_d = value_of(X_discrim_B);")
     L$add("  const Eigen::VectorXd beta_discB_d = value_of(beta_discrim_B);")
@@ -1873,57 +1776,46 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma_B fixed + REs (bivariate)
   if (isTRUE(params$.has_sigma_B)) {
     emit_param_value_extraction(L, "sigma_B", "sigB", params$sigma_B$random, "sigma_B")
   }
 
-  # sigma2_B fixed + REs (bivariate)
   if (isTRUE(params$.has_sigma2_B)) {
     emit_param_value_extraction(L, "sigma2_B", "sig2B", params$sigma2_B$random, "sigma2_B")
   }
 
-  # rho fixed + REs (bivariate)
   if (isTRUE(params$.has_rho)) {
     emit_param_value_extraction(L, "rho", "rho", params$rho$random, "rho")
   }
 
-  # rho_B fixed + REs (bivariate)
   if (isTRUE(params$.has_rho_B)) {
     emit_param_value_extraction(L, "rho_B", "rhoB", params$rho_B$random, "rho_B")
   }
 
-  # rho_N fixed + REs (bivariate)
   if (isTRUE(params$.has_rho_N)) {
     emit_param_value_extraction(L, "rho_N", "rhoN", params$rho_N$random, "rho_N")
   }
 
-  # lambda2 fixed + REs (bivariate_dp)
   if (isTRUE(params$.has_lambda2)) {
     emit_param_value_extraction(L, "lambda2", "lam2", params$lambda2$random, "lambda2")
   }
 
-  # lambda2_B fixed + REs (bivariate_dp Source B)
   if (isTRUE(params$.has_lambda2_B)) {
     emit_param_value_extraction(L, "lambda2_B", "lam2B", params$lambda2_B$random, "lambda2_B")
   }
 
-  # rec_crit fixed + REs (cdp)
   if (isTRUE(params$.has_rec_crit)) {
     emit_param_value_extraction(L, "rec_crit", "rc", params$rec_crit$random, "rec_crit")
   }
 
-  # know_crit fixed + REs (cdp)
   if (isTRUE(params$.has_know_crit)) {
     emit_param_value_extraction(L, "know_crit", "kc", params$know_crit$random, "know_crit")
   }
 
-  # CDP: extract old_level_map as int array
   if (isTRUE(params$.is_cdp)) {
     L$add("  // CDP old_level_map (already int)")
   }
 
-  # Criterion population
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   if (!is_crit_intercept_only) {
@@ -1945,11 +1837,9 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
       L$add("  }")
     }
   } else {
-    # Multi-predictor: gaps are a matrix [n_gaps x P_crit]
     L$add("  const Eigen::MatrixXd gaps_mat_d = value_of(beta_log_gaps);")
   }
 
-  # Criterion REs
   crit_re_idx <- 0
   if (!is.null(params$criterion$random)) {
     for (group in names(params$criterion$random)) {
@@ -1964,12 +1854,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Criterion2 population (vrdp2d/bivariate -- source dimension)
   if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
 
     if (varying_sc) {
-      # Varying source criteria: extract per-bin threshold parameters
       L$add("  // Varying source criteria: K1 sets of thresholds")
       L$add("  const Eigen::VectorXd vary_mid2_d = value_of(beta_thresh_mid_2_varying);")
       K2_val <- model_data$stan_data$K2
@@ -1982,7 +1870,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
           L$add("  const Eigen::VectorXd new_gaps2_d = value_of(beta_log_gaps_2_new);")
         }
       }
-      # Criterion2 REs (varying mode)
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -2014,7 +1901,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
         L$add("  const Eigen::MatrixXd gaps2_mat_d = value_of(beta_log_gaps_2);")
       }
 
-      # Criterion2 REs
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -2031,7 +1917,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Smooth value_of extractions
   if (!is.null(params$.smooth_data)) {
     for (pname in names(params$.smooth_data)) {
       for (sm in params$.smooth_data[[pname]]) {
@@ -2053,7 +1938,6 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
   }
 }
 
-
 # ============================================================================
 # Gradient accumulator emitter
 # ============================================================================
@@ -2063,14 +1947,12 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
 emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   L$add("  // Gradient accumulators")
 
-  # dprime fixed
   has_dp_fixed <- isTRUE(params$.has_dp_fixed)
   has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
   if (has_dp_fixed) {
     L$add("  Eigen::VectorXd grad_beta_dp = Eigen::VectorXd::Zero(P_dp);")
   }
 
-  # dprime REs
   dp_re_idx <- 0
   if (!is.null(params$dprime$random)) {
     for (group in names(params$dprime$random)) {
@@ -2085,7 +1967,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma
   if (isTRUE(params$.has_sigma)) {
     L$add("  Eigen::VectorXd grad_beta_sig = Eigen::VectorXd::Zero(P_sig);")
     sig_re_idx <- 0
@@ -2103,7 +1984,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda
   if (isTRUE(params$.has_lambda)) {
     L$add("  Eigen::VectorXd grad_beta_lam = Eigen::VectorXd::Zero(P_lam);")
     lam_re_idx <- 0
@@ -2121,7 +2001,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime2
   if (isTRUE(params$.has_dprime2)) {
     L$add("  Eigen::VectorXd grad_beta_dp2 = Eigen::VectorXd::Zero(P_dp2);")
     dp2_re_idx <- 0
@@ -2139,7 +2018,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma2
   if (isTRUE(params$.has_sigma2)) {
     L$add("  Eigen::VectorXd grad_beta_sig2 = Eigen::VectorXd::Zero(P_sig2);")
     sig2_re_idx <- 0
@@ -2157,7 +2035,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime_B (source_mixture)
   if (isTRUE(params$.has_dprime_B)) {
     L$add("  Eigen::VectorXd grad_beta_dpB = Eigen::VectorXd::Zero(P_dpB);")
     dpB_re_idx <- 0
@@ -2175,7 +2052,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda_B (source_mixture)
   if (isTRUE(params$.has_lambda_B)) {
     L$add("  Eigen::VectorXd grad_beta_lamB = Eigen::VectorXd::Zero(P_lamB);")
     lamB_re_idx <- 0
@@ -2193,7 +2069,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime_L (lure mixture)
   if (isTRUE(params$.has_dprime_L)) {
     L$add("  Eigen::VectorXd grad_beta_dpL = Eigen::VectorXd::Zero(P_dpL);")
     dpL_re_idx <- 0
@@ -2211,7 +2086,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # sigma_L (lure mixture)
   if (isTRUE(params$.has_sigma_L)) {
     L$add("  Eigen::VectorXd grad_beta_sigL = Eigen::VectorXd::Zero(P_sigL);")
     sigL_re_idx <- 0
@@ -2229,7 +2103,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # lambda_L (lure mixture)
   if (isTRUE(params$.has_lambda_L)) {
     L$add("  Eigen::VectorXd grad_beta_lamL = Eigen::VectorXd::Zero(P_lamL);")
     lamL_re_idx <- 0
@@ -2247,7 +2120,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # discrim (vrdp2d / bivariate)
   if (isTRUE(params$.has_discrim)) {
     if (has_disc_fixed_cpp) {
       L$add("  Eigen::VectorXd grad_beta_disc = Eigen::VectorXd::Zero(P_disc);")
@@ -2267,7 +2139,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # discrim_B (vrdp2d)
   if (isTRUE(params$.has_discrim_B)) {
     L$add("  Eigen::VectorXd grad_beta_discB = Eigen::VectorXd::Zero(P_discB);")
     discB_re_idx <- 0
@@ -2285,7 +2156,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # rec_crit (cdp)
   if (isTRUE(params$.has_rec_crit)) {
     L$add("  Eigen::VectorXd grad_beta_rc = Eigen::VectorXd::Zero(P_rc);")
     rc_re_idx <- 0
@@ -2303,7 +2173,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # know_crit (cdp)
   if (isTRUE(params$.has_know_crit)) {
     L$add("  Eigen::VectorXd grad_beta_kc = Eigen::VectorXd::Zero(P_kc);")
     kc_re_idx <- 0
@@ -2321,19 +2190,16 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Criterion population
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   if (is_crit_intercept_only) {
     L$add("  double grad_thresh_mid_pop = 0.0;")
     L$add("  Eigen::VectorXd grad_log_gaps_pop = Eigen::VectorXd::Zero(n_gaps);")
   } else {
-    # Multi-predictor: accumulate per-coefficient gradients
     L$add("  Eigen::VectorXd grad_thresh_mid_pop = Eigen::VectorXd::Zero(P_crit);")
     L$add("  Eigen::MatrixXd grad_log_gaps_pop = Eigen::MatrixXd::Zero(n_gaps, P_crit);")
   }
 
-  # Criterion REs
   crit_re_idx <- 0
   if (!is.null(params$criterion$random)) {
     for (group in names(params$criterion$random)) {
@@ -2343,7 +2209,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Bivariate-specific gradient accumulators
   if (isTRUE(params$.has_sigma_B)) emit_param_grad_accum(L, "sigma_B", "sigB", params$sigma_B$random, "sigma_B")
   if (isTRUE(params$.has_sigma2_B)) emit_param_grad_accum(L, "sigma2_B", "sig2B", params$sigma2_B$random, "sigma2_B")
   if (isTRUE(params$.has_rho)) emit_param_grad_accum(L, "rho", "rho", params$rho$random, "rho")
@@ -2352,18 +2217,15 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   if (isTRUE(params$.has_lambda2)) emit_param_grad_accum(L, "lambda2", "lam2", params$lambda2$random, "lambda2")
   if (isTRUE(params$.has_lambda2_B)) emit_param_grad_accum(L, "lambda2_B", "lam2B", params$lambda2_B$random, "lambda2_B")
 
-  # Criterion2 population (vrdp2d/bivariate -- source dimension)
   if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     if (varying_sc) {
-      # Varying source criteria: gradient accumulators for per-bin thresholds
       L$add("  Eigen::VectorXd grad_vary_mid2 = Eigen::VectorXd::Zero(K1);")
       L$add("  Eigen::MatrixXd grad_vary_gaps2 = Eigen::MatrixXd::Zero(K1, n_gaps2);")
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("  double grad_new_mid2 = 0.0;")
         L$add("  Eigen::VectorXd grad_new_gaps2 = Eigen::VectorXd::Zero(n_gaps2);")
       }
-      # Criterion2 REs
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -2383,7 +2245,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
         L$add("  Eigen::MatrixXd grad_log_gaps2_pop = Eigen::MatrixXd::Zero(n_gaps2, P_crit2);")
       }
 
-      # Criterion2 REs
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -2395,7 +2256,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Smooth gradient accumulators
   if (!is.null(params$.smooth_data)) {
     for (pname in names(params$.smooth_data)) {
       for (sm in params$.smooth_data[[pname]]) {
@@ -2415,7 +2275,6 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   }
 }
 
-
 #' Emit smooth forward-pass contribution for a parameter
 #' @noRd
 emit_smooth_contribution <- function(L, smooth_data, pname, target_var) {
@@ -2431,7 +2290,6 @@ emit_smooth_contribution <- function(L, smooth_data, pname, target_var) {
     }
   }
 }
-
 
 #' Emit smooth backward-pass gradient for a parameter
 #' @noRd
@@ -2449,17 +2307,17 @@ emit_smooth_gradient <- function(L, smooth_data, pname, d_var) {
   }
 }
 
-
 #' Emit per-threshold smooth contribution (row-indexed) for criterion
 #' @param row_expr C++ expression for the row index (0-based)
 #' @noRd
-emit_criterion_smooth_contribution <- function(L, smooth_data, target_var, row_expr) {
-  if (is.null(smooth_data) || is.null(smooth_data[["criterion"]])) return()
-  for (sm in smooth_data[["criterion"]]) {
+emit_criterion_smooth_contribution <- function(L, smooth_data, target_var, row_expr,
+                                              pname = "criterion") {
+  if (is.null(smooth_data) || is.null(smooth_data[[pname]])) return()
+  for (sm in smooth_data[[pname]]) {
     for (comp in sm$components) {
       for (k in seq_along(comp$Zs_list)) {
-        zs_name <- paste0("Zs_criterion_", comp$san_label, "_", k)
-        s_name <- paste0("s_criterion_", comp$san_label, "_", k)
+        zs_name <- paste0("Zs_", pname, "_", comp$san_label, "_", k)
+        s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
         L$add(sprintf("    for (int j = 0; j < %s_d.cols(); ++j) %s += %s_d(n, j) * %s_d(%s, j);",
                        s_name, target_var, zs_name, s_name, row_expr))
       }
@@ -2467,23 +2325,22 @@ emit_criterion_smooth_contribution <- function(L, smooth_data, target_var, row_e
   }
 }
 
-
 #' Emit per-threshold smooth gradient (row-indexed) for criterion
 #' @noRd
-emit_criterion_smooth_gradient <- function(L, smooth_data, d_var, row_expr) {
-  if (is.null(smooth_data) || is.null(smooth_data[["criterion"]])) return()
-  for (sm in smooth_data[["criterion"]]) {
+emit_criterion_smooth_gradient <- function(L, smooth_data, d_var, row_expr,
+                                          pname = "criterion") {
+  if (is.null(smooth_data) || is.null(smooth_data[[pname]])) return()
+  for (sm in smooth_data[[pname]]) {
     for (comp in sm$components) {
       for (k in seq_along(comp$Zs_list)) {
-        zs_name <- paste0("Zs_criterion_", comp$san_label, "_", k)
-        s_name <- paste0("s_criterion_", comp$san_label, "_", k)
+        zs_name <- paste0("Zs_", pname, "_", comp$san_label, "_", k)
+        s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
         L$add(sprintf("    for (int j = 0; j < %s_d.cols(); ++j) grad_%s(%s, j) += %s * %s_d(n, j);",
                        s_name, s_name, row_expr, d_var, zs_name))
       }
     }
   }
 }
-
 
 # ============================================================================
 # Group index extraction
@@ -2492,7 +2349,6 @@ emit_criterion_smooth_gradient <- function(L, smooth_data, d_var, row_expr) {
 #' Emit per-observation group index extraction
 #' @noRd
 emit_group_indices <- function(L, model_data, family_name, params) {
-  # Track emitted groups to avoid duplicates (same group used by multiple params)
   emitted <- character(0)
 
   dp_re_idx <- 0
@@ -2623,7 +2479,6 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  # CDP-specific group indices (rec_crit, know_crit)
   for (pname in c("rec_crit", "know_crit")) {
     flag <- paste0(".has_", pname)
     if (isTRUE(params[[flag]]) && !is.null(params[[pname]]$random)) {
@@ -2636,7 +2491,6 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  # Bivariate-specific group indices
   for (pname in c("sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "lambda2", "lambda2_B")) {
     flag <- paste0(".has_", pname)
     if (isTRUE(params[[flag]]) && !is.null(params[[pname]]$random)) {
@@ -2649,7 +2503,6 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 }
-
 
 # ============================================================================
 # Parameter computation
@@ -2673,7 +2526,6 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime REs
   dp_re_idx <- 0
   if (!is.null(params$dprime$random)) {
     for (group in names(params$dprime$random)) {
@@ -2684,14 +2536,9 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
   }
 
-  # dprime smooth contributions (must come before mu computation)
   emit_smooth_contribution(L, params$.smooth_data, "dprime", "dprime_n")
 
-  # mu computation: cumulative/source_mixture/vrdp2d/bivariate use dprime_n directly,
-  # CDP families use dprime_n as mu_R (not multiplied by is_old),
-  # standard SDT uses is_old_n * dprime_n
   if (isTRUE(params$.is_cdp_family)) {
-    # CDP: dprime_n is the recollection mean mu_R (used directly by cell function)
   } else if (isTRUE(params$.is_cumulative) || isTRUE(params$.is_source_mixture) || isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
     L$add("    double mu = dprime_n;")
   } else {
@@ -2724,7 +2571,6 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     emit_smooth_contribution(L, params$.smooth_data, "sigma", "sigma_n")
     L$add("    double sigma_val = std::exp(sigma_n);")
     if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate) || isTRUE(params$.is_cdp_family)) {
-      # VRDP2D/bivariate/CDP: sigma used directly by cell function (no s alias)
     } else {
       L$add("    double s = is_old_n > 0 ? sigma_val : 1.0;")
     }
@@ -2753,7 +2599,6 @@ emit_param_computation <- function(L, model_data, family_name, params) {
       }
     }
 
-    # inv_logit link
     emit_smooth_contribution(L, params$.smooth_data, "lambda", "lambda_n")
     L$add("    double lambda_val = 1.0 / (1.0 + std::exp(-lambda_n));")
   }
@@ -2809,7 +2654,6 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     emit_smooth_contribution(L, params$.smooth_data, "sigma2", "sigma2_n")
     L$add("    double sigma2_val = std::exp(sigma2_n);")
     if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate) || isTRUE(params$.is_cdp_family)) {
-      # VRDP2D/bivariate/CDP: sigma2 used by cell function directly (no s2 alias)
     } else {
       L$add("    double s2 = is_old_n > 0 ? sigma2_val : 1.0;")
     }
@@ -2945,23 +2789,13 @@ emit_param_computation <- function(L, model_data, family_name, params) {
   # --- Bivariate-specific parameters ---
   emit_generic_param_computation(L, params, "sigma_B", "sigB", "has_sigma_B", link = "exp", val_name = "sigma_B_val")
   emit_generic_param_computation(L, params, "sigma2_B", "sig2B", "has_sigma2_B", link = "exp", val_name = "sigma2_B_val")
-  # Link for rho follows the family$bounded flag. bivariate_dp now supports
-  # bounded = FALSE (the BDP model from Starns/Rotello/Hautus 2014 appendix),
-  # in which case rho uses Fisher z (tanh) just like unbounded sdt.
   rho_link <- if (isTRUE(params$.bounded)) "inv_logit" else "tanh"
   emit_generic_param_computation(L, params, "rho", "rho", "has_rho", link = rho_link, val_name = "rho_val")
   emit_generic_param_computation(L, params, "rho_B", "rhoB", "has_rho_B", link = rho_link, val_name = "rho_B_val")
   emit_generic_param_computation(L, params, "rho_N", "rhoN", "has_rho_N", link = "tanh", val_name = "rho_N_val")
   emit_generic_param_computation(L, params, "lambda2", "lam2", "has_lambda2", link = "inv_logit", val_name = "R_S_val")
-  # lambda2_B (Source-B source recollection); produces R_S_B_val if user
-  # specified lambda2_B, otherwise R_S_B_val is aliased to R_S_val below.
   emit_generic_param_computation(L, params, "lambda2_B", "lam2B", "has_lambda2_B", link = "inv_logit", val_name = "R_S_B_val")
 
-  # If bivariate_dp, also alias lambda_val as R_I_val (and lambda_B_val as
-  # R_I_B_val when present). When the user did not supply lambda_B /
-  # lambda2_B, fall back to the matching A-side value so the cell function
-  # sees R_I_B_eff = R_I_val (constrained-equal default -- produces the
-  # same likelihood and gradient routing as the pre-asymmetric path).
   if (isTRUE(params$.is_bivariate_dp) && isTRUE(params$.has_lambda)) {
     L$add("    double R_I_val = lambda_val;")
     if (isTRUE(params$.has_lambda_B_dp)) {
@@ -2986,7 +2820,6 @@ emit_param_computation <- function(L, model_data, family_name, params) {
   }
 }
 
-
 #' Emit generic parameter computation (fixed + REs + link)
 #' @noRd
 emit_generic_param_computation <- function(L, params, full_name, short, flag_name, link = "identity", val_name = NULL) {
@@ -3008,7 +2841,6 @@ emit_generic_param_computation <- function(L, params, full_name, short, flag_nam
     }
   }
 
-  # Smooth contributions
   emit_smooth_contribution(L, params$.smooth_data, full_name, sprintf("%s_n", full_name))
 
   if (!is.null(val_name)) {
@@ -3022,7 +2854,6 @@ emit_generic_param_computation <- function(L, params, full_name, short, flag_nam
   }
 }
 
-
 #' Emit a single RE contribution to the linear predictor
 #' @noRd
 emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_idx, prefix) {
@@ -3030,30 +2861,24 @@ emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_i
 
   if (isTRUE(re$use_z_matrix)) {
     if (re$dim == 1) {
-      # Z-matrix scalar: Z[n,0] * u[group]
       L$add(sprintf("    %s += Z_%s_d(n, 0) * %s_d(%s);",
                      target_var, tag, tag, g_var))
     } else {
-      # Z-matrix multi-dim: sum_j Z[n,j] * u[group, j]
       L$add(sprintf("    for (int j = 0; j < %s_d.cols(); ++j) %s += Z_%s_d(n, j) * %s_d(%s, j);",
                      tag, target_var, tag, tag, g_var))
     }
   } else if (re$dim == 1) {
     if (!is.null(re$term_idx)) {
-      # Scalar with term_idx guard
       L$add(sprintf("    if (idx_%s_%s[n] > 0) %s += %s_d(%s);",
                      param_name, group, target_var, tag, g_var))
     } else {
-      # Scalar intercept-only
       L$add(sprintf("    %s += %s_d(%s);", target_var, tag, g_var))
     }
   } else if (!is.null(re$term_idx)) {
-    # Multi-dim index-based: u[group, idx-1]
     L$add(sprintf("    if (idx_%s_%s[n] > 0) %s += %s_d(%s, idx_%s_%s[n] - 1);",
                    param_name, group, target_var, tag, g_var, param_name, group))
   }
 }
-
 
 # ============================================================================
 # Threshold computation
@@ -3069,7 +2894,6 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
 
   if (has_crit_re) {
     # --- Thresholds with criterion RE ---
-    # Mid anchor
     if (is_crit_intercept_only) {
       L$add("    double thresh_mid_val = thresh_mid_d_vec(0);")
     } else {
@@ -3077,18 +2901,15 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add("    for (int p = 0; p < P_crit; ++p) thresh_mid_val += X_crit_d(n, p) * thresh_mid_d_vec(p);")
     }
 
-    # Add criterion RE contributions to mid threshold
     crit_re_idx <- 0
     for (group in names(params$criterion$random)) {
       crit_re_idx <- crit_re_idx + 1
       re <- params$criterion$random[[group]]
       emit_crit_re_mid(L, crit_re_idx, re, group, "thresh_mid_val")
     }
-    # Criterion smooth contribution to mid-anchor (row 0)
     emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh_mid_val", "0")
     L$add("    thresh_n(mid) = thresh_mid_val;")
 
-    # Upper gaps
     L$add("    for (int k = mid + 1; k < n_thresh; ++k) {")
     L$add("      int gi = k - mid - 1;")
     if (is_crit_intercept_only) {
@@ -3097,20 +2918,17 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add("      double eff_gap = 0.0;")
       L$add("      for (int p = 0; p < P_crit; ++p) eff_gap += X_crit_d(n, p) * gaps_mat_d(gi, p);")
     }
-    # Add criterion RE to gap
     crit_re_idx <- 0
     for (group in names(params$criterion$random)) {
       crit_re_idx <- crit_re_idx + 1
       re <- params$criterion$random[[group]]
-      emit_crit_re_gap(L, crit_re_idx, re, group, "eff_gap", "k + 1")  # k+1 for 1-based Stan-like indexing
+      emit_crit_re_gap(L, crit_re_idx, re, group, "eff_gap", "k + 1")
     }
-    # Criterion smooth per-gap (upper, row = 1 + gi)
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
     L$add("      thresh_n(k) = thresh_n(k - 1) + exp_eff_gaps(gi);")
     L$add("    }")
 
-    # Lower gaps
     L$add("    for (int kd = 1; kd <= mid; ++kd) {")
     L$add("      int k = mid - kd;")
     L$add("      int gi = n_upper + kd - 1;")
@@ -3126,7 +2944,6 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       re <- params$criterion$random[[group]]
       emit_crit_re_gap(L, crit_re_idx, re, group, "eff_gap", "k + 1")
     }
-    # Criterion smooth per-gap (lower, row = 1 + gi)
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
     L$add("      thresh_n(k) = thresh_n(k + 1) - exp_eff_gaps(gi);")
@@ -3139,7 +2956,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add("    thresh_n(mid) = thresh_mid_d_vec(0);")
     } else if (is_crit_intercept_only && has_crit_smooth) {
       L$add("    double thresh_mid_val = thresh_mid_d_vec(0);")
-      emit_smooth_contribution(L, params$.smooth_data, "criterion", "thresh_mid_val")
+      emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh_mid_val", "0")
       L$add("    thresh_n(mid) = thresh_mid_val;")
     } else {
       L$add("    double thresh_mid_val = 0.0;")
@@ -3185,7 +3002,6 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
   }
 }
 
-
 #' Emit criterion RE contribution to mid-threshold
 #' @noRd
 emit_crit_re_mid <- function(L, crit_re_idx, re, group, target) {
@@ -3193,21 +3009,16 @@ emit_crit_re_mid <- function(L, crit_re_idx, re, group, target) {
   n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
   if (isTRUE(re$use_z_matrix)) {
-    # Z_crit[n, ] * u_crit[group, ((mid+1-1)*nrt+1):((mid+1)*nrt)]
-    # In 0-based: cols mid*nrt .. (mid+1)*nrt - 1
     L$add(sprintf("    for (int j = 0; j < %d; ++j) %s += Z_crit%d_d(n, j) * u_crit%d_d(%s, mid * %d + j);",
                    n_re_terms, target, crit_re_idx, crit_re_idx, g_var, n_re_terms))
   } else if (n_re_terms == 1) {
-    # u_crit[group, mid]
     L$add(sprintf("    %s += u_crit%d_d(%s, mid);", target, crit_re_idx, g_var))
   } else {
-    # Multi-term with idx: u_crit[group, (mid)*n_re_terms + idx - 1]
     idx_var <- sprintf("idx_criterion_%s", group)
     L$add(sprintf("    if (%s[n] > 0) %s += u_crit%d_d(%s, mid * %d + %s[n] - 1);",
                    idx_var, target, crit_re_idx, g_var, n_re_terms, idx_var))
   }
 }
-
 
 #' Emit criterion RE contribution to a gap
 #' thresh_k_1based is a C++ expression for the 1-based threshold index (Stan convention)
@@ -3216,24 +3027,17 @@ emit_crit_re_gap <- function(L, crit_re_idx, re, group, target, thresh_k_1based)
   g_var <- sprintf("g_%s", group)
   n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
-  # Convert 1-based thresh_k to 0-based column: col = (thresh_k - 1) for n_re_terms==1
-  # For n_re_terms > 1: col_start = (thresh_k - 1) * n_re_terms
-
   if (isTRUE(re$use_z_matrix)) {
-    # Z_crit[n, j] * u_crit[group, (k)*nrt + j]  where k is 0-based threshold = k (from loop var)
     L$add(sprintf("      for (int j = 0; j < %d; ++j) %s += Z_crit%d_d(n, j) * u_crit%d_d(%s, k * %d + j);",
                    n_re_terms, target, crit_re_idx, crit_re_idx, g_var, n_re_terms))
   } else if (n_re_terms == 1) {
-    # u_crit[group, k]  (k is the 0-based threshold index from loop)
     L$add(sprintf("      %s += u_crit%d_d(%s, k);", target, crit_re_idx, g_var))
   } else {
-    # Multi-term: u_crit[group, k * n_re_terms + idx - 1]
     idx_var <- sprintf("idx_criterion_%s", group)
     L$add(sprintf("      if (%s[n] > 0) %s += u_crit%d_d(%s, k * %d + %s[n] - 1);",
                    idx_var, target, crit_re_idx, g_var, n_re_terms, idx_var))
   }
 }
-
 
 # ============================================================================
 # Likelihood computation
@@ -3260,7 +3064,6 @@ emit_likelihood <- function(L, family_name, params) {
     emit_likelihood_source_mixture(L, params)
   }
 }
-
 
 #' Get logit suffix for C++ function calls based on link
 #' @noRd
@@ -3301,7 +3104,6 @@ emit_likelihood_standard <- function(L, family_name, params) {
     L$add("    total_lp += res.lp;")
   }
 }
-
 
 #' Emit DPSDT likelihood
 #' @noRd
@@ -3382,7 +3184,6 @@ emit_likelihood_dpsdt <- function(L, params) {
   }
 }
 
-
 #' Emit mixture SDT likelihood
 #' @noRd
 emit_likelihood_mixture <- function(L, params) {
@@ -3423,7 +3224,6 @@ emit_likelihood_mixture <- function(L, params) {
   L$add("    if (is_old_n > 0) {")
 
   if (has_lambda) {
-    # Signal mixture: P = lambda * p1(dprime) + (1-lambda) * p2(dprime2)
     if (has_dprime2) {
       L$add("      double mu2 = dprime2_n;")
     } else {
@@ -3469,7 +3269,6 @@ emit_likelihood_mixture <- function(L, params) {
       L$add(sprintf("      if (k_hi >= 0) d_sigma2_raw -= mr.d_z2_hi * (thresh_n(k_hi) - mu2) / (%s * %s) * sigma2_val;", s2, s2))
     }
   } else {
-    # Lure-only mixture: old items use standard EVSDT/UVSDT (no signal mixture)
     L$add("      if (yn == 1) {")
     L$add(sprintf("        auto res = batch_sdt::edge_lo%s((thresh_n(0) - mu) / %s);", lsuf, s1))
     L$add("        obs_lp = res.lp;")
@@ -3500,9 +3299,6 @@ emit_likelihood_mixture <- function(L, params) {
 
   if (has_lure) {
     # --- New items: lure mixture ---
-    # P(y|new) = lambda_L * cell_prob(z_lure) + (1 - lambda_L) * cell_prob(z_noise)
-    # z_lure = (thresh + dprime_L) / sigma_L  (note: +dprime_L because lure shifts distribution)
-    # z_noise = thresh  (standard noise, mu=0, s=1)
     sL <- if (has_sigma_L) "sigma_L_val" else "1.0"
 
     L$add("      // Lure mixture for new items")
@@ -3524,24 +3320,19 @@ emit_likelihood_mixture <- function(L, params) {
     L$add("        k_hi = yn - 1;")
     L$add("      }")
 
-    # Reuse source_mixture_cell (same structure: P = lambda * comp1 + (1-lambda) * comp2)
     L$add(sprintf("      auto lr = batch_sdt::source_mixture_cell%s(zL_lo, zL_hi, zR_lo, zR_hi, lambda_L_val, yn, K);", lsuf))
     L$add("      obs_lp = lr.lp;")
 
-    # d_dprime_L: dz_lure/d_dprime_L = 1/sigma_L
     L$add(sprintf("      d_dprime_L_raw = (lr.d_z1_lo + lr.d_z1_hi) / %s;", sL))
 
-    # d_lambda_L
     L$add("      d_lambda_L_raw = lr.d_lambda;")
 
-    # d_sigma_L: dz/d_sigma_L_val = -(thresh+dprime_L)/(sigma_L^2), chain through exp
     if (has_sigma_L) {
       L$add("      d_sigma_L_raw = 0.0;")
       L$add(sprintf("      if (k_lo >= 0) d_sigma_L_raw -= lr.d_z1_lo * (thresh_n(k_lo) + dprime_L_n) / (%s * %s) * sigma_L_val;", sL, sL))
       L$add(sprintf("      if (k_hi >= 0) d_sigma_L_raw -= lr.d_z1_hi * (thresh_n(k_hi) + dprime_L_n) / (%s * %s) * sigma_L_val;", sL, sL))
     }
 
-    # d_thresh for lure mixture: from lure component dz/d_thresh = 1/sigma_L, from ref component dz/d_thresh = 1
     L$add(sprintf("      d_thresh_lo = lr.d_z1_lo / %s + lr.d_z2_lo;", sL))
     L$add(sprintf("      d_thresh_hi = lr.d_z1_hi / %s + lr.d_z2_hi;", sL))
 
@@ -3549,7 +3340,6 @@ emit_likelihood_mixture <- function(L, params) {
     L$add("      d_mu2_raw = 0.0;")
     L$add("      d_lambda_raw = 0.0;")
   } else {
-    # New items: standard EVSDT (mu=0, s=1)
     L$add("      batch_sdt::CellResult res;")
     L$add("      if (yn == 1) {")
     L$add(sprintf("        res = batch_sdt::edge_lo%s(thresh_n(0));", lsuf))
@@ -3579,7 +3369,6 @@ emit_likelihood_mixture <- function(L, params) {
   }
 }
 
-
 #' Emit source mixture SDT likelihood
 #' @noRd
 emit_likelihood_source_mixture <- function(L, params) {
@@ -3589,7 +3378,7 @@ emit_likelihood_source_mixture <- function(L, params) {
 
   L$add("    // Source mixture SDT likelihood")
   L$add("    double obs_lp = 0.0;")
-  L$add("    double d_mu_raw = 0.0;")  # gradient for dprime (source A, or symmetric)
+  L$add("    double d_mu_raw = 0.0;")
   L$add("    double d_lambda_raw = 0.0;")
   L$add("    double d_thresh_lo = 0.0, d_thresh_hi = 0.0;")
   if (has_dprime_B) {
@@ -3601,12 +3390,10 @@ emit_likelihood_source_mixture <- function(L, params) {
   L$add("    int k_lo = -1, k_hi = -1;")
   L$add("")
 
-  # Select d and lambda based on source
   L$add("    // Select parameters based on source")
   if (has_dprime_B) {
     L$add("    double d_eff = source_n == 0 ? mu : dprime_B_n;")
   } else {
-    # Symmetric: d_B = -dprime
     L$add("    double d_eff = source_n == 0 ? mu : -mu;")
   }
   if (has_lambda_B) {
@@ -3615,7 +3402,6 @@ emit_likelihood_source_mixture <- function(L, params) {
     L$add("    double lam_eff = lambda_val;")
   }
 
-  # z_signal = thresh - d_eff (signal at d), z_noise = thresh (noise at 0)
   L$add("")
   L$add("    double zS_lo = 0.0, zS_hi = 0.0, zN_lo = 0.0, zN_hi = 0.0;")
   L$add("    if (yn == 1) {")
@@ -3638,13 +3424,9 @@ emit_likelihood_source_mixture <- function(L, params) {
   L$add(sprintf("    auto sr = batch_sdt::source_mixture_cell%s(zS_lo, zS_hi, zN_lo, zN_hi, lam_eff, yn, K);", lsuf))
   L$add("    obs_lp = sr.lp;")
 
-  # d_mu/d_mu_B: dz_signal/d_d = -1
-  # sr.d_z1_lo and sr.d_z1_hi are d_lp/d_z_signal_{lo,hi}
-  # d_lp/d_d_eff = -(sr.d_z1_lo + sr.d_z1_hi)
   L$add("    double d_d_eff = -(sr.d_z1_lo + sr.d_z1_hi);")
   L$add("    double d_lam_eff = sr.d_lambda;")
 
-  # Route d_d_eff to dprime or dprime_B
   if (has_dprime_B) {
     L$add("    if (source_n == 0) {")
     L$add("      d_mu_raw = d_d_eff;")
@@ -3652,14 +3434,9 @@ emit_likelihood_source_mixture <- function(L, params) {
     L$add("      d_mu_B_raw = d_d_eff;")
     L$add("    }")
   } else {
-    # Symmetric: d_A = dprime, d_B = -dprime
-    # d_lp/d_dprime = d_lp/d_d_eff * d_d_eff/d_dprime
-    # For source A: d_d_eff/d_dprime = 1
-    # For source B: d_d_eff/d_dprime = -1
     L$add("    d_mu_raw = source_n == 0 ? d_d_eff : -d_d_eff;")
   }
 
-  # Route d_lam_eff to lambda or lambda_B
   if (has_lambda_B) {
     L$add("    if (source_n == 0) {")
     L$add("      d_lambda_raw = d_lam_eff;")
@@ -3670,7 +3447,6 @@ emit_likelihood_source_mixture <- function(L, params) {
     L$add("    d_lambda_raw = d_lam_eff;")
   }
 
-  # d_thresh: from signal component dz/d_thresh = 1, from noise dz/d_thresh = 1
   L$add("    d_thresh_lo = sr.d_z1_lo + sr.d_z2_lo;")
   L$add("    d_thresh_hi = sr.d_z1_hi + sr.d_z2_hi;")
 
@@ -3680,7 +3456,6 @@ emit_likelihood_source_mixture <- function(L, params) {
     L$add("    total_lp += obs_lp;")
   }
 }
-
 
 # ============================================================================
 # VRDP2D: Threshold2 computation
@@ -3710,6 +3485,8 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       re <- params$criterion2$random[[group]]
       emit_crit2_re_mid(L, crit2_re_idx, re, group, "thresh2_mid_val")
     }
+    emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh2_mid_val", "0",
+                                       pname = "criterion2")
     L$add("    thresh2_n(mid2) = thresh2_mid_val;")
 
     L$add("    for (int k = mid2 + 1; k < n_thresh2; ++k) {")
@@ -3726,6 +3503,8 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       re <- params$criterion2$random[[group]]
       emit_crit2_re_gap(L, crit2_re_idx, re, group, "eff_gap2", "k + 1")
     }
+    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
+                                       pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
     L$add("      thresh2_n(k) = thresh2_n(k - 1) + exp_eff_gaps2(gi);")
     L$add("    }")
@@ -3745,25 +3524,42 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       re <- params$criterion2$random[[group]]
       emit_crit2_re_gap(L, crit2_re_idx, re, group, "eff_gap2", "k + 1")
     }
+    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
+                                       pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
     L$add("      thresh2_n(k) = thresh2_n(k + 1) - exp_eff_gaps2(gi);")
     L$add("    }")
 
   } else {
     # --- Population-only thresholds ---
-    if (is_crit2_intercept_only) {
+    has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+    if (is_crit2_intercept_only && !has_crit2_smooth) {
       L$add("    thresh2_n(mid2) = thresh_mid2_d_vec(0);")
     } else {
-      L$add("    double thresh2_mid_val = 0.0;")
-      L$add("    for (int p = 0; p < P_crit2; ++p) thresh2_mid_val += X_crit2_d(n, p) * thresh_mid2_d_vec(p);")
+      if (is_crit2_intercept_only) {
+        L$add("    double thresh2_mid_val = thresh_mid2_d_vec(0);")
+      } else {
+        L$add("    double thresh2_mid_val = 0.0;")
+        L$add("    for (int p = 0; p < P_crit2; ++p) thresh2_mid_val += X_crit2_d(n, p) * thresh_mid2_d_vec(p);")
+      }
+      emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh2_mid_val", "0",
+                                         pname = "criterion2")
       L$add("    thresh2_n(mid2) = thresh2_mid_val;")
     }
     L$add("    for (int k = mid2 + 1; k < n_thresh2; ++k) {")
     L$add("      int gi = k - mid2 - 1;")
-    if (!is_crit2_intercept_only) {
-      L$add("      double gval2 = 0.0;")
-      L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
-      L$add(sprintf("      thresh2_n(k) = thresh2_n(k - 1) + %s;", sprintf(gap_fn, "gval2")))
+    if (!is_crit2_intercept_only || has_crit2_smooth) {
+      if (is_crit2_intercept_only) {
+        L$add("      double gval2 = pop_gap2_d(gi);")
+      } else {
+        L$add("      double gval2 = 0.0;")
+        L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
+      }
+      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval2", "1 + gi",
+                                         pname = "criterion2")
+      L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
+      L$add("      thresh2_n(k) = thresh2_n(k - 1) + egval2;")
+      L$add("      obs_exp_gaps2(gi) = egval2;")
     } else {
       L$add("      thresh2_n(k) = thresh2_n(k - 1) + pop_exp_gaps2(gi);")
     }
@@ -3771,17 +3567,24 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
     L$add("    for (int kd = 1; kd <= mid2; ++kd) {")
     L$add("      int k = mid2 - kd;")
     L$add("      int gi = n_upper2 + kd - 1;")
-    if (!is_crit2_intercept_only) {
-      L$add("      double gval2 = 0.0;")
-      L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
-      L$add(sprintf("      thresh2_n(k) = thresh2_n(k + 1) - %s;", sprintf(gap_fn, "gval2")))
+    if (!is_crit2_intercept_only || has_crit2_smooth) {
+      if (is_crit2_intercept_only) {
+        L$add("      double gval2 = pop_gap2_d(gi);")
+      } else {
+        L$add("      double gval2 = 0.0;")
+        L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
+      }
+      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval2", "1 + gi",
+                                         pname = "criterion2")
+      L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
+      L$add("      thresh2_n(k) = thresh2_n(k + 1) - egval2;")
+      L$add("      obs_exp_gaps2(gi) = egval2;")
     } else {
       L$add("      thresh2_n(k) = thresh2_n(k + 1) - pop_exp_gaps2(gi);")
     }
     L$add("    }")
   }
 }
-
 
 #' Emit criterion2 RE contribution to mid-threshold
 #' @noRd
@@ -3801,7 +3604,6 @@ emit_crit2_re_mid <- function(L, crit2_re_idx, re, group, target) {
   }
 }
 
-
 #' Emit criterion2 RE contribution to a gap
 #' @noRd
 emit_crit2_re_gap <- function(L, crit2_re_idx, re, group, target, thresh_k_1based) {
@@ -3819,7 +3621,6 @@ emit_crit2_re_gap <- function(L, crit2_re_idx, re, group, target, thresh_k_1base
                    idx_var, target, crit2_re_idx, g_var, n_re_terms, idx_var))
   }
 }
-
 
 # ============================================================================
 # VRDP2D: Likelihood computation
@@ -3865,7 +3666,6 @@ emit_likelihood_vrdp2d <- function(L, params) {
     L$add("    total_lp += obs_lp;")
   }
 }
-
 
 # ============================================================================
 # VRDP2D: Gradient accumulation
@@ -3913,7 +3713,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
   }
 
   # ---- discrim gradient ----
-  # d_source_d chains to discrim_n or discrim_B_n
   L$add("")
   if (has_discrim_B) {
     L$add("    if (item_type_n == 2) {")
@@ -3942,9 +3741,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     }
     L$add("    }")
   } else {
-    # Symmetric: source_d = discrim_n for A, -discrim_n for B
-    # d_logP/d_discrim_n = d_logP/d_source_d * d_source_d/d_discrim_n
-    # For A: d_source_d/d_discrim_n = 1, For B: = -1
     L$add("    {")
     L$add(sprintf("      double d_discrim_n = (item_type_n == 2 ? vr.d_source_d : -vr.d_source_d)%s;", count_mult))
     L$add("      for (int p = 0; p < P_disc; ++p) grad_beta_disc(p) += d_discrim_n * X_disc_d(n, p);")
@@ -3961,7 +3757,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
   }
 
   # ---- lambda (R recollection probability) gradient ----
-  # d_logP/d_lambda_n = d_logP/d_R * d_R/d_lambda_n (inv_logit chain rule)
   L$add("")
   L$add(sprintf("    double d_lambda_n = vr.d_lambda * lambda_val * (1.0 - lambda_val)%s;", count_mult))
   L$add("    for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
@@ -3977,8 +3772,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
 
   # ---- sigma (sigma_item) gradient ----
   if (has_sigma) {
-    # d_logP/d_sigma_n = d_logP/d_sigma_item * d_sigma_item/d_sigma_n (exp chain)
-    # = d_logP/d_sigma_item * sigma_item
     L$add("")
     L$add(sprintf("    double d_sigma_n = vr.d_sigma_item * sigma_val%s;", count_mult))
     L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
@@ -4025,7 +3818,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     d_hi1 <- "d_thresh1_hi"
   }
 
-  # Use the existing threshold propagation infrastructure
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   emit_thresh_propagation(L, model_data, params, has_crit_re, d_lo1, d_hi1, is_crit_intercept_only)
@@ -4045,7 +3837,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
   varying_sc <- isTRUE(params$.varying_source_criteria)
 
   if (varying_sc) {
-    # Varying source criteria: propagate gradients to per-bin accumulators
     L$add("    {")
     L$add("      int bin = yn - 1;")
     L$add("      Eigen::VectorXd bin_exp_gaps = vary_exp_gaps2.row(bin).transpose();")
@@ -4062,7 +3853,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     crit2 <- model_data$criterion2
     is_crit2_intercept_only <- is.null(crit2) || isTRUE(crit2$is_intercept_only) || crit2$n_coef == 1
 
-    # Inline threshold2 propagation (similar to thresh1 but for dim2)
     if (has_crit2_re) {
       L$add("    double g_crit2_mid = 0.0;")
       L$add("    Eigen::VectorXd g_crit2_gaps = Eigen::VectorXd::Zero(n_gaps2);")
@@ -4077,7 +3867,6 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add("          exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
         L$add("    }")
       } else {
-        # Multi-predictor with RE
         L$add("    auto propagate_mp2 = [&](int k, double d) {")
         L$add("      for (int p = 0; p < P_crit2; ++p) grad_thresh_mid2_pop(p) += d * X_crit2_d(n, p);")
         L$add("      g_crit2_mid += d;")
@@ -4099,32 +3888,40 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add(sprintf("    if (vr.k2_hi >= 0) propagate_mp2(vr.k2_hi, %s);", d_hi2))
       }
 
-      # Scatter criterion2 RE gradients
+      if (!is.null(params$.smooth_data[["criterion2"]])) {
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0",
+                                       pname = "criterion2")
+        L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+                                       pname = "criterion2")
+        L$add("    }")
+      }
+
       emit_crit2_re_grad_scatter(L, model_data, params)
 
     } else {
-      # No criterion2 RE
+      has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "obs_exp_gaps2" else "pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (vr.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(vr.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
-        L$add("          pop_exp_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop);")
+        L$add(sprintf("          %s, grad_thresh_mid2_pop, grad_log_gaps2_pop);", gaps2_vec))
         L$add("    }")
         L$add("    if (vr.k2_hi >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(vr.k2_hi, %s, mid2, n_thresh2, n_upper2,", d_hi2))
-        L$add("          pop_exp_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop);")
+        L$add(sprintf("          %s, grad_thresh_mid2_pop, grad_log_gaps2_pop);", gaps2_vec))
         L$add("    }")
       } else {
-        # Multi-predictor, no RE
         L$add("    auto propagate_mp2 = [&](int k, double d) {")
         L$add("      for (int p = 0; p < P_crit2; ++p) grad_thresh_mid2_pop(p) += d * X_crit2_d(n, p);")
         L$add("      if (k > mid2) {")
         L$add("        for (int j = 0; j <= k - mid2 - 1; ++j) {")
-        L$add("          double g = d * pop_exp_gaps2(j);")
+        L$add(sprintf("          double g = d * %s(j);", gaps2_vec))
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("        }")
         L$add("      } else if (k < mid2) {")
         L$add("        for (int j = n_upper2; j <= n_upper2 + (mid2 - k - 1); ++j) {")
-        L$add("          double g = d * (-pop_exp_gaps2(j));")
+        L$add(sprintf("          double g = d * (-%s(j));", gaps2_vec))
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("        }")
         L$add("      }")
@@ -4132,10 +3929,24 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add(sprintf("    if (vr.k2_lo >= 0) propagate_mp2(vr.k2_lo, %s);", d_lo2))
         L$add(sprintf("    if (vr.k2_hi >= 0) propagate_mp2(vr.k2_hi, %s);", d_hi2))
       }
+      if (has_crit2_smooth) {
+        L$add(sprintf("    double g_sm2_mid = (vr.k2_lo >= 0 ? %s : 0.0) + (vr.k2_hi >= 0 ? %s : 0.0);",
+                      d_lo2, d_hi2))
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_mid", "0",
+                                       pname = "criterion2")
+        L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
+        L$add("      double g_sm2_gap = 0.0;")
+        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo > mid2 && gi <= vr.k2_lo - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_lo2))
+        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi > mid2 && gi <= vr.k2_hi - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_hi2))
+        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_lo - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_lo2))
+        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_hi - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_hi2))
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
+                                       pname = "criterion2")
+        L$add("    }")
+      }
     }
   }
 }
-
 
 #' Emit criterion2 RE gradient scatter (from g_crit2_mid/g_crit2_gaps to grad_u_crit2)
 #' @noRd
@@ -4177,7 +3988,6 @@ emit_crit2_re_grad_scatter <- function(L, model_data, params) {
   }
 }
 
-
 # ============================================================================
 # Gradient accumulation
 # ============================================================================
@@ -4195,7 +4005,6 @@ emit_gradient_accumulation <- function(L, model_data, family_name, params, has_c
     emit_gradient_accumulation_source_mixture(L, model_data, params, has_crit_re)
   }
 }
-
 
 #' Emit standard gradient accumulation (EVSDT, UVSDT, cumulative)
 #' @noRd
@@ -4259,7 +4068,7 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
     if (has_counts) {
       L$add("      d_sigma_val *= count_n;")
     }
-    L$add("      double d_sigma_n = d_sigma_val * sigma_val;")  # chain through exp
+    L$add("      double d_sigma_n = d_sigma_val * sigma_val;")
 
     L$add("      for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
 
@@ -4278,7 +4087,6 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
   # ---- Threshold gradient ----
   emit_thresh_gradient_standard(L, model_data, params, has_crit_re)
 }
-
 
 #' Emit DPSDT gradient accumulation
 #' @noRd
@@ -4350,7 +4158,6 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
   # ---- Threshold gradient ----
   emit_thresh_gradient_extended(L, model_data, params, has_crit_re)
 }
-
 
 #' Emit mixture gradient accumulation
 #' @noRd
@@ -4474,7 +4281,6 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     L$add("")
     L$add("    if (is_old_n <= 0) {")
 
-    # dprime_L gradient
     L$add(sprintf("      double d_dprime_L_n = d_dprime_L_raw%s;", count_mult))
     L$add("      for (int p = 0; p < P_dpL; ++p) grad_beta_dpL(p) += d_dprime_L_n * X_dpL_d(n, p);")
     dpL_re_idx <- 0
@@ -4487,7 +4293,6 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
       }
     }
 
-    # sigma_L gradient
     if (has_sigma_L) {
       L$add(sprintf("      double d_sigma_L_n = d_sigma_L_raw%s;", count_mult))
       L$add("      for (int p = 0; p < P_sigL; ++p) grad_beta_sigL(p) += d_sigma_L_n * X_sigL_d(n, p);")
@@ -4502,7 +4307,6 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
       }
     }
 
-    # lambda_L gradient (inv_logit chain rule)
     L$add(sprintf("      double d_lambda_L_n = d_lambda_L_raw * lambda_L_val * (1.0 - lambda_L_val)%s;", count_mult))
     L$add("      for (int p = 0; p < P_lamL; ++p) grad_beta_lamL(p) += d_lambda_L_n * X_lamL_d(n, p);")
     lamL_re_idx <- 0
@@ -4521,7 +4325,6 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   # ---- Threshold gradient ----
   emit_thresh_gradient_extended(L, model_data, params, has_crit_re)
 }
-
 
 #' Emit source mixture gradient accumulation
 #' @noRd
@@ -4599,7 +4402,6 @@ emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has
   emit_thresh_gradient_extended(L, model_data, params, has_crit_re)
 }
 
-
 #' Emit standard threshold gradient (uses res.d_z_lo / res.d_z_hi)
 #' @noRd
 emit_thresh_gradient_standard <- function(L, model_data, params, has_crit_re) {
@@ -4627,7 +4429,6 @@ emit_thresh_gradient_standard <- function(L, model_data, params, has_crit_re) {
   emit_thresh_propagation(L, model_data, params, has_crit_re, d_lo, d_hi, is_crit_intercept_only)
 }
 
-
 #' Emit threshold gradient for dpsdt/mixture (uses pre-computed d_thresh_lo/d_thresh_hi)
 #' @noRd
 emit_thresh_gradient_extended <- function(L, model_data, params, has_crit_re) {
@@ -4649,7 +4450,6 @@ emit_thresh_gradient_extended <- function(L, model_data, params, has_crit_re) {
   emit_thresh_propagation(L, model_data, params, has_crit_re, d_lo, d_hi, is_crit_intercept_only)
 }
 
-
 #' Emit threshold gradient propagation (shared by standard and extended)
 #' @noRd
 emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_hi, is_crit_intercept_only) {
@@ -4670,21 +4470,9 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
       emit_multi_predictor_thresh_grad_with_re(L, d_lo, d_hi, params)
     }
 
-    # Criterion smooth gradient: extract per-obs contribution from g_crit_mid/g_crit_gaps
-    # by saving pre-propagation values and computing the delta
     if (!is.null(params$.smooth_data[["criterion"]])) {
-      # g_crit_mid and g_crit_gaps were accumulated by propagate_thresh_grad_with_re
-      # which is called BEFORE this point. The per-obs delta is the change from this obs.
-      # Since pre-obs values were saved, delta = current - saved.
-      # Use the per-obs d_lo/d_hi directly with the correct chain rule.
-      # The derivative of log-lik w.r.t. thresh_mid for this observation:
-      # For EACH boundary (lo/hi): d flows through ALL thresholds between it and mid,
-      # each contributing d * product_of_exp_gaps. The propagate function handles this.
-      # Compute it locally:
       L$add("    double g_sm_mid = 0.0;")
       L$add("    Eigen::VectorXd g_sm_gaps = Eigen::VectorXd::Zero(n_gaps);")
-      # Compute per-obs contributions using the same logic as propagate_thresh_grad_with_re
-      # but into local variables only
       L$add("    {")
       L$add("      auto scatter_sm = [&](int k, double d) {")
       L$add("        g_sm_mid += d;")
@@ -4707,42 +4495,32 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
 
   } else {
     if (is_crit_intercept_only) {
+      gaps_vec <- if (is.null(params$.smooth_data[["criterion"]])) "pop_exp_gaps" else "obs_exp_gaps"
       L$add("    if (k_lo >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad(k_lo, %s, mid, n_thresh, n_upper,", d_lo))
-      L$add("          pop_exp_gaps, grad_thresh_mid_pop, grad_log_gaps_pop);")
+      L$add(sprintf("          %s, grad_thresh_mid_pop, grad_log_gaps_pop);", gaps_vec))
       L$add("    }")
       L$add("    if (k_hi >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad(k_hi, %s, mid, n_thresh, n_upper,", d_hi))
-      L$add("          pop_exp_gaps, grad_thresh_mid_pop, grad_log_gaps_pop);")
+      L$add(sprintf("          %s, grad_thresh_mid_pop, grad_log_gaps_pop);", gaps_vec))
       L$add("    }")
     } else {
       emit_multi_predictor_thresh_grad_no_re(L, d_lo, d_hi, params)
     }
-    # Criterion smooth gradient for no-RE path: compute per-obs derivatives
     if (!is.null(params$.smooth_data[["criterion"]])) {
-      # Per-obs mid derivative = d_lo + d_hi (same as what flows to thresh_mid_pop)
       L$add(sprintf("    double g_sm_mid = (k_lo >= 0 ? %s : 0.0) + (k_hi >= 0 ? %s : 0.0);", d_lo, d_hi))
       emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_mid", "0")
-      # Per-obs gap derivatives: chain through exp(gap) and gap direction
       L$add("    for (int gi = 0; gi < n_gaps; ++gi) {")
       L$add("      double g_sm_gap = 0.0;")
-      if (is_crit_intercept_only) {
-        L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * pop_exp_gaps(gi);", d_lo))
-        L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * pop_exp_gaps(gi);", d_hi))
-        L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-pop_exp_gaps(gi));", d_lo))
-        L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-pop_exp_gaps(gi));", d_hi))
-      } else {
-        L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_lo))
-        L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_hi))
-        L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_lo))
-        L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_hi))
-      }
+      L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_lo))
+      L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_hi))
+      L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_lo))
+      L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_hi))
       emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_gap", "1 + gi")
       L$add("    }")
     }
   }
 }
-
 
 #' Emit RE gradient for a single group
 #' @noRd
@@ -4767,17 +4545,13 @@ emit_re_gradient <- function(L, tag, re, group, d_var, param_name, re_idx, prefi
     L$add(sprintf("%sif (idx_%s_%s[n] > 0) grad_%s(%s, idx_%s_%s[n] - 1) += %s;",
                    indent, param_name, group, tag, g_var, param_name, group, d_var))
   } else if (!is.null(re$varying_re_mode) && re$varying_re_mode %in% c("per_bin", "full")) {
-    # Per-bin varying RE: gradient goes to bin yn-1
     L$add(sprintf("%sgrad_%s(%s, yn - 1) += %s;", indent, tag, g_var, d_var))
   }
 }
 
-
 #' Emit multi-predictor threshold gradient with criterion RE
 #' @noRd
 emit_multi_predictor_thresh_grad_with_re <- function(L, d_lo, d_hi, params = list()) {
-  # For multi-predictor criterion with RE, inline the propagation logic
-  # since per-predictor gradient accumulation is needed
   L$add("    // Multi-predictor threshold gradient propagation (with RE)")
   L$add("    auto propagate_mp = [&](int k, double d) {")
   L$add("      // Population: per-predictor")
@@ -4799,11 +4573,7 @@ emit_multi_predictor_thresh_grad_with_re <- function(L, d_lo, d_hi, params = lis
   L$add("    };")
   L$add(sprintf("    if (k_lo >= 0) propagate_mp(k_lo, %s);", d_lo))
   L$add(sprintf("    if (k_hi >= 0) propagate_mp(k_hi, %s);", d_hi))
-  # NOTE: criterion smooth gradient is handled by emit_thresh_propagation's
-  # per-obs scatter_sm block, NOT here (g_crit_mid/g_crit_gaps accumulate
-  # across observations, which is wrong for per-obs smooth gradients)
 }
-
 
 #' Emit multi-predictor threshold gradient without criterion RE
 #' @noRd
@@ -4826,10 +4596,7 @@ emit_multi_predictor_thresh_grad_no_re <- function(L, d_lo, d_hi, params = list(
   L$add("    };")
   L$add(sprintf("    if (k_lo >= 0) propagate_mp(k_lo, %s);", d_lo))
   L$add(sprintf("    if (k_hi >= 0) propagate_mp(k_hi, %s);", d_hi))
-  # NOTE: criterion smooth gradient is handled by emit_thresh_propagation's
-  # per-obs gradient block, NOT here
 }
-
 
 #' Emit criterion RE gradient scatter (from g_crit_mid/g_crit_gaps to grad_u_crit)
 #' @noRd
@@ -4844,24 +4611,19 @@ emit_crit_re_grad_scatter <- function(L, model_data, params) {
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
     if (n_re_terms == 1 && !isTRUE(re$use_z_matrix)) {
-      # Simple: mid column gets g_crit_mid, gap columns get g_crit_gaps
       L$add(sprintf("    grad_u_crit%d(%s, mid) += g_crit_mid;", crit_re_idx, g_var))
       L$add("    for (int g = 0; g < n_gaps; ++g) {")
       L$add(sprintf("      grad_u_crit%d(%s, gap_to_col(g)) += g_crit_gaps(g);", crit_re_idx, g_var))
       L$add("    }")
     } else if (isTRUE(re$use_z_matrix)) {
-      # Z-matrix criterion RE: gradient goes through Z weights
-      # Mid threshold
       L$add(sprintf("    for (int j = 0; j < %d; ++j) grad_u_crit%d(%s, mid * %d + j) += g_crit_mid * Z_crit%d_d(n, j);",
                      n_re_terms, crit_re_idx, g_var, n_re_terms, crit_re_idx))
-      # Gap thresholds
       L$add("    for (int g = 0; g < n_gaps; ++g) {")
       L$add("      int col = gap_to_col(g);")
       L$add(sprintf("      for (int j = 0; j < %d; ++j) grad_u_crit%d(%s, col * %d + j) += g_crit_gaps(g) * Z_crit%d_d(n, j);",
                      n_re_terms, crit_re_idx, g_var, n_re_terms, crit_re_idx))
       L$add("    }")
     } else {
-      # Multi-term idx: mid and gap columns use idx_criterion
       idx_var <- sprintf("idx_criterion_%s", group)
       L$add(sprintf("    if (%s[n] > 0) {", idx_var))
       L$add(sprintf("      grad_u_crit%d(%s, mid * %d + %s[n] - 1) += g_crit_mid;",
@@ -4875,7 +4637,6 @@ emit_crit_re_grad_scatter <- function(L, model_data, params) {
     }
   }
 }
-
 
 # ============================================================================
 # Operand packing (precomputed_gradients)
@@ -4894,13 +4655,11 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   L$add("    std::vector<double> gradients;")
   L$add("")
 
-  # beta_dprime
   has_dp_fixed <- isTRUE(params$.has_dp_fixed)
   if (has_dp_fixed) {
     emit_pack_vec(L, "beta_dprime", "grad_beta_dp")
   }
 
-  # dprime REs
   dp_re_idx <- 0
   if (!is.null(params$dprime$random)) {
     for (group in names(params$dprime$random)) {
@@ -4916,7 +4675,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # sigma
   if (isTRUE(params$.has_sigma)) {
     emit_pack_vec(L, "beta_sigma", "grad_beta_sig")
     sig_re_idx <- 0
@@ -4935,7 +4693,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # lambda
   if (isTRUE(params$.has_lambda)) {
     emit_pack_vec(L, "beta_lambda", "grad_beta_lam")
     lam_re_idx <- 0
@@ -4954,7 +4711,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # dprime2
   if (isTRUE(params$.has_dprime2)) {
     emit_pack_vec(L, "beta_dprime2", "grad_beta_dp2")
     dp2_re_idx <- 0
@@ -4973,7 +4729,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # sigma2
   if (isTRUE(params$.has_sigma2)) {
     emit_pack_vec(L, "beta_sigma2", "grad_beta_sig2")
     sig2_re_idx <- 0
@@ -4992,7 +4747,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # dprime_B (source_mixture)
   if (isTRUE(params$.has_dprime_B)) {
     emit_pack_vec(L, "beta_dprime_B", "grad_beta_dpB")
     dpB_re_idx <- 0
@@ -5011,7 +4765,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # lambda_B (source_mixture)
   if (isTRUE(params$.has_lambda_B)) {
     emit_pack_vec(L, "beta_lambda_B", "grad_beta_lamB")
     lamB_re_idx <- 0
@@ -5030,7 +4783,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # dprime_L (lure mixture)
   if (isTRUE(params$.has_dprime_L)) {
     emit_pack_vec(L, "beta_dprime_L", "grad_beta_dpL")
     dpL_re_idx <- 0
@@ -5049,7 +4801,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # sigma_L (lure mixture)
   if (isTRUE(params$.has_sigma_L)) {
     emit_pack_vec(L, "beta_sigma_L", "grad_beta_sigL")
     sigL_re_idx <- 0
@@ -5068,7 +4819,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # lambda_L (lure mixture)
   if (isTRUE(params$.has_lambda_L)) {
     emit_pack_vec(L, "beta_lambda_L", "grad_beta_lamL")
     lamL_re_idx <- 0
@@ -5087,7 +4837,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # discrim (vrdp2d / bivariate)
   if (isTRUE(params$.has_discrim)) {
     if (has_disc_fixed_cpp) {
       emit_pack_vec(L, "beta_discrim", "grad_beta_disc")
@@ -5108,7 +4857,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # discrim_B (vrdp2d)
   if (isTRUE(params$.has_discrim_B)) {
     emit_pack_vec(L, "beta_discrim_B", "grad_beta_discB")
     discB_re_idx <- 0
@@ -5127,7 +4875,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # Bivariate-specific operand packing
   emit_generic_operand_packing(L, params, "sigma_B", "sigB", "has_sigma_B")
   emit_generic_operand_packing(L, params, "sigma2_B", "sig2B", "has_sigma2_B")
   emit_generic_operand_packing(L, params, "rho", "rho", "has_rho")
@@ -5136,7 +4883,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   emit_generic_operand_packing(L, params, "lambda2", "lam2", "has_lambda2")
   emit_generic_operand_packing(L, params, "lambda2_B", "lam2B", "has_lambda2_B")
 
-  # rec_crit (cdp)
   if (isTRUE(params$.has_rec_crit)) {
     emit_pack_vec(L, "beta_rec_crit", "grad_beta_rc")
     rc_re_idx <- 0
@@ -5155,7 +4901,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # know_crit (cdp)
   if (isTRUE(params$.has_know_crit)) {
     emit_pack_vec(L, "beta_know_crit", "grad_beta_kc")
     kc_re_idx <- 0
@@ -5174,7 +4919,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # Criterion population: thresh_mid
   if (is_crit_intercept_only) {
     L$add("    operands.push_back(beta_thresh_mid.coeff(0));")
     L$add("    gradients.push_back(grad_thresh_mid_pop);")
@@ -5183,7 +4927,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   }
 
   has_two_responses <- isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)
-  # Criterion population: log_gaps
   K_for_crit <- if (has_two_responses) model_data$stan_data$K1
                 else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1
                 else model_data$K
@@ -5198,7 +4941,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # Criterion REs
   crit_re_idx <- 0
   if (!is.null(params$criterion$random)) {
     for (group in names(params$criterion$random)) {
@@ -5208,28 +4950,22 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # Criterion2 population (vrdp2d/bivariate -- source dimension)
   if (has_two_responses) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     K2_val <- model_data$stan_data$K2
 
     if (varying_sc) {
-      # Varying source criteria: pack per-bin threshold gradients
       emit_pack_vec(L, "beta_thresh_mid_2_varying", "grad_vary_mid2")
       if (K2_val > 2) {
         emit_pack_mat(L, "beta_log_gaps_2_varying", "grad_vary_gaps2")
       }
       if (identical(params$.new_source_criteria, "shared")) {
-        # Push the autodiff var itself, NOT value_of(...): wrapping it strips the
-        # var to a constant so operands_and_partials cannot attach grad_new_mid2,
-        # silently dropping the beta_thresh_mid_2_new gradient.
         L$add("    operands.push_back(beta_thresh_mid_2_new);")
         L$add("    gradients.push_back(grad_new_mid2);")
         if (K2_val > 2) {
           emit_pack_vec(L, "beta_log_gaps_2_new", "grad_new_gaps2")
         }
       }
-      # Criterion2 REs
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -5260,7 +4996,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
         }
       }
 
-      # Criterion2 REs
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
         for (group in names(params$criterion2$random)) {
@@ -5272,7 +5007,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  # Smooth operand packing
   if (!is.null(params$.smooth_data)) {
     for (pname in names(params$.smooth_data)) {
       for (sm in params$.smooth_data[[pname]]) {
@@ -5302,7 +5036,6 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   L$add("  }")
 }
 
-
 #' Emit operand packing for a generic parameter (fixed + REs)
 #' @noRd
 emit_generic_operand_packing <- function(L, params, full_name, short, flag_name) {
@@ -5327,7 +5060,6 @@ emit_generic_operand_packing <- function(L, params, full_name, short, flag_name)
   }
 }
 
-
 #' Emit operand packing for an Eigen vector parameter
 #' @noRd
 emit_pack_vec <- function(L, param_name, grad_name) {
@@ -5336,7 +5068,6 @@ emit_pack_vec <- function(L, param_name, grad_name) {
   L$add(sprintf("      gradients.push_back(%s(i));", grad_name))
   L$add("    }")
 }
-
 
 #' Emit operand packing for an Eigen matrix parameter (column-major)
 #' @noRd
@@ -5348,7 +5079,6 @@ emit_pack_mat <- function(L, param_name, grad_name) {
   L$add("      }")
   L$add("    }")
 }
-
 
 # ============================================================================
 # Tag helpers -- short internal names for RE groups
@@ -5423,7 +5153,6 @@ lam2_re_tag <- function(idx) sprintf("u_lam2_%d", idx)
 #' @noRd
 lam2B_re_tag <- function(idx) sprintf("u_lam2B_%d", idx)
 
-
 # ============================================================================
 # CDP: Likelihood and gradient accumulation
 # ============================================================================
@@ -5439,7 +5168,6 @@ emit_likelihood_cdp <- function(L, params) {
   has_counts <- params$.has_counts
   n_rkg <- params$.n_rkg
 
-  # Resolve parameter values
   sigma_R_expr <- if (has_sigma) "sigma_val" else "1.0"
   sigma_F_expr <- if (has_sigma2) "sigma2_val" else "1.0"
   dprime2_expr <- if (has_dprime2) "dprime2_n" else "0.0"
@@ -5451,7 +5179,6 @@ emit_likelihood_cdp <- function(L, params) {
   L$add(sprintf("    double sigma_F_n = %s;", sigma_F_expr))
 
   if (isTRUE(params$.is_cdp)) {
-    # rec_crit value
     L$add("    double c_R_val = rec_crit_val;")
 
     if (isTRUE(n_rkg == 3) && has_know_crit) {
@@ -5488,7 +5215,6 @@ emit_likelihood_cdp <- function(L, params) {
     L$add("    total_lp += obs_lp;")
   }
 }
-
 
 #' Emit CDP gradient accumulation
 #' @noRd
@@ -5599,10 +5325,8 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
   }
 
   # ---- Threshold gradient ----
-  # Uses precomputed d_thresh_lo/d_thresh_hi from CDP cell function
   emit_thresh_gradient_extended(L, model_data, params, has_crit_re)
 }
-
 
 # ============================================================================
 # Generic parameter helpers for bivariate
@@ -5656,7 +5380,6 @@ emit_param_grad_accum <- function(L, param_name, short, random, full_name) {
   }
 }
 
-
 # ============================================================================
 # Bivariate SDT: Likelihood computation
 # ============================================================================
@@ -5679,14 +5402,8 @@ emit_likelihood_bivariate <- function(L, params) {
 
   L$add("    // Bivariate SDT likelihood: resolve per-source parameters")
 
-  # bivariate_dp always uses exp link on dprime/discrim (positivity constraint);
-
-  # bounded mode uses log link on dprime/discrim and logistic on rho. Under
-  # the new convention (A on negative source axis, B on positive), bounded
-  # places the sign by negating A's parameters in the call to bivariate_cell.
   needs_exp <- bounded
 
-  # Resolve dprime for this source
   if (has_dprime_B) {
     if (needs_exp) {
       L$add("    double dprime_B_val = std::exp(dprime_B_n);  // exp link")
@@ -5701,10 +5418,6 @@ emit_likelihood_bivariate <- function(L, params) {
     }
   }
 
-  # Resolve discrim_B_val.
-  # Symmetric default depends on bounded:
-  #   bounded:   discrim_B_val = exp(discrim_n) -- same positive magnitude
-  #   unbounded: discrim_B_val = -discrim_n     -- opposite sign for mirror
   if (has_discrim_B) {
     if (needs_exp) {
       L$add("    double discrim_B_val = std::exp(discrim_B_n);  // exp link")
@@ -5719,22 +5432,16 @@ emit_likelihood_bivariate <- function(L, params) {
     }
   }
 
-  # Apply exp() to dprime_n and discrim_n for positivity
   if (needs_exp) {
     L$add("    double dprime_bounded = std::exp(dprime_n);")
     L$add("    double discrim_bounded = std::exp(discrim_n);")
   }
 
-  # Resolve sigma parameters
   sigma1_A <- if (has_sigma) "sigma_val" else "1.0"
   sigma1_B <- if (has_sigma_B) "sigma_B_val" else sigma1_A
   sigma2_A <- if (has_sigma2) "sigma2_val" else "1.0"
   sigma2_B <- if (has_sigma2_B) "sigma2_B_val" else sigma2_A
 
-  # Resolve rho parameters (rho_val is tanh for unbounded, inv_logit for bounded).
-  # Symmetric default for rho_B_expr depends on bounded:
-  #   bounded:   rho_B_expr = rho_val     -- same magnitude (sign placed in call)
-  #   unbounded: rho_B_expr = -rho_val    -- opposite sign for mirror
   rho_A <- if (has_rho) "rho_val" else "0.0"
   if (has_rho_B) {
     rho_B_expr <- "rho_B_val"
@@ -5745,9 +5452,6 @@ emit_likelihood_bivariate <- function(L, params) {
   }
   rho_N_expr <- if (has_rho_N) "rho_N_val" else "0.0"
 
-  # Per-source mu2/rho_eff under new convention:
-  #   bounded:   mu2_A = -discrim, rho_eff_A = -rho;   mu2_B = discrim_B, rho_eff_B = rho_B
-  #   unbounded: mu2_A =  discrim, rho_eff_A =  rho;   mu2_B = discrim_B, rho_eff_B = rho_B
   L$add("")
   L$add("    // Select parameters based on item_type (1=new, 2=A, 3=B)")
   L$add("    double mu1, mu2, s1, s2, rho_eff;")
@@ -5803,7 +5507,6 @@ emit_likelihood_bivariate <- function(L, params) {
   }
 }
 
-
 # ============================================================================
 # Bivariate SDT: Gradient accumulation
 # ============================================================================
@@ -5827,23 +5530,13 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   has_counts <- params$.has_counts
   count_mult <- if (has_counts) " * count_n" else ""
 
-  # For bivariate_dp or bounded bivariate_sdt, gradients need exp/inv_logit chain rules:
-  # dprime_linear -> exp(dprime_linear) = mu1, so d/d_linear = d/d_mu1 * mu1
-  # discrim_linear -> exp(discrim_linear) = mu2, so d/d_linear = d/d_mu2 * mu2
-  # rho_linear -> inv_logit(rho_linear) = rho, so d/d_linear = d/d_rho * rho*(1-rho)
-  # These chain rule factors are applied as multipliers to bv.d_dprime, bv.d_discrim, bv.d_rho
   needs_exp <- bounded
   bounded_dp_mult <- if (needs_exp) " * dprime_bounded" else ""
   bounded_disc_mult <- if (needs_exp) " * discrim_bounded" else ""
-  # Sign of d_logP/d_discrim_n on the A side: +1 in unbounded (mu2_A = discrim_n),
-  # -1 in bounded (mu2_A = -exp(discrim_n)). Multiplied into chain rule.
   sign_A_disc <- if (bounded) "-" else ""
   sign_A_rho  <- if (bounded) "-" else ""
 
   # ---- dprime gradient ----
-  # For source A: d_logP/d_dprime_n = bv.d_dprime (which is d_logP/d_mu1)
-  # For source B (if shared dprime): d_logP/d_dprime_n = bv.d_dprime (mu1 = dprime_n)
-  # For new items: bv.d_dprime = 0 (mu1=0, no dprime dependence)
   L$add("")
   if (has_dprime_B) {
     L$add("    // dprime gradient (only from source A, new items contribute 0)")
@@ -5884,12 +5577,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- discrim gradient (NEW convention: A on negative source axis) ----
-  # bv.d_discrim = d_logP/d_mu2.
-  # - bounded:   mu2_A = -exp(discrim_n) -> d/d(discrim_n) = -exp(discrim_n) = -discrim_bounded
-  #              mu2_B = +exp(discrim_B_n) -> d/d(discrim_B_n) = +discrim_B_val
-  # - unbounded: mu2_A = discrim_n -> d/d(discrim_n) = +1
-  #              mu2_B = discrim_B_n -> d/d(discrim_B_n) = +1
-  # - unbounded symmetric (no discrim_B): mu2_B = -discrim_n -> d/d(discrim_n) for B = -1
   L$add("")
   if (has_discrim_B) {
     L$add("    if (item_type_n == 2) {")
@@ -5907,7 +5594,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       }
     }
     L$add("    } else if (item_type_n == 3) {")
-    # B side never negates under new convention (chain factor +1 in both modes)
     bounded_discB_mult <- if (needs_exp) " * discrim_B_val" else ""
     L$add(sprintf("      double d_discrim_B_n = bv.d_discrim%s%s;", bounded_discB_mult, count_mult))
     L$add("      for (int p = 0; p < P_discB; ++p) grad_beta_discB(p) += d_discrim_B_n * X_discB_d(n, p);")
@@ -5922,9 +5608,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
     L$add("    }")
   } else {
-    # Symmetric:
-    #   bounded:   A: -bv.d_discrim * discrim_bounded ; B: +bv.d_discrim * discrim_bounded
-    #   unbounded: A: +bv.d_discrim                   ; B: -bv.d_discrim   (B's mu2 = -discrim_n)
     L$add("    {")
     if (needs_exp) {
       L$add(sprintf("      double d_discrim_n = (item_type_n == 2 ? -bv.d_discrim : bv.d_discrim) * discrim_bounded%s;", count_mult))
@@ -5950,8 +5633,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
 
   # ---- sigma gradient (detection SD for source A) ----
   if (has_sigma) {
-    # bv.d_sigma1 is d_logP/d_sigma1. Chain rule for exp: d/d_sigma_n = d_sigma1 * sigma_val
-    # Only contributes for source A (item_type==2), or also B if sigma_B not separate
     L$add("")
     if (has_sigma_B) {
       L$add(sprintf("    double d_sigma_n = (item_type_n == 2) ? bv.d_sigma1 * sigma_val%s : 0.0;", count_mult))
@@ -6023,15 +5704,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- rho gradient (NEW convention) ----
-  # bv.d_rho = d_logP/d_rho_eff. Link chain factor:
-  #   bounded (logistic): d(rho_val)/d(rho_n) = rho_val * (1 - rho_val)
-  #   unbounded (tanh):   d(rho_val)/d(rho_n) = 1 - rho_val^2
-  # mu sign chain (rho_eff = sign * rho_val):
-  #   bounded   A: rho_eff = -rho_val -> -1
-  #   unbounded A: rho_eff =  rho_val -> +1
-  #   B side, asymmetric: rho_eff = +rho_B_val -> +1
-  #   B side, symmetric (no rho_B): bounded uses rho_B_expr = +rho_val (sign from A's
-  #     negation gives mirror), unbounded uses rho_B_expr = -rho_val (mirror in code)
   if (has_rho) {
     L$add("")
     if (bounded) {
@@ -6040,13 +5712,9 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       rho_chain <- "(1.0 - rho_val * rho_val)"
     }
     if (has_rho_B) {
-      # Only A contributes via rho parameter
       L$add(sprintf("    double d_rho_n = (item_type_n == 2) ? %sbv.d_rho * %s%s : 0.0;",
                      sign_A_rho, rho_chain, count_mult))
     } else {
-      # Symmetric: A gets sign_A_rho * chain; B's contribution depends on bounded:
-      #   bounded:   B uses rho_B_expr = +rho_val -> chain factor +1 (no negation)
-      #   unbounded: B uses rho_B_expr = -rho_val -> chain factor -1
       sign_B_rho_sym <- if (bounded) "" else "-"
       L$add("    double d_rho_n = 0.0;")
       L$add(sprintf("    if (item_type_n == 2) d_rho_n = %sbv.d_rho * %s%s;",
@@ -6067,12 +5735,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- rho_B gradient (NEW convention) ----
-  # rho_eff for B = +rho_B_val (no negation in either bounded or unbounded), so
-  # chain factor on the B side is +1 in both modes.
   if (has_rho_B) {
     L$add("")
     if (bounded) {
-      rho_B_chain <- "rho_B_val * (1.0 - rho_B_val)"  # rho_B_val = inv_logit(rho_B_n)
+      rho_B_chain <- "rho_B_val * (1.0 - rho_B_val)"
     } else {
       rho_B_chain <- "(1.0 - rho_B_val * rho_B_val)"
     }
@@ -6106,15 +5772,9 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda gradient (bivariate_dp: R_I -- Source A R_I) ----
-  # bv.d_lambda is already routed by item_type inside bivariate_dp_cell:
-  # nonzero only for Source-A items. The chain rule factor d(R_I)/d(lambda_n)
-  # = R_I_val * (1 - R_I_val) (inv_logit derivative).
   if (is_dp && isTRUE(params$.has_lambda)) {
     L$add("")
     if (!isTRUE(params$.has_lambda_B_dp)) {
-      # lambda_B constrained equal to lambda: Source-B recollection (bv.d_lambda_B,
-      # nonzero only for item_type == 3) shares the lambda linear predictor, so it
-      # must fold into the same accumulator. Dropping it halves the gradient.
       L$add(sprintf("    double d_lambda_n = (bv.d_lambda + bv.d_lambda_B) * R_I_val * (1.0 - R_I_val)%s;", count_mult))
     } else {
       L$add(sprintf("    double d_lambda_n = bv.d_lambda * R_I_val * (1.0 - R_I_val)%s;", count_mult))
@@ -6132,10 +5792,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda_B gradient (bivariate_dp: R_I_B -- Source B R_I) ----
-  # bv.d_lambda_B is nonzero only for Source-B items (item_type == 3).
-  # Chain rule uses R_I_B_val (which equals lambda_B_val when the user
-  # specified lambda_B; constrained-equal default has has_lambda_B_dp = FALSE
-  # so this block doesn't run).
   if (is_dp && isTRUE(params$.has_lambda_B_dp)) {
     L$add("")
     L$add(sprintf("    double d_lambda_B_n = bv.d_lambda_B * R_I_B_val * (1.0 - R_I_B_val)%s;", count_mult))
@@ -6155,8 +5811,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   if (is_dp && isTRUE(params$.has_lambda2)) {
     L$add("")
     if (!isTRUE(params$.has_lambda2_B)) {
-      # lambda2_B constrained equal to lambda2: fold Source-B source-recollection
-      # gradient (bv.d_lambda2_B) into the shared lambda2 accumulator (see lambda).
       L$add(sprintf("    double d_lambda2_n = (bv.d_lambda2 + bv.d_lambda2_B) * R_S_val * (1.0 - R_S_val)%s;", count_mult))
     } else {
       L$add(sprintf("    double d_lambda2_n = bv.d_lambda2 * R_S_val * (1.0 - R_S_val)%s;", count_mult))
@@ -6224,10 +5878,8 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   varying_sc <- isTRUE(params$.varying_source_criteria)
 
   if (varying_sc) {
-    # Varying source criteria: propagate to per-bin threshold gradient accumulators
     new_shared <- identical(params$.new_source_criteria, "shared")
     if (new_shared) {
-      # For new responses, propagate to shared new-response thresholds
       L$add("    if (is_new_response[yn - 1] == 1) {")
       L$add("      // New response: propagate to shared new-response thresholds")
       L$add(sprintf("      if (bv.k2_lo >= 0) batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2, new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_lo2))
@@ -6246,7 +5898,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       L$add(sprintf("      if (bv.k2_hi >= 0) propagate_vary(bv.k2_hi, %s);", d_hi2))
       L$add("    }")
     } else {
-      # All items use varying thresholds indexed by yn
       L$add("    {")
       L$add("      int bin = yn - 1;")
       L$add("      Eigen::VectorXd bin_exp_gaps = vary_exp_gaps2.row(bin).transpose();")
@@ -6264,7 +5915,6 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     crit2 <- model_data$criterion2
     is_crit2_intercept_only <- is.null(crit2) || isTRUE(crit2$is_intercept_only) || crit2$n_coef == 1
 
-    # Reuse the same thresh2 propagation infrastructure as vrdp2d
     if (has_crit2_re) {
       L$add("    double g_crit2_mid = 0.0;")
       L$add("    Eigen::VectorXd g_crit2_gaps = Eigen::VectorXd::Zero(n_gaps2);")
@@ -6299,34 +5949,59 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
         L$add(sprintf("    if (bv.k2_lo >= 0) propagate_mp2(bv.k2_lo, %s);", d_lo2))
         L$add(sprintf("    if (bv.k2_hi >= 0) propagate_mp2(bv.k2_hi, %s);", d_hi2))
       }
+      if (!is.null(params$.smooth_data[["criterion2"]])) {
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0",
+                                       pname = "criterion2")
+        L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+                                       pname = "criterion2")
+        L$add("    }")
+      }
       emit_crit2_re_grad_scatter(L, model_data, params)
     } else {
+      has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "obs_exp_gaps2" else "pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (bv.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
-        L$add("          pop_exp_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop);")
+        L$add(sprintf("          %s, grad_thresh_mid2_pop, grad_log_gaps2_pop);", gaps2_vec))
         L$add("    }")
         L$add("    if (bv.k2_hi >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(bv.k2_hi, %s, mid2, n_thresh2, n_upper2,", d_hi2))
-        L$add("          pop_exp_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop);")
+        L$add(sprintf("          %s, grad_thresh_mid2_pop, grad_log_gaps2_pop);", gaps2_vec))
         L$add("    }")
       } else {
         L$add("    auto propagate_mp2 = [&](int k, double d) {")
         L$add("      for (int p = 0; p < P_crit2; ++p) grad_thresh_mid2_pop(p) += d * X_crit2_d(n, p);")
         L$add("      if (k > mid2) {")
         L$add("        for (int j = 0; j <= k - mid2 - 1; ++j) {")
-        L$add("          double g = d * pop_exp_gaps2(j);")
+        L$add(sprintf("          double g = d * %s(j);", gaps2_vec))
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("        }")
         L$add("      } else if (k < mid2) {")
         L$add("        for (int j = n_upper2; j <= n_upper2 + (mid2 - k - 1); ++j) {")
-        L$add("          double g = d * (-pop_exp_gaps2(j));")
+        L$add(sprintf("          double g = d * (-%s(j));", gaps2_vec))
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("        }")
         L$add("      }")
         L$add("    };")
         L$add(sprintf("    if (bv.k2_lo >= 0) propagate_mp2(bv.k2_lo, %s);", d_lo2))
         L$add(sprintf("    if (bv.k2_hi >= 0) propagate_mp2(bv.k2_hi, %s);", d_hi2))
+      }
+      if (has_crit2_smooth) {
+        L$add(sprintf("    double g_sm2_mid = (bv.k2_lo >= 0 ? %s : 0.0) + (bv.k2_hi >= 0 ? %s : 0.0);",
+                      d_lo2, d_hi2))
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_mid", "0",
+                                       pname = "criterion2")
+        L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
+        L$add("      double g_sm2_gap = 0.0;")
+        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo > mid2 && gi <= bv.k2_lo - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_lo2))
+        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi > mid2 && gi <= bv.k2_hi - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_hi2))
+        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_lo - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_lo2))
+        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_hi - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_hi2))
+        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
+                                       pname = "criterion2")
+        L$add("    }")
       }
     }
   }

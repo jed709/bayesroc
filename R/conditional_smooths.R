@@ -30,7 +30,6 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
 
   probs <- c((1 - prob) / 2, 1 - (1 - prob) / 2)
 
-  # Get posterior draws
   all_draws <- as.matrix(fit$draws(format = "matrix"))
   S <- nrow(all_draws)
   if (!is.null(ndraws) && ndraws < S) {
@@ -42,60 +41,49 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
   results <- list()
 
   for (pname in names(smooth_data)) {
-    # Filter by distributional parameter
     if (!is.null(dpar) && !pname %in% dpar) next
 
     for (sm in smooth_data[[pname]]) {
-      # Filter by user-specified smooths
       if (!is.null(smooths) && !sm$term_str %in% smooths) next
 
       for (j in seq_along(sm$components)) {
         comp <- sm$components[[j]]
 
-        # Build grid of covariate values from the original data range
         covars <- sm$covars
         grid_data <- build_smooth_grid(covars, model$data, resolution,
                                        by_var = sm$by, bylevel = comp$bylevel)
 
-        # Compute smooth prediction basis on the grid
         pred <- build_smooth_prediction_basis(comp, grid_data)
 
-        # Extract unpenalized (Xs) and penalized (s_ = sds * zs) draws
         smooth_contribution <- matrix(0, nrow = nrow(grid_data), ncol = S)
 
-        # Unpenalized part: Xs * bs
         if (NCOL(pred$Xs) > 0) {
-          # Find which beta indices correspond to the Xs columns
           all_coef_names <- md[[paste0(pname, "_fixed")]]$coef_names
           xs_colnames <- comp$Xs_colnames
           xs_idx <- match(xs_colnames, all_coef_names)
           xs_idx <- xs_idx[!is.na(xs_idx)]
           if (length(xs_idx) > 0) {
             beta_names <- paste0("beta_", pname, "[", xs_idx, "]")
-            beta_draws <- all_draws[, beta_names, drop = FALSE]  # S x n_Xs
+            beta_draws <- all_draws[, beta_names, drop = FALSE]
             smooth_contribution <- smooth_contribution + pred$Xs %*% t(beta_draws)
           }
         }
 
-        # Penalized part: Zs * s (where s = sds * zs)
         for (k in seq_along(pred$Zs_list)) {
           Zs <- pred$Zs_list[[k]]
           nbasis <- ncol(Zs)
           s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
           s_vars <- paste0(s_name, "[", 1:nbasis, "]")
-          s_draws <- all_draws[, s_vars, drop = FALSE]  # S x nbasis
-          smooth_contribution <- smooth_contribution + Zs %*% t(s_draws)  # N_grid x S
+          s_draws <- all_draws[, s_vars, drop = FALSE]
+          smooth_contribution <- smooth_contribution + Zs %*% t(s_draws)
         }
 
-        # Summarize: mean and CIs across draws
         est <- rowMeans(smooth_contribution)
         lower <- apply(smooth_contribution, 1, quantile, probs = probs[1])
         upper <- apply(smooth_contribution, 1, quantile, probs = probs[2])
 
-        # Build label
         comp_label <- comp$sm_obj$label
 
-        # Assemble result
         res <- grid_data
         res$estimate <- est
         res$lower <- lower
@@ -112,8 +100,6 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
     stop("No matching smooth terms found.")
   }
 
-  # Unify column names across all results (handles mismatched columns),
-  # fill missing with NA, then row-bind.
   all_cols <- unique(unlist(lapply(results, names)))
   results <- lapply(results, function(df) {
     missing <- setdiff(all_cols, names(df))
@@ -125,7 +111,6 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
   class(out) <- c("conditional_smooths", "data.frame")
   out
 }
-
 
 #' Build Grid for Smooth Evaluation
 #'
@@ -151,14 +136,12 @@ build_smooth_grid <- function(covars, data, resolution, by_var = NA, bylevel = N
 
   grid <- expand.grid(grid_vals, KEEP.OUT.ATTRS = FALSE)
 
-  # If by-variable is a factor, add the by-level column
   if (!is.na(by_var) && !is.null(bylevel)) {
     grid[[by_var]] <- factor(bylevel, levels = levels(data[[by_var]]))
   }
 
   grid
 }
-
 
 #' Plot Conditional Smooths
 #'
@@ -172,15 +155,12 @@ plot.conditional_smooths <- function(x, ...) {
     stop("Package 'ggplot2' is required for smooth plots.")
   }
 
-  # Determine the covariate column(s) -- everything except estimate/lower/upper/parameter/smooth
   meta_cols <- c("estimate", "lower", "upper", "parameter", "smooth")
   covar_cols <- setdiff(names(x), meta_cols)
 
-  # For 1D smooths: single covariate
   smooths <- unique(x$smooth)
   params <- unique(x$parameter)
 
-  # Identify the primary numeric covariate
   numeric_covars <- covar_cols[vapply(x[covar_cols], is.numeric, logical(1))]
   if (length(numeric_covars) == 0) {
     stop("No numeric covariates found for smooth plotting.")
@@ -188,7 +168,6 @@ plot.conditional_smooths <- function(x, ...) {
 
   xvar <- numeric_covars[1]
 
-  # Rename covariate column to a fixed name for ggplot mapping
   plot_df <- x
   plot_df$.xvar <- plot_df[[xvar]]
 
@@ -200,7 +179,6 @@ plot.conditional_smooths <- function(x, ...) {
     ggplot2::labs(x = xvar, y = "Smooth effect") +
     ggplot2::theme_minimal()
 
-  # Facet by smooth term if multiple
   if (length(smooths) > 1 || length(params) > 1) {
     p <- p + ggplot2::facet_wrap(~ smooth, scales = "free")
   } else {

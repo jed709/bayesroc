@@ -65,7 +65,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     stop("response = 2 is only valid for bivariate families (bivariate_gaussian, bivariate_dp, vrdp2d).")
   }
 
-  # Determine K for the plotted dimension
   if (is_bivariate && response == 2) {
     K <- model$model_data$K2
   } else {
@@ -82,15 +81,11 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   S <- dim(probs_raw)[1]
   N <- dim(probs_raw)[2]
 
-  # Marginalize bivariate to selected dimension
-  # Note: varying_source_criteria is handled transparently -- the joint probs
-  # from predict_broc already incorporate per-detection-level source criteria,
-  # and marginalization correctly averages over them.
   if (is_bivariate) {
     if (response == 1) {
-      probs <- apply(probs_raw, c(1, 2, 3), sum)  # S x N x K1
+      probs <- apply(probs_raw, c(1, 2, 3), sum)
     } else {
-      probs <- apply(probs_raw, c(1, 2, 4), sum)  # S x N x K2
+      probs <- apply(probs_raw, c(1, 2, 4), sum)
     }
   } else {
     probs <- probs_raw
@@ -139,7 +134,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     reverse <- isTRUE(comp$reverse)
 
     if (is.null(group_vec)) {
-      # No grouping: single ROC per comparison
       model_roc <- .compute_model_roc(probs, sig_idx, noi_idx, K, counts, S, reverse)
       df <- .summarize_roc(model_roc, prob)
       df$curve <- curve_label
@@ -151,9 +145,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
         all_emp_dfs[[length(all_emp_dfs) + 1]] <- emp_df
       }
     } else {
-      # Per-group ROC. If group variable is an encoding factor, noise items
-      # don't have that variable -- use ALL noise as shared FAR baseline.
-      # Otherwise, each group has its own signal AND noise observations.
       enc_vars <- model$model_data$encoding_vars
       group_is_encoding <- any(group %in% enc_vars)
 
@@ -195,12 +186,10 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   rownames(df_model) <- NULL
   if (!is.null(df_emp)) rownames(df_emp) <- NULL
 
-  # Ensure is_anchor is logical after rbind
   df_model$is_anchor <- as.logical(df_model$is_anchor)
 
   # --- zROC transform ---
   if (scale == "z") {
-    # Remove anchor points (0,0) and (1,1) -- they map to +/-Inf on z-scale
     df_model <- df_model[!df_model$is_anchor, ]
     df_model <- .zroc_transform(df_model)
     if (!is.null(df_emp)) df_emp <- .zroc_transform_emp(df_emp)
@@ -212,12 +201,10 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
 
   p <- ggplot2::ggplot()
 
-  # Diagonal reference line
   p <- p + ggplot2::geom_abline(intercept = 0, slope = 1, linetype = "dashed",
                                  color = "gray50", linewidth = 0.5)
 
   if (has_multiple_curves) {
-    # Multiple curves: color by curve label
     p <- p +
       ggplot2::geom_ribbon(
         data = df_model,
@@ -244,7 +231,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
       )
     }
   } else {
-    # Single curve: fixed color
     p <- p +
       ggplot2::geom_ribbon(
         data = df_model,
@@ -271,18 +257,15 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     }
   }
 
-  # Facet by group if provided
   if (has_groups) {
     p <- p + ggplot2::facet_wrap(~ group)
   }
 
-  # Axes and labels
   if (scale == "probability") {
     p <- p + ggplot2::coord_fixed(ratio = 1, xlim = c(0, 1), ylim = c(0, 1))
     x_lab <- "False Alarm Rate"
     y_lab <- "Hit Rate"
   } else {
-    # Symmetric axes centered on 0 so the diagonal is visually centered
     z_range <- max(abs(c(df_model$FAR, df_model$HR,
                          df_model$HR_lower, df_model$HR_upper)), na.rm = TRUE)
     z_lim <- c(-z_range, z_range) * 1.05
@@ -307,7 +290,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
 
   p
 }
-
 
 # =============================================================================
 # Internal Helpers
@@ -351,8 +333,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     new_idx <- which(item_type == 1L)
     src_a_idx <- which(item_type == 2L)
     src_b_idx <- which(item_type == 3L)
-    # Source A has positive discrim -> high source responses -> standard P(Y >= k).
-    # Source B has negative discrim -> low source responses -> flip scale.
     return(list(
       list(signal_idx = src_a_idx, noise_idx = new_idx, label = "Source A", reverse = FALSE),
       list(signal_idx = src_b_idx, noise_idx = new_idx, label = "Source B", reverse = TRUE)
@@ -363,18 +343,15 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
        family_display_name(family_name), ", response = ", response)
 }
 
-
 #' Compute model-implied ROC curves from posterior draws
 #' @return List with HR (S x n_points) and FAR (S x n_points) matrices
 #' @noRd
 .compute_model_roc <- function(probs, sig_idx, noi_idx, K, counts, S, reverse = FALSE) {
   n_points <- K - 1
 
-  # Weighted mean P(Y=k) per group per draw
   sig_wt <- counts[sig_idx] / sum(counts[sig_idx])
   noi_wt <- counts[noi_idx] / sum(counts[noi_idx])
 
-  # Compute weighted average category probs: S x K
   sig_mean <- matrix(0, S, K)
   noi_mean <- matrix(0, S, K)
   for (s in seq_len(S)) {
@@ -384,14 +361,11 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     noi_mean[s, ] <- colSums(np * noi_wt)
   }
 
-  # If reverse, flip the probability columns (mirror the response scale)
-  # so that P(Y >= k) on the flipped scale = P(Y_orig <= K+1-k)
   if (reverse) {
     sig_mean <- sig_mean[, K:1, drop = FALSE]
     noi_mean <- noi_mean[, K:1, drop = FALSE]
   }
 
-  # Cumulative from right: P(Y >= k) for k = 2, ..., K
   HR <- matrix(0, S, n_points)
   FAR <- matrix(0, S, n_points)
   for (j in seq_len(n_points)) {
@@ -402,7 +376,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
 
   list(HR = HR, FAR = FAR)
 }
-
 
 #' Summarize posterior ROC into data frame with mean + CI
 #' @noRd
@@ -418,7 +391,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     is_anchor = FALSE
   )
 
-  # Add anchor points (0,0) and (1,1)
   anchors <- data.frame(
     FAR = c(0, 1), HR = c(0, 1),
     HR_lower = c(0, 1), HR_upper = c(0, 1),
@@ -430,7 +402,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   df
 }
 
-
 #' Compute empirical ROC from observed data
 #' @noRd
 .compute_empirical_roc <- function(y_obs, sig_idx, noi_idx, K, counts, reverse = FALSE) {
@@ -441,7 +412,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   sig_total <- sum(counts[sig_idx])
   noi_total <- sum(counts[noi_idx])
 
-  # If reverse, flip the response scale so "high" means Source A direction
   y_sig <- y_obs[sig_idx]
   y_noi <- y_obs[noi_idx]
   if (reverse) {
@@ -449,7 +419,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
     y_noi <- K + 1L - y_noi
   }
 
-  # P(Y >= k) for k = 2, ..., K (on possibly flipped scale)
   for (j in seq_len(n_points)) {
     k <- j + 1
     emp_HR[j] <- sum(counts[sig_idx][y_sig >= k]) / sig_total
@@ -459,11 +428,9 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   data.frame(FAR = emp_FAR, HR = emp_HR)
 }
 
-
 #' Transform ROC data frame to zROC scale
 #' @noRd
 .zroc_transform <- function(df) {
-  # Clip to avoid Inf from qnorm(0) or qnorm(1)
   clip <- function(x) pmin(pmax(x, 0.001), 0.999)
   df$FAR <- qnorm(clip(df$FAR))
   df$HR <- qnorm(clip(df$HR))
@@ -471,7 +438,6 @@ plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
   df$HR_upper <- qnorm(clip(df$HR_upper))
   df
 }
-
 
 #' Transform empirical ROC to zROC scale
 #' @noRd

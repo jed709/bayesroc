@@ -1,18 +1,7 @@
-# Randomized cross-backend config fuzzer (gated).
-#
-# Each run draws a random config from the cross-product of family x RE structure
-# x bounded/varying x counts, fits it on plain Stan (autodiff oracle) AND batch
-# Stan (hand-coded gradients), and asserts (a) posterior means agree within MC
-# noise, (b) batch treedepth ~ plain, (c) the predict<->likelihood bridge holds.
-# Gated behind BAYESROC_FUZZ because it fits many models; seed-swept in CI so
-# coverage compounds over time. The likelihood/gradient bug class found in this
-# package was batch-specific, so batch-vs-plain agreement directly targets it.
 
 .fuzz_seed <- as.integer(Sys.getenv("BAYESROC_FUZZ_SEED", "0"))
 .fuzz_n    <- as.integer(Sys.getenv("BAYESROC_FUZZ_N", "4"))
 
-# Random valid config from curated templates + random knobs. Returns
-# list(formula, data, counts, label).
 .gen_config <- function(seed) {
   set.seed(seed)
   cut_int <- function(z, thr) as.integer(cut(z, c(-Inf, thr, Inf)))
@@ -32,9 +21,6 @@
     if (fam == "uvsd") parts <- c(parts, stats::as.formula(paste0("sigma ~ ", sig_rhs)))
     if (fam == "dpsd") parts <- c(parts, lambda ~ 1)
     parts$family <- if (fam == "uvsd") uvsd() else dpsd()
-    # Aggregate to (sub x cond x resp) counts -- the grouping factor sub is kept
-    # in the key, so the RE structure is preserved (this is the package's
-    # "quick version"). Valid whenever there's no trial-level covariate.
     d$resp <- factor(d$resp, levels = seq_len(K))
     agg <- as.data.frame(table(d[c("sub", "cond", "resp")]), responseName = "count")
     agg <- agg[agg$count > 0, ]
@@ -89,7 +75,6 @@
   mbv <- sb$mean[match(common, sb$variable)]
   std_diff <- max(abs(mbv - mpv) / (sdv + 0.02), na.rm = TRUE)
   td <- sum(fb$diagnostic_summary()$num_max_treedepth) - sum(fp$diagnostic_summary()$num_max_treedepth)
-  # bridge on batch fit
   ll <- as.matrix(fb$draws(variables = "log_lik", format = "matrix"))
   pr <- predict(fb, type = "response", summary = FALSE, cores = 2)
   S <- nrow(ll); N <- ncol(ll); sd0 <- mb$stan_data

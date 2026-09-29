@@ -24,14 +24,12 @@ parse_broc_parameter_formula <- function(formula) {
 
   result <- list(fixed = fixed, random = random)
 
-  # Pass through smooth terms if any were detected
   if (length(fixed$smooth_terms) > 0) {
     result$smooth <- fixed$smooth_terms
   }
 
   result
 }
-
 
 #' Extract Random Effect Strings from Formula RHS
 #'
@@ -57,9 +55,6 @@ extract_random_effects <- function(rhs) {
       }
       content <- paste(chars[(start + 1):(i - 2)], collapse = "")
       
-      # Check if this is a random effect (contains | outside of any function)
-      # Simple check: if it contains |, it's a random effect
-      # encoding() with | inside would be invalid syntax anyway
       if (grepl("\\|", content)) {
         random_effects <- c(random_effects, content)
       }
@@ -90,10 +85,8 @@ remove_random_effects <- function(rhs) {
       }
       content <- paste(chars[(start + 1):(i - 2)], collapse = "")
       if (!grepl("\\|", content)) {
-        # Not a random effect, keep it
         result <- c(result, chars[start:(i - 1)])
       }
-      # If it has |, skip it (it's a random effect)
     } else {
       result <- c(result, chars[i])
       i <- i + 1
@@ -108,14 +101,6 @@ remove_random_effects <- function(rhs) {
   fixed_str
 }
 
-# Parse Fixed Effects String
-# Handles single terms, interactions (*), and nested effects (:)
-# Also detects encoding() wrapper for within-subject encoding manipulations
-# @param fixed_str Character string of fixed effects
-# @return List with terms, intercept flag, and encoding info
-
-# Parenthesis-aware split on +
-# Splits a string by + signs that are NOT inside parentheses
 split_on_plus <- function(str) {
   chars <- strsplit(str, "")[[1]]
   n <- length(chars)
@@ -128,7 +113,6 @@ split_on_plus <- function(str) {
   for (i in seq_len(n)) {
     ch <- chars[i]
 
-    # Track quoted strings (to avoid matching + inside strings)
     if (!in_string && ch %in% c('"', "'")) {
       in_string <- TRUE
       string_char <- ch
@@ -147,11 +131,9 @@ split_on_plus <- function(str) {
     }
     current <- c(current, ch)
   }
-  # Add last part
   parts <- c(parts, paste(current, collapse = ""))
   parts
 }
-
 
 #' Detect Smooth Term
 #'
@@ -165,30 +147,24 @@ detect_smooth_term <- function(term_str) {
  grepl("^\\s*(s|t2)\\s*\\(", term_str)
 }
 
-
 parse_fixed_effects <- function(fixed_str) {
-  # Check for explicit no-intercept
   has_minus_one <- grepl("-\\s*1", fixed_str)
   has_zero_plus <- grepl("^\\s*0\\s*\\+", fixed_str)
-  has_just_zero <- grepl("^\\s*0\\s*$", fixed_str)  # Just "0" with optional whitespace
+  has_just_zero <- grepl("^\\s*0\\s*$", fixed_str)
   no_intercept <- has_minus_one || has_zero_plus || has_just_zero
   
-  # Remove intercept modifiers
   fixed_str <- gsub("-\\s*1", "", fixed_str)
   fixed_str <- gsub("^\\s*0\\s*\\+", "", fixed_str)
-  fixed_str <- gsub("^\\s*0\\s*$", "", fixed_str)  # Remove standalone 0
+  fixed_str <- gsub("^\\s*0\\s*$", "", fixed_str)
   
-  # Split by + to get terms -- parenthesis-aware to handle conditional()
   terms <- split_on_plus(fixed_str)
   terms <- trimws(terms)
   terms <- terms[terms != "" & terms != "1"]
 
-  # Detect and extract smooth terms (s(), t2()) -- they must not reach model.matrix()
   smooth_mask <- vapply(terms, detect_smooth_term, logical(1))
   smooth_terms <- terms[smooth_mask]
   terms <- terms[!smooth_mask]
 
-  # Process each term to detect encoding(), conditional(), and expand interactions
   processed_terms <- list()
   encoding_vars <- character(0)
   conditional_terms <- list()
@@ -198,9 +174,7 @@ parse_fixed_effects <- function(fixed_str) {
     unwrapped_term <- term
     encoding_factor <- NULL
 
-    # Check for conditional() -- must happen BEFORE * / : splitting
     if (grepl("conditional\\s*\\(", term)) {
-      # Use paren-aware split to separate conditional(...) from :partner or *partner
       split_result <- split_conditional_interaction(term)
       cond_info <- detect_conditional(split_result$conditional_part)
       interaction_partners <- split_result$partners
@@ -217,27 +191,18 @@ parse_fixed_effects <- function(fixed_str) {
       next
     }
 
-    # Check for encoding() wrapper - can wrap a single factor or be part of interaction
-    # e.g., encoding(condition) or encoding(condition):encoding(scale_wf)
     if (grepl("encoding\\s*\\(", term)) {
-      # Extract ALL factors wrapped in encoding(): an interaction term may carry
-      # several (encoding(a):encoding(b)). Grabbing only the first would leave the
-      # rest unreported in the encoding-vars summary.
       enc_hits <- regmatches(term, gregexpr("encoding\\s*\\(([^)]+)\\)", term))[[1]]
       if (length(enc_hits) > 0) {
         facs <- trimws(gsub("encoding\\s*\\(([^)]+)\\)", "\\1", enc_hits))
         encoding_vars <- c(encoding_vars, facs)
         is_encoding_term <- TRUE
-        # Replace encoding(X) with just X in the term
         unwrapped_term <- gsub("encoding\\s*\\(([^)]+)\\)", "\\1", term)
       }
     }
 
-    # Check for interaction (*)
     if (grepl("\\*", unwrapped_term)) {
-      # a*b expands to a + b + a:b
       factors <- trimws(strsplit(unwrapped_term, "\\*")[[1]])
-      # Add main effects
       for (f in factors) {
         processed_terms[[length(processed_terms) + 1]] <- list(
           term = f,
@@ -246,7 +211,6 @@ parse_fixed_effects <- function(fixed_str) {
           is_encoding = f %in% encoding_vars
         )
       }
-      # Add interaction
       processed_terms[[length(processed_terms) + 1]] <- list(
         term = paste(factors, collapse = ":"),
         type = "interaction",
@@ -254,7 +218,6 @@ parse_fixed_effects <- function(fixed_str) {
         is_encoding = any(factors %in% encoding_vars)
       )
     } else if (grepl(":", unwrapped_term)) {
-      # Explicit interaction a:b
       factors <- trimws(strsplit(unwrapped_term, ":")[[1]])
       processed_terms[[length(processed_terms) + 1]] <- list(
         term = unwrapped_term,
@@ -263,7 +226,6 @@ parse_fixed_effects <- function(fixed_str) {
         is_encoding = any(factors %in% encoding_vars)
       )
     } else {
-      # Simple main effect
       processed_terms[[length(processed_terms) + 1]] <- list(
         term = unwrapped_term,
         type = "main",
@@ -273,7 +235,6 @@ parse_fixed_effects <- function(fixed_str) {
     }
   }
 
-  # Deduplicate terms (in case a*b added 'a' when 'a' was also explicit)
   seen_terms <- character(0)
   unique_terms <- list()
   for (pt in processed_terms) {
@@ -283,7 +244,6 @@ parse_fixed_effects <- function(fixed_str) {
     }
   }
 
-  # Determine intercept
   if (length(unique_terms) == 0 && !no_intercept) {
     intercept <- TRUE
   } else if (no_intercept) {
@@ -292,7 +252,6 @@ parse_fixed_effects <- function(fixed_str) {
     intercept <- TRUE
   }
 
-  # Extract just the term strings for backwards compatibility
   term_strings <- sapply(unique_terms, `[[`, "term")
   if (length(term_strings) == 0) term_strings <- character(0)
 
@@ -353,7 +312,6 @@ parse_random_effect <- function(re_str) {
 #' @return List with confidence and response2
 #' @noRd
 parse_resp_args <- function(inner_str) {
-  # Split on commas at depth 0
   chars <- strsplit(inner_str, "")[[1]]
   depth <- 0
   splits <- c(0)
@@ -375,7 +333,6 @@ parse_resp_args <- function(inner_str) {
   if (length(args) > 2) {
     stop("resp() takes exactly two variables: resp(response1, response2)")
   }
-  # Reject old named-arg syntax (src = ..., rk = ...)
   if (grepl("=", args[1]) || grepl("=", args[2])) {
     stop("resp() now uses positional arguments only: resp(response1, response2)\n",
          "  Old syntax like resp(conf, src = src_var) or resp(conf, rk = rk_var) ",
@@ -384,7 +341,6 @@ parse_resp_args <- function(inner_str) {
 
   list(confidence = trimws(args[1]), response2 = trimws(args[2]))
 }
-
 
 #' Parse Response Variable with Conditioning Variable
 #'
@@ -407,7 +363,6 @@ parse_response <- function(response_str, family_name = NULL) {
   # --- Detect resp() wrapper using paren-depth-aware parsing ---
   resp_info <- NULL
   if (grepl("^resp\\s*\\(", response_str)) {
-    # Find the matching close paren for resp(
     match_start <- regexpr("resp\\s*\\(", response_str)
     paren_start <- match_start + attr(match_start, "match.length") - 1
     chars <- strsplit(response_str, "")[[1]]
@@ -423,7 +378,6 @@ parse_response <- function(response_str, family_name = NULL) {
     inner <- substr(response_str, paren_start + 1, paren_end - 1)
     resp_info <- parse_resp_args(inner)
 
-    # Replace response_str: use confidence var + everything after resp(...)
     remainder <- trimws(substr(response_str, paren_end + 1, nchar(response_str)))
     response_str <- paste0(resp_info$confidence, remainder)
   }
@@ -437,7 +391,6 @@ parse_response <- function(response_str, family_name = NULL) {
       stop("Only one conditioning variable is supported after |: response | variable ~ ...")
     }
 
-    # Map conditioning variable to the appropriate role based on family
     result <- list(response = response_var, is_old = NULL, source = NULL,
                    item_type = NULL, rk = NULL, response2 = NULL)
 
@@ -446,11 +399,9 @@ parse_response <- function(response_str, family_name = NULL) {
     } else if (is_source) {
       result$source <- condition_var
     } else {
-      # SDT families (evsdt, uvsdt, dpsdt, mixture) and CDP
       result$is_old <- condition_var
     }
 
-    # If resp() was used, store response2 and rk (based on family)
     if (!is.null(resp_info)) {
       if (is_cdp) {
         result$rk <- resp_info$response2
@@ -464,7 +415,6 @@ parse_response <- function(response_str, family_name = NULL) {
     stop("resp() formulas must include a conditioning variable after |: ",
          "resp(var1, var2) | condition_var ~ ...")
   } else if (is_cumulative) {
-    # Bare response (no |) -- allowed for cumulative
     return(list(response = response_str, is_old = NULL, source = NULL,
                 item_type = NULL, rk = NULL, response2 = NULL))
   } else {
@@ -476,7 +426,6 @@ parse_response <- function(response_str, family_name = NULL) {
          "  CDP families: resp(conf, rk) | old_new_var ~ ...")
   }
 }
-
 
 #' Parse Complete SDT Formula
 #'
@@ -533,7 +482,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     criterion = parse_broc_parameter_formula(criterion)
   )
   
-  # Parse optional parameters (only if not NULL)
   if (!is.null(sigma)) {
     parsed$sigma <- parse_broc_parameter_formula(sigma)
   }
@@ -558,7 +506,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     parsed$lambda_B <- parse_broc_parameter_formula(lambda_B)
   }
   
-  # Bivariate SDT specific parameters
   if (!is.null(discrim)) {
     parsed$discrim <- parse_broc_parameter_formula(discrim)
   }
@@ -591,7 +538,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     parsed$criterion2 <- parse_broc_parameter_formula(criterion2)
   }
   
-  # CDP specific parameters
   if (!is.null(rec_crit)) {
     parsed$rec_crit <- parse_broc_parameter_formula(rec_crit)
   }
@@ -599,7 +545,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     parsed$know_crit <- parse_broc_parameter_formula(know_crit)
   }
 
-  # Lure mixture parameters (mixture family)
   if (!is.null(dprime_L)) {
     parsed$dprime_L <- parse_broc_parameter_formula(dprime_L)
   }
@@ -612,17 +557,14 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     parsed$lambda_L <- parse_broc_parameter_formula(lambda_L)
   }
 
-  # Bivariate DP specific: lambda2 (source recollection)
   if (!is.null(lambda2)) {
     parsed$lambda2 <- parse_broc_parameter_formula(lambda2)
   }
 
-  # Bivariate DP specific: lambda2_B (source recollection for Source B)
   if (!is.null(lambda2_B)) {
     parsed$lambda2_B <- parse_broc_parameter_formula(lambda2_B)
   }
 
-  # For bivariate families, extract the second response variable from resp()
   if (!is.null(family_name) && family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")) {
     if (!is.null(response_info$response2)) {
       parsed$response2 <- response_info$response2
@@ -632,7 +574,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     }
   }
 
-  # For CDP, validate rk is present (comes from resp())
   if (identical(family_name, "cdp")) {
     if (is.null(response_info$rk)) {
       stop("cdp family requires resp() with confidence and R/K variables.\n",
@@ -640,8 +581,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     }
   }
   
-  # Collect all encoding variables (those that only apply to old items)
-  # All possible parameters for encoding vars
   all_param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
@@ -656,20 +595,31 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
   }
   parsed$encoding_vars <- unique(encoding_vars)
   
-  # Collect all unique grouping factors
-  # Include criterion and criterion2 in grouping
   all_param_names_with_crit <- c(all_param_names, "criterion", "criterion2")
   
   all_groups <- character(0)
   for (pname in all_param_names_with_crit) {
     if (!is.null(parsed[[pname]]) && !is.null(parsed[[pname]]$random)) {
       groups <- sapply(parsed[[pname]]$random, `[[`, "group")
+      dup <- unique(groups[duplicated(groups)])
+      if (length(dup) > 0) {
+        terms_shown <- vapply(parsed[[pname]]$random[groups == dup[1]], function(re) {
+          bar <- if (isTRUE(re$correlated)) "|" else "||"
+          lhs <- c(if (isTRUE(re$intercept)) "1" else "0", re$terms)
+          paste0("(", paste(lhs, collapse = " + "), " ", bar, " ", re$group, ")")
+        }, character(1))
+        stop(sprintf(paste0("Parameter '%s' has %d random-effects terms for grouping factor '%s': %s.\n",
+                            "bayesroc supports one term per grouping factor per parameter. Combine them ",
+                            "into a single term, e.g. (1 + x | %s), or (1 + x || %s) if the effects ",
+                            "should be uncorrelated."),
+                     pname, sum(groups == dup[1]), dup[1],
+                     paste(terms_shown, collapse = " and "), dup[1], dup[1]), call. = FALSE)
+      }
       all_groups <- c(all_groups, groups)
     }
   }
   parsed$grouping_factors <- unique(all_groups)
   
-  # Collect all correlation IDs
   all_cor_ids <- character(0)
   for (pname in all_param_names_with_crit) {
     if (!is.null(parsed[[pname]]) && !is.null(parsed[[pname]]$random)) {
@@ -688,7 +638,6 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
   parsed
 }
 
-
 #' Extract Data Information for Formula Terms
 #'
 #' @param parsed Parsed formula structure
@@ -699,17 +648,14 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
 extract_data_info <- function(parsed, data) {
   info <- list()
   
-  # Get all unique base terms (not interactions) across all parameters
   all_terms <- character(0)
   
-  # All possible parameters
   param_names <- c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2",
                    "dprime_B", "lambda_B", "discrim", "discrim_B",
                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
                    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L",
                    "lambda2", "lambda2_B")
   
-  # From fixed effects
   for (param in param_names) {
     if (!is.null(parsed[[param]])) {
       for (ti in parsed[[param]]$fixed$term_info) {
@@ -718,7 +664,6 @@ extract_data_info <- function(parsed, data) {
     }
   }
   
-  # From random effects
   for (param in param_names) {
     if (!is.null(parsed[[param]])) {
       for (re in parsed[[param]]$random) {
@@ -729,7 +674,6 @@ extract_data_info <- function(parsed, data) {
   
   all_terms <- unique(all_terms)
   
-  # Get levels for each term
   info$term_levels <- list()
   for (term in all_terms) {
     if (term %in% names(data)) {
@@ -741,7 +685,6 @@ extract_data_info <- function(parsed, data) {
     }
   }
   
-  # Get levels for grouping factors
   info$group_levels <- list()
   info$group_n <- list()
   for (group in parsed$grouping_factors) {
@@ -757,7 +700,6 @@ extract_data_info <- function(parsed, data) {
   info
 }
 
-
 #' Print Method for SDT Formula
 #'
 #' @param x An broc_formula object
@@ -768,21 +710,15 @@ print.broc_formula <- function(x, ...) {
   cat("bayesroc model formula\n")
   cat("======================\n\n")
 
-  # If print.broc_model attached the family on the way in, use its
-  # external_aliases to choose user-facing labels per parameter section
-  # (cdp -> rec/fam/sigma_R, cumulative -> mu/cutpoints, etc.).
   fam <- attr(x, ".broc_family")
   ext <- if (!is.null(fam$external_aliases)) fam$external_aliases else list()
   family_name <- if (!is.null(fam)) fam$family else NA
   is_cumulative <- identical(family_name, "cumulative")
   is_bivariate_cumulative <- identical(family_name, "bivariate_cumulative")
 
-  # Section label resolver: prefer external alias, fall back to a hand-curated
-  # label, finally to a Title-cased internal name.
   section_label <- function(internal, fallback = NULL) {
     ext_name <- ext[[internal]]
     if (!is.null(ext_name)) {
-      # e.g. "rec" -> "Rec (Recollection d')", "mu" -> "Mu (location)"
       pretty <- switch(ext_name,
         rec       = "Rec (Recollection d')",
         fam       = "Fam (Familiarity d')",
@@ -802,8 +738,6 @@ print.broc_formula <- function(x, ...) {
   }
 
   cat("Response:", x$response$response, "\n")
-  # Skip the .cumulative_is_old fake column that was injected internally --
-  # it's an implementation detail, not something the user wrote.
   if (!is.null(x$response$is_old) && x$response$is_old != ".cumulative_is_old") {
     cat("Condition variable:", x$response$is_old, "(old/new)\n")
   }
@@ -843,7 +777,6 @@ print.broc_formula <- function(x, ...) {
     print_parameter_formula(x[["sigma2"]])
   }
 
-  # Bivariate/source parameters
   if (!is.null(x[["dprime_B"]])) {
     cat("\nd'_B (Source B detection):\n")
     print_parameter_formula(x[["dprime_B"]])
@@ -889,7 +822,6 @@ print.broc_formula <- function(x, ...) {
     print_parameter_formula(x[["lambda2_B"]])
   }
 
-  # Lure mixture parameters
   if (!is.null(x[["dprime_L"]])) {
     cat("\nd'_L (lure discriminability):\n")
     print_parameter_formula(x[["dprime_L"]])
@@ -903,7 +835,6 @@ print.broc_formula <- function(x, ...) {
     print_parameter_formula(x[["lambda_L"]])
   }
 
-  # CDP parameters
   if (!is.null(x[["rec_crit"]])) {
     cat("\nRec_crit (recollection criterion):\n")
     print_parameter_formula(x[["rec_crit"]])
@@ -913,7 +844,6 @@ print.broc_formula <- function(x, ...) {
     print_parameter_formula(x[["know_crit"]])
   }
 
-  # Criterion2 (bivariate/vrdp2d)
   if (!is.null(x[["criterion2"]])) {
     cat("\nCriterion2 (source thresholds):\n")
     print_parameter_formula(x[["criterion2"]])
@@ -927,15 +857,12 @@ print.broc_formula <- function(x, ...) {
   invisible(x)
 }
 
-
 #' Helper to Print Parameter Formula
 #'
 #' @param param Parsed parameter specification
 #' @noRd
 
 print_parameter_formula <- function(param) {
-  # Fixed effects. Encoding-only variables are named once in the header line;
-  # we deliberately don't repeat encoding() wrappers on every term here.
   display_terms <- param$fixed$terms
 
   if (param$fixed$intercept && length(display_terms) == 0) {
@@ -946,7 +873,6 @@ print_parameter_formula <- function(param) {
     cat("  Fixed: ~ 0 +", paste(display_terms, collapse = " + "), "\n")
   }
   
-  # Random effects
   if (length(param$random) > 0) {
     cat("  Random:\n")
     for (re in param$random) {

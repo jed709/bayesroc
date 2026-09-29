@@ -1,17 +1,9 @@
-# Stan vs JAX agreement tests. The class of bug we fixed in commits
-# 05022dc / d6deac8 / etc. would all have been caught by these.
-#
-# Strategy: fit the same model under both backends with a fixed seed, then
-# check posterior means agree to a coarse tolerance. We use coarse tol (0.05
-# absolute) because MC noise dominates at 4 chains x 300 iter — true
-# agreement under matching analytic specs is to 0.001 or better.
 
 .tol_means <- 0.05
 
 .assert_means_agree <- function(fit_s, fit_j, vars, tol = .tol_means) {
   ds <- posterior::as_draws_matrix(fit_s$draws(variables = vars))
   dj <- posterior::as_draws_matrix(fit_j$draws(variables = vars))
-  # Variables may not be in the same order in the two draws_matrix objects
   for (v in vars) {
     if (v %in% colnames(ds) && v %in% colnames(dj)) {
       diff <- abs(mean(ds[, v]) - mean(dj[, v]))
@@ -20,7 +12,6 @@
     }
   }
 }
-
 
 test_that("evsdt: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
@@ -62,7 +53,7 @@ test_that("cdp (rotello_2005): Stan and JAX agree on rec/fam/sigma_R/rec_crit", 
             "beta_dprime2[1]", "beta_dprime2[2]",
             "beta_sigma[1]", "beta_sigma[2]",
             "beta_rec_crit[1]", "beta_rec_crit[2]")
-  .assert_means_agree(fs, fj, vars, tol = 0.03)  # this fit is well-behaved
+  .assert_means_agree(fs, fj, vars, tol = 0.03)
 })
 
 test_that("cumulative: Stan and JAX agree", {
@@ -78,13 +69,20 @@ test_that("cumulative: Stan and JAX agree", {
                       c("beta_mu[1]", "beta_thresh_mid[1]"))
 })
 
-# Regression guard: cross-correlated REs `(1|s|sub) + (1|i|item)` on multiple
-# parameters used to break prediction. The single-term cross-correlated RE was
-# serialized 2D `[i,1]` by JAX but 1D `[i]` by Stan, and get_re_variables
-# requested an exact index form that didn't match -- so the RE columns were
-# filtered out of the prediction draws and predict()/plot_roc_curve() failed
-# with "subscript out of bounds". Both backends must now predict cleanly, and
-# the single-term RE must be named identically (1D) across backends.
+test_that("bivariate_cumulative: Stan and JAX posterior means agree", {
+  skip_if_no_cmdstan(); skip_if_no_jax()
+  d <- .fixture_bivariate_cumulative()
+  m <- broc(brf(resp(y1, y2) ~ 1,
+                discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
+                family = bivariate_cumulative()), d, batch_likelihood = TRUE)
+  fs <- fit_broc(m, backend = "stan", refresh = 0,
+                 parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
+  fj <- fit_broc(m, backend = "jax",
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+  .assert_means_agree(fs, fj,
+                      c("beta_rho[1]", "beta_thresh_mid[1]", "beta_thresh_mid_2[1]"))
+})
+
 test_that("crossed REs: predict + plot_roc_curve work on both backends", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_crossed()
@@ -103,7 +101,6 @@ test_that("crossed REs: predict + plot_roc_curve work on both backends", {
                iter_warmup = 300, iter_sampling = 300, chains = 4)
     }
 
-    # type = "response" returns one row per observation x response category.
     pred <- predict(fit, type = "response", summary = TRUE)
     expect_gt(nrow(pred), 0)
     expect_equal(nrow(pred) %% nrow(d), 0, label = paste(backend, "predict rows / N"))
@@ -111,8 +108,6 @@ test_that("crossed REs: predict + plot_roc_curve work on both backends", {
     p <- plot_roc_curve(fit)
     expect_s3_class(p, "ggplot")
 
-    # Single-term cross-correlated RE is named 1D `[i]` (not 2D `[i,1]`) on both
-    # backends; the multi-term criterion RE stays 2D `[i,d]`.
     v <- posterior::variables(fit$draws())
     expect_true("u_dprime_sub_from_s[1]" %in% v,
                 label = paste(backend, "dprime RE 1D name"))

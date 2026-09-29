@@ -13,23 +13,18 @@
 build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_old_var = NULL,
                                        conditional_terms = NULL, parsed_fixed = NULL) {
 
-  # If conditional terms are present, delegate to the conditional builder
   if (!is.null(conditional_terms) && length(conditional_terms) > 0 && !is.null(parsed_fixed)) {
     return(build_conditional_fixed_matrix(parsed_fixed, formula, data,
                                            encoding_vars, is_old_var))
   }
 
-  # Check if any encoding variables are in the formula
   formula_vars <- all.vars(formula)
   has_encoding <- !is.null(encoding_vars) && any(encoding_vars %in% formula_vars)
   
   if (has_encoding && !is.null(is_old_var)) {
-    # Build matrix on old items only, then map back
-    old_idx <- which(data[[is_old_var]] > 0)  # target rows (1 treatment / 0.5 centered)
+    old_idx <- which(data[[is_old_var]] > 0)
     old_data <- data[old_idx, , drop = FALSE]
     
-    # Drop unused levels for encoding factors in the formula,
-    # but only if 2+ levels remain (1-level factors crash model.matrix)
     for (v in formula_vars) {
       if (v %in% names(old_data) && is.factor(old_data[[v]])) {
         dropped <- droplevels(old_data[[v]])
@@ -39,10 +34,8 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
       }
     }
     
-    # Build matrix on old data
     X_old <- model.matrix(formula, data = old_data)
     
-    # Create full matrix with zeros for new items
     N <- nrow(data)
     P <- ncol(X_old)
     X <- matrix(0, nrow = N, ncol = P)
@@ -50,7 +43,6 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
     X[old_idx, ] <- X_old
     
   } else {
-    # No encoding variables - use full data
     X <- model.matrix(formula, data = data)
   }
   
@@ -62,7 +54,6 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
     formula = formula
   )
 }
-
 
 #' Build Random Effects Structure
 #'
@@ -85,7 +76,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
   for (re in re_terms) {
     group <- re$group
     
-    # Get group indices
     if (is.factor(data[[group]])) {
       group_idx <- as.integer(data[[group]])
       n_groups <- nlevels(data[[group]])
@@ -95,17 +85,13 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
       n_groups <- nlevels(group_fac)
     }
     
-    # Get the terms (accounting for encoding variables)
     re_terms_clean <- re$terms
     
-    # Check for encoding - need to look at term_info if available
     is_encoding <- FALSE
     if (!is.null(re$encoding_vars) && length(re$encoding_vars) > 0) {
       is_encoding <- TRUE
     } else if (!is.null(encoding_vars)) {
-      # Check if any RE terms are encoding vars
       for (t in re_terms_clean) {
-        # Strip encoding() wrapper if present
         t_clean <- gsub("encoding\\s*\\(([^)]+)\\)", "\\1", t)
         if (t_clean %in% encoding_vars) {
           is_encoding <- TRUE
@@ -116,9 +102,7 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
     
     N <- nrow(data)
     
-    # Determine dimension of random effects
     if (length(re_terms_clean) == 0 || (length(re_terms_clean) == 1 && re_terms_clean[1] == "")) {
-      # Intercept only - no Z matrix needed, just use group index
       re_list[[group]] <- list(
         group = group,
         group_idx = group_idx,
@@ -128,20 +112,17 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
         type = "intercept",
         term = NULL,
         term_idx = NULL,
-        Z = NULL,  # No Z matrix for intercept-only
+        Z = NULL,
         use_z_matrix = FALSE,
         correlated = re$correlated,
         cor_id = re$cor_id,
         is_encoding = FALSE
       )
     } else {
-      # Has varying slopes - build Z matrix using model.matrix
-      # Clean up the terms (remove encoding() wrapper)
       terms_clean <- sapply(re_terms_clean, function(t) {
         gsub("encoding\\s*\\(([^)]+)\\)", "\\1", t)
       })
 
-      # Check if any RE term contains conditional()
       re_cond_info <- NULL
       re_has_conditional <- FALSE
       for (ti in re$term_info) {
@@ -153,7 +134,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
       }
 
       if (re_has_conditional && !is.null(re_cond_info)) {
-        # Build Z via conditional columns (always one-hot -> fast index path)
         cond_result <- build_conditional_columns(
           term = re_cond_info$term,
           where_str = re_cond_info$where_str,
@@ -193,7 +173,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
           conditional_info = cond_result$conditional_info
         )
       } else {
-      # Build formula for RE - respect intercept flag for treatment vs cell-means coding
       if (re$intercept) {
         re_formula <- as.formula(paste("~ 1 +", paste(terms_clean, collapse = " + ")))
       } else {
@@ -201,11 +180,9 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
       }
 
       if (is_encoding && !is.null(is_old_var)) {
-        # Build on old items only, zeros for new items
-        old_idx <- which(data[[is_old_var]] > 0)  # target rows (1 treatment / 0.5 centered)
+        old_idx <- which(data[[is_old_var]] > 0)
         old_data <- data[old_idx, , drop = FALSE]
 
-        # Drop unused levels for factors in formula, only if 2+ remain
         formula_vars <- all.vars(re_formula)
         for (v in formula_vars) {
           if (v %in% names(old_data) && is.factor(old_data[[v]])) {
@@ -220,7 +197,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
         dim <- ncol(Z_old)
         level_names <- colnames(Z_old)
 
-        # Create full Z matrix with zeros for new items
         Z <- matrix(0, nrow = N, ncol = dim)
         colnames(Z) <- level_names
         Z[old_idx, ] <- Z_old
@@ -229,7 +205,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
         primary_term <- formula_vars[1]
 
       } else {
-        # Use full data
         Z <- model.matrix(re_formula, data = data)
         dim <- ncol(Z)
         level_names <- colnames(Z)
@@ -238,18 +213,12 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
         primary_term <- formula_vars[1]
       }
 
-      # Determine whether the fast index-based approach applies
-      # This is possible when:
-      # 1. Each row has exactly one 1 and rest zeros (simple categorical)
-      # 2. OR each row is all zeros (for encoding with new items)
       can_use_index <- check_simple_categorical(Z)
 
       if (can_use_index) {
-        # Build index array for fast lookup
         term_idx <- build_term_index(Z)
         use_z_matrix <- FALSE
       } else {
-        # Must use full Z matrix
         term_idx <- NULL
         use_z_matrix <- TRUE
       }
@@ -277,7 +246,6 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
   re_list
 }
 
-
 #' Check if Z matrix has simple categorical structure
 #' 
 #' Returns TRUE if each row has at most one non-zero entry and that entry is 1.
@@ -288,19 +256,15 @@ check_simple_categorical <- function(Z) {
     row <- Z[i, ]
     nonzero <- which(row != 0)
     if (length(nonzero) == 0) {
-      # All zeros - OK (e.g., new items for encoding)
       next
     } else if (length(nonzero) == 1 && row[nonzero] == 1) {
-      # Exactly one 1 - OK
       next
     } else {
-      # Multiple non-zeros or non-1 value - need full Z matrix
       return(FALSE)
     }
   }
   TRUE
 }
-
 
 #' Build term index array from simple categorical Z matrix
 #' 
@@ -320,7 +284,6 @@ build_term_index <- function(Z) {
   term_idx
 }
 
-
 #' Build Criterion (Threshold) Structure
 #'
 #' Thresholds never use encoding variables - all items respond
@@ -336,7 +299,6 @@ build_term_index <- function(Z) {
 build_criterion_structure <- function(formula, re_terms, data, n_thresh,
                                      conditional_terms = NULL, parsed_fixed = NULL) {
 
-  # First, strip random effects from formula to get just fixed effects
   formula_str <- as.character(formula)
   if (length(formula_str) == 2) {
     rhs <- formula_str[2]
@@ -350,7 +312,6 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
   }
   fixed_formula <- as.formula(paste("~", fixed_str), env = environment(formula))
 
-  # If conditional terms present, build fixed effects via conditional builder
   crit_cond_info <- NULL
   if (!is.null(conditional_terms) && length(conditional_terms) > 0 && !is.null(parsed_fixed)) {
     crit_fixed <- build_conditional_fixed_matrix(parsed_fixed, formula, data, NULL, NULL)
@@ -359,7 +320,6 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     coef_names <- crit_fixed$coef_names
     crit_cond_info <- crit_fixed$conditional_info
   } else {
-    # Drop any unused factor levels in the full data for formula vars
     formula_vars <- all.vars(fixed_formula)
     data_clean <- data
     for (v in formula_vars) {
@@ -371,18 +331,15 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
       }
     }
 
-    # Fixed effects - use model.matrix with the cleaned formula
     X <- model.matrix(fixed_formula, data = data_clean)
     n_coef <- ncol(X)
     coef_names <- colnames(X)
   }
 
-  # Check if it's intercept only
   is_intercept_only <- n_coef == 1 && coef_names[1] == "(Intercept)"
 
   N <- nrow(data)
 
-  # Random effects
   re_list <- list()
   for (re in re_terms) {
     group <- re$group
@@ -397,15 +354,13 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     }
 
     if (length(re$terms) == 0 || (length(re$terms) == 1 && re$terms[1] == "")) {
-      # Intercept only - n_thresh correlated REs per group
-      # No Z matrix needed, dimension is just n_thresh
       re_list[[group]] <- list(
         group = group,
         group_idx = group_idx,
         n_groups = n_groups,
         dim = n_thresh,
         n_cond_levels = 1,
-        n_re_terms = 1,  # Just intercept
+        n_re_terms = 1,
         term = NULL,
         term_idx = NULL,
         Z = NULL,
@@ -414,7 +369,6 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
         cor_id = re$cor_id
       )
     } else {
-      # Check if RE terms contain conditional()
       re_cond_info <- NULL
       for (ti in re$term_info) {
         if (!is.null(ti$conditional_info)) {
@@ -424,7 +378,6 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
       }
 
       if (!is.null(re_cond_info)) {
-        # Build Z via conditional columns
         cond_result <- build_conditional_columns(
           term = re_cond_info$term,
           where_str = re_cond_info$where_str,
@@ -475,28 +428,21 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
           )
         }
       } else {
-      # Has varying slopes - build Z matrix using model.matrix
-      # Clean up the terms
       terms_clean <- re$terms
 
-      # Build formula for RE (include intercept if specified)
       if (re$intercept) {
         re_formula <- as.formula(paste("~ 1 +", paste(terms_clean, collapse = " + ")))
       } else {
         re_formula <- as.formula(paste("~ 0 +", paste(terms_clean, collapse = " + ")))
       }
 
-      # Build the Z matrix
       Z <- model.matrix(re_formula, data = data)
-      n_re_terms <- ncol(Z)  # Number of RE terms (e.g., intercept + slope = 2)
+      n_re_terms <- ncol(Z)
       level_names <- colnames(Z)
 
-      # Check whether simple index-based lookup applies
-      # This only works for simple categorical (one-hot) structures
       can_use_index <- check_simple_categorical(Z)
 
       if (can_use_index) {
-        # Simple categorical - use index-based lookup
         term_idx <- build_term_index(Z)
         n_cond_levels <- n_re_terms
 
@@ -504,7 +450,7 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
           group = group,
           group_idx = group_idx,
           n_groups = n_groups,
-          dim = n_thresh * n_cond_levels,  # Total dimension for all thresholds
+          dim = n_thresh * n_cond_levels,
           n_cond_levels = n_cond_levels,
           n_re_terms = n_re_terms,
           level_names = level_names,
@@ -516,14 +462,12 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
           cor_id = re$cor_id
         )
       } else {
-        # General case - use Z matrix
-        # Total dimension: n_thresh thresholds x n_re_terms
         re_list[[group]] <- list(
           group = group,
           group_idx = group_idx,
           n_groups = n_groups,
-          dim = n_thresh * n_re_terms,  # e.g., 3 thresholds x 2 RE terms = 6
-          n_cond_levels = n_re_terms,  # For compatibility
+          dim = n_thresh * n_re_terms,
+          n_cond_levels = n_re_terms,
           n_re_terms = n_re_terms,
           level_names = level_names,
           term = NULL,

@@ -8,11 +8,11 @@ fit_broc(
   model,
   chains = 4,
   parallel_chains = 4,
-  iter_warmup = 2000,
-  iter_sampling = 2000,
+  iter_warmup = NULL,
+  iter_sampling = NULL,
   thin = 1,
-  adapt_delta = 0.8,
-  max_treedepth = 10,
+  sampler = c("nuts", "drghmc"),
+  control = list(),
   init = 0,
   refresh = 100,
   threads_per_chain = NULL,
@@ -23,6 +23,13 @@ fit_broc(
   file = NULL,
   file_refit = FALSE,
   save_loglik = TRUE,
+  loo = FALSE,
+  loo_cores = 4,
+  loglik_precision = c("f32", "f64"),
+  keep_re = FALSE,
+  re_store = c("f32", "f64", "int16", "int8"),
+  warm_state = NULL,
+  save_state = FALSE,
   num_warmup = NULL,
   num_samples = NULL,
   num_chains = NULL,
@@ -39,16 +46,27 @@ the JAX backend this is all-or-nothing: chains run in parallel across
 devices when \code{parallel_chains >= chains}, and sequentially on one device
 when \code{parallel_chains < chains}.}
 
-\item{iter_warmup}{Number of warmup/adaptation iterations per chain (default 2000).}
+\item{iter_warmup}{Number of warmup/adaptation iterations per chain. Default
+2000 for \code{sampler = "nuts"}, 2500 for \code{"drghmc"}.}
 
-\item{iter_sampling}{Number of post-warmup sampling iterations per chain (default 2000).}
+\item{iter_sampling}{Number of post-warmup sampling iterations per chain.
+Default 2000 for \code{sampler = "nuts"}, 10000 for \code{"drghmc"}.}
 
 \item{thin}{Period for saving samples (default 1). \code{thin = k} keeps every
 \code{k}-th post-warmup draw.}
 
-\item{adapt_delta}{Target acceptance probability for NUTS (default 0.8).}
+\item{sampler}{Sampling algorithm: \code{"nuts"} (default) or \code{"drghmc"}, a
+delayed-rejection generalized HMC sampler (JAX backend only).}
 
-\item{max_treedepth}{Maximum tree depth for NUTS (default 10).}
+\item{control}{Named list of sampler tuning parameters (defaults in
+parentheses; unknown keys are ignored with a warning):
+\itemize{
+\item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
+\code{precision} ("f64" or "f32"; JAX backend only).
+\item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
+("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
+\code{eps_c} (1.0), \code{precision} ("f64" or "f32").
+}}
 
 \item{init}{Initial-value strategy. Default \code{0}: all parameters start at 0 on
 the unconstrained scale. Other options: \code{"prior"} samples each parameter
@@ -87,6 +105,27 @@ Ignored when \code{file} is \code{NULL}.}
 \item{save_loglik}{If \code{TRUE} (default), the per-observation log-likelihood is
 kept so the saved fit supports \code{\link[=loo]{loo()}}. If \code{FALSE}, \code{log_lik} is dropped when
 the fit is saved.}
+
+\item{loo}{If \code{TRUE}, PSIS-LOO is computed at fit time and the on-disk
+log-likelihood file is deleted afterwards. Default \code{FALSE}.}
+
+\item{loo_cores}{Number of worker processes used when \code{loo = TRUE} (default 4).}
+
+\item{loglik_precision}{Storage precision for the log-likelihood sidecar,
+\code{"f32"} (default) or \code{"f64"}.}
+
+\item{keep_re}{If \code{TRUE}, per-level random-effect draws are retained (JAX
+backend). Default \code{FALSE}, which stores only population-level parameters.}
+
+\item{re_store}{Codec for random-effect draws when the fit is saved: \code{"f32"}
+(default), \code{"f64"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
+given its own \code{re_store}.}
+
+\item{warm_state}{Optional path to a state file written by \code{save_state}, used
+to resume sampling without repeating warmup (JAX backend).}
+
+\item{save_state}{If \code{TRUE}, the post-warmup sampler state is saved so a later
+fit can resume from it via \code{warm_state}. Default \code{FALSE}.}
 
 \item{num_warmup, num_samples, num_chains}{NumPyro-style aliases for
 \code{iter_warmup}, \code{iter_sampling}, and \code{chains}. When supplied, each overrides

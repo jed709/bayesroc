@@ -13,8 +13,10 @@ new_broc_fit(
   elapsed = NULL,
   draws_array = NULL,
   max_treedepth = 10L,
+  sampler = "nuts",
   save_loglik = TRUE,
-  diagnostics = NULL
+  diagnostics = NULL,
+  loglik_path = NULL
 )
 }
 \arguments{
@@ -33,6 +35,8 @@ new_broc_fit(
 \item{draws_array}{For JAX: pre-converted posterior::draws_array (NULL for Stan)}
 
 \item{max_treedepth}{Maximum NUTS tree depth used in the fit (default 10).}
+
+\item{loglik_path}{Path to the \code{.npy} log_lik sidecar, or \code{NULL}}
 }
 \value{
 An broc_fit object (environment with S3 class)

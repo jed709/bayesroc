@@ -1,15 +1,7 @@
-# Per-family smoke tests. Each family fits a tiny synthetic dataset under
-# Stan, then walks summary -> predict -> pp_check -> plot_roc, asserting
-# that nothing errors and shapes are right. JAX is exercised separately in
-# test-stan_jax_agreement.R.
-#
-# Each fit uses very few iterations (300/300) — we're testing wiring, not
-# convergence. Set BAYESROC_TEST_FAST=false to run a longer suite.
 
 .fast_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 300 else 1000
 .fast_chains <- 4
 
-# Helper: run the standard set of post-fit calls and assert they don't error.
 .assert_post_fit_works <- function(fit, has_roc = TRUE,
                                     pp_check_types = c("bars", "bars_grouped")) {
   s <- summary(fit)
@@ -28,7 +20,6 @@
     expect_s3_class(g, "ggplot")
   }
 }
-
 
 test_that("evsd: smoke", {
   skip_if_no_cmdstan()
@@ -139,7 +130,6 @@ test_that("cumulative: smoke", {
   expect_true(is.array(p))
   g <- pp_check(fit, type = "bars", ndraws = 50)
   expect_s3_class(g, "ggplot")
-  # plot_roc_curve intentionally errors for cumulative — verify
   expect_error(plot_roc_curve(fit, ndraws = 50), "not supported for 'cumulative'")
 })
 
@@ -179,7 +169,6 @@ test_that("cdp: smoke (rotello_2005)", {
     g <- pp_check(fit, type = t, group = "condition", ndraws = 50)
     expect_s3_class(g, "ggplot")
   }
-  # response = 2 (R/K dimension)
   g <- pp_check(fit, type = "bars_grouped", group = "condition",
                 response = 2, ndraws = 50)
   expect_s3_class(g, "ggplot")

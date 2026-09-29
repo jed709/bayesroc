@@ -2,21 +2,8 @@
 #'
 #' These functions define the structure of different SDT model families.
 
-
 # =============================================================================
-# Internal <-> external parameter name map
 # =============================================================================
-# All families store `family$params` keyed by INTERNAL Stan/JAX names. Some
-# families also expose user-facing EXTERNAL names that appear in formulas:
-#
-#   cdp:                    dprime/dprime2/sigma/sigma2 displayed as rec/fam/sigma_R/sigma_F
-#   cumulative:             dprime/criterion            displayed as mu/cutpoints
-#   bivariate_cumulative:   dprime/discrim/criterion/criterion2 displayed as mu1/mu2/cutpoints1/cutpoints2
-#
-# The mapping below is the single source of truth. Family constructors copy
-# it into `family$external_aliases`, and the print method consults that to
-# show user-facing names. `external_to_internal_param()` below maps a
-# user-facing formula name back to the internal name (used by posterior.R).
 
 #' @noRd
 .param_name_map <- function(family_name) {
@@ -36,10 +23,9 @@ external_to_internal_param <- function(external_name, family_name) {
   m <- .param_name_map(family_name)
   if (length(m) == 0) return(external_name)
   inv <- setNames(names(m), unlist(m, use.names = FALSE))
-  hit <- inv[external_name]  # named-vector lookup: missing -> NA, not error
+  hit <- inv[external_name]
   if (is.na(hit)) external_name else unname(hit)
 }
-
 
 # =============================================================================
 # Link Functions
@@ -72,7 +58,6 @@ print.broc_link <- function(x, ...) {
   cat("Link:", x$name, "\n")
   invisible(x)
 }
-
 
 # =============================================================================
 # SDT Families
@@ -373,7 +358,6 @@ mixture <- function(link = link_probit()) {
   )
 }
 
-
 #' Cumulative Ordinal Regression Model
 #'
 #' Ordinal regression with cumulative-link cutpoints and no SDT structure
@@ -424,9 +408,7 @@ cumulative <- function(link = link_probit()) {
     list(
       family = "cumulative",
       link = link,
-      is_sdt = FALSE,  # Flag to indicate this is NOT an SDT model
-      # params keyed by INTERNAL Stan/JAX names. external_aliases below maps
-      # them to the user-facing names ("mu", "cutpoints") used in formulas.
+      is_sdt = FALSE,
       params = list(
         dprime    = list(required = TRUE, default = NULL, link = "identity",
                          description = "linear predictor for location"),
@@ -439,7 +421,6 @@ cumulative <- function(link = link_probit()) {
     class = "broc_family"
   )
 }
-
 
 #' Bivariate Cumulative Ordinal Model
 #'
@@ -496,9 +477,6 @@ bivariate_cumulative <- function() {
       family = "bivariate_cumulative",
       link = link,
       is_sdt = FALSE,
-      # params keyed by INTERNAL Stan/JAX names. external_aliases below maps
-      # them to the user-facing names ("mu1", "mu2", "cutpoints1", "cutpoints2")
-      # used in formulas.
       params = list(
         dprime     = list(required = TRUE, default = NULL, link = "identity",
                           description = "linear predictor for dimension 1 location"),
@@ -517,7 +495,6 @@ bivariate_cumulative <- function() {
     class = "broc_family"
   )
 }
-
 
 #' Source Mixture Signal Detection Model
 #'
@@ -603,7 +580,6 @@ source_mixture <- function(link = link_probit()) {
     class = "broc_family"
   )
 }
-
 
 #' Bivariate Gaussian Signal Detection Model
 #'
@@ -742,7 +718,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
   } else if (!is.null(old_levels)) {
     stop("old_levels is only used when new_source_criteria = 'shared'")
   }
-  # Bounded models require positive dprime, discrim, and rho in (0,1)
   dprime_link <- if (bounded) "log" else "identity"
   discrim_link <- if (bounded) "log" else "identity"
   rho_link <- if (bounded) "logis" else "fisherz"
@@ -762,7 +737,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
       old_levels = old_levels,
       varying_re = varying_re,
       params = list(
-        # Detection dimension (dimension 1)
         dprime = list(required = TRUE, default = NULL, link = dprime_link,
                       description = "d' for Source A detection (dimension 1 mean)"),
         dprime_B = list(required = FALSE, default = NULL, link = dprime_link,
@@ -777,7 +751,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
                        null_description = "constrained equal to sigma",
                        description = "sigma1 for Source B (detection SD)"),
 
-        # Discrimination dimension (dimension 2)
         discrim = list(required = TRUE, default = NULL, link = discrim_link,
                        description = "Source A discrimination (dimension 2 mean)"),
         discrim_B = list(required = FALSE, default = NULL, link = discrim_link,
@@ -792,7 +765,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
                         null_description = "constrained equal to sigma2",
                         description = "sigma2 for Source B (discrimination SD)"),
 
-        # Correlations
         rho = list(required = TRUE, default = NULL, link = rho_link,
                    description = rho_desc),
         rho_B = list(required = FALSE, default = NULL, link = rho_link,
@@ -803,7 +775,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
                      null_value = 0, null_description = "fixed at 0",
                      description = "rho_N correlation for new items"),
 
-        # Thresholds
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
@@ -818,7 +789,6 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
     class = "broc_family"
   )
 }
-
 
 #' Bivariate Dual Process Signal Detection Model
 #'
@@ -927,7 +897,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
   } else if (!is.null(old_levels)) {
     stop("old_levels is only used when new_source_criteria = 'shared'")
   }
-  # Conditional links: bounded = log/logistic, unbounded = identity/Fisher z.
   dprime_link <- if (bounded) "log" else "identity"
   discrim_link <- if (bounded) "log" else "identity"
   rho_link <- if (bounded) "logis" else "fisherz"
@@ -944,7 +913,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
       old_levels = old_levels,
       varying_re = varying_re,
       params = list(
-        # Detection dimension (dimension 1)
         dprime = list(required = TRUE, default = NULL, link = dprime_link,
                       description = dprime_desc),
         dprime_B = list(required = FALSE, default = NULL, link = dprime_link,
@@ -959,7 +927,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
                        null_description = "constrained equal to sigma",
                        description = "sigma_I for Source B (detection SD)"),
 
-        # Discrimination dimension (dimension 2)
         discrim = list(required = TRUE, default = NULL, link = discrim_link,
                        description = discrim_desc),
         discrim_B = list(required = FALSE, default = NULL, link = discrim_link,
@@ -974,7 +941,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
                         null_description = "constrained equal to sigma2",
                         description = "sigma_S for Source B (discrimination SD)"),
 
-        # Correlations
         rho = list(required = TRUE, default = NULL, link = rho_link,
                    description = rho_desc),
         rho_B = list(required = FALSE, default = NULL, link = rho_link,
@@ -985,7 +951,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
                      null_value = 0, null_description = "fixed at 0",
                      description = "rho_N correlation for new items"),
 
-        # Recollection parameters
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "item recollection probability for Source A (logit scale)"),
         lambda_B = list(required = FALSE, default = NULL, link = "logit",
@@ -999,7 +964,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
                          null_description = "constrained equal to lambda2",
                          description = "source recollection probability for Source B"),
 
-        # Thresholds
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
@@ -1015,11 +979,12 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
   )
 }
 
-
 #' Continuous Dual Process Signal Detection Model
 #'
-#' Continuous dual-process model for Remember/Know paradigms, with independent
-#' recollection and familiarity strengths (Wixted & Mickes, 2010).
+#' Continuous dual-process model for Remember/Know paradigms: memory strength is
+#' the sum of a recollection and a familiarity signal, confidence is rated on the
+#' summed strength, and the Remember judgment is a criterion on the recollection
+#' signal (Wixted & Mickes, 2010).
 #'
 #' @param old_levels Integer vector specifying which confidence levels
 #'   correspond to "old" responses (where R/K judgments apply). If `NULL`
@@ -1029,49 +994,52 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #'
 #' @details
 #' ## Likelihood
-#' Recollection R and familiarity F are independent Gaussians:
-#' \eqn{R \sim \mathcal{N}(\mu_R, \sigma_R)}, \eqn{F \sim \mathcal{N}(\mu_F, \sigma_F)}
-#' for targets, with \eqn{(\mu_R, \mu_F) = (0, 0)} and
-#' \eqn{(\sigma_R, \sigma_F) = (1, 1)} for lures.
+#' Recollection and familiarity are independent Gaussians,
+#' \eqn{R \sim \mathcal{N}(\mu_R, \sigma_R^2)} and
+#' \eqn{F \sim \mathcal{N}(\mu_F, \sigma_F^2)} for targets,
+#' \eqn{R, F \sim \mathcal{N}(0, 1)} for lures. Confidence is driven by their sum,
+#' \deqn{M = R + F \sim \mathcal{N}(\mu_R + \mu_F,\; \sigma_R^2 + \sigma_F^2),}
+#' so \eqn{(R, M)} is bivariate normal with \eqn{\rho = \sigma_R / \sigma_M}
+#' (lures: \eqn{\sigma_M = \sqrt{2}}, \eqn{\rho = 1/\sqrt{2}}).
 #'
-#' On the F (familiarity) dimension the cumulative is:
-#' \deqn{P(Y \le k \mid \mathrm{old} = 0) = \Phi(c_k), \quad
-#'       P(Y \le k \mid \mathrm{old} = 1) = \Phi\!\Big(\tfrac{c_k - \mu_F}{\sigma_F}\Big)}
-#' For ratings k not in `old_levels` (new-side responses), the F cell
-#' (by differencing) is the full likelihood. For ratings k in `old_levels`
-#' (old-side responses), the cell factors across F (bin) and R (Remember
-#' vs Know):
-#' \deqn{P(Y = k,\; \mathrm{rk} \mid \mathrm{old}) =
-#'       \big[P(Y \le k) - P(Y \le k - 1)\big] \cdot P(\mathrm{rk} \mid \mathrm{old})}
-#' with the rk factor from the cumulative on the R dimension. For targets:
-#' \deqn{P(\mathrm{rk} = K \mid \mathrm{old} = 1) = \Phi\!\Big(\tfrac{c_R - \mu_R}{\sigma_R}\Big), \quad
-#'       P(\mathrm{rk} = R \mid \mathrm{old} = 1) = 1 - \Phi\!\Big(\tfrac{c_R - \mu_R}{\sigma_R}\Big)}
-#' (lures use the same form with \eqn{\mu_R = 0, \sigma_R = 1}). For 3-level
-#' R/K/G with Know criterion \eqn{c_K}, the K row becomes
-#' \eqn{\Phi((c_R - \mu_R)/\sigma_R) - \Phi((c_K - \mu_R)/\sigma_R)} and
-#' \eqn{P(\mathrm{rk} = G) = \Phi((c_K - \mu_R)/\sigma_R)}.
+#' `criterion` supplies J thresholds \eqn{\tau_1 < \dots < \tau_J} on M, where
+#' J = `length(old_levels)`. A response falls in old bin j when
+#' \eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}); every rating outside
+#' `old_levels` is a single collapsed "new" response,
+#' \deqn{P(\mathrm{new}) = \Phi\left(\frac{\tau_1 - \mu_M}{\sigma_M}\right),}
+#' so graded new-side ratings are pooled rather than modelled separately.
+#'
+#' With two `rk` levels the joint cell is a strip of the \eqn{(R, M)} plane:
+#' \deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad
+#'       P(Y = j, \mathrm{K}) = P(R \le c_R,\; \tau_j < M < \tau_{j+1}).}
+#' With three `rk` levels a second criterion \eqn{c_K} sits on the familiarity
+#' axis and the judgment is sequential: Remember if \eqn{R > c_R}, else Know if
+#' \eqn{F > c_K}, else Guess. The Guess cell is \eqn{G(\tau_{j+1}) - G(\tau_j)}
+#' with \eqn{G(c) = P(R \le c_R, F \le c_K, M < c)}, and Know is the remainder of
+#' the band.
+#'
+#' Lure means and SDs are fixed at 0 and 1 on both axes, and the R-F correlation
+#' is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010).
 #'
 #' ## Parameters
 #' \describe{
-#'   \item{rec}{(required) Recollection mean \eqn{\mu_R} for targets. Identity
-#'     link.}
-#'   \item{fam}{(required) Familiarity mean \eqn{\mu_F} for targets. Identity
-#'     link.}
-#'   \item{criterion}{(required) Confidence thresholds on the F dimension.
-#'     Identity link.}
-#'   \item{rec_crit}{(required) Recollection criterion \eqn{c_R} separating
-#'     Remember vs Know responses on the R dimension. Identity link.}
-#'   \item{sigma_R}{(optional) SD of recollection for targets. If omitted, fixed
-#'     at 1. Log link.}
-#'   \item{sigma_F}{(optional) SD of familiarity for targets. If omitted, fixed
-#'     at 1. Log link.}
-#'   \item{know_crit}{(optional) Know criterion \eqn{c_K} on the R dimension
-#'     for the 3-level R/K/G case (when `rk` has values 1=R, 2=K, 3=G).
-#'     Identity link. If omitted, only R/K is modeled.}
+#'   \item{rec}{(required) Recollection mean \eqn{\mu_R} for targets. Identity link.}
+#'   \item{fam}{(required) Familiarity mean \eqn{\mu_F} for targets. Identity link.}
+#'   \item{criterion}{(required) J thresholds \eqn{\tau} on memory strength
+#'     \eqn{M = R + F}, J = `length(old_levels)`. Identity link.}
+#'   \item{rec_crit}{(required) Remember criterion \eqn{c_R} on the recollection
+#'     axis. Identity link.}
+#'   \item{sigma_R}{(optional) Recollection SD for targets. If omitted, fixed at 1.
+#'     Log link.}
+#'   \item{sigma_F}{(optional) Familiarity SD for targets. If omitted, fixed at 1.
+#'     Log link.}
+#'   \item{know_crit}{(optional) Know criterion \eqn{c_K} on the familiarity axis,
+#'     required when `rk` has three levels. Identity link.}
 #' }
 #'
 #' ## Response coding
-#' `rk` values: 1 = Remember, 2 = Know, (3 = Guess for R/K/G mode).
+#' `rk` values: 1 = Remember, 2 = Know, (3 = Guess for R/K/G mode). Centered
+#' `is_old` coding is not supported.
 #'
 #' ## Formula syntax
 #' ```
@@ -1087,14 +1055,16 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #' Wixted, J. T., & Mickes, L. (2010). A continuous dual-process model of
 #'   remember/know judgments. *Psychological Review*, *117*(4), 1025-1054.
 #'
+#' Moran, R., & Goshen-Gottstein, Y. (2015). Old processes, new perspectives:
+#'   Familiarity is correlated with (not independent of) recollection and is more
+#'   (not equally) variable for targets than for lures. *Cognitive Psychology*,
+#'   *79*, 40-67.
+#'
 #' @return A `broc_family` object.
 #' @export
 cdp <- function(old_levels = NULL) {
   link <- link_probit()
 
-  # old_levels is optional: if NULL, broc() will infer from data as
-  # the confidence bins where rk is non-NA (rk should be NA for new-side
-  # responses by data construction). Pass explicitly to override.
   if (!is.null(old_levels)) {
     if (!is.numeric(old_levels) || length(old_levels) < 1) {
       stop("old_levels must be a numeric vector of confidence levels (or NULL to infer from data)")
@@ -1109,30 +1079,23 @@ cdp <- function(old_levels = NULL) {
       link = link,
       old_levels = old_levels,
       J = J,
-      # params keyed by INTERNAL Stan/JAX names. external_aliases below maps
-      # them to the user-facing names (rec/fam/sigma_R/sigma_F) used in formulas.
       params = list(
-        # Recollection mean (rec) -> internal: dprime
         dprime    = list(required = TRUE, default = NULL, link = "identity",
                          description = "Recollection mean (mu_R) for targets"),
-        # Recollection SD (sigma_R) -> internal: sigma
         sigma     = list(required = FALSE, default = NULL, link = "log",
                          null_value = 0, null_description = "fixed at 1",
                          description = "Recollection SD for targets"),
-        # Familiarity mean (fam) -> internal: dprime2
         dprime2   = list(required = TRUE, default = NULL, link = "identity",
                          description = "Familiarity mean (mu_F) for targets"),
-        # Familiarity SD (sigma_F) -> internal: sigma2
         sigma2    = list(required = FALSE, default = NULL, link = "log",
                          null_value = 0, null_description = "fixed at 1",
                          description = "Familiarity SD for targets"),
-        # Criteria (no aliasing for these)
         rec_crit  = list(required = TRUE, default = NULL, link = "identity",
-                         description = "Recollection criterion (c_R)"),
+                         description = "Remember criterion (c_R) on the recollection axis"),
         know_crit = list(required = FALSE, default = NULL, link = "identity",
-                         description = "Know criterion (c_K) for R/K/G mode"),
+                         description = "Know criterion (c_K) on the familiarity axis (R/K/G mode)"),
         criterion = list(required = TRUE, default = NULL, link = "identity",
-                         description = "Confidence thresholds (tau)")
+                         description = "Confidence thresholds (tau) on memory strength M = R + F")
       ),
       external_aliases = .param_name_map("cdp"),
       description = "Continuous Dual Process Signal Detection Model"
@@ -1140,7 +1103,6 @@ cdp <- function(old_levels = NULL) {
     class = "broc_family"
   )
 }
-
 
 #' Two-Dimensional Variable Recollection Dual Process Model
 #'
@@ -1231,39 +1193,31 @@ vrdp2d <- function(varying_source_criteria = FALSE,
       varying_source_criteria = varying_source_criteria,
       varying_re = varying_re,
       params = list(
-        # Item dimension - familiarity (use dprime)
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "Familiarity strength (item dimension, new vs old)"),
         
-        # Item dimension - recollection boost (use dprime2)
         dprime2 = list(required = TRUE, default = NULL, link = "identity",
                        description = "Recollection strength boost on item dimension"),
         
-        # Source dimension (use discrim for Source A/symmetric)
         discrim = list(required = TRUE, default = NULL, link = "identity",
                        description = "Source discriminability for Source A (only for recollected items)"),
         
-        # Source dimension B (optional, for asymmetric sources)
         discrim_B = list(required = FALSE, default = NULL, link = "identity",
                          null_value = "symmetric",
                          null_description = "constrained to -discrim (symmetric sources)",
                          description = "Source discriminability for Source B"),
         
-        # Recollection probability
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "R: Probability of recollection for old items"),
         
-        # Optional: SD on item dimension for old items (use sigma)
         sigma = list(required = FALSE, default = NULL, link = "log",
                      null_value = 1, null_description = "fixed at 1",
                      description = "sigma_item: SD on item dimension for old items"),
         
-        # Optional: SD on source dimension for recollected items (use sigma2)
         sigma2 = list(required = FALSE, default = NULL, link = "log",
                       null_value = 1, null_description = "fixed at 1",
                       description = "sigma_S: SD on source dimension for recollected items"),
         
-        # Thresholds
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Item dimension thresholds (K1-1 thresholds)"),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
@@ -1274,7 +1228,6 @@ vrdp2d <- function(varying_source_criteria = FALSE,
     class = "broc_family"
   )
 }
-
 
 #' Validate that required parameters are provided
 #' @param family The SDT family
@@ -1289,7 +1242,6 @@ validate_family_params <- function(family, provided_params) {
                    param_name, family$family))
     }
     
-    # Check if optional param is provided but family doesn't support it
     if (param_name %in% names(provided_params) && 
         !param_name %in% names(family$params)) {
       stop(sprintf("Parameter '%s' is not supported by family '%s'",
@@ -1297,7 +1249,6 @@ validate_family_params <- function(family, provided_params) {
     }
   }
   
-  # Check for unknown parameters
   for (param_name in names(provided_params)) {
     if (!param_name %in% names(family$params) && 
         !param_name %in% c("data", "family", "priors")) {
@@ -1308,7 +1259,6 @@ validate_family_params <- function(family, provided_params) {
   
   invisible(TRUE)
 }
-
 
 #' Map an internal family name to its user-facing constructor name.
 #'
@@ -1334,9 +1284,6 @@ print.broc_family <- function(x, ...) {
   cat("Parameters:\n")
   for (nm in names(x$params)) {
     p <- x$params[[nm]]
-    # For aliased families, show the user-facing external name (rec/fam/mu/...)
-    # rather than the internal Stan name (dprime/dprime2/...) since the external
-    # name is what the user writes in formulas.
     display_nm <- if (!is.null(x$external_aliases) &&
                      !is.null(x$external_aliases[[nm]])) {
       x$external_aliases[[nm]]

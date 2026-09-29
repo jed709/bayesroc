@@ -49,10 +49,8 @@ plot.broc_fit <- function(x, class = "b", dpar = "dprime", group = NULL,
     stop("Package 'ggdist' is required for plotting. Please install it.")
   }
   
-  # Match type argument
   type <- match.arg(type)
   
-  # Validate class
   valid_classes <- c("b", "sd", "cor")
   if (!class %in% valid_classes) {
     stop("class must be one of: ", paste(valid_classes, collapse = ", "))
@@ -62,18 +60,15 @@ plot.broc_fit <- function(x, class = "b", dpar = "dprime", group = NULL,
     stop("dpar must not be NULL")
   }
   
-  # Get the model object from attribute (set by fit_broc)
   model <- attr(fit, "broc_model")
   if (is.null(model)) {
     stop("Fit object must have 'broc_model' attribute. Use fit_broc() to fit the model.")
   }
   
-  # Handle criterion -> thresh_mid + log_gaps expansion (fixed effects only)
   if (class == "b") {
     dpar <- expand_criterion_dpar(dpar)
   }
 
-  # Get draws data for plotting based on class
   plot_data <- switch(class,
                       "b" = get_fixed_effects_draws(fit, model, dpar),
                       "sd" = get_sd_draws(fit, model, dpar, group),
@@ -84,12 +79,10 @@ plot.broc_fit <- function(x, class = "b", dpar = "dprime", group = NULL,
     stop("No parameters found matching the specified dpar and group")
   }
   
-  # Build the plot
   p <- build_ggdist_plot(plot_data, class, type, prob, prob_inner)
   
   p
 }
-
 
 #' Expand criterion to thresh_mid and log_gaps
 #' @noRd
@@ -106,7 +99,6 @@ expand_criterion_dpar <- function(dpar) {
   dpar
 }
 
-
 #' Get fixed effects draws for plotting
 #' @noRd
 get_fixed_effects_draws <- function(fit, model, dpar) {
@@ -118,7 +110,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
   is_cdp <- model$family$family == "cdp"
   
   for (d in dpar) {
-    # Get internal dpar name
     internal_dpar <- d
     if (is_cdp) {
       if (d == "rec") internal_dpar <- "dprime"
@@ -127,7 +118,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       if (d == "sigma_F") internal_dpar <- "sigma2"
     }
     
-    # Handle thresh_mid
     if (d == "thresh_mid") {
       var_name <- "beta_thresh_mid"
       if (!any(grepl(paste0("^", var_name, "\\["), var_names))) next
@@ -147,9 +137,7 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       next
     }
     
-    # Handle thresh_mid2 (source/dim2 thresholds)
     if (d == "thresh_mid2") {
-      # Try varying, then non-varying, then per-coef
       for (var_name in c("beta_thresh_mid_2_varying", "beta_thresh_mid_2")) {
         if (any(grepl(paste0("^", var_name), var_names))) {
           matched <- var_names[grepl(paste0("^", var_name, "(\\[|$)"), var_names)]
@@ -166,7 +154,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       next
     }
 
-    # Handle log_gaps2 (source/dim2 gaps)
     if (d == "log_gaps2") {
       gap_prefix <- if (identical(model$gap_link, "softplus")) "beta_raw_gaps_2" else "beta_log_gaps_2"
       for (var_name in c(paste0(gap_prefix, "_varying"), gap_prefix)) {
@@ -185,7 +172,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       next
     }
 
-    # Handle log_gaps / raw_gaps
     if (d == "log_gaps") {
       var_name <- if (identical(model$gap_link, "softplus")) "beta_raw_gaps" else "beta_log_gaps"
       if (!any(grepl(paste0("^", var_name, "\\["), var_names))) next
@@ -193,7 +179,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       coef_names <- model$model_data$criterion$coef_names
       K <- model$model_data$K
       
-      # For CDP, use J-1 gaps; for standard models use K-2
       if (is_cdp) {
         J <- model$family$J
         n_gaps <- J - 1
@@ -201,8 +186,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
         n_gaps <- K - 2
       }
       
-      # Gaps are named 2D (beta_log_gaps[k,i], per coefficient) or 1D
-      # (beta_log_gaps[k], single intercept) depending on backend/design.
       is_2d <- any(grepl(paste0("^", var_name, "\\[1,"), var_names))
       for (k in 1:n_gaps) {
         cols <- if (is_2d) {
@@ -225,16 +208,13 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       next
     }
     
-    # Standard fixed effects
     var_name <- paste0("beta_", internal_dpar)
     if (!any(grepl(paste0("^", var_name, "\\["), var_names))) next
     
-    # Get coefficient names
     fixed_info <- model$model_data[[paste0(internal_dpar, "_fixed")]]
     if (is.null(fixed_info)) next
     coef_names <- fixed_info$coef_names
     
-    # Display dpar name
     display_dpar <- d
     if (is_cdp) {
       if (internal_dpar == "dprime") display_dpar <- "rec"
@@ -262,7 +242,6 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
   do.call(rbind, results)
 }
 
-
 #' Get SD draws for plotting
 #' @noRd
 get_sd_draws <- function(fit, model, dpar, group_filter) {
@@ -273,7 +252,6 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
   results <- list()
   is_cdp <- model$family$family == "cdp"
 
-  # Helper to map internal param name to display name
   display_name <- function(d, internal) {
     if (is_cdp) {
       if (internal == "dprime") return("rec")
@@ -284,7 +262,6 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
     d
   }
 
-  # Helper to map user dpar to internal name
   to_internal <- function(d) {
     if (is_cdp) {
       if (d == "rec") return("dprime")
@@ -298,7 +275,6 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
   for (d in dpar) {
     internal_dpar <- to_internal(d)
 
-    # Find random effects for this dpar
     if (internal_dpar %in% c("criterion", "criterion2")) {
       re_list <- model$model_data[[internal_dpar]]$random
     } else {
@@ -312,19 +288,15 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
 
       re <- re_list[[grp]]
 
-      # Skip cross-correlated REs here; handled separately below
       if (!is.null(re$cor_id)) next
 
       var_name <- paste0("sigma_", internal_dpar, "_", grp)
 
-      # Get level names
       level_names <- re$level_names
       if (is.null(level_names) || length(level_names) == 0) {
         level_names <- "(Intercept)"
       }
 
-      # Criterion/criterion2 SDs are a per-threshold vector
-      # sigma_<crit>_<grp>[1..dim] -- always indexed, even when intercept-only.
       is_criterion <- internal_dpar %in% c("criterion", "criterion2")
       if (is_criterion) {
         n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
@@ -356,7 +328,6 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
     }
   }
 
-  # Handle cross-parameter correlated SDs
   internal_dpars <- vapply(dpar, to_internal, character(1))
 
   for (cor_id in names(model$model_data$cross_cor)) {
@@ -368,16 +339,13 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
     for (member in cc$members) {
       param <- member$param
 
-      # Only include if user requested this dpar
       if (!param %in% internal_dpars) {
         col_start <- col_start + member$dim
         next
       }
 
-      # Find the user-facing dpar name for display
       disp <- display_name(dpar[internal_dpars == param][1], param)
 
-      # Get level names
       if (param %in% c("criterion", "criterion2")) {
         re <- model$model_data[[param]]$random[[grp]]
       } else {
@@ -420,7 +388,6 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
   do.call(rbind, results)
 }
 
-
 #' Get correlation draws for plotting
 #' @noRd
 get_cor_draws <- function(fit, model, dpar, group_filter) {
@@ -431,7 +398,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
   results <- list()
   is_cdp <- model$family$family == "cdp"
 
-  # Helper to map user dpar to internal name
   to_internal <- function(d) {
     if (is_cdp) {
       if (d == "rec") return("dprime")
@@ -442,7 +408,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
     d
   }
 
-  # Helper to map internal param name to display name
   display_name <- function(d, internal) {
     if (is_cdp) {
       if (internal == "dprime") return("rec")
@@ -456,7 +421,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
   for (d in dpar) {
     internal_dpar <- to_internal(d)
 
-    # Find random effects for this dpar
     if (internal_dpar %in% c("criterion", "criterion2")) {
       re_list <- model$model_data[[internal_dpar]]$random
     } else {
@@ -470,19 +434,15 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
 
       re <- re_list[[grp]]
 
-      # Skip cross-correlated REs; handled separately below
       if (!is.null(re$cor_id)) next
       if (re$dim <= 1) next
 
       var_name <- paste0("corr_", internal_dpar, "_", grp)
 
-      # Get level names for labeling
       level_names <- re$level_names
       if (is.null(level_names) || length(level_names) == 0) {
         level_names <- paste0("dim", 1:re$dim)
       }
-      # Criterion REs correlate across thresholds; label by threshold rather
-      # than the (shorter) term-level names, which would index out to NA.
       if (internal_dpar %in% c("criterion", "criterion2") &&
           (is.null(re$n_re_terms) || re$n_re_terms == 1)) {
         level_names <- paste0("thresh", seq_len(re$dim))
@@ -490,7 +450,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
 
       disp <- display_name(d, internal_dpar)
 
-      # Extract correlations (lower triangle)
       for (i in 2:re$dim) {
         for (j in 1:(i-1)) {
           col_name <- paste0(var_name, "[", i, ",", j, "]")
@@ -511,7 +470,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
     }
   }
 
-  # Handle cross-parameter correlations
   internal_dpars <- vapply(dpar, to_internal, character(1))
 
   for (cor_id in names(model$model_data$cross_cor)) {
@@ -520,11 +478,9 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
     if (!is.null(group_filter) && !grp %in% group_filter) next
     if (cc$total_dim <= 1) next
 
-    # Check if any requested dpar is in this cross-correlation
     member_params <- vapply(cc$members, function(m) m$param, character(1))
     if (!any(member_params %in% internal_dpars)) next
 
-    # Build dimension labels
     labels <- character(0)
     for (member in cc$members) {
       param <- member$param
@@ -545,7 +501,6 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
       labels <- c(labels, paste0(disp, ":", level_names))
     }
 
-    # Extract lower triangle correlations
     for (i in 2:cc$total_dim) {
       for (j in 1:(i-1)) {
         col_name <- paste0("corr_cross_", cor_id, "_", grp, "[", i, ",", j, "]")
@@ -572,23 +527,18 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
   do.call(rbind, results)
 }
 
-
 #' Build ggdist plot
 #' @noRd
 build_ggdist_plot <- function(data, class, type, prob, prob_inner) {
   
-  # Determine faceting structure
   n_dpars <- length(unique(data$dpar))
   has_group <- "group" %in% names(data)
   n_groups <- if (has_group) length(unique(data$group)) else 1
   
-  # Create coefficient factor with order preserved
   data$coef <- factor(data$coef, levels = rev(unique(data$coef)))
   
-  # Base plot
   p <- ggplot2::ggplot(data, ggplot2::aes(x = value, y = coef))
   
-  # Add the appropriate ggdist geom based on type
   probs <- c(prob_inner, prob)
   
   if (type == "interval") {
@@ -630,7 +580,6 @@ build_ggdist_plot <- function(data, class, type, prob, prob_inner) {
     )
   }
   
-  # Theme
   p <- p + ggplot2::theme_minimal(base_size = 11) +
     ggplot2::theme(
       panel.grid.minor = ggplot2::element_blank(),
@@ -639,7 +588,6 @@ build_ggdist_plot <- function(data, class, type, prob, prob_inner) {
       axis.title.y = ggplot2::element_blank()
     )
   
-  # Labels
   class_labels <- c(b = "Fixed Effects", sd = "Random Effect SDs", cor = "Correlations")
   ci_label <- paste0(round(prob_inner * 100), "% / ", round(prob * 100), "% CI")
   
@@ -648,7 +596,6 @@ build_ggdist_plot <- function(data, class, type, prob, prob_inner) {
     title = class_labels[class]
   )
   
-  # Add faceting
   if (n_dpars > 1 && has_group && n_groups > 1) {
     p <- p + ggplot2::facet_grid(group ~ dpar, scales = "free_y", space = "free_y")
   } else if (n_dpars > 1) {

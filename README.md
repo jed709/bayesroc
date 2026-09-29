@@ -158,6 +158,48 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 - `?conditional_smooths` — smooth-term evaluation/plotting (mgcv `s()` / `t2()`
   are supported in any parameter formula)
 - `?broc_prior` — prior specification
+- `?autostop_broc` — sample in rounds until ESS targets are met (JAX backend)
+- `?drop_loglik` — reclaim a fit's log-likelihood sidecar
+
+## Log-likelihood and LOO
+
+`log_lik` is written to an `.npy` sidecar rather than held in the draws array,
+and `loo()` streams it in column chunks sized to available RAM. Both backends
+produce the same sidecar, so `loo()` behaves identically on Stan and JAX.
+
+```r
+fit <- fit_broc(model, loo = TRUE)   # LOO at fit time, sidecar reclaimed
+fit$.loo
+
+fit <- fit_broc(model)               # sidecar kept for the session
+loo(fit, cores = 4)
+fit <- drop_loglik(fit)              # reclaim when finished
+```
+
+For aggregated (`counts =`) fits, `loo()` defaults to leave-one-trial-out;
+`type = "cell"` gives the leave-one-row-out partition that brms `weights()`
+produces. The two are not comparable via `loo_compare()`.
+
+Sidecars are not persisted alongside a saved fit unless asked:
+`save_broc_fit(fit, "f.rds", include_loglik = TRUE)`.
+
+## Sampling to an ESS target
+
+`autostop_broc()` adds rounds of draws until rank-normalised bulk and tail ESS
+clear per-class floors. With `restart = "warm"` the chains continue from saved
+sampler state, so later rounds skip warmup entirely and the pooled draws are
+identical to one long run.
+
+```r
+fit <- autostop_broc(model,
+                     pop_target = 5000, sd_target = 400, cor_target = 400,
+                     restart = "warm", backend = "jax")
+attr(fit, "ess_trace")
+```
+
+Warm continuation needs sampler state that cmdstanr cannot return, so
+`autostop_broc()` is JAX-only. Divergences are reported per round and
+accumulated in the trace; they do not stop the loop.
 
 ## License
 

@@ -1,5 +1,3 @@
-# Prior-distribution parity: the JAX-style names half_*/laplace must translate
-# to valid Stan syntax, and the Stan-native names must parse on the JAX backend.
 
 test_that("to_stan_prior translates JAX-style names; identity otherwise", {
   expect_equal(to_stan_prior("laplace(0, 1)"), "double_exponential(0, 1)")

@@ -3,7 +3,6 @@
 #' Support for conditional() in SDT formulas. Allows predictors to apply
 #' only to a subset of observations defined by a where condition.
 
-
 #' Conditional Term Marker
 #'
 #' Used in formulas to indicate that a predictor should only vary for
@@ -18,7 +17,6 @@ conditional <- function(term, where) {
   stop("conditional() should only be used inside formulas, not called directly.")
 }
 
-
 #' Detect conditional() in a Term String
 #'
 #' Parses a term string like 'conditional(production, where = group == "matched")'
@@ -30,12 +28,10 @@ conditional <- function(term, where) {
 detect_conditional <- function(term_str) {
   if (!grepl("conditional\\s*\\(", term_str)) return(NULL)
 
-  # Find the opening paren of conditional(
   match_start <- regexpr("conditional\\s*\\(", term_str)
   paren_start <- match_start + attr(match_start, "match.length") - 1
   chars <- strsplit(term_str, "")[[1]]
 
-  # Find matching close paren
   depth <- 1
   i <- paren_start + 1
   while (i <= length(chars) && depth > 0) {
@@ -45,11 +41,8 @@ detect_conditional <- function(term_str) {
   }
   paren_end <- i - 1
 
-  # Extract content inside conditional(...)
   inner <- substr(term_str, paren_start + 1, paren_end - 1)
 
-  # Split on first comma that is outside nested parens to get term and where=...
-  # Need to find the comma that separates term from where = ...
   inner_chars <- strsplit(inner, "")[[1]]
   comma_pos <- NULL
   depth <- 0
@@ -70,12 +63,10 @@ detect_conditional <- function(term_str) {
   term_part <- trimws(substr(inner, 1, comma_pos - 1))
   where_part <- trimws(substr(inner, comma_pos + 1, nchar(inner)))
 
-  # Strip "where =" or "where=" prefix if present; also accept positional arg
   where_str <- sub("^where\\s*=\\s*", "", where_part)
 
   list(term = term_part, where_str = where_str)
 }
-
 
 #' Parenthesis-Aware Split of Conditional Interaction
 #'
@@ -90,7 +81,6 @@ split_conditional_interaction <- function(term_str) {
   chars <- strsplit(term_str, "")[[1]]
   n <- length(chars)
 
-  # Track positions of : and * that are at depth 0
   depth <- 0
   split_positions <- integer(0)
   split_types <- character(0)
@@ -108,7 +98,6 @@ split_conditional_interaction <- function(term_str) {
     return(list(conditional_part = term_str, partners = character(0)))
   }
 
-  # Split the string at the operator positions
   parts <- character(0)
   prev <- 1
   for (pos in split_positions) {
@@ -117,7 +106,6 @@ split_conditional_interaction <- function(term_str) {
   }
   parts <- c(parts, trimws(substr(term_str, prev, n)))
 
-  # Find which part contains conditional(
   cond_idx <- grep("conditional\\s*\\(", parts)
   if (length(cond_idx) != 1) {
     stop("Expected exactly one conditional() in term: ", term_str)
@@ -126,14 +114,11 @@ split_conditional_interaction <- function(term_str) {
   conditional_part <- parts[cond_idx]
   partners <- parts[-cond_idx]
 
-  # If any split was *, also need to expand main effects
-  # For now, just return the partners; parse_fixed_effects handles * expansion
   has_star <- any(split_types == "*")
 
   list(conditional_part = conditional_part, partners = partners,
        has_star = has_star)
 }
-
 
 #' Build Conditional Design Matrix Columns
 #'
@@ -152,7 +137,6 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
                                       intercept = TRUE) {
   N <- nrow(data)
 
-  # Evaluate the where mask
   mask <- eval(parse(text = where_str), envir = data, enclos = parent.frame())
   if (!is.logical(mask) || length(mask) != N) {
     stop("conditional() where expression must evaluate to a logical vector ",
@@ -162,7 +146,6 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
   true_idx <- which(mask)
   false_idx <- which(!mask)
 
-  # Get levels of the conditional term
   if (is.factor(data[[term]])) {
     term_levels <- levels(data[[term]])
   } else {
@@ -170,21 +153,16 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
   }
   n_term_levels <- length(term_levels)
 
-  # Build partner interaction levels if partners exist
   has_partners <- !is.null(interaction_partners) && length(interaction_partners) > 0
 
   if (!has_partners) {
-    # Simple case: FALSE intercept + TRUE level columns
-    # Always cell-means coded (one 1 per row)
-    n_cols <- 1 + n_term_levels  # FALSE + TRUE levels
+    n_cols <- 1 + n_term_levels
     col_names <- c("cond_FALSE", paste0("cond_", term, ":", term_levels))
     X <- matrix(0, nrow = N, ncol = n_cols)
     colnames(X) <- col_names
 
-    # FALSE rows get column 1
     X[false_idx, 1] <- 1
 
-    # TRUE rows get their level column
     term_vals <- as.character(data[[term]])
     for (i in seq_along(term_levels)) {
       lev <- term_levels[i]
@@ -193,8 +171,6 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
     }
 
   } else {
-    # Interaction case: cross conditional columns with partner levels
-    # Get partner levels
     partner_level_list <- lapply(interaction_partners, function(p) {
       if (is.factor(data[[p]])) {
         levels(data[[p]])
@@ -204,15 +180,12 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
     })
     names(partner_level_list) <- interaction_partners
 
-    # Expand partner combinations (grid of all partners)
     partner_grid <- expand.grid(partner_level_list, stringsAsFactors = FALSE)
     n_partner_combos <- nrow(partner_grid)
     partner_labels <- apply(partner_grid, 1, function(row) paste(row, collapse = ":"))
 
-    # FALSE group: partner-only columns
     false_col_names <- paste0("cond_FALSE:", partner_labels)
 
-    # TRUE group: term x partner crossed columns
     true_col_names <- character(0)
     for (lev in term_levels) {
       for (pl in partner_labels) {
@@ -228,21 +201,18 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
     X <- matrix(0, nrow = N, ncol = n_cols)
     colnames(X) <- col_names
 
-    # Get partner values for each row
     partner_vals <- as.data.frame(lapply(interaction_partners, function(p) {
       as.character(data[[p]])
     }), stringsAsFactors = FALSE)
     names(partner_vals) <- interaction_partners
     row_partner_labels <- apply(partner_vals, 1, function(row) paste(row, collapse = ":"))
 
-    # FALSE rows: match on partner label only
     for (i in seq_along(partner_labels)) {
       pl <- partner_labels[i]
       match_idx <- intersect(false_idx, which(row_partner_labels == pl))
       X[match_idx, i] <- 1
     }
 
-    # TRUE rows: match on term level + partner label
     term_vals <- as.character(data[[term]])
     col_offset <- n_false_cols
     for (ti in seq_along(term_levels)) {
@@ -255,7 +225,6 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
     }
   }
 
-  # Store metadata for predict rebuild
   conditional_info <- list(
     term = term,
     where_str = where_str,
@@ -268,7 +237,6 @@ build_conditional_columns <- function(term, where_str, data, interaction_partner
 
   list(X = X, col_names = col_names, conditional_info = conditional_info)
 }
-
 
 #' Rebuild Conditional Columns for New Data
 #'
@@ -286,11 +254,9 @@ rebuild_conditional_columns <- function(conditional_info, newdata) {
     data = newdata,
     interaction_partners = conditional_info$interaction_partners
   )
-  # Align to original column names
   X <- align_matrix_columns(result$X, conditional_info$col_names)
   X
 }
-
 
 #' Build Full Fixed Effects Matrix with Conditional Terms
 #'
@@ -307,7 +273,6 @@ rebuild_conditional_columns <- function(conditional_info, newdata) {
 #' @noRd
 build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
                                             encoding_vars, is_old_var) {
-  # Separate conditional and non-conditional terms
   cond_terms <- list()
   regular_terms <- character(0)
   regular_term_info <- list()
@@ -325,10 +290,6 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
   blocks <- list()
   all_cond_info <- list()
 
-  # Build regular term columns (if any)
-  # Note: When ONLY conditional terms exist, skip the intercept column --
-  # the conditional cond_FALSE column already provides the baseline.
-  # Only add regular columns if there are actual non-conditional terms.
   if (length(regular_terms) > 0) {
     terms_str <- paste(regular_terms, collapse = " + ")
     if (parsed_fixed$intercept) {
@@ -359,7 +320,6 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
     blocks[[length(blocks) + 1]] <- X_reg
   }
 
-  # Build conditional term columns
   for (ct in cond_terms) {
     ci <- ct$conditional_info
     result <- build_conditional_columns(
@@ -373,7 +333,6 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
     all_cond_info[[length(all_cond_info) + 1]] <- result$conditional_info
   }
 
-  # Column-bind all blocks
   X <- do.call(cbind, blocks)
 
   has_encoding_overall <- !is.null(encoding_vars) &&
@@ -388,7 +347,6 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
     conditional_info = if (length(all_cond_info) > 0) all_cond_info else NULL
   )
 }
-
 
 #' Extract Conditional Terms from Parsed Formula
 #'

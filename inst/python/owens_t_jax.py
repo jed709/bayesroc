@@ -16,8 +16,6 @@ import jax.numpy as jnp
 from jax import custom_jvp
 
 
-# Fast polynomial Phi (matches numpyro_backend.py's _poly_phi)
-# Abramowitz & Stegun rational approximation, max error 7.5e-8
 _PHI_D = 0.3989422804014327
 
 def _poly_phi(x):
@@ -28,10 +26,6 @@ def _poly_phi(x):
             1.781477937 + t * (-1.821255978 + t * 1.330274429)))))
     return jnp.where(x >= 0, 1.0 - p, p)
 
-# ============================================================
-# Gauss-Legendre 13-point quadrature nodes and weights
-# (squared roots on [0, 1])
-# ============================================================
 
 _GL13_PTS = jnp.array([
     0.35082039676451715489e-02, 0.31279042338030753740e-01,
@@ -62,10 +56,9 @@ def _t5(h, a):
     """Owen's T via 13-point Gauss-Legendre quadrature.
     Valid for 0 <= a <= 1, h >= 0. Machine-epsilon accuracy.
     h, a can be arrays (broadcast with quadrature dimension)."""
-    # Add trailing dim for quadrature points: (..., 1) * (13,) -> (..., 13)
     h2 = jnp.expand_dims(h, -1)
     a2 = jnp.expand_dims(a, -1)
-    r = 1.0 + a2 * a2 * _GL13_PTS  # (..., 13)
+    r = 1.0 + a2 * a2 * _GL13_PTS
     return a * jnp.sum(_GL13_WTS * jnp.exp(-0.5 * h2 * h2 * r) / r, axis=-1)
 
 
@@ -79,12 +72,9 @@ def owens_t(h, a):
     ah = jnp.abs(h)
     aa = jnp.abs(a)
 
-    # Core: T5 for |a| <= 1
     val_direct = _t5(ah, aa)
 
-    # Identity for |a| > 1:
-    # T(h, a) = 0.5*(Phi(h) + Phi(a*h)) - Phi(h)*Phi(a*h) - T(a*h, 1/a)
-    aa_safe = jnp.where(aa > 0, aa, 1.0)  # avoid div by 0
+    aa_safe = jnp.where(aa > 0, aa, 1.0)
     Phi_ah = _poly_phi(ah)
     Phi_aah = _poly_phi(aa * ah)
     val_indirect = (0.5 * (Phi_ah + Phi_aah)
@@ -142,7 +132,6 @@ if __name__ == "__main__":
 
     print("=== Pure JAX Owen's T (T5-only) self-test ===\n")
 
-    # Broad test
     h_grid = np.linspace(0.01, 6.0, 60)
     a_grid = np.linspace(0.01, 5.0, 60)
     H, A = np.meshgrid(h_grid, a_grid)
@@ -158,7 +147,6 @@ if __name__ == "__main__":
     print(f"Num > 1e-10: {(errors > 1e-10).sum()}")
     print(f"Num > 1e-8:  {(errors > 1e-8).sum()}")
 
-    # Specific test cases
     print(f"\nSelected test cases:")
     test_cases = [(0.0, 0.1), (0.01, 0.5), (0.1, 0.99), (1.0, 0.5),
                   (2.0, 0.9), (5.0, 0.99), (-1.0, 0.5), (0.5, 1.5),
@@ -168,7 +156,6 @@ if __name__ == "__main__":
         sv = scipy_owens_t(h, a)
         print(f"  T({h:>5.2f}, {a:>4.2f}) = {jv:.15f}  ref={sv:.15f}  diff={abs(jv-sv):.2e}")
 
-    # Gradient check
     h_s, a_s = jnp.float64(1.0), jnp.float64(0.5)
     eps = 1e-7
     fd_dh = (scipy_owens_t(1.0 + eps, 0.5) - scipy_owens_t(1.0 - eps, 0.5)) / (2 * eps)
@@ -179,13 +166,11 @@ if __name__ == "__main__":
     print(f"  dT/dh: FD={fd_dh:.10f}, AD={ad_dh:.10f}, diff={abs(fd_dh-ad_dh):.2e}")
     print(f"  dT/da: FD={fd_da:.10f}, AD={ad_da:.10f}, diff={abs(fd_da-ad_da):.2e}")
 
-    # Binormal CDF
     z1, z2, rho = 1.0, 0.5, 0.3
     ref_bvn = multivariate_normal.cdf([z1, z2], mean=[0, 0], cov=[[1, rho], [rho, 1]])
     our_bvn = float(binormal_cdf(jnp.float64(z1), jnp.float64(z2), jnp.float64(rho)))
     print(f"\nBinormal CDF(1.0, 0.5, rho=0.3): {our_bvn:.15f}  ref={ref_bvn:.15f}  diff={abs(our_bvn-ref_bvn):.2e}")
 
-    # Speed
     h_big = jnp.ones(5760)
     a_big = jnp.full(5760, 0.5)
     f = jax.jit(owens_t)

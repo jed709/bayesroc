@@ -63,62 +63,46 @@
 #' @export
 broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
   
-  # Validate class
   valid_classes <- c("b", "sd", "cor", "sds")
   if (!class %in% valid_classes) {
     stop("Invalid class '", class, "'. Valid classes: ", 
          paste(valid_classes, collapse = ", "))
   }
   
-  # Validate dpar if provided
   if (!is.null(dpar)) {
-    # Core SDT parameters
     valid_dpars <- c("dprime", "sigma", "lambda", "criterion", "dprime2", "sigma2",
                      "dprime_B", "lambda_B",
-                     # Bivariate SDT parameters
                      "discrim", "discrim_B", "sigma_B", "sigma2_B",
                      "rho", "rho_B", "rho_N", "criterion2",
-                     # Lure mixture parameters
                      "dprime_L", "sigma_L", "lambda_L",
-                     # Bivariate DP lambda2 / lambda2_B
                      "lambda2", "lambda2_B",
-                     # CDP parameters
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
-                     # Aliases for cumulative models. cutpoint priors are set
-                     # via thresh_mid / log_gaps, so "cutpoints" is not a dpar.
                      "mu", "mu1", "mu2")
     if (!dpar %in% valid_dpars) {
       stop("Invalid dpar '", dpar, "'. Valid dpars: ",
            paste(valid_dpars, collapse = ", "))
     }
 
-    # Map cumulative aliases to internal names for storage
-    # mu/mu1 -> dprime, mu2 -> discrim
     if (dpar == "mu" || dpar == "mu1") dpar <- "dprime"
     if (dpar == "mu2") dpar <- "discrim"
     
-    # Map CDP aliases to internal names for storage
-    # rec -> dprime, fam -> dprime2, sigma_R -> sigma, sigma_F -> sigma2
     if (dpar == "rec") dpar <- "dprime"
     if (dpar == "fam") dpar <- "dprime2"
     if (dpar == "sigma_R") dpar <- "sigma"
     if (dpar == "sigma_F") dpar <- "sigma2"
   }
   
-  # coef only makes sense for class = "b", "sd", or "sds"
   if (!is.null(coef) && !class %in% c("b", "sd", "sds")) {
     warning("coef argument is ignored for class '", class, "'")
     coef <- NULL
   }
   
-  # group only makes sense for sd and cor
   if (!is.null(group) && class == "b") {
     warning("group argument is ignored for class 'b'")
     group <- NULL
   }
   
-  # Parse the prior string to validate it
   prior_info <- parse_prior_string(prior)
   
   structure(
@@ -135,19 +119,16 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
   )
 }
 
-
 #' Parse a Prior String
 #'
 #' @param prior_str Prior specification string (e.g., "normal(0, 1)")
 #' @return List with distribution name and arguments
 #' @noRd
 parse_prior_string <- function(prior_str) {
-  # Handle special cases
   if (prior_str == "" || is.na(prior_str)) {
     return(list(distribution = "flat", args = list()))
   }
   
-  # Parse distribution(args) format
   match <- regmatches(prior_str, regexec("^([a-zA-Z_]+)\\((.*)\\)$", prior_str))[[1]]
   
   if (length(match) != 3) {
@@ -158,7 +139,6 @@ parse_prior_string <- function(prior_str) {
   distribution <- match[2]
   args_str <- match[3]
   
-  # Parse arguments
   if (args_str == "") {
     args <- list()
   } else {
@@ -173,7 +153,6 @@ parse_prior_string <- function(prior_str) {
   list(distribution = distribution, args = args)
 }
 
-
 #' Combine Multiple Priors
 #'
 #' @param ... Prior specifications from broc_prior()
@@ -184,7 +163,6 @@ c.broc_prior <- function(...) {
   class(priors) <- "broc_prior_list"
   priors
 }
-
 
 #' Print Method for Prior
 #' @param x The object to print.
@@ -201,7 +179,6 @@ print.broc_prior <- function(x, ...) {
   invisible(x)
 }
 
-
 #' Print Method for Prior List
 #' @param x The object to print.
 #' @param ... Ignored.
@@ -216,82 +193,62 @@ print.broc_prior_list <- function(x, ...) {
   invisible(x)
 }
 
-
-# Base default priors per parameter class/dpar, as a data frame. Starting
-# defaults only -- link functions can override; get_broc_prior() on a built
-# model gives the authoritative per-model priors.
 #' @noRd
 get_default_broc_priors <- function() {
   data.frame(
     class = c("b", "b", "b", "b", "b", "b", "b", "b", "b",
-              # Bivariate SDT fixed effects
               "b", "b", "b", "b", "b", "b", "b", "b",
-              # Lure mixture fixed effects
               "b", "b", "b",
               "sd", "sd", "sd", "sd", "sd", "sd", "sd", "sd",
-              # Bivariate SDT SDs
               "sd", "sd", "sd", "sd", "sd", "sd", "sd", "sd",
-              # Lure mixture SDs
               "sd", "sd", "sd",
               "cor"),
     dpar = c("dprime", "sigma", "lambda", "dprime2", "sigma2", 
              "dprime_B", "lambda_B",
              "thresh_mid", "log_gaps",
-             # Bivariate SDT
              "discrim", "discrim_B", "sigma_B", "sigma2_B",
              "rho", "rho_B", "rho_N", "criterion2",
-             # Lure mixture
              "dprime_L", "sigma_L", "lambda_L",
              "dprime", "sigma", "lambda", "dprime2", "sigma2", 
              "dprime_B", "lambda_B", "criterion",
-             # Bivariate SDT SDs
              "discrim", "discrim_B", "sigma_B", "sigma2_B",
              "rho", "rho_B", "rho_N", "criterion2",
-             # Lure mixture SDs
              "dprime_L", "sigma_L", "lambda_L",
              NA),
     prior = c("normal(1, 1)", "normal(0, 0.5)", "normal(0, 1.5)", 
               "normal(0, 1)", "normal(0, 0.5)", 
-              "normal(-1, 1)", "normal(0, 1.5)",  # dprime_B, lambda_B
+              "normal(-1, 1)", "normal(0, 1.5)",
               "normal(0, 1.5)", "normal(0, 1)",
-              # Bivariate SDT fixed effects
-              "normal(0, 1)", "normal(0, 1)",     # discrim, discrim_B
-              "normal(0, 0.5)", "normal(0, 0.5)", # sigma_B, sigma2_B
-              "normal(0, 0.5)", "normal(0, 0.5)", "normal(0, 0.5)",  # rho params (Fisher z scale)
-              "normal(0, 1.5)",  # criterion2 thresh_mid
-              # Lure mixture fixed effects
-              "normal(0, 1)", "normal(0, 0.5)", "normal(0, 1.5)",  # dprime_L, sigma_L, lambda_L
+              "normal(0, 1)", "normal(0, 1)",
+              "normal(0, 0.5)", "normal(0, 0.5)",
+              "normal(0, 0.5)", "normal(0, 0.5)", "normal(0, 0.5)",
+              "normal(0, 1.5)",
+              "normal(0, 1)", "normal(0, 0.5)", "normal(0, 1.5)",
               "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 0.5)", 
               "normal(0, 0.5)", "normal(0, 0.3)", 
-              "normal(0, 0.5)", "normal(0, 0.5)",  # dprime_B, lambda_B SDs
+              "normal(0, 0.5)", "normal(0, 0.5)",
               "normal(0, 0.5)",
-              # Bivariate SDT SDs
-              "normal(0, 0.5)", "normal(0, 0.5)",  # discrim, discrim_B
-              "normal(0, 0.3)", "normal(0, 0.3)",  # sigma_B, sigma2_B
-              "normal(0, 0.3)", "normal(0, 0.3)", "normal(0, 0.3)",  # rho params
-              "normal(0, 0.5)",  # criterion2
-              # Lure mixture SDs
-              "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 0.5)",  # dprime_L, sigma_L, lambda_L
+              "normal(0, 0.5)", "normal(0, 0.5)",
+              "normal(0, 0.3)", "normal(0, 0.3)",
+              "normal(0, 0.3)", "normal(0, 0.3)", "normal(0, 0.3)",
+              "normal(0, 0.5)",
+              "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 0.5)",
               "lkj_corr_cholesky(1)"),
     stringsAsFactors = FALSE
   )
 }
 
-
 #' Build Prior Lookup Structure
 #'
-#' Converts user priors into a lookup structure that can be efficiently queried
-#' when generating Stan code. Priors are organized by specificity so that
-#' more specific priors (e.g., with coef specified) override less specific ones.
+#' Converts user priors into a lookup structure keyed by specificity; more
+#' specific priors (with `coef`) override less specific ones.
 #'
 #' @param user_priors List of broc_prior objects or single broc_prior
 #' @return A prior_lookup object
 #' @noRd
 build_prior_lookup <- function(user_priors, family = NULL) {
   
-  # Initialize with defaults
   lookup <- list(
-    # Fixed effects: b_dpar, b_dpar_coef
     b = list(
       dprime = "normal(1, 1)",
       sigma = "normal(0, 0.5)",
@@ -302,37 +259,31 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       lambda_B = "normal(0, 1.5)",
       lambda2 = "normal(0, 1.5)",
       lambda2_B = "normal(0, 1.5)",
-      # Bivariate SDT
       discrim = "normal(0, 1)",
       discrim_B = "normal(0, 1)",
       sigma_B = "normal(0, 0.5)",
       sigma2_B = "normal(0, 0.5)",
-      rho = "normal(0, 0.5)",       # Fisher z scale
+      rho = "normal(0, 0.5)",
       rho_B = "normal(0, 0.5)",
       rho_N = "normal(0, 0.5)",
-      # CDP
-      rec = "normal(1, 1)",         # Recollection strength
-      fam = "normal(0, 1)",         # Familiarity strength
-      sigma_R = "normal(0, 0.5)",   # Recollection sigma (log scale)
-      sigma_F = "normal(0, 0.5)",   # Familiarity sigma (log scale)
-      rec_crit = "normal(1.5, 1)",  # Recollection criterion
-      know_crit = "normal(1.0, 1)",  # Know criterion (R/K/G)
-      # Lure mixture
-      dprime_L = "normal(0, 1)",    # Lure d'
-      sigma_L = "normal(0, 0.5)",   # Lure sigma (log scale)
-      lambda_L = "normal(0, 1.5)",  # Lure mixture prob (logit scale)
+      rec = "normal(1, 1)",
+      fam = "normal(0, 1)",
+      sigma_R = "normal(0, 0.5)",
+      sigma_F = "normal(0, 0.5)",
+      rec_crit = "normal(1.5, 1)",
+      know_crit = "normal(1.0, 1)",
+      dprime_L = "normal(0, 1)",
+      sigma_L = "normal(0, 0.5)",
+      lambda_L = "normal(0, 1.5)",
       thresh_mid = "normal(0, 1.5)",
       log_gaps = "normal(0, 1)",
       raw_gaps = "normal(0, 1)",
-      # Criterion2 (source/dim2 thresholds) -- same defaults as criterion, settable separately
       thresh_mid2 = "normal(0, 1.5)",
       log_gaps2 = "normal(0, 1)"
     ),
-    # Coefficient-specific fixed effects: b_dpar_coefname
     b_coef = list(),
     
-    # Random effect SDs: sd (global), sd_dpar, sd_group, sd_dpar_group, sd_dpar_coef, sd_dpar_group_coef
-    sd = "normal(0, 0.5)",  # global default
+    sd = "normal(0, 0.5)",
     sd_dpar = list(
       dprime = "normal(0, 0.5)",
       sigma = "normal(0, 0.3)",
@@ -343,7 +294,6 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       lambda_B = "normal(0, 0.5)",
       lambda2 = "normal(0, 0.5)",
       lambda2_B = "normal(0, 0.5)",
-      # Bivariate SDT
       discrim = "normal(0, 0.5)",
       discrim_B = "normal(0, 0.5)",
       sigma_B = "normal(0, 0.3)",
@@ -351,151 +301,115 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.3)",
       rho_B = "normal(0, 0.3)",
       rho_N = "normal(0, 0.3)",
-      # CDP
       rec = "normal(0, 0.5)",
       fam = "normal(0, 0.5)",
       sigma_R = "normal(0, 0.3)",
       sigma_F = "normal(0, 0.3)",
       rec_crit = "normal(0, 0.5)",
       know_crit = "normal(0, 0.3)",
-      # Lure mixture
       dprime_L = "normal(0, 0.5)",
       sigma_L = "normal(0, 0.3)",
       lambda_L = "normal(0, 0.5)",
       criterion = "normal(0, 0.5)",
       criterion2 = "normal(0, 0.5)"
     ),
-    sd_group = list(),      # sd_participant, sd_words, etc.
-    sd_dpar_group = list(), # sd_dprime_participant, etc.
-    sd_dpar_coef = list(),  # sd_dprime_(Intercept), etc. (without group)
-    sd_dpar_group_coef = list(), # sd_dprime_participant_(Intercept), etc.
+    sd_group = list(),
+    sd_dpar_group = list(),
+    sd_dpar_coef = list(),
+    sd_dpar_group_coef = list(),
     
-    # Correlations: cor (global), cor_dpar, cor_group, cor_dpar_group
-    cor = "lkj_corr_cholesky(1)",  # global default
+    cor = "lkj_corr_cholesky(1)",
     cor_dpar = list(),
     cor_group = list(),
     cor_dpar_group = list(),
 
-    # Smooth penalty SDs: sds (global), sds_dpar, sds_coef (dpar_label)
     sds = "student_t(3, 0, 2.5)",
     sds_dpar = list(),
     sds_coef = list()
   )
   
-  # Track which entries were user-specified
   lookup$user_set <- list(
-    b = character(0),          # dpar names set by user in b
-    sd = FALSE,                # global sd set by user
-    sd_dpar = character(0),    # dpar names set by user in sd_dpar
-    cor = FALSE                # global cor set by user
+    b = character(0),
+    sd = FALSE,
+    sd_dpar = character(0),
+    cor = FALSE
   )
 
-  # Convert single prior to list
   if (!is.null(user_priors) && inherits(user_priors, "broc_prior")) {
     user_priors <- list(user_priors)
   }
 
-  # Process each user prior (more specific overrides less specific)
   for (p in if (!is.null(user_priors)) user_priors else list()) {
     if (p$class == "b") {
-      # Fixed effect prior
       if (!is.null(p$coef) && !is.null(p$dpar)) {
-        # Most specific: b_dpar_coef
         key <- paste0(p$dpar, "_", p$coef)
         lookup$b_coef[[key]] <- p$prior
       } else if (!is.null(p$dpar)) {
-        # Less specific: b_dpar
         lookup$b[[p$dpar]] <- p$prior
         lookup$user_set$b <- unique(c(lookup$user_set$b, p$dpar))
       }
-      # class = "b" alone (no dpar) doesn't make sense for us
 
     } else if (p$class == "sd") {
-      # Random effect SD prior
       if (!is.null(p$dpar) && !is.null(p$group) && !is.null(p$coef)) {
-        # Most specific: sd_dpar_group_coef
         key <- paste0(p$dpar, "_", p$group, "_", p$coef)
         lookup$sd_dpar_group_coef[[key]] <- p$prior
       } else if (!is.null(p$dpar) && !is.null(p$coef)) {
-        # sd_dpar_coef (applies to all groups)
         key <- paste0(p$dpar, "_", p$coef)
         lookup$sd_dpar_coef[[key]] <- p$prior
       } else if (!is.null(p$dpar) && !is.null(p$group)) {
-        # sd_dpar_group
         key <- paste0(p$dpar, "_", p$group)
         lookup$sd_dpar_group[[key]] <- p$prior
       } else if (!is.null(p$group)) {
-        # sd_group
         lookup$sd_group[[p$group]] <- p$prior
       } else if (!is.null(p$dpar)) {
-        # sd_dpar
         lookup$sd_dpar[[p$dpar]] <- p$prior
         lookup$user_set$sd_dpar <- unique(c(lookup$user_set$sd_dpar, p$dpar))
       } else {
-        # Global sd
         lookup$sd <- p$prior
         lookup$user_set$sd <- TRUE
       }
 
     } else if (p$class == "cor") {
-      # Correlation prior
       if (!is.null(p$dpar) && !is.null(p$group)) {
-        # Most specific: cor_dpar_group
         key <- paste0(p$dpar, "_", p$group)
         lookup$cor_dpar_group[[key]] <- p$prior
       } else if (!is.null(p$group)) {
-        # cor_group
         lookup$cor_group[[p$group]] <- p$prior
       } else if (!is.null(p$dpar)) {
-        # cor_dpar
         lookup$cor_dpar[[p$dpar]] <- p$prior
       } else {
-        # Global cor
         lookup$cor <- p$prior
         lookup$user_set$cor <- TRUE
       }
 
     } else if (p$class == "sds") {
-      # Smooth penalty SD prior
       if (!is.null(p$dpar) && !is.null(p$coef)) {
-        # Most specific: sds_dpar_label
         key <- paste0(p$dpar, "_", p$coef)
         lookup$sds_coef[[key]] <- p$prior
       } else if (!is.null(p$dpar)) {
-        # sds_dpar
         lookup$sds_dpar[[p$dpar]] <- p$prior
       } else {
-        # Global sds
         lookup$sds <- p$prior
       }
     }
   }
 
-  # Override defaults based on family-specific link functions
-  # Only override parameters where the user hasn't set a prior. family$params
-  # is internal-keyed across all families, so pname matches the hardcoded role
-  # lists below directly.
   if (!is.null(family) && inherits(family, "broc_family") && !is.null(family$params)) {
     for (pname in names(family$params)) {
       plink <- family$params[[pname]]$link
       if (is.null(plink)) next
       if (pname %in% lookup$user_set$b) next
 
-      # Override fixed effect defaults based on link
       if (plink == "log" && pname %in% c("dprime", "dprime_B", "discrim", "discrim_B")) {
-        # Log-linked location params: prior on log scale, exp(0.5) ~ 1.6
         lookup$b[[pname]] <- "normal(0, 0.5)"
       }
       if (plink == "logis" && pname %in% c("rho", "rho_B")) {
-        # Logistic-linked rho: inv_logit(0) = 0.5 (centered), SD ~1 gives good spread
         lookup$b[[pname]] <- "normal(0, 1)"
       }
       if (plink == "logit" && pname %in% c("lambda", "lambda2", "lambda_B", "lambda2_B")) {
-        # Logit-linked recollection probabilities
         lookup$b[[pname]] <- "normal(0, 1.5)"
       }
 
-      # Override RE SD defaults based on link
       if (!(pname %in% lookup$user_set$sd_dpar)) {
         if (plink == "log" && pname %in% c("dprime", "dprime_B", "discrim", "discrim_B")) {
           lookup$sd_dpar[[pname]] <- "normal(0, 0.3)"
@@ -511,7 +425,6 @@ build_prior_lookup <- function(user_priors, family = NULL) {
   lookup
 }
 
-
 #' Get Prior for Fixed Effect
 #'
 #' @param lookup prior_lookup object
@@ -520,7 +433,6 @@ build_prior_lookup <- function(user_priors, family = NULL) {
 #' @return Prior string
 #' @noRd
 get_fixed_prior <- function(lookup, dpar, coef = NULL) {
-  # Try most specific first: b_dpar_coef
   if (!is.null(coef)) {
     key <- paste0(dpar, "_", coef)
     if (!is.null(lookup$b_coef[[key]])) {
@@ -528,22 +440,16 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
     }
   }
 
-  # Smooth unpenalized (Xs) coefficients get centered prior by default,
-  # not the dpar default (e.g., dprime's normal(1,1) would be wrong for
-  # smooth basis weights). User can override with coef-specific prior above.
   if (!is.null(coef) && grepl("^sXs", coef)) {
     return("normal(0, 1)")
   }
 
-  # Fall back to b_dpar
   if (!is.null(lookup$b[[dpar]])) {
     return(lookup$b[[dpar]])
   }
 
-  # Should not happen if defaults are set correctly
   "normal(0, 1)"
 }
-
 
 #' Get Prior for Random Effect SD
 #'
@@ -554,40 +460,33 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
 #' @return Prior string
 #' @noRd
 get_sd_prior <- function(lookup, dpar, group, coef = NULL) {
-  # Try most specific first: sd_dpar_group_coef
   if (!is.null(coef)) {
     key <- paste0(dpar, "_", group, "_", coef)
     if (!is.null(lookup$sd_dpar_group_coef[[key]])) {
       return(lookup$sd_dpar_group_coef[[key]])
     }
     
-    # Try sd_dpar_coef (applies to all groups)
     key <- paste0(dpar, "_", coef)
     if (!is.null(lookup$sd_dpar_coef[[key]])) {
       return(lookup$sd_dpar_coef[[key]])
     }
   }
   
-  # Try sd_dpar_group
   key <- paste0(dpar, "_", group)
   if (!is.null(lookup$sd_dpar_group[[key]])) {
     return(lookup$sd_dpar_group[[key]])
   }
   
-  # Try sd_group
   if (!is.null(lookup$sd_group[[group]])) {
     return(lookup$sd_group[[group]])
   }
   
-  # Try sd_dpar
   if (!is.null(lookup$sd_dpar[[dpar]])) {
     return(lookup$sd_dpar[[dpar]])
   }
   
-  # Fall back to global sd
   lookup$sd
 }
-
 
 #' Get Prior for Correlation
 #'
@@ -597,26 +496,21 @@ get_sd_prior <- function(lookup, dpar, group, coef = NULL) {
 #' @return Prior string
 #' @noRd
 get_cor_prior <- function(lookup, dpar, group) {
-  # Try most specific first: cor_dpar_group
   key <- paste0(dpar, "_", group)
   if (!is.null(lookup$cor_dpar_group[[key]])) {
     return(lookup$cor_dpar_group[[key]])
   }
   
-  # Try cor_group
   if (!is.null(lookup$cor_group[[group]])) {
     return(lookup$cor_group[[group]])
   }
   
-  # Try cor_dpar
   if (!is.null(lookup$cor_dpar[[dpar]])) {
     return(lookup$cor_dpar[[dpar]])
   }
   
-  # Fall back to global cor
   lookup$cor
 }
-
 
 #' Get Smooth Penalty SD Prior
 #'
@@ -629,7 +523,6 @@ get_cor_prior <- function(lookup, dpar, group) {
 #' @return Prior string
 #' @noRd
 get_sds_prior <- function(lookup, dpar, smooth_label = NULL) {
-  # Try coef-specific: sds_dpar_label
   if (!is.null(smooth_label)) {
     key <- paste0(dpar, "_", smooth_label)
     if (!is.null(lookup$sds_coef[[key]])) {
@@ -637,20 +530,16 @@ get_sds_prior <- function(lookup, dpar, smooth_label = NULL) {
     }
   }
 
-  # Try dpar-specific
   if (!is.null(lookup$sds_dpar[[dpar]])) {
     return(lookup$sds_dpar[[dpar]])
   }
 
-  # Global default
   if (!is.null(lookup$sds)) {
     return(lookup$sds)
   }
 
-  # Fallback
   "student_t(3, 0, 2.5)"
 }
-
 
 #' Print Method for Prior Lookup
 #' @param x The object to print.
@@ -710,7 +599,6 @@ print.prior_lookup <- function(x, ...) {
   invisible(x)
 }
 
-
 #' Preview the Priors for an SDT Model
 #'
 #' Show every prior a model will use as a data frame. Accepts either a built
@@ -769,7 +657,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     stop("`object` must be a broc_model (from broc()), a brf() object, or a formula.")
   }
 
-  # Build prior lookup with user priors if provided
   pl <- if (!is.null(user_priors)) {
     build_prior_lookup(user_priors)
   } else if (!is.null(model$prior_lookup)) {
@@ -778,13 +665,10 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     build_prior_lookup(NULL)
   }
   
-  # Check if cumulative
   is_cumulative <- model$family$family == "cumulative"
   
-  # Collect all priors into a data frame
   priors <- list()
   
-  # Helper to add a prior row
   add_prior <- function(class, dpar, coef, group, prior, source) {
     priors[[length(priors) + 1]] <<- data.frame(
       class = class,
@@ -799,10 +683,8 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   
   # --- Fixed effects (class = "b") ---
 
-  # Helper: check if user set a fixed effect prior at dpar level
   is_user_b <- function(dpar_name) dpar_name %in% pl$user_set$b
 
-  # Helper: add fixed effect priors for a parameter's coefficients
   add_fixed_priors <- function(internal_dpar, display_dpar, coef_names) {
     for (coef in coef_names) {
       key <- paste0(internal_dpar, "_", coef)
@@ -817,7 +699,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # Dprime/mu fixed effects
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
   dprime_dpar <- if (is_cumulative) "mu" else if (is_bivariate_cumulative) "mu1" else "dprime"
   has_dprime_fixed <- isTRUE(model$model_data$has_dprime_fixed)
@@ -826,7 +707,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("dprime", dprime_dpar, model$model_data$dprime_fixed$coef_names)
   }
 
-  # Criterion/cutpoints thresholds
   crit_dpar <- if (is_cumulative) "cutpoints" else "criterion"
   thresh_mid_prior <- get_fixed_prior(pl, "thresh_mid")
   log_gaps_prior <- get_fixed_prior(pl, "log_gaps")
@@ -847,7 +727,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # All other parameters -- use add_fixed_priors helper
   if (model$model_data$has_sigma)
     add_fixed_priors("sigma", "sigma", model$model_data$sigma_fixed$coef_names)
   if (isTRUE(model$model_data$has_dprime2))
@@ -890,7 +769,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   if (isTRUE(model$model_data$has_lambda2_B))
     add_fixed_priors("lambda2_B", "lambda2_B", model$model_data$lambda2_B_fixed$coef_names)
 
-  # criterion2 threshold priors (source/dim2 -- separate keys from criterion)
   if (isTRUE(model$model_data$has_criterion2)) {
     thresh_mid2_prior <- get_fixed_prior(pl, "thresh_mid2")
     log_gaps2_prior <- get_fixed_prior(pl, "log_gaps2")
@@ -914,20 +792,17 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   
   # --- Random effect SDs (class = "sd") ---
   
-  # Helper to check if user specified a coef-level SD prior
   is_user_sd_prior_coef <- function(pl, dpar, group, coef) {
     key_full <- paste0(dpar, "_", group, "_", coef)
     key_no_group <- paste0(dpar, "_", coef)
     !is.null(pl$sd_dpar_group_coef[[key_full]]) || !is.null(pl$sd_dpar_coef[[key_no_group]])
   }
   
-  # Dprime/mu random effects
   re_list <- model$model_data$dprime_random
   if (!is.null(re_list)) {
     for (group in names(re_list)) {
       re <- re_list[[group]]
-      if (is.null(re$cor_id)) {  # Not in cross-parameter correlation
-        # Add one row per coefficient
+      if (is.null(re$cor_id)) {
         level_names <- re$level_names
         if (is.null(level_names) || length(level_names) == 0) {
           level_names <- "(Intercept)"
@@ -947,23 +822,16 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Criterion/cutpoints random effects
   crit_re <- model$model_data$criterion$random
   if (!is.null(crit_re)) {
     for (group in names(crit_re)) {
       re <- crit_re[[group]]
       if (is.null(re$cor_id)) {
-        # For criterion, we need to distinguish between:
-        # 1. Intercept-only: show one SD entry "(Intercept)"
-        # 2. Varying slopes: show entries per RE term
-        # The dim reflects thresholds x RE terms, but get_broc_prior should show RE terms
         n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
         
         if (n_re_terms == 1) {
-          # Intercept-only random effect
           level_names <- "(Intercept)"
         } else {
-          # Has varying slopes - use the level_names from the RE structure
           level_names <- re$level_names
           if (is.null(level_names)) {
             level_names <- paste0("term", 1:n_re_terms)
@@ -985,7 +853,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Sigma random effects
   if (model$model_data$has_sigma) {
     sigma_re <- model$model_data$sigma_random
     if (!is.null(sigma_re)) {
@@ -1012,7 +879,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Lambda random effects
   if (model$model_data$has_lambda) {
     lambda_re <- model$model_data$lambda_random
     if (!is.null(lambda_re)) {
@@ -1039,7 +905,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Lambda2 random effects (bivariate_dp: source recollection)
   if (isTRUE(model$model_data$has_lambda2)) {
     lambda2_re <- model$model_data$lambda2_random
     if (!is.null(lambda2_re)) {
@@ -1066,7 +931,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # Lambda2_B random effects (bivariate_dp: Source-B source recollection)
   if (isTRUE(model$model_data$has_lambda2_B)) {
     lambda2_B_re <- model$model_data$lambda2_B_random
     if (!is.null(lambda2_B_re)) {
@@ -1093,7 +957,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # dprime_B random effects (for source_mixture)
   if (isTRUE(model$model_data$has_dprime_B)) {
     dprime_B_re <- model$model_data$dprime_B_random
     if (!is.null(dprime_B_re)) {
@@ -1120,7 +983,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # lambda_B random effects (for source_mixture)
   if (isTRUE(model$model_data$has_lambda_B)) {
     lambda_B_re <- model$model_data$lambda_B_random
     if (!is.null(lambda_B_re)) {
@@ -1147,9 +1009,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Bivariate SDT random effects
   
-  # discrim random effects
   if (isTRUE(model$model_data$has_discrim)) {
     discrim_re <- model$model_data$discrim_random
     if (!is.null(discrim_re)) {
@@ -1169,7 +1029,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # discrim_B random effects
   if (isTRUE(model$model_data$has_discrim_B)) {
     discrim_B_re <- model$model_data$discrim_B_random
     if (!is.null(discrim_B_re)) {
@@ -1189,7 +1048,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # sigma_B random effects
   if (isTRUE(model$model_data$has_sigma_B)) {
     sigma_B_re <- model$model_data$sigma_B_random
     if (!is.null(sigma_B_re)) {
@@ -1209,7 +1067,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # sigma2 random effects
   if (isTRUE(model$model_data$has_sigma2)) {
     sigma2_re <- model$model_data$sigma2_random
     if (!is.null(sigma2_re)) {
@@ -1229,7 +1086,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # sigma2_B random effects
   if (isTRUE(model$model_data$has_sigma2_B)) {
     sigma2_B_re <- model$model_data$sigma2_B_random
     if (!is.null(sigma2_B_re)) {
@@ -1249,7 +1105,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # rho random effects
   if (isTRUE(model$model_data$has_rho)) {
     rho_re <- model$model_data$rho_random
     if (!is.null(rho_re)) {
@@ -1269,7 +1124,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # rho_B random effects
   if (isTRUE(model$model_data$has_rho_B)) {
     rho_B_re <- model$model_data$rho_B_random
     if (!is.null(rho_B_re)) {
@@ -1289,7 +1143,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # rho_N random effects
   if (isTRUE(model$model_data$has_rho_N)) {
     rho_N_re <- model$model_data$rho_N_random
     if (!is.null(rho_N_re)) {
@@ -1309,7 +1162,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # rec_crit random effects (CDP)
   if (isTRUE(model$model_data$has_rec_crit)) {
     rec_crit_re <- model$model_data$rec_crit_random
     if (!is.null(rec_crit_re)) {
@@ -1336,7 +1188,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # know_crit random effects (CDP R/K/G)
   if (isTRUE(model$model_data$has_know_crit)) {
     know_crit_re <- model$model_data$know_crit_random
     if (!is.null(know_crit_re)) {
@@ -1363,7 +1214,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # dprime_L random effects (lure mixture)
   if (isTRUE(model$model_data$has_dprime_L)) {
     dprime_L_re <- model$model_data$dprime_L_random
     if (!is.null(dprime_L_re)) {
@@ -1383,7 +1233,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # sigma_L random effects (lure mixture)
   if (isTRUE(model$model_data$has_sigma_L)) {
     sigma_L_re <- model$model_data$sigma_L_random
     if (!is.null(sigma_L_re)) {
@@ -1403,7 +1252,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # lambda_L random effects (lure mixture)
   if (isTRUE(model$model_data$has_lambda_L)) {
     lambda_L_re <- model$model_data$lambda_L_random
     if (!is.null(lambda_L_re)) {
@@ -1423,14 +1271,12 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # criterion2 random effects
   if (isTRUE(model$model_data$has_criterion2)) {
     crit2_re <- model$model_data$criterion2$random
     if (!is.null(crit2_re)) {
       for (group in names(crit2_re)) {
         re <- crit2_re[[group]]
         if (is.null(re$cor_id)) {
-          # For criterion2, handle similarly to criterion
           n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
           if (n_re_terms == 1) {
             level_names <- "(Intercept)"
@@ -1439,7 +1285,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
             if (is.null(level_names)) level_names <- paste0("term", 1:n_re_terms)
           }
           for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "criterion", group, coef)  # Use same priors as criterion
+            sd_prior <- get_sd_prior(pl, "criterion", group, coef)
             source <- if (is_user_sd_prior_coef(pl, "criterion", group, coef)) "user" 
             else if (is_user_sd_prior(pl, "criterion", group)) "user" else "default"
             add_prior("sd", "criterion2", coef, group, sd_prior, source)
@@ -1451,7 +1297,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   
   # --- Correlations (class = "cor") ---
   
-  # Dprime correlations
   if (!is.null(re_list)) {
     for (group in names(re_list)) {
       re <- re_list[[group]]
@@ -1463,7 +1308,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Criterion correlations
   if (!is.null(crit_re)) {
     for (group in names(crit_re)) {
       re <- crit_re[[group]]
@@ -1475,7 +1319,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Sigma correlations
   if (model$model_data$has_sigma) {
     sigma_re <- model$model_data$sigma_random
     if (!is.null(sigma_re)) {
@@ -1490,7 +1333,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Lambda correlations
   if (model$model_data$has_lambda) {
     lambda_re <- model$model_data$lambda_random
     if (!is.null(lambda_re)) {
@@ -1505,7 +1347,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Lambda2 correlations (bivariate_dp: source recollection)
   if (isTRUE(model$model_data$has_lambda2)) {
     lambda2_re <- model$model_data$lambda2_random
     if (!is.null(lambda2_re)) {
@@ -1520,7 +1361,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # Lambda2_B correlations (bivariate_dp: Source-B source recollection)
   if (isTRUE(model$model_data$has_lambda2_B)) {
     lambda2_B_re <- model$model_data$lambda2_B_random
     if (!is.null(lambda2_B_re)) {
@@ -1535,7 +1375,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # dprime_B correlations (for source_mixture)
   if (isTRUE(model$model_data$has_dprime_B)) {
     dprime_B_re <- model$model_data$dprime_B_random
     if (!is.null(dprime_B_re)) {
@@ -1550,7 +1389,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # lambda_B correlations (for source_mixture)
   if (isTRUE(model$model_data$has_lambda_B)) {
     lambda_B_re <- model$model_data$lambda_B_random
     if (!is.null(lambda_B_re)) {
@@ -1565,7 +1403,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # dprime_L correlations (lure mixture)
   if (isTRUE(model$model_data$has_dprime_L)) {
     dprime_L_re <- model$model_data$dprime_L_random
     if (!is.null(dprime_L_re)) {
@@ -1580,7 +1417,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # sigma_L correlations (lure mixture)
   if (isTRUE(model$model_data$has_sigma_L)) {
     sigma_L_re <- model$model_data$sigma_L_random
     if (!is.null(sigma_L_re)) {
@@ -1595,7 +1431,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # lambda_L correlations (lure mixture)
   if (isTRUE(model$model_data$has_lambda_L)) {
     lambda_L_re <- model$model_data$lambda_L_random
     if (!is.null(lambda_L_re)) {
@@ -1610,17 +1445,14 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
   
-  # Cross-parameter correlations - both SDs and correlations
   for (cor_id in names(model$model_data$cross_cor)) {
     cc <- model$model_data$cross_cor[[cor_id]]
     
-    # Add SD entries for each parameter in the cross-correlation
     for (member in cc$members) {
       param <- member$param
       group <- member$group
       dim <- member$dim
       
-      # Get the random effects structure to find level names
       if (param == "criterion") {
         re <- model$model_data$criterion$random[[group]]
       } else {
@@ -1653,16 +1485,12 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
       }
     }
     
-    # Add correlation prior for the cross-parameter correlation
     cor_prior <- get_cor_prior(pl, "cross", cc$group)
-    source <- "default"  # Cross-cor uses global cor prior
+    source <- "default"
     add_prior("cor", paste0("cross_", cor_id), NA, cc$group, cor_prior, source)
   }
 
   # --- Smooth penalty SDs (class = "sds") ---
-  # One row per (parameter, smooth component, penalty matrix). The label
-  # mirrors the lookup key get_sds_prior() uses: "<san_label>_<k>", with
-  # the by-level appended by build_smooth_terms() inside san_label.
   sm_data <- model$model_data$smooth_data
   if (!is.null(sm_data) && length(sm_data) > 0) {
     is_user_sds <- function(dpar_, key_) {
@@ -1689,7 +1517,6 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     }
   }
 
-  # Combine into data frame
   if (length(priors) == 0) {
     return(data.frame(
       class = character(0),
@@ -1706,18 +1533,15 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   rownames(result) <- NULL
   
   
-  # Rename parameters for CDP models to match formula names
   if (model$family$family == "cdp") {
     result$dpar <- gsub("^dprime$", "rec", result$dpar)
     result$dpar <- gsub("^dprime2$", "fam", result$dpar)
     result$dpar <- gsub("^sigma$", "sigma_R", result$dpar)
     result$dpar <- gsub("^sigma2$", "sigma_F", result$dpar)
-    # criterion -> tau (optional, keeping as criterion for now since formula uses criterion)
   }
   
   result
 }
-
 
 #' Check if user specified an SD prior (not just using defaults)
 #' @noRd
@@ -1729,7 +1553,6 @@ is_user_sd_prior <- function(pl, dpar, group) {
     isTRUE(pl$user_set$sd)
 }
 
-
 #' Check if user specified a correlation prior (not just using defaults)
 #' @noRd
 is_user_cor_prior <- function(pl, dpar, group) {
@@ -1737,7 +1560,6 @@ is_user_cor_prior <- function(pl, dpar, group) {
   !is.null(pl$cor_dpar_group[[key]]) || !is.null(pl$cor_dpar[[dpar]]) ||
     !is.null(pl$cor_group[[group]]) || isTRUE(pl$user_set$cor)
 }
-
 
 #' Print method for get_broc_prior output
 #' @param x The object to print.
@@ -1748,7 +1570,6 @@ print.broc_prior_table <- function(x, ...) {
   cat("bayesroc model priors\n")
   cat("=====================\n\n")
   
-  # Fixed effects
   fixed <- x[x$class == "b", ]
   if (nrow(fixed) > 0) {
     cat("Fixed Effects (class = 'b'):\n")
@@ -1756,7 +1577,6 @@ print.broc_prior_table <- function(x, ...) {
     cat("\n")
   }
   
-  # Random effect SDs
   sds <- x[x$class == "sd", ]
   if (nrow(sds) > 0) {
     cat("Random Effect SDs (class = 'sd'):\n")
@@ -1764,7 +1584,6 @@ print.broc_prior_table <- function(x, ...) {
     cat("\n")
   }
   
-  # Correlations
   cors <- x[x$class == "cor", ]
   if (nrow(cors) > 0) {
     cat("Correlations (class = 'cor'):\n")

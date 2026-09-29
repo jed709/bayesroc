@@ -17,59 +17,64 @@ some "old" bin happens to have no observed responses).}
 A \code{broc_family} object.
 }
 \description{
-Continuous dual-process model for Remember/Know paradigms, with independent
-recollection and familiarity strengths (Wixted & Mickes, 2010).
+Continuous dual-process model for Remember/Know paradigms: memory strength is
+the sum of a recollection and a familiarity signal, confidence is rated on the
+summed strength, and the Remember judgment is a criterion on the recollection
+signal (Wixted & Mickes, 2010).
 }
 \details{
 \subsection{Likelihood}{
 
-Recollection R and familiarity F are independent Gaussians:
-\eqn{R \sim \mathcal{N}(\mu_R, \sigma_R)}, \eqn{F \sim \mathcal{N}(\mu_F, \sigma_F)}
-for targets, with \eqn{(\mu_R, \mu_F) = (0, 0)} and
-\eqn{(\sigma_R, \sigma_F) = (1, 1)} for lures.
+Recollection and familiarity are independent Gaussians,
+\eqn{R \sim \mathcal{N}(\mu_R, \sigma_R^2)} and
+\eqn{F \sim \mathcal{N}(\mu_F, \sigma_F^2)} for targets,
+\eqn{R, F \sim \mathcal{N}(0, 1)} for lures. Confidence is driven by their sum,
+\deqn{M = R + F \sim \mathcal{N}(\mu_R + \mu_F,\; \sigma_R^2 + \sigma_F^2),}
+so \eqn{(R, M)} is bivariate normal with \eqn{\rho = \sigma_R / \sigma_M}
+(lures: \eqn{\sigma_M = \sqrt{2}}, \eqn{\rho = 1/\sqrt{2}}).
 
-On the F (familiarity) dimension the cumulative is:
-\deqn{P(Y \le k \mid \mathrm{old} = 0) = \Phi(c_k), \quad
-      P(Y \le k \mid \mathrm{old} = 1) = \Phi\!\Big(\tfrac{c_k - \mu_F}{\sigma_F}\Big)}
-For ratings k not in \code{old_levels} (new-side responses), the F cell
-(by differencing) is the full likelihood. For ratings k in \code{old_levels}
-(old-side responses), the cell factors across F (bin) and R (Remember
-vs Know):
-\deqn{P(Y = k,\; \mathrm{rk} \mid \mathrm{old}) =
-      \big[P(Y \le k) - P(Y \le k - 1)\big] \cdot P(\mathrm{rk} \mid \mathrm{old})}
-with the rk factor from the cumulative on the R dimension. For targets:
-\deqn{P(\mathrm{rk} = K \mid \mathrm{old} = 1) = \Phi\!\Big(\tfrac{c_R - \mu_R}{\sigma_R}\Big), \quad
-      P(\mathrm{rk} = R \mid \mathrm{old} = 1) = 1 - \Phi\!\Big(\tfrac{c_R - \mu_R}{\sigma_R}\Big)}
-(lures use the same form with \eqn{\mu_R = 0, \sigma_R = 1}). For 3-level
-R/K/G with Know criterion \eqn{c_K}, the K row becomes
-\eqn{\Phi((c_R - \mu_R)/\sigma_R) - \Phi((c_K - \mu_R)/\sigma_R)} and
-\eqn{P(\mathrm{rk} = G) = \Phi((c_K - \mu_R)/\sigma_R)}.
+\code{criterion} supplies J thresholds \eqn{\tau_1 < \dots < \tau_J} on M, where
+J = \code{length(old_levels)}. A response falls in old bin j when
+\eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}); every rating outside
+\code{old_levels} is a single collapsed "new" response,
+\deqn{P(\mathrm{new}) = \Phi\left(\frac{\tau_1 - \mu_M}{\sigma_M}\right),}
+so graded new-side ratings are pooled rather than modelled separately.
+
+With two \code{rk} levels the joint cell is a strip of the \eqn{(R, M)} plane:
+\deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad
+      P(Y = j, \mathrm{K}) = P(R \le c_R,\; \tau_j < M < \tau_{j+1}).}
+With three \code{rk} levels a second criterion \eqn{c_K} sits on the familiarity
+axis and the judgment is sequential: Remember if \eqn{R > c_R}, else Know if
+\eqn{F > c_K}, else Guess. The Guess cell is \eqn{G(\tau_{j+1}) - G(\tau_j)}
+with \eqn{G(c) = P(R \le c_R, F \le c_K, M < c)}, and Know is the remainder of
+the band.
+
+Lure means and SDs are fixed at 0 and 1 on both axes, and the R-F correlation
+is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010).
 }
 
 \subsection{Parameters}{
 
 \describe{
-\item{rec}{(required) Recollection mean \eqn{\mu_R} for targets. Identity
-link.}
-\item{fam}{(required) Familiarity mean \eqn{\mu_F} for targets. Identity
-link.}
-\item{criterion}{(required) Confidence thresholds on the F dimension.
-Identity link.}
-\item{rec_crit}{(required) Recollection criterion \eqn{c_R} separating
-Remember vs Know responses on the R dimension. Identity link.}
-\item{sigma_R}{(optional) SD of recollection for targets. If omitted, fixed
-at 1. Log link.}
-\item{sigma_F}{(optional) SD of familiarity for targets. If omitted, fixed
-at 1. Log link.}
-\item{know_crit}{(optional) Know criterion \eqn{c_K} on the R dimension
-for the 3-level R/K/G case (when \code{rk} has values 1=R, 2=K, 3=G).
-Identity link. If omitted, only R/K is modeled.}
+\item{rec}{(required) Recollection mean \eqn{\mu_R} for targets. Identity link.}
+\item{fam}{(required) Familiarity mean \eqn{\mu_F} for targets. Identity link.}
+\item{criterion}{(required) J thresholds \eqn{\tau} on memory strength
+\eqn{M = R + F}, J = \code{length(old_levels)}. Identity link.}
+\item{rec_crit}{(required) Remember criterion \eqn{c_R} on the recollection
+axis. Identity link.}
+\item{sigma_R}{(optional) Recollection SD for targets. If omitted, fixed at 1.
+Log link.}
+\item{sigma_F}{(optional) Familiarity SD for targets. If omitted, fixed at 1.
+Log link.}
+\item{know_crit}{(optional) Know criterion \eqn{c_K} on the familiarity axis,
+required when \code{rk} has three levels. Identity link.}
 }
 }
 
 \subsection{Response coding}{
 
-\code{rk} values: 1 = Remember, 2 = Know, (3 = Guess for R/K/G mode).
+\code{rk} values: 1 = Remember, 2 = Know, (3 = Guess for R/K/G mode). Centered
+\code{is_old} coding is not supported.
 }
 
 \subsection{Formula syntax}{
@@ -86,4 +91,9 @@ Identity link. If omitted, only R/K is modeled.}
 \references{
 Wixted, J. T., & Mickes, L. (2010). A continuous dual-process model of
 remember/know judgments. \emph{Psychological Review}, \emph{117}(4), 1025-1054.
+
+Moran, R., & Goshen-Gottstein, Y. (2015). Old processes, new perspectives:
+Familiarity is correlated with (not independent of) recollection and is more
+(not equally) variable for targets than for lures. \emph{Cognitive Psychology},
+\emph{79}, 40-67.
 }

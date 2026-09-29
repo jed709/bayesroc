@@ -41,17 +41,13 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, threshold_natural 
   
   probs <- c((1 - prob) / 2, 1 - (1 - prob) / 2)
   
-  # Get only the needed variables - much faster than getting everything
   vars_needed <- get_summary_variables(model)
   
-  # Get summary for only needed variables
   draws_summary <- fit$summary(variables = vars_needed)
   
-  # Convert to data.frame
   draws_df <- as.data.frame(draws_summary)
   rownames(draws_df) <- draws_df$variable
   
-  # Find quantile columns
   col_names <- names(draws_df)
   pct_cols <- grep("%$", col_names, value = TRUE)
   if (length(pct_cols) >= 2) {
@@ -83,7 +79,6 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, threshold_natural 
     result$threshold_natural <- compute_natural_threshold_stats(fit, model, probs, digits)
   }
 
-  # Smooth term penalty SDs
   result$smooth_sds <- summarize_smooth_sds(draws_df, model, lower_col, upper_col, digits)
 
   result$model_info <- list(
@@ -92,10 +87,10 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, threshold_natural 
     K = model$model_data$K,
     n_chains = fit$num_chains(),
     n_iter = fit$metadata()$iter_sampling,
+    sampler = fit$.sampler %||% "nuts",
     digits = digits
   )
 
-  # Sampler diagnostics (divergences / treedepth / E-BFMI), shown by print().
   result$diagnostics <- tryCatch(fit$diagnostic_summary(),
                                  error = function(e) NULL)
 
@@ -121,22 +116,18 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, threshold_natural 
   df
 }
 
-
 #' Get list of variables needed for summary
 #' @noRd
 get_summary_variables <- function(model) {
   vars <- character(0)
   
-  # Check if cumulative model (uses mu/cutpoints naming)
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
   is_cdp <- model$family$family == "cdp"
 
-  # Parameter name mappings for cumulative vs SDT
   dprime_name <- if (is_cumulative) "mu" else if (is_bivariate_cumulative) "mu1" else "dprime"
   criterion_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
   
-  # Fixed effects - handle case where there are no fixed effects (cumulative with only RE)
   has_dprime_fixed <- isTRUE(model$model_data$has_dprime_fixed)
   if (has_dprime_fixed) {
     P_dprime <- model$model_data$dprime_fixed$n_coef
@@ -148,7 +139,6 @@ get_summary_variables <- function(model) {
   P_crit <- model$model_data$criterion$n_coef
   vars <- c(vars, paste0("beta_thresh_mid[", 1:P_crit, "]"))
   
-  # Number of log_gaps: J-1 for CDP, K-2 for standard models
   K <- model$model_data$K
   if (is_cdp) {
     J <- model$family$J
@@ -159,8 +149,6 @@ get_summary_variables <- function(model) {
   
   if (n_gaps > 0) {
     gap_param <- if (identical(model$gap_link, "softplus")) "beta_raw_gaps" else "beta_log_gaps"
-    # Use prefix-only so both 1D (JAX P_crit==1) and 2D (Stan) naming works
-    # via the fuzzy prefix matching in broc_fit$summary()/$draws()
     vars <- c(vars, gap_param)
   }
 
@@ -194,7 +182,6 @@ get_summary_variables <- function(model) {
     vars <- c(vars, paste0("beta_lambda_B[", 1:P_lambda_B, "]"))
   }
   
-  # Bivariate SDT fixed effects
   if (isTRUE(model$model_data$has_discrim)) {
     P_discrim <- model$model_data$discrim_fixed$n_coef
     if (P_discrim > 0) {
@@ -277,7 +264,6 @@ get_summary_variables <- function(model) {
           vars <- c(vars, paste0(gap_param, "_2_varying[", k1, ",", k2, "]"))
         }
       }
-      # Shared new-item source thresholds
       if (identical(model$model_data$new_source_criteria, "shared")) {
         vars <- c(vars, "beta_thresh_mid_2_new")
         if (K2 > 2) {
@@ -285,20 +271,15 @@ get_summary_variables <- function(model) {
         }
       }
     } else {
-      # Standard: single set of source thresholds
       P_crit2 <- model$model_data$criterion2$n_coef
       vars <- c(vars, paste0("beta_thresh_mid_2[", 1:P_crit2, "]"))
 
       if (K2 > 2) {
-        # Use prefix-only so both 1D and 2D naming works
         vars <- c(vars, paste0(gap_param, "_2"))
       }
     }
   }
   
-  # Random effect SDs - get from model structure
-  # For cumulative, dprime -> mu in Stan variable names
-  # Include bivariate and CDP parameters
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "lambda2", "lambda2_B",
                    "rec_crit", "know_crit",
@@ -307,7 +288,6 @@ get_summary_variables <- function(model) {
     re_list <- model$model_data[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
     
-    # Get the Stan variable name (mu for cumulative dprime)
     stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
       if (is_bivariate_cumulative && pname == "dprime") "mu1" else
       if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
@@ -324,7 +304,6 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Criterion SDs (cutpoints for cumulative)
   for (group in names(model$model_data$criterion$random)) {
     re <- model$model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
@@ -332,7 +311,6 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Criterion2 SDs (for bivariate_sdt/bivariate_cumulative)
   crit2_stan_name <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
   if (isTRUE(model$model_data$has_criterion2) && !is.null(model$model_data$criterion2$random)) {
     for (group in names(model$model_data$criterion2$random)) {
@@ -343,18 +321,15 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Cross-parameter SDs
   for (cor_id in names(model$model_data$cross_cor)) {
     cc <- model$model_data$cross_cor[[cor_id]]
     vars <- c(vars, paste0("sigma_cross_", cor_id, "_", cc$group, "[", 1:cc$total_dim, "]"))
   }
   
-  # Correlations (only off-diagonal elements)
   for (pname in param_names) {
     re_list <- model$model_data[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
     
-    # Get Stan variable name (mu for cumulative dprime)
     stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
       if (is_bivariate_cumulative && pname == "dprime") "mu1" else
       if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
@@ -371,7 +346,6 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Criterion correlations (cutpoints for cumulative)
   crit_corr_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
   for (group in names(model$model_data$criterion$random)) {
     re <- model$model_data$criterion$random[[group]]
@@ -384,7 +358,6 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Criterion2 correlations (for bivariate_sdt/bivariate_cumulative)
   if (isTRUE(model$model_data$has_criterion2) && !is.null(model$model_data$criterion2$random)) {
     for (group in names(model$model_data$criterion2$random)) {
       re <- model$model_data$criterion2$random[[group]]
@@ -398,7 +371,6 @@ get_summary_variables <- function(model) {
     }
   }
   
-  # Cross correlations
   for (cor_id in names(model$model_data$cross_cor)) {
     cc <- model$model_data$cross_cor[[cor_id]]
     for (i in 1:(cc$total_dim-1)) {
@@ -408,7 +380,6 @@ get_summary_variables <- function(model) {
     }
   }
 
-  # Smooth penalty SDs
   if (!is.null(model$model_data$smooth_data)) {
     for (pname in names(model$model_data$smooth_data)) {
       for (sm in model$model_data$smooth_data[[pname]]) {
@@ -430,14 +401,12 @@ get_summary_variables <- function(model) {
   unique(vars)
 }
 
-
 #' Fast Fixed Effects Summary
 #' @noRd
 summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, digits) {
   
   result <- list()
   
-  # Check if cumulative model
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
   dprime_beta_pattern <- if (is_cumulative) "^beta_mu\\[" else if (is_bivariate_cumulative) "^beta_mu1\\[" else "^beta_dprime\\["
@@ -449,7 +418,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     if (is.null(coef_names) || length(coef_names) != length(rows)) {
       coef_names <- draws_df$variable[rows]
     }
-    # Clean up R model.matrix naming conventions
     coef_names <- gsub("\\(Intercept\\)", "intercept", coef_names)
     
     df <- data.frame(
@@ -468,15 +436,12 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     df
   }
   
-  # For cumulative, only include dprime/mu if there are fixed effects
   has_dprime_fixed <- isTRUE(model$model_data$has_dprime_fixed)
   if (has_dprime_fixed && model$model_data$dprime_fixed$n_coef > 0) {
     dprime_summary <- build_summary_df(dprime_beta_pattern, model$model_data$dprime_fixed$coef_names)
-    # Annotate scale if dprime uses a transforming link (e.g., log for bounded SDT)
     dprime_link <- model$family$params$dprime$link
     if (identical(dprime_link, "log")) dprime_summary$scale <- "(log)"
     else if (identical(dprime_link, "logit")) dprime_summary$scale <- "(logit)"
-    # Use appropriate name in result
     if (is_cumulative) {
       result$mu <- dprime_summary
     } else if (is_bivariate_cumulative) {
@@ -558,7 +523,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     if (!is.null(result$lambda_B)) result$lambda_B$scale <- "(logit)"
   }
   
-  # Bivariate SDT fixed effects
   if (isTRUE(model$model_data$has_discrim) && model$model_data$discrim_fixed$n_coef > 0) {
     discrim_name <- if (is_bivariate_cumulative) "mu2" else "discrim"
     discrim_pattern <- paste0("^beta_", discrim_name, "\\[")
@@ -623,7 +587,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     result$know_crit <- build_summary_df("^beta_know_crit\\[", kc_coef)
   }
 
-  # Lure mixture fixed effects
   if (isTRUE(model$model_data$has_dprime_L)) {
     result$dprime_L <- build_summary_df("^beta_dprime_L\\[", model$model_data$dprime_L_fixed$coef_names)
   }
@@ -653,12 +616,10 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     gap_param_base <- if (identical(model$gap_link, "softplus")) "beta_raw_gaps" else "beta_log_gaps"
     gap_label <- if (identical(model$gap_link, "softplus")) "raw_gap" else "log_gap"
     if (isTRUE(model$model_data$varying_source_criteria)) {
-      # Varying source criteria: thresholds indexed by item response level
       K1 <- model$model_data$K
       n_vary <- K1
       level_labels <- 1:K1
 
-      # First thresholds for each item level
       thresh_rows <- grep("^beta_thresh_mid_2_varying\\[", draws_df$variable)
       if (length(thresh_rows) > 0) {
         thresh_names <- paste0("thresh_mid_2[item_level=", level_labels, "]")
@@ -675,7 +636,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
         result$criterion2_thresh_mid_varying <- .add_ess_tail(result$criterion2_thresh_mid_varying, draws_df, thresh_rows)
       }
 
-      # Gaps for each item level
       gap_2_vary_pattern <- paste0("^", gap_param_base, "_2_varying\\[")
       log_gaps_rows <- grep(gap_2_vary_pattern, draws_df$variable)
       if (length(log_gaps_rows) > 0) {
@@ -700,7 +660,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
         result$criterion2_log_gaps_varying <- .add_ess_tail(result$criterion2_log_gaps_varying, draws_df, log_gaps_rows)
       }
 
-      # Shared new-item source thresholds
       if (identical(model$model_data$new_source_criteria, "shared")) {
         new_thresh_row <- grep("^beta_thresh_mid_2_new$", draws_df$variable)
         if (length(new_thresh_row) > 0) {
@@ -724,7 +683,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
       }
 
     } else {
-      # Standard: single set of source thresholds
       crit2_names <- model$model_data$criterion2$coef_names
       result$criterion2_thresh_mid <- build_summary_df("^beta_thresh_mid_2\\[", crit2_names)
 
@@ -756,7 +714,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     }
   }
 
-  # Rename parameters for CDP models to match formula names
   if (model$family$family %in% "cdp") {
     if (!is.null(result$dprime)) {
       names(result)[names(result) == "dprime"] <- "rec"
@@ -772,9 +729,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
     }
   }
 
-  # Canonical display order for fixed-effects sections (cosmetic). Aliases
-  # (mu/mu1 for cumulative, rec/fam/sigma_R/sigma_F for cdp) share the rank of
-  # the parameter they rename. Any slot not listed keeps its position at the end.
   .fixed_order <- c(
     "dprime", "mu", "mu1", "rec",
     "dprime_B", "mu2",
@@ -794,7 +748,6 @@ summarize_fixed_effects_fast <- function(draws_df, model, lower_col, upper_col, 
 
   result
 }
-
 
 #' Fast Random Effects SD Summary
 #' @noRd
@@ -887,7 +840,6 @@ print.broc_random_sd <- function(x, ...) {
   invisible(x)
 }
 
-
 #' Fast Correlation Summary
 #' @noRd
 summarize_correlations_fast <- function(draws_df, model, lower_col, upper_col, digits) {
@@ -907,7 +859,6 @@ summarize_correlations_fast <- function(draws_df, model, lower_col, upper_col, d
     
     vars <- draws_df$variable[mat_rows]
     
-    # Parse indices efficiently
     idx_matches <- regmatches(vars, regexec("\\[(\\d+),(\\d+)\\]", vars))
     indices <- do.call(rbind, lapply(idx_matches, function(m) {
       if (length(m) == 3) as.integer(m[2:3]) else c(NA, NA)
@@ -916,7 +867,6 @@ summarize_correlations_fast <- function(draws_df, model, lower_col, upper_col, d
     dim_size <- max(indices, na.rm = TRUE)
     labels <- get_correlation_labels(mat_name, dim_size, model)
     
-    # Off-diagonal only (already filtered by get_summary_variables)
     off_diag <- which(indices[, 1] < indices[, 2])
     
     if (length(off_diag) > 0) {
@@ -978,7 +928,6 @@ print.broc_correlations <- function(x, ...) {
   invisible(x)
 }
 
-
 #' Compute Population Thresholds - Fast Version
 #' 
 #' Only computed for models with simple categorical criterion predictors.
@@ -996,12 +945,9 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
   X_crit <- model$model_data$criterion$X
   crit_names <- model$model_data$criterion$coef_names
   
-  # Check for continuous predictors by looking at the range of values
-  # A continuous predictor will have many unique non-0/1 values
   has_continuous <- FALSE
   for (j in 1:P_crit) {
     unique_vals <- unique(X_crit[, j])
-    # If more than a few unique values and not all 0/1, it's continuous
     if (length(unique_vals) > 10 && !all(unique_vals %in% c(0, 1))) {
       has_continuous <- TRUE
       break
@@ -1009,12 +955,9 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
   }
   
   if (has_continuous) {
-    # Return NULL - population thresholds don't make sense with continuous predictors
-    # The user should interpret the fixed effects directly
     return(NULL)
   }
   
-  # Original behavior for categorical-only models
   X_unique <- unique(X_crit)
   n_conditions <- nrow(X_unique)
   
@@ -1035,11 +978,9 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
     })
   }
   
-  # Get only the draws needed for thresholds
   thresh_vars <- paste0("beta_thresh_mid[", 1:P_crit, "]")
   gap_vars <- character(0)
   
-  # Number of thresholds and gaps depends on family
   is_cdp <- model$family$family == "cdp"
   if (is_cdp) {
     J <- model$family$J
@@ -1050,8 +991,6 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
     n_gaps <- K - 2
   }
   
-  # Detect gap variable naming convention: JAX backend with P_crit==1
-  # uses 1D names (beta_log_gaps[k]) while Stan always uses 2D (beta_log_gaps[k,j])
   use_1d_gap_names <- FALSE
   if (n_gaps > 0) {
     test_2d <- paste0(gap_param_name, "[1,1]")
@@ -1091,11 +1030,9 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
 
     thresh_draws <- matrix(NA_real_, n_draws, n_thresh)
 
-    # Mid-anchor threshold
     thresh_mid_draws <- as.matrix(draws[, thresh_vars, drop = FALSE]) %*% t(x_row)
     thresh_draws[, mid] <- thresh_mid_draws
 
-    # Helper to get gap column names
     .gap_cols <- function(gap_idx) {
       if (use_1d_gap_names) {
         paste0(gap_param_name, "[", gap_idx, "]")
@@ -1104,7 +1041,6 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
       }
     }
 
-    # Upper gaps: mid+1 to n_thresh
     if (n_upper > 0) {
       for (k in (mid + 1):n_thresh) {
         gap_cols <- .gap_cols(k - mid)
@@ -1113,7 +1049,6 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
       }
     }
 
-    # Lower gaps: mid-1 down to 1
     if (mid > 1) {
       for (k_down in seq_len(mid - 1)) {
         k <- mid - k_down
@@ -1141,11 +1076,9 @@ compute_population_thresholds_fast <- function(fit, model, probs, digits) {
   do.call(rbind, results_list)
 }
 
-
 #' Label a sigma parameter
 #' @noRd
 label_sigma_parameter <- function(var_name, model) {
-  # Check if cumulative model
   is_cumulative <- model$family$family == "cumulative"
   is_cdp <- model$family$family == "cdp"
   
@@ -1157,10 +1090,8 @@ label_sigma_parameter <- function(var_name, model) {
     idx <- NULL
   }
   
-  # Strip "sigma_" prefix
   remainder <- sub("^sigma_", "", base)
   
-  # Known parameter names (ordered longest first so greedy matching works)
   known_params <- c("dprime_B", "dprime_L", "lambda_B", "lambda_L", "discrim_B",
                     "sigma_B", "sigma_L", "sigma2_B", "rho_B", "rho_N",
                     "rec_crit", "know_crit", "criterion2",
@@ -1179,7 +1110,6 @@ label_sigma_parameter <- function(var_name, model) {
     }
   }
   
-  # Fallback: original split behavior
   if (is.null(param)) {
     parts <- strsplit(remainder, "_")[[1]]
     if (length(parts) >= 2) {
@@ -1190,14 +1120,12 @@ label_sigma_parameter <- function(var_name, model) {
     }
   }
   
-  # Map internal names to display names for cumulative
   display_param <- param
   if (is_cumulative) {
     if (param == "dprime") display_param <- "mu"
     if (param == "criterion") display_param <- "cutpoints"
   }
 
-  # Map internal names to display names for CDP
   if (is_cdp) {
     if (param == "dprime") display_param <- "rec"
     if (param == "dprime2") display_param <- "fam"
@@ -1205,18 +1133,15 @@ label_sigma_parameter <- function(var_name, model) {
     if (param == "sigma2") display_param <- "sigma_F"
   }
   
-  # For looking up in model_data, use internal names
   internal_param <- if (param %in% c("mu", "dprime")) "dprime" else if (param %in% c("cutpoints", "criterion")) "criterion" else param
   
   if (!is.null(idx)) {
-    # For dim=1 REs, the [1] index is just an artifact of NumPyro naming -- treat as scalar
     re_list <- model$model_data[[paste0(internal_param, "_random")]]
     re <- NULL
     if (!is.null(re_list) && group %in% names(re_list)) {
       re <- re_list[[group]]
     }
     if (!is.null(re) && re$dim == 1) {
-      # Scalar RE -- no level label needed, just "param | group"
       return(paste0(display_param, " | ", group))
     }
     level_label <- as.character(idx)
@@ -1224,7 +1149,6 @@ label_sigma_parameter <- function(var_name, model) {
       level_label <- re$level_names[idx]
     }
     if (internal_param == "criterion") {
-      # Criterion has (K-1) x n_re_terms dimensions
       re_crit <- model$model_data$criterion$random[[group]]
       K <- model$model_data$K
       if (!is.null(re_crit) && !is.null(re_crit$n_re_terms) && re_crit$n_re_terms > 1) {
@@ -1239,7 +1163,6 @@ label_sigma_parameter <- function(var_name, model) {
     } else if (!is.null(re) && !is.null(re$varying_re_mode) &&
                re$varying_re_mode %in% c("per_bin", "full") &&
                re$dim > length(re$level_names %||% character(0))) {
-      # Per-bin varying RE: dim was overridden to K but level_names weren't updated
       level_label <- paste0("bin", idx)
     }
     return(sprintf("sd(%s | %s)[%s]", display_param, group, level_label))
@@ -1247,7 +1170,6 @@ label_sigma_parameter <- function(var_name, model) {
     return(sprintf("sd(%s | %s)", display_param, group))
   }
 }
-
 
 #' Label a cross-parameter sigma
 #' @noRd
@@ -1282,7 +1204,6 @@ label_cross_sigma_parameter <- function(var_name, model) {
         }
       }
       level_label <- gsub("\\(Intercept\\)", "intercept", level_label)
-      # Map display names
       is_cumulative <- model$family$family == "cumulative"
       is_cdp_family <- model$family$family %in% "cdp"
       display_param <- param
@@ -1299,12 +1220,10 @@ label_cross_sigma_parameter <- function(var_name, model) {
   var_name
 }
 
-
 #' Get labels for correlation matrix dimensions
 #' @noRd
 get_correlation_labels <- function(mat_name, dim_size, model) {
   
-  # Check if cumulative model
   is_cumulative <- model$family$family == "cumulative"
   
   if (grepl("^corr_cross_", mat_name)) {
@@ -1317,7 +1236,6 @@ get_correlation_labels <- function(mat_name, dim_size, model) {
       labels <- character(0)
       for (member in cc$members) {
         param <- member$param
-        # Map to display name
         is_cdp_family <- model$family$family %in% "cdp"
         display_param <- param
         if (is_cumulative && param == "dprime") display_param <- "mu"
@@ -1343,13 +1261,11 @@ get_correlation_labels <- function(mat_name, dim_size, model) {
       return(labels)
     }
   } else if (grepl("^corr_(criterion|cutpoints)_", mat_name)) {
-    # Handle both criterion and cutpoints naming
     group <- sub("^corr_(criterion|cutpoints)_", "", mat_name)
     re <- model$model_data$criterion$random[[group]]
     K <- model$model_data$K
     
     if (!is.null(re) && !is.null(re$n_re_terms) && re$n_re_terms > 1) {
-      # Has random slopes - labels are thresh x re_term combinations
       n_re_terms <- re$n_re_terms
       re_labels <- if (!is.null(re$level_names)) re$level_names else paste0("term", 1:n_re_terms)
       
@@ -1361,13 +1277,11 @@ get_correlation_labels <- function(mat_name, dim_size, model) {
       }
       return(labels)
     } else {
-      # Intercept only - just threshold labels
       return(paste0("thresh", 1:(K - 1)))
     }
   } else {
     remainder <- sub("^corr_", "", mat_name)
     
-    # Known parameter names (ordered longest first for greedy matching)
     known_params <- c("dprime_B", "dprime_L", "lambda_B", "lambda_L", "discrim_B",
                       "sigma_B", "sigma_L", "sigma2_B", "rho_B", "rho_N",
                       "rec_crit", "know_crit", "criterion2",
@@ -1386,14 +1300,12 @@ get_correlation_labels <- function(mat_name, dim_size, model) {
       }
     }
     
-    # Fallback
     if (is.null(param)) {
       parts <- strsplit(remainder, "_")[[1]]
       param <- parts[1]
       group <- paste(parts[-1], collapse = "_")
     }
     
-    # Map from Stan name to internal name for lookup
     internal_param <- if (param == "mu") "dprime" else if (param == "cutpoints") "criterion" else param
     
     re_list <- model$model_data[[paste0(internal_param, "_random")]]
@@ -1404,14 +1316,12 @@ get_correlation_labels <- function(mat_name, dim_size, model) {
       }
     }
   }
-  # Fallback: use bin numbers for per-bin REs, generic dim labels otherwise
   if (!is.null(param) && param %in% c("rec_crit", "know_crit")) {
     paste0("bin", 1:dim_size)
   } else {
     paste0("dim", 1:dim_size)
   }
 }
-
 
 # =============================================================================
 # Natural-Scale Threshold Statistics
@@ -1437,7 +1347,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
 
   results <- list()
 
-  # Process each criterion dimension (criterion, criterion2)
   for (crit_name in c("criterion", "criterion2")) {
     crit_data <- model$model_data[[crit_name]]
     if (is.null(crit_data)) next
@@ -1448,7 +1357,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
     P_crit <- crit_data$n_coef
     X_crit <- crit_data$X
 
-    # Threshold dimensions
     if (crit_name == "criterion") {
       K <- model$model_data$K
       n_thresh <- K - 1
@@ -1478,7 +1386,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
       n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
       if (n_groups < 3) next
 
-      # Collect draws as matrices
       u_var <- paste0("u_", crit_name, "_", group_name)
       u_col_names <- as.vector(outer(
         paste0(u_var, "["),
@@ -1494,8 +1401,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
       gap_col_names <- character(0)
       use_1d_gaps <- FALSE
       if (n_gaps > 0) {
-        # Detect naming convention: JAX with P_crit==1 uses 1D (gap[k]),
-        # Stan always uses 2D (gap[k,j])
         test_2d <- paste0(gap_base, "[1,1]")
         has_2d <- tryCatch({ fit$draws(variables = test_2d, format = "matrix"); TRUE },
                            error = function(e) FALSE)
@@ -1525,23 +1430,18 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
       if (is.null(draws)) next
       n_draws <- nrow(draws)
 
-      # u_arr[s, g, j]
       u_arr <- array(draws[, u_col_names], dim = c(n_draws, n_groups, D))
 
-      # gap_arr[s, gap, p]
       gap_arr <- if (n_gaps > 0) {
         if (use_1d_gaps) {
-          # 1D gaps: reshape [n_draws, n_gaps] -> [n_draws, n_gaps, 1]
           array(draws[, gap_col_names], dim = c(n_draws, n_gaps, 1))
         } else {
           array(draws[, gap_col_names], dim = c(n_draws, n_gaps, P_crit))
         }
       } else NULL
 
-      # mid_mat[s, p]
       mid_mat <- draws[, mid_vars, drop = FALSE]
 
-      # Per-term X rows (for pop-level mid/gaps in each condition)
       X_per_term <- matrix(0, n_re_terms, P_crit)
       if (n_re_terms == 1) {
         X_per_term[1, ] <- colMeans(X_crit)
@@ -1565,10 +1465,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
         if (n_re_terms == 1) "intercept" else paste0("term", seq_len(n_re_terms))
       }
 
-      # Build natural thresholds for every (threshold k, term t):
-      # thresh_nat[s, g, (k-1)*n_re_terms + t] using condition-t's pop mid/gaps and
-      # the matching RE slice. This preserves the same dimension ordering as the
-      # raw (gap-scale) RE correlation matrix.
       D_total <- n_thresh * n_re_terms
       thresh_nat <- array(NA_real_, dim = c(n_draws, n_groups, D_total))
 
@@ -1576,7 +1472,7 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
 
       for (t in seq_len(n_re_terms)) {
         xt <- X_per_term[t, ]
-        pop_mid_draws <- as.numeric(mid_mat %*% xt)  # [n_draws]
+        pop_mid_draws <- as.numeric(mid_mat %*% xt)
         pop_gap_draws <- if (n_gaps > 0) {
           m <- matrix(gap_arr, n_draws * n_gaps, P_crit) %*% xt
           dim(m) <- c(n_draws, n_gaps)
@@ -1607,7 +1503,6 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
         }
       }
 
-      # Labels: matches raw gap-scale ordering (k varies slow, t fast)
       dim_labels <- character(D_total)
       for (k in seq_len(n_thresh)) {
         for (t in seq_len(n_re_terms)) {
@@ -1619,10 +1514,9 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
         }
       }
 
-      # Vectorized Pearson correlation across groups, per draw, all pairs.
-      row_mean <- apply(thresh_nat, c(1, 3), mean)            # [n_draws, D_total]
+      row_mean <- apply(thresh_nat, c(1, 3), mean)
       centered <- sweep(thresh_nat, c(1, 3), row_mean, FUN = "-")
-      var_d <- apply(centered * centered, c(1, 3), sum)       # [n_draws, D_total]
+      var_d <- apply(centered * centered, c(1, 3), sum)
 
       n_pairs <- D_total * (D_total - 1L) / 2L
       corr_nat_draws <- matrix(NA_real_, n_draws, n_pairs)
@@ -1697,7 +1591,6 @@ summarize_smooth_sds <- function(draws_df, model, lower_col, upper_col, digits) 
           base_var <- paste0("sds_", pname, "_", comp$san_label, "_", k)
 
           if (n_thresh > 0) {
-            # Per-threshold: one row per threshold
             for (t in seq_len(n_thresh)) {
               var_name <- paste0(base_var, "[", t, "]")
               row_idx <- which(draws_df$variable == var_name)
@@ -1741,7 +1634,6 @@ summarize_smooth_sds <- function(draws_df, model, lower_col, upper_col, digits) 
   result
 }
 
-
 #' @export
 print.broc_summary <- function(x, ...) {
   digits <- x$model_info$digits %||% 3L
@@ -1751,29 +1643,38 @@ print.broc_summary <- function(x, ...) {
   cat("N:", x$model_info$N, "| K:", x$model_info$K, "| Chains:",
       x$model_info$n_chains, "x", x$model_info$n_iter, "\n")
 
-  # Sampler diagnostics banner
   d <- x$diagnostics
+  smp <- x$model_info$sampler %||% "nuts"
   if (!is.null(d)) {
-    ndiv  <- if (!is.null(d$num_divergent)) sum(d$num_divergent) else 0L
-    ntd   <- if (!is.null(d$num_max_treedepth)) sum(d$num_max_treedepth) else 0L
     ebfmi <- if (!is.null(d$ebfmi)) suppressWarnings(min(d$ebfmi, na.rm = TRUE)) else NA_real_
-    cat(sprintf("Sampler: %d divergent | %d max-treedepth | min E-BFMI %s\n",
-                as.integer(ndiv), as.integer(ntd),
-                if (is.finite(ebfmi)) sprintf("%.2f", ebfmi) else "NA"))
-    if (ndiv > 0) {
-      cat("  ** WARNING: divergent transitions -- treat inference as unreliable.\n")
-    } else if (is.finite(ebfmi) && ebfmi < 0.3) {
-      cat("  ** WARNING: low E-BFMI -- sampler may not have explored the posterior.\n")
+    ebfmi_s <- if (is.finite(ebfmi)) sprintf("%.2f", ebfmi) else "NA"
+    if (identical(smp, "drghmc")) {
+      st <- d$dr_stage
+      cat(sprintf("Sampler (drghmc): acc %s | DR %d/%d/%d/%d (s1/s2/s3/rej)\n",
+                  if (!is.null(d$accept) && is.finite(d$accept)) sprintf("%.2f", d$accept) else "NA",
+                  as.integer(round(100 * (st["s1"] %||% 0))),
+                  as.integer(round(100 * (st["s2"] %||% 0))),
+                  as.integer(round(100 * (st["s3"] %||% 0))),
+                  as.integer(round(100 * (st["rej"] %||% 0)))))
+      if (!is.null(st) && (st["rej"] %||% 0) > 0.30) {
+        cat("  ** WARNING: high DR rejection -- adaptation may be insufficient.\n")
+      }
+    } else {
+      ndiv  <- if (!is.null(d$num_divergent)) sum(d$num_divergent) else 0L
+      ntd   <- if (!is.null(d$num_max_treedepth)) sum(d$num_max_treedepth) else 0L
+      cat(sprintf("Sampler: %d divergent | %d max-treedepth | min E-BFMI %s\n",
+                  as.integer(ndiv), as.integer(ntd), ebfmi_s))
+      if (ndiv > 0) {
+        cat("  ** WARNING: divergent transitions -- treat inference as unreliable.\n")
+      } else if (is.finite(ebfmi) && ebfmi < 0.3) {
+        cat("  ** WARNING: low E-BFMI -- sampler may not have explored the posterior.\n")
+      }
     }
   }
 
   cat("\nFIXED EFFECTS\n")
   cat("-------------\n")
   
-  # Display name mapping for fixed effect section headers. For aliased
-  # families (cumulative / bivariate_cumulative), the criterion thresholds
-  # are user-facing "cutpoints" -- relabel accordingly so the printed output
-  # matches the names users wrote in their formulas.
   fname <- x$model_info$family
   is_cumulative_like <- fname %in% c("cumulative", "bivariate_cumulative")
   thresh_label <- if (is_cumulative_like) "CUTPOINTS" else "CRITERION"
@@ -1831,12 +1732,9 @@ print.broc_summary <- function(x, ...) {
   cat("\nRANDOM EFFECTS (Standard Deviations)\n")
   cat("------------------------------------\n")
 
-  # Helper: print RE SDs grouped by param|group with subheaders
   print_re_sd_grouped <- function(df) {
     if (is.null(df) || nrow(df) == 0) return()
-    # Parse "sd(param | group)[level]" or "sd(param | group)" from parameter column
     params <- df$parameter
-    # Extract param|group and level
     pg <- sub("^sd\\((.+)\\).*$", "\\1", params)
     level <- ifelse(grepl("\\[", params), sub("^.*\\[(.+)\\]$", "\\1", params), "")
     groups <- unique(pg)
@@ -1846,11 +1744,9 @@ print.broc_summary <- function(x, ...) {
       lvls <- level[mask]
       cat("\n", g, ":\n", sep = "")
       if (all(lvls == "")) {
-        # No level index -- single dim RE
         out <- sub_df[, !names(sub_df) %in% "parameter", drop = FALSE]
         print(.fmt_summary_tbl(out, digits), row.names = FALSE)
       } else {
-        # Replace parameter column with just the level
         out <- sub_df
         out$parameter <- lvls
         names(out)[names(out) == "parameter"] <- "level"
@@ -1875,7 +1771,6 @@ print.broc_summary <- function(x, ...) {
   cat("\nCORRELATIONS\n")
   cat("------------\n")
 
-  # Known multi-word parameter names (must not be split on _)
   known_params_corr <- c("rec_crit", "know_crit", "criterion2", "dprime_B",
                           "dprime_L", "lambda_B", "lambda_L", "discrim_B",
                           "sigma_B", "sigma_L", "sigma2_B", "rho_B", "rho_N")
@@ -1883,7 +1778,6 @@ print.broc_summary <- function(x, ...) {
     df <- x$correlations[[name]]
     if (!is.null(df) && nrow(df) > 0) {
       remainder <- gsub("^corr_", "", name)
-      # Find which known param prefix matches, then extract group
       nice_name <- NULL
       for (kp in known_params_corr) {
         prefix <- paste0(kp, "_")
@@ -1894,7 +1788,6 @@ print.broc_summary <- function(x, ...) {
         }
       }
       if (is.null(nice_name)) {
-        # Simple params: first segment is param, rest is group
         parts <- strsplit(remainder, "_")[[1]]
         if (length(parts) >= 2) {
           nice_name <- paste0(parts[1], " | ", paste(parts[-1], collapse = "_"))

@@ -1,5 +1,3 @@
-# Tests for the JAX backend management API. These don't fit any models —
-# just exercise install/check/jax_python/set_jax_python.
 
 test_that("jax_backend_dir() returns a path", {
   d <- jax_backend_dir()
@@ -20,9 +18,6 @@ test_that("set_jax_python errors on nonexistent path", {
 })
 
 test_that("install_jax_backend() errors when overwrite = FALSE on existing venv", {
-  # Only run if we already have a managed venv (to avoid creating one in CI
-  # just for this check; CI installs one in setup so it'll be present).
-  # managed_venv_python is internal — use ::: to access it.
   skip_if_not(file.exists(bayesroc:::managed_venv_python()))
   expect_error(install_jax_backend(overwrite = FALSE), "already exists")
 })
