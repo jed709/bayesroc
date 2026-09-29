@@ -56,6 +56,16 @@ def _poly_phi(x):
             1.781477937 + t * (-1.821255978 + t * 1.330274429)))))
     return jnp.where(x >= 0, 1.0 - p, p)
 
+def _poly_phi_deriv(x):
+    """Exact derivative of _poly_phi (not the Gaussian pdf it approximates)."""
+    ax = jnp.abs(x)
+    t = 1.0 / (1.0 + 0.2316419 * ax)
+    s = t * (0.319381530 + t * (-0.356563782 + t * (
+        1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+    ds = 0.319381530 + t * (2.0 * -0.356563782 + t * (
+        3.0 * 1.781477937 + t * (4.0 * -1.821255978 + t * 5.0 * 1.330274429)))
+    return _PHI_D * jnp.exp(-0.5 * x * x) * (ax * s + 0.2316419 * t * t * ds)
+
 def _phi_and_Phi(x):
     """Compute standard normal PDF and CDF in a single pass, sharing the
     expensive exp(-0.5 x^2) evaluation. ~30% faster than calling _phi and
@@ -183,7 +193,7 @@ def _link_fns(link_name):
         return jax_expit, lambda x: jax_expit(x) * (1.0 - jax_expit(x))
     if link_name == "cloglog":
         return _cloglog_cdf, _cloglog_pdf
-    return _Phi, _phi
+    return _Phi, _poly_phi_deriv
 
 
 def link_cdf(x, link_name):
@@ -2107,7 +2117,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             d_val_dtau_first = jnp.where(is_new_resp, dlp_dztau1 * inv_sM, 0.0)
 
         else:
-            p_R_raw = _batch_rect_cell_prob(z_cR, jnp.full_like(z_cR, 8.0), z_lo, z_hi, rho)
             z_cK_F = (c_K - mu_F) * inv_sF
             s_hi = jnp.fmin(c_R, tau_hi - c_K)
             s_lo = jnp.fmin(c_R, tau_lo - c_K)
@@ -2120,6 +2129,8 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             bv_cR_lo = binormal_cdf(jnp.float64(z_cR), jnp.float64(z_lo), jnp.float64(rho))
             bv_s_hi = binormal_cdf(jnp.float64(z_s_hi), jnp.float64(z_hi), jnp.float64(rho))
             bv_s_lo = binormal_cdf(jnp.float64(z_s_lo), jnp.float64(z_lo), jnp.float64(rho))
+
+            p_R_raw = p_band - (bv_cR_hi - bv_cR_lo)
 
             Phi_zcR = _Phi(z_cR)
             Phi_zcKF = _Phi(z_cK_F)

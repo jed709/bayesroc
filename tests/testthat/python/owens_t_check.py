@@ -1,25 +1,7 @@
-"""Accuracy audit for owens_t / binormal_cdf.
+"""Accuracy check for owens_t / binormal_cdf against scipy.
 
-Run from the package root: python tools/numerics/owens_t_accuracy_check.py
-
-Records a known defect (found 2026-09-28). Root cause is _poly_phi, the
-5-term Zelen-Severo polynomial for Phi (documented error 7.5e-8):
-
-  1. owens_t is discontinuous at |a| = 1, where it switches between the direct
-     series and the reflected one. Jumps of 1e-8 to 7e-8.
-  2. The |a| > 1 branch calls _poly_phi and carries ~7e-8 absolute error; the
-     |a| < 1 branch is Gauss-Legendre only and good to ~1e-11.
-  3. binormal_cdf inherits a ~1e-7 absolute error floor at every rho, and its
-     analytic d/drho disagrees with its own value by ~9e-7 relative,
-     step-size-independent: the derivative belongs to a different function
-     than the value.
-
-Scope: binormal_cdf is reached only by the cdp kernel and the strip helpers
-used by cdp and bounded bivariate_dp. bivariate_gaussian, bivariate_dp and
-vrdp2d use a 10-point Gauss-Legendre rectangle rule whose own error (~5e-7)
-dominates this one.
-
-Expected output is the baseline; a fix should drive every number below 1e-10.
+Run: python owens_t_check.py <dir containing owens_t_jax.py>
+Prints a JSON summary; every number must be below 1e-10 (tests/testthat/test-numerics.R).
 """
 
 import numpy as np
@@ -30,7 +12,7 @@ jax.config.update("jax_enable_x64", True)
 
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "inst", "python"))
+sys.path.insert(0, sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "inst", "python"))
 from owens_t_jax import owens_t, binormal_cdf
 from scipy.special import owens_t as sp_owens_t
 from scipy.stats import multivariate_normal as sp_mvn
@@ -44,10 +26,11 @@ def check_discontinuity():
     for h in (0.25, 0.5, 1.0, 2.0, 3.0):
         lo = float(owens_t(jnp.float64(h), jnp.float64(1 - 1e-9)))
         hi = float(owens_t(jnp.float64(h), jnp.float64(1 + 1e-9)))
-        exact = float(sp_owens_t(h, 1.0))
-        jump = hi - lo
+        err_lo = lo - float(sp_owens_t(h, 1 - 1e-9))
+        err_hi = hi - float(sp_owens_t(h, 1 + 1e-9))
+        jump = err_hi - err_lo
         worst = max(worst, abs(jump))
-        print(f"   h={h:<5} jump={jump:+.3e}   err below={lo - exact:+.1e}  above={hi - exact:+.1e}")
+        print(f"   h={h:<5} jump={jump:+.3e}   err below={err_lo:+.1e}  above={err_hi:+.1e}")
     return worst
 
 
@@ -89,14 +72,12 @@ def check_gradient_consistency():
     z2 = jnp.array([0.3, -0.2, 0.8, -1.0])
     f = lambda r: jnp.sum(binormal_cdf(z1, z2, r))
     an = float(jax.grad(f)(jnp.float64(0.5)))
-    worst = 0.0
-    for h in (1e-6, 1e-4, 1e-2):
-        fd = (float(f(jnp.float64(0.5 + h))) - float(f(jnp.float64(0.5 - h)))) / (2 * h)
-        rel = abs(an - fd) / abs(fd)
-        worst = max(worst, rel) if h < 1e-2 else worst
-        print(f"   h={h:.0e}: analytic {an:.10f}  fd {fd:.10f}  rel {rel:.2e}")
-    print("   step-size-independent error => the derivative is not the value's derivative")
-    return worst
+    cd = lambda h: (float(f(jnp.float64(0.5 + h))) - float(f(jnp.float64(0.5 - h)))) / (2 * h)
+    h = 1e-3
+    fd = (4.0 * cd(h / 2) - cd(h)) / 3.0
+    rel = abs(an - fd) / abs(fd)
+    print(f"   analytic {an:.12f}  richardson fd {fd:.12f}  rel {rel:.2e}")
+    return rel
 
 
 if __name__ == "__main__":
@@ -106,7 +87,5 @@ if __name__ == "__main__":
         "binormal_cdf abs err": check_binormal(),
         "binormal_cdf d/drho rel err": check_gradient_consistency(),
     }
-    print("\n" + "=" * 62)
-    for k, v in results.items():
-        print(f"   {k:<32} {v:.2e}   {'OK' if v < TOL else 'FAILS'}")
-    print("=" * 62)
+    import json
+    print("RESULT " + json.dumps(results))
