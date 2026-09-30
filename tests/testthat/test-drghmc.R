@@ -125,3 +125,21 @@ test_that("drghmc runs chains sequentially when parallel_chains < chains", {
   mp <- colMeans(posterior::as_draws_matrix(fp$draws(variables = v)))
   expect_lt(max(abs(ms - mp)), 0.05)
 })
+
+test_that("f32 fits (NUTS and DR-G-HMC) sum the likelihood relative to a warmed-up offset", {
+  skip_if_no_jax()
+  d <- .fixture_univariate(sigma = 1.3)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
+  ref <- fit_broc(m, backend = "jax", seed = 3, chains = 2, iter_warmup = 300, iter_sampling = 600,
+                  progress_bar = FALSE)
+  mr <- colMeans(posterior::as_draws_matrix(ref$draws(variables = v)))
+  sr <- apply(posterior::as_draws_matrix(ref$draws(variables = v)), 2, sd)
+  for (smp in c("nuts", "drghmc")) {
+    f <- fit_broc(m, backend = "jax", sampler = smp, seed = 3, chains = 2, iter_warmup = 300,
+                  iter_sampling = 600, control = list(precision = "f32"), progress_bar = FALSE)
+    expect_equal(sum(f$diagnostic_summary()$num_divergent), 0, label = smp)
+    mf <- colMeans(posterior::as_draws_matrix(f$draws(variables = v)))
+    expect_true(all(abs(mf - mr) < 0.5 * sr), label = paste(smp, "f32 means vs f64"))
+  }
+})

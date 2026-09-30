@@ -152,6 +152,26 @@ def _build(model, config):
     return jax.value_and_grad(pot), unflatten, keys, off, D, st.postprocess_fn
 
 
+def _build_offset(model, config, unflatten):
+    """value_and_grad of the potential with a runtime per-observation log-likelihood
+    offset (see ll_offset): the sampler takes it as an argument, so a compiled
+    sampler serves any offset."""
+    from numpyro.infer.util import potential_energy
+
+    def pot(v, offset):
+        return potential_energy(model, ({**config, "_ll_offset": offset},), {}, unflatten(v))
+    return jax.value_and_grad(pot)
+
+
+def ll_offset(postprocess_fn, unflatten, config, th):
+    """Per-observation weighted log-likelihood at the unconstrained point `th`. Summing
+    log_lik - offset keeps the potential near zero around `th`, so its float32 value
+    resolves energy differences (a sum of ~|U| rounds to |U| * 6e-8, 0.03 at |U| = 5e5)."""
+    ll = jnp.asarray(postprocess_fn(unflatten(jnp.asarray(th)))["log_lik"])
+    counts = config.get("counts")
+    return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
+
+
 def _leap_flip(vg, integ, th, rho, g_th, eps, imm):
     """One reversible integrator step + momentum flip (involution)."""
     if integ == "bcss3":
@@ -272,7 +292,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     return np.asarray(imm), eps, np.asarray(th), time.time() - t0
 
 
-def _sampler_fns(vg, D, ctrl, parallel):
+def _sampler_fns(vg_off, D, ctrl, parallel):
     """State-independent sampler functions (setup_p, chunk_p). (imm, eps) are
     runtime arguments, so chunk_p can be lowered/compiled before adaptation ends.
     The key for global step t of a chain is fold_in(chain_key, t), so a run split
@@ -284,7 +304,8 @@ def _sampler_fns(vg, D, ctrl, parallel):
     RSC = jnp.asarray([(1.0 / rfac) ** k for k in range(3)])
     SQ1MG, SQG = jnp.sqrt(1.0 - gamma), jnp.sqrt(gamma)
 
-    def scanner(c, ts, ckey, IMM, MSQ, E0):
+    def scanner(c, ts, ckey, IMM, MSQ, E0, OFF):
+        vg = lambda v: vg_off(v, OFF)
         eps_k = E0 * RSC
         tiny = jnp.finfo(c[0].dtype).tiny
 
@@ -360,12 +381,12 @@ def _sampler_fns(vg, D, ctrl, parallel):
 
         return jax.lax.scan(dr_step, c, ts)
 
-    def setup(th0, rho0):
-        U0, g0 = vg(th0)
+    def setup(th0, rho0, OFF):
+        U0, g0 = vg_off(th0, OFF)
         return (th0, rho0, U0, g0)
 
-    return (_chain_map(setup, (0, 0), parallel),
-            _chain_map(scanner, (0, None, 0, None, None, None), parallel))
+    return (_chain_map(setup, (0, 0, None), parallel),
+            _chain_map(scanner, (0, None, 0, None, None, None, None), parallel))
 
 
 def _chain_map(f, in_axes, parallel):
@@ -389,9 +410,9 @@ def _chunk_len(samples):
     return max(1, samples // 100)
 
 
-def _sample_phase(vg, D, chains, samples, thinning, seed, ctrl,
+def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
                   imm, eps, state, parallel, progress_bar=False,
-                  donor_loader=None, prebuilt=None):
+                  donor_loader=None, prebuilt=None, n_obs=None, offset_fn=None):
     """DR-G-HMC sampling from a fixed (imm, eps). `state` holds the chains'
     positions `th` [chains, D], optional momenta `rho`, and the global step
     offset `t0` (0 for a fresh run). Returns (thinned draws [chains, kept, D],
@@ -400,17 +421,20 @@ def _sample_phase(vg, D, chains, samples, thinning, seed, ctrl,
     if prebuilt is not None:
         setup_p, chunk_c, chunk_raw = prebuilt
     else:
-        setup_p, chunk_raw = _sampler_fns(vg, D, ctrl, parallel)
+        setup_p, chunk_raw = _sampler_fns(vg_off, D, ctrl, parallel)
         chunk_c = chunk_raw
     chain_keys = jax.random.split(_tagged(seed, 1), chains)
+    zero_off = jnp.zeros(n_obs)
 
     if donor_loader is not None:
         dummy = jnp.zeros((chains, D))
-        c0 = setup_p(dummy, dummy)
-        cw = chunk_c(c0, jnp.arange(step), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3))
+        c0 = setup_p(dummy, dummy, zero_off)
+        cw = chunk_c(c0, jnp.arange(step), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3),
+                     zero_off)
         jax.block_until_ready(cw)
         del c0, cw, dummy
         imm, eps, state = donor_loader()
+    OFF = zero_off if offset_fn is None else offset_fn(state)
 
     IMM = jnp.asarray(imm)
     MSQ = jnp.sqrt(1.0 / IMM)
@@ -420,14 +444,14 @@ def _sample_phase(vg, D, chains, samples, thinning, seed, ctrl,
     if rho0 is None:
         rho0 = MSQ * jax.random.normal(_tagged(seed, 2), (chains, D))
     t0 = int(state.get("t0", 0))
-    carry = setup_p(th0, jnp.asarray(rho0))
+    carry = setup_p(th0, jnp.asarray(rho0), OFF)
 
     bar = _pbar(samples, "DR-G-HMC sample") if progress_bar else None
     tp, sp, ep = [], [], []
     for i in range(t0, t0 + samples, step):
         ts = jnp.arange(i, min(i + step, t0 + samples))
         fn = chunk_c if ts.shape[0] == step else chunk_raw
-        carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0)
+        carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0, OFF)
         carry = jax.block_until_ready(carry)
         tp.append(np.asarray(t)); sp.append(np.asarray(s)); ep.append(np.asarray(e))
         if bar is not None:
@@ -435,7 +459,8 @@ def _sample_phase(vg, D, chains, samples, thinning, seed, ctrl,
     if bar is not None:
         bar.close()
     sl = slice(None, None, thinning)
-    end = dict(th=np.asarray(carry[0]), rho=np.asarray(carry[1]), t0=t0 + samples)
+    end = dict(th=np.asarray(carry[0]), rho=np.asarray(carry[1]), t0=t0 + samples,
+               offset=None if offset_fn is None else np.asarray(OFF))
     return (np.concatenate(tp, 1)[:, sl], np.concatenate(sp, 1)[:, sl],
             np.concatenate(ep, 1)[:, sl], end)
 
@@ -532,7 +557,7 @@ def _f32_send_donor_and_collect(proc, tmp, donor, out, imm, eps, state):
         if rc != 0:
             raise RuntimeError(f"f32 sampling subprocess failed (exit {rc})")
         d = np.load(out)
-        end = dict(th=d["end_th"], rho=d["end_rho"], t0=int(d["end_t0"]))
+        end = dict(th=d["end_th"], rho=d["end_rho"], t0=int(d["end_t0"]), offset=d["offset"])
         return d["ths"], d["stages"], d["energy"], end
     finally:
         if proc.poll() is None:
@@ -612,14 +637,15 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             setup_p, chunk_raw = cache["fns"]
         elif ctrl["precision"] != "f32":
             import threading
-            setup_p, chunk_raw = _sampler_fns(vg, D, ctrl, parallel)
+            setup_p, chunk_raw = _sampler_fns(_build_offset(model, config, unflatten), D, ctrl, parallel)
             step = _chunk_len(samples)
             _ck = jax.random.split(_tagged(seed, 1), chains)
             _th0 = jnp.zeros((chains, D))
             _c0 = (_th0, _th0, jnp.zeros(chains), _th0)
-            low_setup = setup_p.lower(_th0, _th0)
+            _off0 = jnp.zeros(int(config["N"]))
+            low_setup = setup_p.lower(_th0, _th0, _off0)
             low_chunk = chunk_raw.lower(_c0, jnp.arange(step), _ck, jnp.ones(D), jnp.ones(D),
-                                        jnp.asarray(1e-3))
+                                        jnp.asarray(1e-3), _off0)
             _res = {}
 
             def _worker():
@@ -639,7 +665,7 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             imm = jnp.asarray(resume_state["imm"])
             eps = float(resume_state["eps"])
             state = dict(th=np.asarray(resume_state["th"]), rho=np.asarray(resume_state["rho"]),
-                         t0=int(resume_state["t0"]))
+                         t0=int(resume_state["t0"]), offset=resume_state.get("offset"))
             wall_warm = 0.0
         else:
             th_init = _initial_positions(model, config, keys, off, D, chains, seed,
@@ -666,9 +692,9 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
         if cache is not None:
             cache["sampler"], cache["fns"], cache["sampler_key"] = _res, (setup_p, chunk_raw), sampler_key
         ths, stages, energy, end = _sample_phase(
-            vg, D, chains, samples, thinning, seed, ctrl, imm, eps, state,
+            None, D, chains, samples, thinning, seed, ctrl, imm, eps, state,
             parallel, progress_bar,
-            prebuilt=(_res["setup"], _res["chunk"], chunk_raw))
+            prebuilt=(_res["setup"], _res["chunk"], chunk_raw), n_obs=int(config["N"]))
 
     pp_fn = postprocess_fn
     if not save_loglik:
@@ -696,7 +722,7 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
     state_out = None
     if save_state:
         state_out = dict(imm=np.asarray(imm), eps=float(eps), th=end["th"], rho=end["rho"],
-                         t0=int(end["t0"]), seed=int(seed))
+                         t0=int(end["t0"]), seed=int(seed), offset=end.get("offset"))
     return {"samples": samples_np, "extra_fields": extra_fields,
             "elapsed": float(elapsed), "state": state_out}
 
@@ -710,7 +736,8 @@ def _main_sample_f32(argfile):
     with open(p["config"]) as fh:
         config = json.load(fh)
     _convert_matrices(config)
-    vg, unflatten, keys, off, D, _ = _build(backend.sdt_model, config)
+    vg, unflatten, keys, off, D, postprocess_fn = _build(backend.sdt_model, config)
+    vg_off = _build_offset(backend.sdt_model, config, unflatten)
 
     def load_donor(timeout=3600.0):
         t0 = time.time()
@@ -723,11 +750,13 @@ def _main_sample_f32(argfile):
         return don["imm"], don["eps"], don["state"]
 
     ths, stages, energy, end = _sample_phase(
-        vg, D, p["chains"], p["samples"], p["thinning"], p["seed"], p["ctrl"],
+        vg_off, D, p["chains"], p["samples"], p["thinning"], p["seed"], p["ctrl"],
         None, None, None, p["parallel"], p.get("progress_bar", False),
-        donor_loader=load_donor)
+        donor_loader=load_donor, n_obs=int(config["N"]),
+        offset_fn=lambda st: (jnp.asarray(st["offset"]) if st.get("offset") is not None else
+                              ll_offset(postprocess_fn, unflatten, config, np.asarray(st["th"])[0])))
     np.savez(p["out"], ths=ths, stages=stages, energy=energy,
-             end_th=end["th"], end_rho=end["rho"], end_t0=end["t0"])
+             end_th=end["th"], end_rho=end["rho"], end_t0=end["t0"], offset=end["offset"])
 
 
 if __name__ == "__main__":

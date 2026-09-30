@@ -109,6 +109,11 @@ run the full suite.
   chain started in that region (e.g. Stan's random inits) can settle in a spurious
   mode that ignores the observation. Where a JVP divides by a clipped probability,
   zero the gradient where the clip is active so value and tangent stay consistent.
+- **float32 potentials are summed relative to an offset.** A float32 sum of N log-likelihood
+  terms resolves only ~|U| * 6e-8, which is 0.03 at |U| = 5e5 and swamps energy differences.
+  In f32 both samplers subtract a per-observation offset (the log-likelihood at a warmed-up
+  position; `drghmc.ll_offset`, `_nuts_ll_offset`) inside the sum. The offset travels with
+  warm-restart state so rounds continue exactly; f64 passes zeros, which is exact.
 - **Stan's `normal_lcdf` has an approximate hand-written derivative** (~1e-5
   relative); use `bvn_log_interval()` instead.
 - **Pure-JAX bivariate code must be compiled** (`jit`): the |rho|-tier `lax.switch`

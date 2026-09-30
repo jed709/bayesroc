@@ -4233,7 +4233,8 @@ def sdt_model(config):
         log_lik_unweighted = log_lik
     numpyro.deterministic("log_lik", log_lik_unweighted)
 
-    numpyro.factor("obs", jnp.sum(log_lik))
+    ll_offset = config.get("_ll_offset")
+    numpyro.factor("obs", jnp.sum(log_lik) if ll_offset is None else jnp.sum(log_lik - ll_offset))
 
 
 # =============================================================================
@@ -4384,22 +4385,38 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     )
 
     keep = held is not None and token is not None
+    f32 = not jax.config.jax_enable_x64
+    offset = None
     prior = held.get(("nuts", token)) if keep else None
+    t0 = time.time()
     if warm_state is not None and prior is not None and prior.num_samples == samples:
         mcmc = prior
         mcmc.post_warmup_state = mcmc.last_state
         rng_key = mcmc.post_warmup_state.rng_key
+        offset = held.get(("nuts_offset", token))
     elif warm_state is not None:
         with open(warm_state, "rb") as fh:
-            mcmc.post_warmup_state = pickle.load(fh)
+            loaded = pickle.load(fh)
+        if isinstance(loaded, dict) and "hmc" in loaded:
+            mcmc.post_warmup_state, offset = loaded["hmc"], loaded.get("offset")
+        else:
+            mcmc.post_warmup_state = loaded
         rng_key = mcmc.post_warmup_state.rng_key
+    elif f32:
+        mcmc.warmup(rng_key, config, init_params=init_z, collect_warmup=False)
+        rng_key = mcmc.post_warmup_state.rng_key
+    if f32:
+        if offset is None:
+            offset = _nuts_ll_offset(config, mcmc.post_warmup_state)
+        config = {**config, "_ll_offset": jnp.asarray(offset)}
+        mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state)
 
-    t0 = time.time()
-    mcmc.run(rng_key, config, init_params=init_z,
+    mcmc.run(rng_key, config, init_params=None if f32 else init_z,
              extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
     elapsed = time.time() - t0
     if keep:
         held[("nuts", token)] = mcmc
+        held[("nuts_offset", token)] = offset
 
     samples_dict = mcmc.get_samples(group_by_chain=True)
 
@@ -4425,5 +4442,35 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         "elapsed": float(elapsed),
     }
     if save_state:
-        out["state"] = mcmc.last_state
+        out["state"] = (mcmc.last_state if offset is None
+                        else {"hmc": mcmc.last_state, "offset": np.asarray(offset)})
     return out
+
+
+def _chain0(state):
+    batched = jnp.ndim(state.potential_energy) > 0
+    return jax.tree_util.tree_map(lambda x: x[0], state.z) if batched else state.z
+
+
+def _nuts_ll_offset(config, state):
+    """Per-observation weighted log-likelihood at chain 0's warmed-up position (see
+    drghmc.ll_offset): in float32 the potential is summed relative to it."""
+    from numpyro.infer.util import constrain_fn
+    ll = constrain_fn(sdt_model, (config,), {}, _chain0(state), return_deterministic=True)["log_lik"]
+    counts = config.get("counts")
+    return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
+
+
+def _refresh_potential(config, state):
+    """The warmed-up state caches a potential computed without the offset; recompute it
+    so the first transition compares like with like."""
+    from numpyro.infer.util import potential_energy
+    pe_fn = jax.jit(lambda z: potential_energy(sdt_model, (config,), {}, z))
+    if jnp.ndim(state.potential_energy) > 0:
+        pe = jax.lax.map(pe_fn, state.z)
+    else:
+        pe = pe_fn(state.z)
+    old = state.potential_energy
+    pe = jnp.asarray(pe, dtype=old.dtype)
+    sharding = getattr(old, "sharding", None)
+    return state._replace(potential_energy=pe if sharding is None else jax.device_put(pe, sharding))
