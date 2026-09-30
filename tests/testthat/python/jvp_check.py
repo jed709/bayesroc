@@ -36,13 +36,16 @@ def check(f, args, cont_idx, seed=0):
         worst_primal = max(worst_primal, float(np.max(np.abs(np.asarray(primal) - plain))))
         ref = np.asarray(jax.jit(lambda a, t: jax.jvp(f.fun, a, t))(tuple(args), tuple(tangents))[1])
         err = np.abs(np.asarray(tan) - ref)
+        if not np.all(np.isfinite(err)):
+            return {"custom_jvp": True, "primal_abs": worst_primal, "tangent_abs": float("inf"),
+                    "tangent_rel": float("inf"), "finite": False}
         worst_abs = max(worst_abs, float(np.max(err)))
         worst_tan = max(worst_tan, float(np.max(err / np.maximum(np.abs(ref), 1.0))))
     return {"custom_jvp": True, "primal_abs": worst_primal, "tangent_abs": worst_abs, "tangent_rel": worst_tan,
             "finite": bool(np.all(np.isfinite(plain)))}
 
 
-def cdp_case(n_rkg, N=300, J=5, seed=1):
+def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4)):
     rng = np.random.default_rng(seed)
     n_gaps = J - 1
     f = nb._make_fused_batch_cdp_loglik(J + 5, J, False, n_rkg=n_rkg)
@@ -57,8 +60,8 @@ def cdp_case(n_rkg, N=300, J=5, seed=1):
         jnp.asarray(rng.uniform(0.6, 1.4, N)),
         jnp.asarray(rng.normal(0.6, 0.3, N)),
         jnp.asarray(rng.uniform(0.6, 1.4, N)),
-        jnp.asarray(rng.normal(1.5, 0.3, N)),
-        jnp.asarray(rng.normal(0.4, 0.3, N)),
+        jnp.asarray(rng.normal(crit[0], 0.3, N)),
+        jnp.asarray(rng.normal(crit[1], 0.3, N)),
         jnp.asarray(rng.normal(0.3, 0.2, N)),
         jnp.asarray(rng.normal(-0.5, 0.2, (N, n_gaps))),
     ]
@@ -123,6 +126,7 @@ def biv_case(kind, N=400, K=6, seed=3):
 CASES = {
     "cdp_rk": lambda: cdp_case(2),
     "cdp_rkg": lambda: cdp_case(3),
+    "cdp_rkg_tail": lambda: cdp_case(3, crit=(4.0, 3.5)),
 }
 for _k in ("simple", "dpsdt", "mixture", "source_mixture"):
     for _l in ("probit", "logit", "cloglog"):

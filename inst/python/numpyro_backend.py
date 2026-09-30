@@ -500,11 +500,11 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("probit_cell", "ProbitCell"),
-                         ("probit_diff", "ProbitDiff")):
+                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4")):
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("cdp_cell", "CdpCell")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
     except Exception as _e:
@@ -636,7 +636,8 @@ def _rect_tail_jax(a1, b1, a2, b2, rho):
         xs = c0[..., None] + h[..., None] * _GL32_X
         lw = jnp.log(jnp.maximum(h[..., None] * _GL32_W, 1e-300))
         v = lw + g(xs.reshape(xs.shape[:-2] + (-1,))).reshape(xs.shape)
-        v = jnp.where((w > 0.0)[..., None, None], v, -jnp.inf)
+        v = jnp.where((w > 0.0)[..., None, None] & jnp.isfinite(v), v,
+                      jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
         vals.append(v.reshape(v.shape[:-2] + (-1,)))
     allv = jnp.concatenate(vals, axis=-1)
     lp = jax.scipy.special.logsumexp(allv, axis=-1)
@@ -660,6 +661,192 @@ def _rect_tail_jax(a1, b1, a2, b2, rho):
         return jnp.where(fin, v, 0.0)
     drho = phi2(b1, b2) - phi2(a1, b2) - phi2(b1, a2) + phi2(a1, a2)
     return p, d1l, d1h, d2l, d2h, drho
+
+
+def _lin_bounds(Al, Bl, Au, Bu, x):
+    l = jnp.where(jnp.isfinite(Al), Al + Bl * x, jax.lax.stop_gradient(jnp.sign(Al) * _OPEN))
+    u = jnp.where(jnp.isfinite(Au), Au + Bu * x, jax.lax.stop_gradient(jnp.sign(Au) * _OPEN))
+    return l, u
+
+
+def _lin_log_integral_jax(Al, Bl, Au, Bu, a, b):
+    """log of the integral over (a, b) of phi(x) [Phi(Au + Bu x) - Phi(Al + Bl x)]; an infinite
+    A is a constant bound. Same algorithm as _rect_tail_jax; the band may vanish at an end
+    (a polygon vertex), where the log integrand is -inf and rises into the interval."""
+    lo = jnp.maximum(a, -40.0)
+    hi = jnp.minimum(b, 40.0)
+    ok = hi > lo
+    hi = jnp.where(ok, hi, lo + 1.0)
+
+    def bc(v, x):
+        return v.reshape(v.shape + (1,) * (x.ndim - v.ndim))
+
+    def g(x):
+        l, u = _lin_bounds(bc(Al, x), bc(Bl, x), bc(Au, x), bc(Bu, x), x)
+        return -0.5 * x * x - _LOG_SQRT_2PI + _log_diff_phi(l, u)
+
+    def dg(x):
+        l, u = _lin_bounds(Al, Bl, Au, Bu, x)
+        ld = _log_diff_phi(l, u)
+        live = jnp.isfinite(ld)
+        tl = jnp.where(live & (jnp.abs(l) < 1e9), jnp.exp(-0.5 * l * l - _LOG_SQRT_2PI - ld), 0.0)
+        tu = jnp.where(live & (jnp.abs(u) < 1e9), jnp.exp(-0.5 * u * u - _LOG_SQRT_2PI - ld), 0.0)
+        return -x + Bu * tu - Bl * tl
+
+    at_lo = (dg(lo) <= 0.0) & jnp.isfinite(g(lo))
+    at_hi = (dg(hi) >= 0.0) & jnp.isfinite(g(hi))
+
+    def bis(_, lh):
+        L, H = lh
+        M = 0.5 * (L + H)
+        up = dg(M) > 0.0
+        return jnp.where(up, M, L), jnp.where(up, H, M)
+    L, H = jax.lax.fori_loop(0, 64, bis, (lo, hi))
+    m = jnp.where(at_lo, lo, jnp.where(at_hi, hi, 0.5 * (L + H)))
+    gm = g(m)
+    offs = jnp.cumsum(0.25 * (1.6 ** jnp.arange(40.0)))
+
+    def reach(direction, edge):
+        xs = m[..., None] + direction * offs
+        past = (xs - edge[..., None]) * direction >= 0.0
+        drop = (gm[..., None] - g(jnp.where(past, m[..., None], xs))) > 40.0
+        stop = past | drop
+        first = jnp.argmax(stop, axis=-1)
+        x_stop = jnp.take_along_axis(xs, first[..., None], axis=-1)[..., 0]
+        hit_edge = jnp.take_along_axis(past, first[..., None], axis=-1)[..., 0]
+        e = jnp.where(hit_edge, edge, x_stop)
+        return jnp.where((edge - m) * direction > 0.0, e, m)
+    left = reach(-1.0, lo)
+    right = reach(1.0, hi)
+    k = jnp.arange(4.0)
+    vals = []
+    for A0, B0 in ((left, m), (m, right)):
+        w = B0 - A0
+        A = A0[..., None] + w[..., None] * k / 4.0
+        h = w[..., None] / 8.0
+        xs = (A + h)[..., None] + h[..., None] * _GL32_X
+        lw = jnp.log(jnp.maximum(h[..., None] * _GL32_W, 1e-300))
+        v = lw + g(xs.reshape(xs.shape[:-2] + (-1,))).reshape(xs.shape)
+        v = jnp.where((w > 0.0)[..., None, None] & jnp.isfinite(v), v,
+                      jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
+        vals.append(v.reshape(v.shape[:-2] + (-1,)))
+    lp = jax.scipy.special.logsumexp(jnp.concatenate(vals, axis=-1), axis=-1)
+    return jnp.where(ok & jnp.isfinite(gm), lp, -jnp.inf)
+
+
+def _gauss_line_jax(A, B, xa, xb):
+    """log of the integral over (xa, xb) of phi(x) phi(A + Bx), and the ratio of the x-weighted
+    integral to it; closed forms via phi(x) phi(A + Bx) = phi(A/s) phi(s (x + AB/s^2))."""
+    s2 = 1.0 + B * B
+    s = jnp.sqrt(s2)
+    m = A * B / s2
+    tl = jnp.where(jnp.isfinite(xa), s * (xa + m), xa)
+    th = jnp.where(jnp.isfinite(xb), s * (xb + m), xb)
+    ld = _log_diff_phi(tl, th)
+    fl = jnp.where(jnp.isfinite(tl) & jnp.isfinite(ld), jnp.exp(-0.5 * tl * tl - _LOG_SQRT_2PI - ld), 0.0)
+    fh = jnp.where(jnp.isfinite(th) & jnp.isfinite(ld), jnp.exp(-0.5 * th * th - _LOG_SQRT_2PI - ld), 0.0)
+    return -0.5 * (A / s) ** 2 - _LOG_SQRT_2PI - jnp.log(s) + ld, (fl - fh) / s - m
+
+
+def _cdp_cell_jax(kind, muR, sR, muF, sF, cR, cK, tlo, thi):
+    """log P of a CDP R/K/G cell (kind 1 = Remember, 2 = Know, 3 = Guess) as a one-dimensional
+    integral over the standardised recollection axis, and its derivatives in
+    (muR, sR, muF, sF, cR, cK, tlo, thi); same construction as bvn_tail::cdp_cell."""
+    inf = jnp.inf
+    zero = jnp.zeros_like(muR)
+    beta = sR / sF
+    B = -beta
+    xcR = (cR - muR) / sR
+    fin_hi, fin_lo = jnp.isfinite(thi), jnp.isfinite(tlo)
+    xkh = jnp.where(fin_hi, (thi - cK - muR) / sR, inf)
+    xkl = jnp.where(fin_lo, (tlo - cK - muR) / sR, -inf)
+    Alo = jnp.where(fin_lo, (tlo - muR - muF) / sF, -inf)
+    Ahi = jnp.where(fin_hi, (thi - muR - muF) / sF, inf)
+    AK = (cK - muF) / sF
+    Blo = jnp.where(fin_lo, B, 0.0)
+    Bhi = jnp.where(fin_hi, B, 0.0)
+
+    def vec(*c):
+        return jnp.stack([jnp.broadcast_to(v, muR.shape) for v in c], axis=-1)
+    Z = vec(*([zero] * 8))
+    dxcR = vec(-1 / sR, -xcR / sR, zero, zero, 1 / sR, zero, zero, zero)
+    dxkh = jnp.where(fin_hi[..., None], vec(-1 / sR, -xkh / sR, zero, zero, zero, -1 / sR, zero, 1 / sR), Z)
+    dxkl = jnp.where(fin_lo[..., None], vec(-1 / sR, -xkl / sR, zero, zero, zero, -1 / sR, 1 / sR, zero), Z)
+    dAlo = jnp.where(fin_lo[..., None], vec(-1 / sF, zero, -1 / sF, -Alo / sF, zero, zero, 1 / sF, zero), Z)
+    dAhi = jnp.where(fin_hi[..., None], vec(-1 / sF, zero, -1 / sF, -Ahi / sF, zero, zero, zero, 1 / sF), Z)
+    dB = vec(zero, -1 / sF, zero, beta / sF, zero, zero, zero, zero)
+    dBlo = jnp.where(fin_lo[..., None], dB, Z)
+    dBhi = jnp.where(fin_hi[..., None], dB, Z)
+    dAK = vec(zero, zero, -1 / sF, -AK / sF, zero, 1 / sF, zero, zero)
+
+    def pick(c, a, da, b, db):
+        return jnp.where(c, a, b), jnp.where(c[..., None], da, db)
+
+    g1b, dg1b = pick(xkh <= xcR, xkh, dxkh, xcR, dxcR)
+    g2a, dg2a = pick(xkh >= xkl, xkh, dxkh, xkl, dxkl)
+    ub, dub = pick(xcR <= xkh, xcR, dxcR, xkh, dxkh)
+    k1b, dk1b = pick(xkl <= ub, xkl, dxkl, ub, dub)
+    ninf = jnp.full_like(muR, -inf)
+    pinf = jnp.full_like(muR, inf)
+    is1, is2 = kind == 1, kind == 2
+
+    def sel(r, k, g):
+        if isinstance(r, tuple):
+            return tuple(sel(a, b, c) for a, b, c in zip(r, k, g))
+        cond1 = is1[..., None] if r.ndim > muR.ndim else is1
+        cond2 = is2[..., None] if r.ndim > muR.ndim else is2
+        return jnp.where(cond1, r, jnp.where(cond2, k, g))
+
+    pieces = [
+        sel((xcR, pinf, Alo, Blo, Ahi, Bhi, dxcR, Z, dAlo, dBlo, dAhi, dBhi),
+            (ninf, k1b, Alo, Blo, Ahi, Bhi, Z, dk1b, dAlo, dBlo, dAhi, dBhi),
+            (xkl, g1b, Alo, Blo, AK, zero, dxkl, dg1b, dAlo, dBlo, dAK, Z)),
+        sel((pinf, pinf, Alo, Blo, Ahi, Bhi, Z, Z, Z, Z, Z, Z),
+            (xkl, ub, AK, zero, Ahi, Bhi, dxkl, dub, dAK, Z, dAhi, dBhi),
+            (g2a, xcR, Alo, Blo, Ahi, Bhi, dg2a, dxcR, dAlo, dBlo, dAhi, dBhi)),
+    ]
+    lps = [_lin_log_integral_jax(p[2], p[3], p[4], p[5], p[0], p[1]) for p in pieces]
+    lp = jnp.logaddexp(lps[0], lps[1])
+    d = jnp.zeros(muR.shape + (8,), dtype=muR.dtype)
+    for p, lpi in zip(pieces, lps):
+        xa0, xb0, Al, Bl, Au, Bu, dxa, dxb, dAl, dBl, dAu, dBu = p
+        live = jnp.isfinite(lpi) & jnp.isfinite(lp)
+        xa = jnp.maximum(xa0, -40.0)
+        xb = jnp.minimum(xb0, 40.0)
+
+        def gat(x):
+            l, u = _lin_bounds(Al, Bl, Au, Bu, x)
+            return -0.5 * x * x - _LOG_SQRT_2PI + _log_diff_phi(l, u)
+        w_xb = jnp.where(live & (xb0 < 40.0), jnp.exp(gat(xb) - lp), 0.0)
+        w_xa = jnp.where(live & (xa0 > -40.0), -jnp.exp(gat(xa) - lp), 0.0)
+        lJu, ru = _gauss_line_jax(jnp.where(jnp.isfinite(Au), Au, 0.0), Bu, xa, xb)
+        lJl, rl = _gauss_line_jax(jnp.where(jnp.isfinite(Al), Al, 0.0), Bl, xa, xb)
+        eu = jnp.where(live & jnp.isfinite(Au), jnp.exp(lJu - lp), 0.0)
+        el = jnp.where(live & jnp.isfinite(Al), jnp.exp(lJl - lp), 0.0)
+        for w, dv in ((w_xa, dxa), (w_xb, dxb), (-el, dAl), (-el * rl, dBl), (eu, dAu), (eu * ru, dBu)):
+            d = d + w[..., None] * dv
+    return lp, d
+
+
+def _cdp_tail(flag, kind, muR, sR, muF, sF, cR, cK, tlo, thi):
+    """Exact CDP R/K/G cells where `flag` is set: (log p, d log p / d(muR, sR, muF, sF, cR, cK,
+    tlo, thi) as a [..., 8] array); zeros elsewhere. Skipped unless some cell is flagged."""
+    args = jnp.broadcast_arrays(*[jnp.asarray(a) for a in (muR, sR, muF, sF, cR, cK, tlo, thi)])
+    dt = args[0].dtype
+
+    def run(_):
+        if _native_ok(args[0]):
+            out = _native_call("cdp_cell", 9, [jnp.asarray(flag, dt), jnp.asarray(kind, dt), *args])
+            return out[0], jnp.stack(out[1:], axis=-1)
+        lp, d = _cdp_cell_jax(jnp.asarray(kind), *args)
+        f = jnp.asarray(flag, bool)
+        live = f & jnp.isfinite(lp)
+        lp = jnp.where(live, lp, jax.lax.stop_gradient(jnp.where(f, -jnp.inf, 0.0)))
+        return lp, jnp.where(live[..., None], d, 0.0)
+
+    def skip(_):
+        return jnp.zeros_like(args[0]), jnp.zeros(args[0].shape + (8,), dt)
+    return jax.lax.cond(jnp.any(flag), run, skip, None)
 
 
 _TAIL_CHUNK = 256
@@ -2207,15 +2394,10 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
     n_gaps = n_thresh - 1
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
-    _KK_CDP = 10000.0
-
     gap_mask_np = _make_batch_gap_mask_np(n_gaps, n_thresh, mid_idx, n_upper)
 
     _INV_2PI = 1.0 / (2.0 * np.pi)
 
-
-    def _softclamp(x):
-        return jax.nn.softplus(_KK_CDP * x) / _KK_CDP
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):
         """Remember/Know strips as direct rectangles in (R, M) for the cells flagged
@@ -2295,10 +2477,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_G_raw = G_hi - G_lo
             p_K_raw = p_band - p_R_raw - p_G_raw
 
-            p_R = _softclamp(p_R_raw)
-            p_G = _softclamp(p_G_raw)
-            p_K = _softclamp(p_K_raw)
-            p_rk = jnp.where(rk == 1, p_R, jnp.where(rk == 2, p_K, p_G))
+            p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
+            tail = (is_old_resp_val == 1) & ~(p_sel >= _TAIL_SWITCH)
+            t_lp, _ = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo,
+                                jnp.where(old_idx < J - 1, tau_hi, jnp.inf))
+            p_rk = jnp.where(tail, jnp.exp(t_lp), p_sel)
 
         prob = jnp.where(is_old_resp_val == 1, p_rk, p_new)
         return jnp.log(jnp.clip(prob, _pfloor()))
@@ -2440,22 +2623,20 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_G_raw = G_hi - G_lo
             p_K_raw = p_band - p_R_raw - p_G_raw
 
-            p_R = _softclamp(p_R_raw)
-            p_K = _softclamp(p_K_raw)
-            p_G = _softclamp(p_G_raw)
-
-            p_rk = jnp.where(rk == 1, p_R, jnp.where(rk == 2, p_K, p_G))
+            p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
+            tail = is_old_resp & ~(p_sel >= _TAIL_SWITCH)
+            t_lp, t_d = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo,
+                                  jnp.where(has_tau_hi, tau_hi, jnp.inf))
+            p_cell = jnp.where(tail, jnp.exp(t_lp), p_sel)
+            p_rk = p_cell
             prob = jnp.where(is_old_resp, p_rk, p_new)
             val = jnp.log(jnp.clip(prob, _pfloor()))
             inv_prob = jnp.where(prob > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
+            closed = is_old_resp & ~tail
 
-            sig_R = jax.nn.sigmoid(_KK_CDP * p_R_raw)
-            sig_K = jax.nn.sigmoid(_KK_CDP * p_K_raw)
-            sig_G = jax.nn.sigmoid(_KK_CDP * p_G_raw)
-
-            dlp_dpR = jnp.where(is_old_resp & (rk == 1), sig_R * inv_prob, 0.0)
-            dlp_dpK = jnp.where(is_old_resp & (rk == 2), sig_K * inv_prob, 0.0)
-            dlp_dpG = jnp.where(is_old_resp & (rk == 3), sig_G * inv_prob, 0.0)
+            dlp_dpR = jnp.where(closed & (rk == 1), inv_prob, 0.0)
+            dlp_dpK = jnp.where(closed & (rk == 2), inv_prob, 0.0)
+            dlp_dpG = jnp.where(closed & (rk == 3), inv_prob, 0.0)
 
             eff_dpR = dlp_dpR - dlp_dpK
             eff_dpG = dlp_dpG - dlp_dpK
@@ -2558,6 +2739,17 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             d_val_dtau_hi = jnp.where(is_old_resp, dlp_dzhi * inv_sM + eff_dpG * dGhi_dtau, 0.0)
             d_val_dtau_lo = jnp.where(is_old_resp, dlp_dzlo * inv_sM + eff_dpG * (-dGlo_dtau), 0.0)
             d_val_dtau_first = jnp.where(is_new_resp, dlp_dztau1 * inv_sM, 0.0)
+
+            t_w = jnp.where(tail & (prob > _pfloor()), p_cell * inv_prob, 0.0)
+            td = [t_w * jnp.where(tail, t_d[..., j], 0.0) for j in range(8)]
+            d_val_dmuR = d_val_dmuR + td[0]
+            d_val_dsigR = d_val_dsigR + td[1]
+            d_val_dmuF = d_val_dmuF + td[2]
+            d_val_dsigF = d_val_dsigF + td[3]
+            d_val_dcR = d_val_dcR + td[4]
+            d_val_dcK = d_val_dcK + td[5]
+            d_val_dtau_lo = d_val_dtau_lo + td[6]
+            d_val_dtau_hi = d_val_dtau_hi + td[7]
 
         d_t_k_lo = d_val_dtau_lo
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)
@@ -3390,6 +3582,42 @@ def _positive_dist(d):
     return dist.FoldedDistribution(d)
 
 
+def _rkg_knob(config):
+    """Static setup for sampling the CDP R/K/G know criterion on its feasible set.
+
+    A Guess response in the confidence band starting at tau_k is possible only when
+    c_R + c_K > tau_k, so the likelihood has hard walls in the know-criterion
+    coefficients. With v solving X v = 1 (the fixed-effect design spans the constant),
+    beta = B_perp w + t v and t is solved last as max over Guess trials of the bound plus
+    exp(slack): an exact bijection onto the feasible set whose coordinates never meet a
+    wall. Returns None when no Guess response constrains the model."""
+    if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
+        return None
+    pconf = config.get("params", {}).get("know_crit")
+    if pconf is None or pconf.get("n_coef", 0) < 1:
+        return None
+    X = np.asarray(pconf["X"], dtype=float)
+    if X.ndim == 1:
+        X = X[:, None]
+    y = np.asarray(config["y"])
+    rk = np.asarray(config["rk"])
+    olm = np.asarray(config["old_level_map"])
+    band = np.full(y.shape[0], -1)
+    for j, lev in enumerate(olm):
+        band[y == lev] = j
+    live = np.ones(y.shape[0], bool) if config.get("counts") is None else np.asarray(config["counts"]) > 0
+    G = np.where((band >= 0) & (rk == 3) & live)[0]
+    if G.size == 0:
+        return None
+    v = np.linalg.lstsq(X, np.ones(X.shape[0]), rcond=None)[0]
+    if not np.allclose(X @ v, 1.0, atol=1e-9):
+        raise ValueError("know_crit: the fixed-effect design must span the constant (an intercept "
+                         "or a full factor coding)")
+    d = X.shape[1]
+    B_perp = np.linalg.svd(v[None, :])[2][1:].T if d > 1 else np.zeros((1, 0))
+    return {"X": X, "v": v, "B_perp": B_perp, "G": G, "band": band[G]}
+
+
 def sdt_model(config):
     """NumPyro model function driven by config dict."""
     N = config["N"]
@@ -3413,10 +3641,15 @@ def sdt_model(config):
     needs_ordered = config.get("needs_ordered_dprime", False)
     ordered_done = False
 
+    knob = _rkg_knob(config)
+    knob_state = {}
+
     _batch_scalar_betas = {}
     _batch_skip = set()
     for param_name, pconf in params_config.items():
         if param_name == "criterion":
+            continue
+        if knob is not None and param_name == "know_crit":
             continue
         if needs_ordered and param_name in ("dprime", "dprime2"):
             continue
@@ -3501,6 +3734,20 @@ def sdt_model(config):
         col_names = pconf.get("col_names", [f"V{i+1}" for i in range(n_coef)])
         if isinstance(col_names, str):
             col_names = [col_names]
+
+        if knob is not None and param_name == "know_crit":
+            B_perp = jnp.asarray(knob["B_perp"], dtype=_FLOAT)
+            if n_coef > 1:
+                w = numpyro.sample("know_crit_free",
+                                   dist.ImproperUniform(dist.constraints.real, (), (n_coef - 1,)))
+                beta_perp = B_perp @ w
+            else:
+                beta_perp = jnp.zeros(1, dtype=_FLOAT)
+            knob_state.update(beta_perp=beta_perp, X=X, n_coef=n_coef,
+                              prior_strs=[priors.get(col_names[j] if j < len(col_names) else f"V{j+1}",
+                                                     "normal(0, 2.5)") for j in range(n_coef)])
+            param_values[param_name] = X @ beta_perp
+            continue
 
         if n_coef > 0:
             if param_name in _batch_skip:
@@ -3938,6 +4185,25 @@ def sdt_model(config):
 
         c_R = param_values.get("rec_crit", jnp.full(N, 1.5))
         c_K = param_values.get("know_crit", jnp.zeros(N)) if n_rkg == 3 else jnp.zeros(N)
+        if knob is not None:
+            G = jnp.asarray(knob["G"])
+            bound = thresh[G, jnp.asarray(knob["band"])] - c_R[G] - c_K[G]
+            slack = numpyro.sample("know_crit_slack", dist.ImproperUniform(dist.constraints.real, (), ()))
+            t = jnp.max(bound) + jnp.exp(slack)
+            numpyro.factor("know_crit_slack_jac", slack)
+            v = jnp.asarray(knob["v"], dtype=_FLOAT)
+            beta_kc = knob_state["beta_perp"] + t * v
+            prior_strs = knob_state["prior_strs"]
+            numpyro.factor("know_crit_prior", sum(parse_prior(prior_strs[j]).log_prob(beta_kc[j])
+                                                  for j in range(knob_state["n_coef"])))
+            if knob_state["n_coef"] == 1:
+                numpyro.deterministic("beta_know_crit[1]", beta_kc[0])
+            elif len(set(prior_strs)) == 1:
+                numpyro.deterministic("beta_know_crit", beta_kc)
+            else:
+                for j in range(knob_state["n_coef"]):
+                    numpyro.deterministic(f"beta_know_crit[{j+1}]", beta_kc[j])
+            c_K = c_K + t * (knob_state["X"] @ v)
 
         log_lik = cdp_loglik(
                 y=y, rk=rk, is_old=is_old, thresh=thresh,
@@ -4257,15 +4523,63 @@ def _init_site_value(name, shape, vals):
     return m.group(1), np.asarray(arr[idx]).reshape(shape)
 
 
+def _knob_init_beta(vals, knob):
+    d = knob["X"].shape[1]
+    if "beta_know_crit" in vals:
+        return np.asarray(vals["beta_know_crit"], dtype=float).reshape(d)
+    if all(f"beta_know_crit[{j+1}]" in vals for j in range(d)):
+        return np.asarray([vals[f"beta_know_crit[{j+1}]"] for j in range(d)], dtype=float)
+    return None
+
+
+def _knob_init_slack(config, knob, z, beta):
+    """Slack reproducing the user's know-criterion init: with slack 0 the model sets t to the
+    Guess bound + 1, so the bound is read back and the user's t = beta . v / v . v is
+    placed above it. An init where some Guess response is impossible keeps slack 0."""
+    from numpyro.infer.util import constrain_fn
+    v = knob["v"]
+    z0 = dict(z)
+    z0["know_crit_slack"] = jnp.asarray(0.0)
+    out = constrain_fn(sdt_model, (config,), {}, z0, return_deterministic=True)
+    d = knob["X"].shape[1]
+    if d == 1:
+        b0 = np.asarray([out["beta_know_crit[1]"]], dtype=float)
+    elif "beta_know_crit" in out:
+        b0 = np.asarray(out["beta_know_crit"], dtype=float)
+    else:
+        b0 = np.asarray([out[f"beta_know_crit[{j+1}]"] for j in range(d)], dtype=float)
+    vv = float(v @ v)
+    bound = float(b0 @ v) / vv - 1.0
+    t_user = float(beta @ v) / vv
+    if t_user > bound:
+        return jnp.asarray(np.log(t_user - bound))
+    print("[bayesroc] the know_crit init makes an observed Guess response impossible; its slack "
+          "starts at the boundary + 1 instead", file=sys.stderr, flush=True)
+    return jnp.asarray(0.0)
+
+
+def _init_given_else_uniform_site(site=None, values=None, radius=2.0):
+    if site["type"] == "sample" and not site["is_observed"] and site["name"] in values:
+        return values[site["name"]]
+    return init_to_uniform(site, radius=radius)
+
+
+def _init_given_else_uniform(values, radius):
+    return partial(_init_given_else_uniform_site, values=values, radius=radius)
+
+
 def init_values_to_z(config, init_values, seed, init_radius=2.0):
     """Per-chain user init lists (Stan parameter names, constrained scale) ->
     stacked unconstrained NumPyro params. Sites a list leaves out start from
     uniform(-init_radius, init_radius), as Stan does."""
     from numpyro import handlers
-    from numpyro.infer import init_to_value
     from numpyro.infer.util import initialize_model
 
-    tr = handlers.trace(handlers.seed(sdt_model, random.PRNGKey(0))).get_trace(config)
+    improper = lambda site: (jnp.zeros(site["fn"].shape())
+                             if site.get("type") == "sample" and isinstance(site.get("fn"), dist.ImproperUniform)
+                             else None)
+    tr = handlers.trace(handlers.seed(handlers.substitute(sdt_model, substitute_fn=improper),
+                                      random.PRNGKey(0))).get_trace(config)
     sites = {k: np.shape(v["value"]) for k, v in tr.items()
              if v["type"] == "sample" and not v["is_observed"]}
     base = random.PRNGKey(int(seed) + 7919)
@@ -4278,11 +4592,22 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
             if key is not None:
                 fixed[name] = jnp.asarray(v)
                 used.add(key)
+        knob = _rkg_knob(config)
+        kc = None
+        if knob is not None:
+            kc = _knob_init_beta(vals, knob)
+            if kc is not None:
+                used.update(k for k in vals if k == "beta_know_crit" or k.startswith("beta_know_crit["))
+                if knob["B_perp"].shape[1] > 0:
+                    fixed["know_crit_free"] = jnp.asarray(knob["B_perp"].T @ kc)
+                fixed["know_crit_slack"] = jnp.asarray(0.0)
         st = initialize_model(random.fold_in(base, c), sdt_model,
-                              init_strategy=init_to_value(values=fixed,
-                                                          init_strategy=init_to_uniform(radius=float(init_radius))),
+                              init_strategy=_init_given_else_uniform(fixed, float(init_radius)),
                               model_args=(config,))
-        zs.append(st.param_info.z)
+        z = dict(st.param_info.z)
+        if kc is not None:
+            z["know_crit_slack"] = _knob_init_slack(config, knob, z, kc)
+        zs.append(z)
     given = set().union(*[set((v or {}).keys()) for v in init_values])
     unused = sorted(given - used)
     if unused:

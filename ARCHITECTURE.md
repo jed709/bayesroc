@@ -109,6 +109,16 @@ run the full suite.
   chain started in that region (e.g. Stan's random inits) can settle in a spurious
   mode that ignores the observation. Where a JVP divides by a clipped probability,
   zero the gradient where the clip is active so value and tangent stay consistent.
+- **CDP R/K/G cells are exact, and the know criterion is sampled on its feasible set.** A
+  Guess response in the band starting at tau_k is possible only when c_R + c_K > tau_k
+  (Wixted & Mickes 2010 have fixed criteria), so the likelihood has hard walls. With v solving
+  X_know_crit v = 1, beta_know_crit = B_perp w + t v and t = max over Guess trials of
+  (tau - c_R - rest) + exp(slack): an exact bijection (constant Jacobian times exp(slack))
+  under which no coordinate meets a wall, for any fixed/random/smooth terms. Stan builds it in
+  transformed parameters from the likelihood's own per-observation snippets; JAX in
+  `sdt_model` (`_rkg_knob`). Criterion formulas must therefore span the constant: an
+  intercept or a full factor coding (`.check_criterion_designs`), which is also the only
+  meaningful form on a latent axis whose zero is the lure mean.
 - **float32 potentials are summed relative to an offset.** A float32 sum of N log-likelihood
   terms resolves only ~|U| * 6e-8, which is 0.03 at |U| = 5e5 and swamps energy differences.
   In f32 both samplers subtract a per-observation offset (the log-likelihood at a warmed-up

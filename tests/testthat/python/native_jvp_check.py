@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jvp_check
 
 
-def fd_check(f, args, cont_idx, seed=0, h=1e-6):
+def fd_check(f, args, cont_idx, seed=0, h=1e-5):
     """Custom-JVP tangent vs central differences of the kernel's own value, with the
     native kernels loaded."""
     rng = np.random.default_rng(seed)

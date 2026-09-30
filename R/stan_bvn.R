@@ -162,6 +162,114 @@
     return log_sum_exp(vals[1:nv]);
   }
 
+  vector bvn_lin_eval(real x, real Al, real Bl, real Au, real Bu) {
+    real l = is_inf(Al) ? Al : Al + Bl * x;
+    real u = is_inf(Au) ? Au : Au + Bu * x;
+    real ld = bvn_log_interval(l, u);
+    if (is_inf(ld)) return [negative_infinity(), 0, -1]\';
+    real fl = is_inf(l) ? 0 : exp(-0.5 * l * l - 0.9189385332046727 - ld);
+    real fu = is_inf(u) ? 0 : exp(-0.5 * u * u - 0.9189385332046727 - ld);
+    real lA = is_inf(l) ? 0 : l * fl;
+    real uA = is_inf(u) ? 0 : u * fu;
+    real q = Bu * fu - Bl * fl;
+    return [-0.5 * x * x - 0.9189385332046727 + ld, -x + q, -1 - Bu * Bu * uA + Bl * Bl * lA - q * q]\';
+  }
+
+  real bvn_log_lin_integral(real Al, real Bl, real Au, real Bu, real a, real b) {
+    real lo = fmax(a, -40);
+    real hi = fmin(b, 40);
+    if (hi <= lo) return negative_infinity();
+    vector[3] e = bvn_lin_eval(lo, Al, Bl, Au, Bu);
+    if (is_inf(e[1])) e[2] = positive_infinity();
+    real m = lo;
+    if (e[2] > 0) {
+      vector[3] eh = bvn_lin_eval(hi, Al, Bl, Au, Bu);
+      if (is_inf(eh[1])) eh[2] = negative_infinity();
+      if (eh[2] >= 0) {
+        m = hi;
+        e = eh;
+      } else {
+        real L = lo;
+        real H = hi;
+        real x = 0.5 * (lo + hi);
+        e = bvn_lin_eval(x, Al, Bl, Au, Bu);
+        for (it in 1:60) {
+          if (e[2] > 0) L = x; else H = x;
+          real nx = x - e[2] / e[3];
+          if (!(nx > L && nx < H)) nx = 0.5 * (L + H);
+          int done = abs(nx - x) < 1e-12 * (1 + abs(x)) || H - L < 1e-12 * (1 + abs(x));
+          x = nx;
+          e = bvn_lin_eval(x, Al, Bl, Au, Bu);
+          if (done) break;
+        }
+        m = x;
+      }
+    }
+    real gm = e[1];
+    if (is_inf(gm) || is_nan(gm)) return negative_infinity();
+    real rs = (m == lo || m == hi) ? abs(e[2]) : 0;
+    real cv = fmax(-e[3], 1);
+    array[2] real ends;
+    for (side in 1:2) {
+      real dir = side == 1 ? -1 : 1;
+      real edge = side == 1 ? lo : hi;
+      if ((edge - m) * dir <= 0) {
+        ends[side] = m;
+      } else {
+        real Tg = -rs + sqrt(rs * rs + 50);
+        real T = (-rs + sqrt(rs * rs + 50 * cv)) / cv;
+        for (it in 1:8) {
+          if (T >= Tg) break;
+          real xx = m + dir * T;
+          if ((xx - edge) * dir >= 0) break;
+          if (gm - bvn_lin_eval(xx, Al, Bl, Au, Bu)[1] >= 25) break;
+          T = fmin(2 * T, Tg);
+        }
+        real xe = m + dir * T;
+        ends[side] = (xe - edge) * dir >= 0 ? edge : xe;
+      }
+    }
+    array[20] real gx = bvn_gl_x(20);
+    array[20] real gw = bvn_gl_w(20);
+    vector[80] vals = rep_vector(negative_infinity(), 80);
+    int nv = 0;
+    for (sg in 1:2) {
+      real A0 = sg == 1 ? ends[1] : m;
+      real B0 = sg == 1 ? m : ends[2];
+      if (B0 > A0) {
+        for (j in 0:1) {
+          real A = A0 + (B0 - A0) * j / 2.0;
+          real B = A0 + (B0 - A0) * (j + 1) / 2.0;
+          real h = 0.5 * (B - A);
+          real c0 = 0.5 * (A + B);
+          for (q in 1:20) {
+            nv += 1;
+            vals[nv] = log(h * gw[q]) + bvn_lin_eval(c0 + h * gx[q], Al, Bl, Au, Bu)[1];
+          }
+        }
+      }
+    }
+    if (nv == 0) return negative_infinity();
+    return log_sum_exp(vals[1:nv]);
+  }
+
+  real cdp_log_cell(int kind, real muR, real sR, real muF, real sF, real cR, real cK, real tlo, real thi) {
+    real B = -sR / sF;
+    real xcR = (cR - muR) / sR;
+    real xkh = is_inf(thi) ? positive_infinity() : (thi - cK - muR) / sR;
+    real xkl = (tlo - cK - muR) / sR;
+    real Alo = (tlo - muR - muF) / sF;
+    real Ahi = is_inf(thi) ? positive_infinity() : (thi - muR - muF) / sF;
+    real Bhi = is_inf(thi) ? 0 : B;
+    real AK = (cK - muF) / sF;
+    if (kind == 1) return bvn_log_lin_integral(Alo, B, Ahi, Bhi, xcR, positive_infinity());
+    if (kind == 3) return log_sum_exp(bvn_log_lin_integral(Alo, B, AK, 0, xkl, fmin(xkh, xcR)),
+                                      bvn_log_lin_integral(Alo, B, Ahi, Bhi, fmax(xkh, xkl), xcR));
+    real ub = fmin(xcR, xkh);
+    return log_sum_exp(bvn_log_lin_integral(Alo, B, Ahi, Bhi, negative_infinity(), fmin(xkl, ub)),
+                       bvn_log_lin_integral(AK, 0, Ahi, Bhi, xkl, ub));
+  }
+
   real bvn_rect(real a1, real b1, real a2, real b2, real rho_in) {
     real rho = fmin(fmax(rho_in, -0.999999), 0.999999);
     real ar = abs(rho);

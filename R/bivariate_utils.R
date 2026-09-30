@@ -412,25 +412,26 @@ univariate_cell_prob_r <- function(resp, K, mu, sigma, thresh) {
 #' @param z_tau_lo Standardized lower confidence threshold
 #' @param z_tau_hi Standardized upper confidence threshold
 #' @param rho Correlation between R and M
-#' @return Scalar probability (clamped >= 1e-20)
+#' @return Scalar probability; cells below 1e-6 come from the log-space integral
 #' @noRd
 binormal_strip_upper_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
-  p_upper <- pnorm(z_tau_hi) - binormal_cdf_r(z_cR, z_tau_hi, rho)
-  p_lower <- pnorm(z_tau_lo) - binormal_cdf_r(z_cR, z_tau_lo, rho)
-  max(p_upper - p_lower, 1e-20)
+  p <- (pnorm(z_tau_hi) - binormal_cdf_r(z_cR, z_tau_hi, rho)) -
+       (pnorm(z_tau_lo) - binormal_cdf_r(z_cR, z_tau_lo, rho))
+  if (p >= 1e-6) return(p)
+  s <- sqrt((1 - rho) * (1 + rho))
+  exp(.log_lin_integral_r(z_tau_lo / s, -rho / s, z_tau_hi / s, -rho / s, z_cR, Inf))
 }
 
 #' P(R <= c_R, tau_lo < M < tau_hi) -- "Know" in confidence band
 #'
-#' @param z_cR Standardized recollection criterion
-#' @param z_tau_lo Standardized lower confidence threshold
-#' @param z_tau_hi Standardized upper confidence threshold
-#' @param rho Correlation between R and M
-#' @return Scalar probability (clamped >= 1e-20)
+#' @inheritParams binormal_strip_upper_r
+#' @return Scalar probability; cells below 1e-6 come from the log-space integral
 #' @noRd
 binormal_strip_lower_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
-  p_band <- pnorm(z_tau_hi) - pnorm(z_tau_lo)
-  max(p_band - binormal_strip_upper_r(z_cR, z_tau_lo, z_tau_hi, rho), 1e-20)
+  p <- (binormal_cdf_r(z_cR, z_tau_hi, rho) - binormal_cdf_r(z_cR, z_tau_lo, rho))
+  if (p >= 1e-6) return(p)
+  s <- sqrt((1 - rho) * (1 + rho))
+  exp(.log_lin_integral_r(z_tau_lo / s, -rho / s, z_tau_hi / s, -rho / s, -Inf, z_cR))
 }
 
 # --- R/K/G (Remember/Know/Guess) CDP functions ---
@@ -475,6 +476,67 @@ G_cdp_r <- function(c_val, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) {
 #' @param tau_hi Upper confidence threshold (raw, not z-scored)
 #' @return Numeric vector of length 3: c(p_Remember, p_Know, p_Guess)
 #' @noRd
+.log_diff_pnorm <- function(l, u) {
+  if (!(u > l)) return(-Inf)
+  if (l >= 0) {
+    a <- stats::pnorm(l, lower.tail = FALSE, log.p = TRUE)
+    return(a + log1p(-exp(stats::pnorm(u, lower.tail = FALSE, log.p = TRUE) - a)))
+  }
+  if (u <= 0) {
+    a <- stats::pnorm(u, log.p = TRUE)
+    return(a + log1p(-exp(stats::pnorm(l, log.p = TRUE) - a)))
+  }
+  log(stats::pnorm(u) - stats::pnorm(l))
+}
+
+.log_lin_integral_r <- function(Al, Bl, Au, Bu, a, b) {
+  lo <- max(a, -40)
+  hi <- min(b, 40)
+  if (!(hi > lo)) return(-Inf)
+  g <- function(x) {
+    l <- if (is.finite(Al)) Al + Bl * x else Al
+    u <- if (is.finite(Au)) Au + Bu * x else Au
+    stats::dnorm(x, log = TRUE) + .log_diff_pnorm(l, u)
+  }
+  gs <- function(x) {
+    v <- g(x)
+    if (is.finite(v)) v else -1e300
+  }
+  m <- stats::optimize(gs, c(lo, hi), maximum = TRUE, tol = 1e-12)$maximum
+  gm <- max(gs(m), gs(lo), gs(hi))
+  if (!(gm > -1e299)) return(-Inf)
+  f <- function(x) vapply(x, function(xx) exp(gs(xx) - gm), numeric(1))
+  v <- 0
+  if (m > lo) v <- v + stats::integrate(f, lo, m, rel.tol = 1e-10, subdivisions = 500L)$value
+  if (hi > m) v <- v + stats::integrate(f, m, hi, rel.tol = 1e-10, subdivisions = 500L)$value
+  if (!(v > 0)) return(-Inf)
+  gm + log(v)
+}
+
+cdp_log_cell_r <- function(kind, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
+  B <- -sigma_R / sigma_F
+  xcR <- (c_R - mu_R) / sigma_R
+  xkh <- if (is.finite(tau_hi)) (tau_hi - c_K - mu_R) / sigma_R else Inf
+  xkl <- (tau_lo - c_K - mu_R) / sigma_R
+  Alo <- (tau_lo - mu_R - mu_F) / sigma_F
+  Ahi <- if (is.finite(tau_hi)) (tau_hi - mu_R - mu_F) / sigma_F else Inf
+  Bhi <- if (is.finite(tau_hi)) B else 0
+  AK <- (c_K - mu_F) / sigma_F
+  lse <- function(a, b) {
+    m <- max(a, b)
+    if (!is.finite(m)) return(m)
+    m + log(exp(a - m) + exp(b - m))
+  }
+  if (kind == 1) return(.log_lin_integral_r(Alo, B, Ahi, Bhi, xcR, Inf))
+  if (kind == 3) {
+    return(lse(.log_lin_integral_r(Alo, B, AK, 0, xkl, min(xkh, xcR)),
+               .log_lin_integral_r(Alo, B, Ahi, Bhi, max(xkh, xkl), xcR)))
+  }
+  ub <- min(xcR, xkh)
+  lse(.log_lin_integral_r(Alo, B, Ahi, Bhi, -Inf, min(xkl, ub)),
+      .log_lin_integral_r(AK, 0, Ahi, Bhi, xkl, ub))
+}
+
 compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
   mu_M <- mu_R + mu_F
   sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
@@ -493,10 +555,9 @@ compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, 
   p_Band <- pnorm(z_hi) - pnorm(z_lo)
   p_Know <- p_Band - p_Remember - p_Guess
 
-  kk <- 10000
-  soft_floor <- function(p) {
-    y <- kk * p
-    (pmax(y, 0) + log1p(exp(-abs(y)))) / kk
-  }
-  c(soft_floor(p_Remember), soft_floor(p_Know), soft_floor(p_Guess))
+  raw <- c(p_Remember, p_Know, p_Guess)
+  vapply(1:3, function(k) {
+    if (raw[k] >= 1e-6) raw[k]
+    else exp(cdp_log_cell_r(k, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi))
+  }, numeric(1))
 }

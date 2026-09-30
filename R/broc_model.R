@@ -645,6 +645,46 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 #' @param counts Optional column name for count weights
 #' @return List with all model data
 #' @noRd
+.rkg_knob_data <- function(stan_data) {
+  if (!isTRUE(stan_data$n_rkg == 3) || is.null(stan_data$X_know_crit)) return(stan_data)
+  band <- match(stan_data$y, stan_data$old_level_map)
+  live <- if (is.null(stan_data$counts)) rep(TRUE, length(band)) else stan_data$counts > 0
+  g <- which(!is.na(band) & stan_data$rk == 3 & live)
+  stan_data$kc_knob <- as.integer(length(g) > 0)
+  if (!length(g)) return(stan_data)
+  X <- as.matrix(stan_data$X_know_crit)
+  sv <- svd(X)
+  keep <- sv$d > max(sv$d) * 1e-10
+  v <- drop(sv$v[, keep, drop = FALSE] %*% ((t(sv$u[, keep, drop = FALSE]) %*% rep(1, nrow(X))) / sv$d[keep]))
+  P <- ncol(X)
+  stan_data$N_guess <- length(g)
+  stan_data$guess_idx <- as.array(as.integer(g))
+  stan_data$guess_band <- as.array(as.integer(band[g]))
+  stan_data$kc_v <- as.array(v)
+  stan_data$kc_Bperp <- if (P > 1) qr.Q(qr(matrix(v, ncol = 1)), complete = TRUE)[, -1, drop = FALSE]
+                        else matrix(0, nrow = 1, ncol = 0)
+  stan_data
+}
+
+.check_criterion_designs <- function(stan_data) {
+  labels <- c(X_criterion = "criterion", X_criterion2 = "criterion2",
+              X_rec_crit = "rec_crit", X_know_crit = "know_crit")
+  for (nm in names(labels)) {
+    X <- stan_data[[nm]]
+    if (is.null(X) || !length(X)) next
+    X <- as.matrix(X)
+    v <- qr.coef(qr(X), rep(1, nrow(X)))
+    v[is.na(v)] <- 0
+    if (max(abs(X %*% v - 1)) > 1e-8) {
+      stop("The ", labels[[nm]], " formula has no intercept and no full factor coding, so it forces ",
+           "the criterion to 0 wherever its predictors are 0. Criteria live on a latent axis whose ",
+           "zero is only the lure mean, so this is not a meaningful model; include an intercept ",
+           "or code a factor in full (e.g. 0 + condition).", call. = FALSE)
+    }
+  }
+  invisible(NULL)
+}
+
 build_model_data <- function(parsed, data, family, counts = NULL,
                              cor_threshold = TRUE, encoding_vars = NULL) {
   
@@ -1533,6 +1573,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_dprime_fixed <- dprime_fixed$n_coef > 0
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
   
+  .check_criterion_designs(stan_data)
+  if (isTRUE(has_know_crit)) stan_data <- .rkg_knob_data(stan_data)
+
   list(
     N = N,
     K = K,

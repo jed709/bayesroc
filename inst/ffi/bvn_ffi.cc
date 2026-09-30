@@ -113,6 +113,40 @@ ffi::Error ProbitDiffImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::
   return ffi::Error::Success();
 }
 
+void cdp_k(int64_t n, const double* const* i, double* const* o) {
+  for (int64_t k = 0; k < n; ++k) {
+    if (i[0][k] == 0.0) {
+      for (int j = 0; j < 9; ++j) o[j][k] = 0.0;
+      continue;
+    }
+    bvn_tail::CdpCell c = bvn_tail::cdp_cell(static_cast<int>(i[1][k]), i[2][k], i[3][k], i[4][k], i[5][k],
+                                             i[6][k], i[7][k], i[8][k], i[9][k]);
+    o[0][k] = c.lp;
+    for (int j = 0; j < 8; ++j) o[1 + j][k] = c.d[j];
+  }
+}
+
+template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
+ffi::Error F64Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
+  if (args.size() != NI || rets.size() != NO) return ffi::Error::InvalidArgument("bayesroc: f64 arity");
+  const double* in[NI];
+  double* out[NO];
+  int64_t n = 0;
+  for (int a = 0; a < NI; ++a) {
+    auto b = args.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    in[a] = static_cast<const double*>(b.value().untyped_data());
+    n = b.value().element_count();
+  }
+  for (int a = 0; a < NO; ++a) {
+    auto b = rets.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    out[a] = static_cast<double*>(b.value()->untyped_data());
+  }
+  K(n, in, out);
+  return ffi::Error::Success();
+}
+
 struct FlushDenormals {
   unsigned saved;
   FlushDenormals() : saved(_mm_getcsr()) { _mm_setcsr(saved | 0x8040); }
@@ -164,6 +198,10 @@ BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
 BAYESROC_F32(BayesrocVrdp2dF32, 14, 11, bvn::vrdp_array);
 BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
+BAYESROC_F32(BayesrocCdpCellF32, 10, 9, cdp_k);
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocCdpCell, (F64Impl<10, 9, cdp_k>),
+                              ffi::Ffi::Bind().RemainingArgs().RemainingRets());
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitDiff, ProbitDiffImpl,
                               ffi::Ffi::Bind()

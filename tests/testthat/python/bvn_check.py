@@ -86,6 +86,15 @@ if nb._BVN_FFI:
     hh = h
     fd_hi = (np.asarray(nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi + hh))[0])
              - np.asarray(nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi - hh))[0])) / (2 * hh)
+    cx = np.genfromtxt(sys.argv[4], delimiter=",", skip_header=1)
+    cargs = [jnp.asarray(cx[:, j]) for j in range(1, 9)]
+    ref_lp = cx[:, 9]
+    cfin = np.isfinite(ref_lp)
+    nat_lp = np.asarray(nb._cdp_tail(jnp.ones(cx.shape[0], bool), jnp.asarray(cx[:, 0]), *cargs)[0])
+    jax_lp = np.asarray(jax.jit(nb._cdp_cell_jax)(jnp.asarray(cx[:, 0]), *cargs)[0])
+    out["cdp_cell_rel_err"] = float(np.max(np.abs(nat_lp[cfin] - ref_lp[cfin]) / np.maximum(1, np.abs(ref_lp[cfin]))))
+    out["cdp_cell_jax_rel_err"] = float(np.max(np.abs(jax_lp[cfin] - ref_lp[cfin]) / np.maximum(1, np.abs(ref_lp[cfin]))))
+    out["cdp_cell_empty_ok"] = bool(np.all(~np.isfinite(nat_lp[~cfin])) and np.all(~np.isfinite(jax_lp[~cfin])))
     out["probit_cell_fd_err"] = float(max(
         np.max(np.abs(fd_lo[fin] - glo[fin]) / np.maximum(1, np.abs(glo[fin]))),
         np.max(np.abs(fd_hi[fin] - ghi[fin]) / np.maximum(1, np.abs(ghi[fin])))))

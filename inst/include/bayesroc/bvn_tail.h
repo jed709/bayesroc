@@ -100,18 +100,16 @@ inline double lphi2(double x, double y, double rho, double s) {
   return -(x * x - 2.0 * rho * x * y + y * y) / (2.0 * s * s) - std::log(s) - kLog2Pi;
 }
 
-inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
-  Rect r{-kInf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  if (rho > 0.999999) rho = 0.999999;
-  if (rho < -0.999999) rho = -0.999999;
-  double s = std::sqrt((1.0 - rho) * (1.0 + rho));
-  Cond c{a2, b2, rho, s, rho / s};
-  double lo = std::fmax(a1, -kDomain), hi = std::fmin(b1, kDomain);
-  if (!(hi > lo)) return r;
+template <class C>
+inline double log_integral(const C& c, double a, double b) {
+  double lo = std::fmax(a, -kDomain), hi = std::fmin(b, kDomain);
+  if (!(hi > lo)) return -kInf;
   G3 e = c.eval(lo);
+  if (!std::isfinite(e.g)) e.d1 = kInf;
   double m = lo;
   if (e.d1 > 0.0) {
     G3 eh = c.eval(hi);
+    if (!std::isfinite(eh.g)) eh.d1 = -kInf;
     if (eh.d1 >= 0.0) {
       m = hi;
       e = eh;
@@ -131,7 +129,7 @@ inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
     }
   }
   double gm = e.g;
-  if (!std::isfinite(gm)) return r;
+  if (!std::isfinite(gm)) return -kInf;
   double rs = (m == lo || m == hi) ? std::fabs(e.d1) : 0.0;
   double cv = std::fmax(-e.d2, 1.0);
   double ends[2];
@@ -168,10 +166,20 @@ inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
       }
     }
   }
-  if (nv == 0 || !std::isfinite(vmax)) return r;
+  if (nv == 0 || !std::isfinite(vmax)) return -kInf;
   double acc = 0.0;
   for (int i = 0; i < nv; ++i) acc += std::exp(vals[i] - vmax);
-  r.lp = vmax + std::log(acc);
+  return vmax + std::log(acc);
+}
+
+inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
+  Rect r{-kInf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (rho > 0.999999) rho = 0.999999;
+  if (rho < -0.999999) rho = -0.999999;
+  double s = std::sqrt((1.0 - rho) * (1.0 + rho));
+  Cond c{a2, b2, rho, s, rho / s};
+  r.lp = log_integral(c, a1, b1);
+  if (!std::isfinite(r.lp)) return r;
   r.p = std::exp(r.lp);
   if (std::isfinite(b1)) r.d1h = std::exp(log_phi(b1) + band((a2 - rho * b1) / s, (b2 - rho * b1) / s).ld);
   if (std::isfinite(a1)) r.d1l = -std::exp(log_phi(a1) + band((a2 - rho * a1) / s, (b2 - rho * a1) / s).ld);
@@ -273,6 +281,132 @@ inline Rect rect_full(double a1, double b1, double a2, double b2, double rho, Dw
   r.d2h = D1 * pdf(b2) + c[0].dk - c[1].dk;
   r.drho = (c[0].dA - c[1].dA - c[2].dA + c[3].dA) * nd.dAdr;
   return r;
+}
+
+struct LinCond {
+  double Al, Bl, Au, Bu;
+  double lo_at(double x) const { return std::isfinite(Al) ? Al + Bl * x : Al; }
+  double hi_at(double x) const { return std::isfinite(Au) ? Au + Bu * x : Au; }
+  G3 eval(double x) const {
+    double l = lo_at(x), u = hi_at(x);
+    Band b = band(l, u);
+    double fl = std::isfinite(l) ? b.Al : 0.0, fu = std::isfinite(u) ? b.Au : 0.0;
+    double lA = std::isfinite(l) ? l * b.Al : 0.0, uA = std::isfinite(u) ? u * b.Au : 0.0;
+    double q = Bu * fu - Bl * fl;
+    return {log_phi(x) + b.ld, -x + q, -1.0 - Bu * Bu * uA + Bl * Bl * lA - q * q};
+  }
+  double g(double x) const { return log_phi(x) + band(lo_at(x), hi_at(x)).ld; }
+};
+
+struct GaussLine {
+  double lJ0, r1;
+};
+
+inline GaussLine gauss_line(double A, double B, double xa, double xb) {
+  double s2 = 1.0 + B * B, s = std::sqrt(s2), m = A * B / s2;
+  double tl = std::isfinite(xa) ? s * (xa + m) : xa, th = std::isfinite(xb) ? s * (xb + m) : xb;
+  Band b = band(tl, th);
+  double fl = std::isfinite(tl) ? b.Al : 0.0, fh = std::isfinite(th) ? b.Au : 0.0;
+  return {log_phi(A / s) - std::log(s) + b.ld, (fl - fh) / s - m};
+}
+
+struct CdpCell {
+  double lp;
+  double d[8];
+};
+
+struct CdpPiece {
+  double xa, xb, Al, Bl, Au, Bu;
+  const double *dxa, *dxb, *dAl, *dBl, *dAu, *dBu;
+};
+
+inline CdpCell cdp_cell(int kind, double muR, double sR, double muF, double sF, double cR, double cK,
+                        double tlo, double thi) {
+  static const double Z[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  CdpCell out{-kInf, {0, 0, 0, 0, 0, 0, 0, 0}};
+  double beta = sR / sF, B = -beta;
+  double xcR = (cR - muR) / sR;
+  double xkh = std::isfinite(thi) ? (thi - cK - muR) / sR : kInf;
+  double xkl = std::isfinite(tlo) ? (tlo - cK - muR) / sR : -kInf;
+  double Alo = std::isfinite(tlo) ? (tlo - muR - muF) / sF : -kInf;
+  double Ahi = std::isfinite(thi) ? (thi - muR - muF) / sF : kInf;
+  double AK = (cK - muF) / sF;
+  double dxcR[8] = {-1 / sR, -xcR / sR, 0, 0, 1 / sR, 0, 0, 0};
+  double dxkh[8] = {-1 / sR, -xkh / sR, 0, 0, 0, -1 / sR, 0, 1 / sR};
+  double dxkl[8] = {-1 / sR, -xkl / sR, 0, 0, 0, -1 / sR, 1 / sR, 0};
+  double dAlo[8] = {-1 / sF, 0, -1 / sF, -Alo / sF, 0, 0, 1 / sF, 0};
+  double dAhi[8] = {-1 / sF, 0, -1 / sF, -Ahi / sF, 0, 0, 0, 1 / sF};
+  double dB[8] = {0, -1 / sF, 0, beta / sF, 0, 0, 0, 0};
+  double dAK[8] = {0, 0, -1 / sF, -AK / sF, 0, 1 / sF, 0, 0};
+  const double* pdxkh = std::isfinite(xkh) ? dxkh : Z;
+  const double* pdxkl = std::isfinite(xkl) ? dxkl : Z;
+  const double* pdAlo = std::isfinite(Alo) ? dAlo : Z;
+  const double* pdAhi = std::isfinite(Ahi) ? dAhi : Z;
+  const double* pdBlo = std::isfinite(Alo) ? dB : Z;
+  const double* pdBhi = std::isfinite(Ahi) ? dB : Z;
+  double Blo = std::isfinite(Alo) ? B : 0.0, Bhi = std::isfinite(Ahi) ? B : 0.0;
+  CdpPiece pc[2];
+  int np = 0;
+  auto lesser = [](double a, const double* da, double b, const double* db, double& v, const double*& dv) {
+    if (a <= b) { v = a; dv = da; } else { v = b; dv = db; }
+  };
+  auto greater = [](double a, const double* da, double b, const double* db, double& v, const double*& dv) {
+    if (a >= b) { v = a; dv = da; } else { v = b; dv = db; }
+  };
+  if (kind == 1) {
+    pc[np++] = {xcR, kInf, Alo, Blo, Ahi, Bhi, dxcR, Z, pdAlo, pdBlo, pdAhi, pdBhi};
+  } else if (kind == 3) {
+    double b1; const double* db1;
+    lesser(xkh, pdxkh, xcR, dxcR, b1, db1);
+    pc[np++] = {xkl, b1, Alo, Blo, AK, 0.0, pdxkl, db1, pdAlo, pdBlo, dAK, Z};
+    double a2; const double* da2;
+    greater(xkh, pdxkh, xkl, pdxkl, a2, da2);
+    pc[np++] = {a2, xcR, Alo, Blo, Ahi, Bhi, da2, dxcR, pdAlo, pdBlo, pdAhi, pdBhi};
+  } else {
+    double ub; const double* dub;
+    lesser(xcR, dxcR, xkh, pdxkh, ub, dub);
+    double b1; const double* db1;
+    lesser(xkl, pdxkl, ub, dub, b1, db1);
+    pc[np++] = {-kInf, b1, Alo, Blo, Ahi, Bhi, Z, db1, pdAlo, pdBlo, pdAhi, pdBhi};
+    pc[np++] = {xkl, ub, AK, 0.0, Ahi, Bhi, pdxkl, dub, dAK, Z, pdAhi, pdBhi};
+  }
+  double lps[2] = {-kInf, -kInf};
+  double lmax = -kInf;
+  for (int k = 0; k < np; ++k) {
+    LinCond c{pc[k].Al, pc[k].Bl, pc[k].Au, pc[k].Bu};
+    lps[k] = log_integral(c, pc[k].xa, pc[k].xb);
+    if (lps[k] > lmax) lmax = lps[k];
+  }
+  if (!std::isfinite(lmax)) return out;
+  double acc = 0.0;
+  for (int k = 0; k < np; ++k) acc += std::exp(lps[k] - lmax);
+  out.lp = lmax + std::log(acc);
+  for (int k = 0; k < np; ++k) {
+    const CdpPiece& q = pc[k];
+    if (!std::isfinite(lps[k])) continue;
+    LinCond c{q.Al, q.Bl, q.Au, q.Bu};
+    double xa = std::fmax(q.xa, -kDomain), xb = std::fmin(q.xb, kDomain);
+    double w[6] = {0, 0, 0, 0, 0, 0};
+    if (q.xb < kDomain) w[1] = std::exp(c.g(xb) - out.lp);
+    if (q.xa > -kDomain) w[0] = -std::exp(c.g(xa) - out.lp);
+    if (std::isfinite(q.Au)) {
+      GaussLine gl = gauss_line(q.Au, q.Bu, xa, xb);
+      double e = std::exp(gl.lJ0 - out.lp);
+      w[4] = e;
+      w[5] = e * gl.r1;
+    }
+    if (std::isfinite(q.Al)) {
+      GaussLine gl = gauss_line(q.Al, q.Bl, xa, xb);
+      double e = std::exp(gl.lJ0 - out.lp);
+      w[2] = -e;
+      w[3] = -e * gl.r1;
+    }
+    const double* dv[6] = {q.dxa, q.dxb, q.dAl, q.dBl, q.dAu, q.dBu};
+    for (int t = 0; t < 6; ++t)
+      if (w[t] != 0.0)
+        for (int j = 0; j < 8; ++j) out.d[j] += w[t] * dv[t][j];
+  }
+  return out;
 }
 
 }  // namespace bvn_tail

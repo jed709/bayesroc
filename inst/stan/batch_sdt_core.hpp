@@ -38,13 +38,6 @@ inline double Phi_diff(double lo, double hi) {
 // Cell log-probability and gradients (probit link)
 // ============================================================
 
-// Numerically stable softplus: log1p(exp(x)) ≈ x for large x
-inline double stable_softplus(double x) {
-  if (x > 20.0) return x;      // exp(x) >> 1, so log1p(exp(x)) ≈ x
-  if (x < -20.0) return 0.0;   // exp(x) ≈ 0, so log1p(exp(x)) ≈ 0
-  return std::log1p(std::exp(x));
-}
-
 struct CellResult {
   double lp;
   double d_z_lo;
@@ -1302,10 +1295,10 @@ inline CdpRkgResult cdp_rkg_cell(
 
   // "Old" response: use the same Remember + G(c) decomposition.
   double tau_lo_val = tau[old_idx];
-  double tau_hi_val = (old_idx < J - 1) ? tau[old_idx + 1] : 20.0;
-  double z_lo = (tau_lo_val - mu_M) * inv_sM;
-  double z_hi = (tau_hi_val - mu_M) * inv_sM;
   bool is_hi_edge = (old_idx == J - 1);
+  double tau_hi_val = is_hi_edge ? bvn_tail::kInf : tau[old_idx + 1];
+  double z_lo = (tau_lo_val - mu_M) * inv_sM;
+  double z_hi = is_hi_edge ? bvn_tail::kInf : (tau_hi_val - mu_M) * inv_sM;
 
   res.k_lo = old_idx;
   if (!is_hi_edge) res.k_hi = old_idx + 1;
@@ -1326,29 +1319,35 @@ inline CdpRkgResult cdp_rkg_cell(
   // KNOW: remainder
   double p_K_raw = p_band - p_R_raw - p_G_raw;
 
-  // Soft clamp (same as fused JAX path)
-  double kk = 10000.0;
-  double p_R = stable_softplus(kk * p_R_raw) / kk;
-  double p_K = stable_softplus(kk * p_K_raw) / kk;
-  double p_G = stable_softplus(kk * p_G_raw) / kk;
-
-  double prob;
-  if (rk_n == 1) prob = p_R;
-  else if (rk_n == 2) prob = p_K;
-  else prob = p_G;
-
-  if (prob < kPFloor) prob = kPFloor;
+  double prob = rk_n == 1 ? p_R_raw : (rk_n == 2 ? p_K_raw : p_G_raw);
+  if (!(prob >= bvn_tail::kTailSwitch)) {
+    bvn_tail::CdpCell t = bvn_tail::cdp_cell(rk_n, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff,
+                                             c_R, c_K, tau_lo_val, tau_hi_val);
+    double lfloor = std::log(kPFloor);
+    if (!(t.lp > lfloor)) {
+      res.lp = lfloor;
+      return res;
+    }
+    res.lp = t.lp;
+    if (is_old) {
+      res.d_dprime = t.d[0];
+      res.d_sigma = t.d[1] * sigma_R_eff;
+      res.d_dprime2 = t.d[2];
+      res.d_sigma2 = t.d[3] * sigma_F_eff;
+    }
+    res.d_rec_crit = t.d[4];
+    res.d_know_crit = t.d[5];
+    res.d_thresh_lo = t.d[6];
+    res.d_thresh_hi = is_hi_edge ? 0.0 : t.d[7];
+    return res;
+  }
   res.lp = std::log(prob);
 
   double inv_prob = 1.0 / prob;
-  double sig_R = 1.0 / (1.0 + std::exp(-kk * p_R_raw));
-  double sig_K = 1.0 / (1.0 + std::exp(-kk * p_K_raw));
-  double sig_G = 1.0 / (1.0 + std::exp(-kk * p_G_raw));
-
   double dlp_dpR = 0.0, dlp_dpK = 0.0, dlp_dpG = 0.0;
-  if (rk_n == 1) dlp_dpR = sig_R * inv_prob;
-  else if (rk_n == 2) dlp_dpK = sig_K * inv_prob;
-  else dlp_dpG = sig_G * inv_prob;
+  if (rk_n == 1) dlp_dpR = inv_prob;
+  else if (rk_n == 2) dlp_dpK = inv_prob;
+  else dlp_dpG = inv_prob;
 
   // K = band - R - G, so every param's K-contribution is -(R + G) contribution,
   // plus the band derivative where R/G don't reach (e.g. through phi(z_hi/lo)).
@@ -1389,8 +1388,9 @@ inline CdpRkgResult cdp_rkg_cell(
 
     // sigma_R: through z_cR, through sigma_M (z_lo/z_hi and rho), and G
     double drho_dsigR = (sigma_F_eff * sigma_F_eff) / (sigma_M * sigma_M * sigma_M);
+    double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
     double d_sigR_raw = dlp_dzcR * (-z_cR * inv_sR)
-                      + (dlp_dzhi * (-z_hi * inv_sM) + dlp_dzlo * (-z_lo * inv_sM))
+                      + (zh_s + dlp_dzlo * (-z_lo * inv_sM))
                         * sR_over_sM
                       + dlp_drho * drho_dsigR
                       + eff_dpG * dG_dsigR;
@@ -1400,7 +1400,7 @@ inline CdpRkgResult cdp_rkg_cell(
     // sigma_F: same shape, through sigma_M and G
     double sF_over_sM = sigma_F_eff * inv_sM;
     double drho_dsigF = -sigma_R_eff * sigma_F_eff / (sigma_M * sigma_M * sigma_M);
-    double d_sigF_raw = (dlp_dzhi * (-z_hi * inv_sM) + dlp_dzlo * (-z_lo * inv_sM))
+    double d_sigF_raw = (zh_s + dlp_dzlo * (-z_lo * inv_sM))
                           * sF_over_sM
                       + dlp_drho * drho_dsigF
                       + eff_dpG * dG_dsigF;

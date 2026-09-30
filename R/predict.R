@@ -2317,7 +2317,7 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
 
           if (!is.na(old_idx)) {
             tau_lo <- tau[old_idx]
-            tau_hi <- if (old_idx == J) 20.0 else tau[old_idx + 1]
+            tau_hi <- if (old_idx == J) Inf else tau[old_idx + 1]
 
             if (n_rkg == 3) {
               rkg <- compute_rkg_probs_r(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi)
@@ -2357,7 +2357,7 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
 
           if (!is.na(old_idx)) {
             tau_lo <- tau[old_idx]
-            tau_hi <- if (old_idx == J) 20.0 else tau[old_idx + 1]
+            tau_hi <- if (old_idx == J) Inf else tau[old_idx + 1]
 
             if (n_rkg == 3) {
               rkg <- compute_rkg_probs_r(0, 1, 0, 1, c_R, c_K, tau_lo, tau_hi)

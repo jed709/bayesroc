@@ -23,3 +23,26 @@
        grad = max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))),
        dim = c(ncol(a), ncol(b)))
 }
+
+.stan_parity_at <- function(mp, mb, edits, warmup = 100) {
+  modp <- .compile_broc_stan(mp)
+  modb <- .compile_broc_stan(mb)
+  fp <- modp$sample(data = mp$stan_data, chains = 1, iter_warmup = warmup, iter_sampling = 5,
+                    init = 0, sig_figs = 18, refresh = 50, seed = 1, show_messages = FALSE)
+  src <- readLines(fp$output_files()[1])
+  hdr <- grep("^lp__", src)
+  cols <- strsplit(src[hdr], ",")[[1]]
+  rows <- which(seq_along(src) > hdr & !startsWith(src, "#") & nzchar(src))
+  for (r in rows) {
+    v <- strsplit(src[r], ",")[[1]]
+    for (nm in names(edits)) v[match(nm, cols)] <- format(edits[[nm]], digits = 17)
+    src[r] <- paste(v, collapse = ",")
+  }
+  csv <- tempfile(fileext = ".csv")
+  writeLines(src, csv)
+  a <- .cmdstan_log_prob(modp, mp$stan_data, csv)
+  b <- .cmdstan_log_prob(modb, mb$stan_data, csv)
+  list(lp = max(abs(a[, 1] - b[, 1])),
+       grad = max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))),
+       lp_values = a[, 1])
+}

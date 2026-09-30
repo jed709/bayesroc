@@ -11,7 +11,7 @@
   paste0(rep(c("simple", "dpsdt", "mixture", "source_mixture"), each = 3), "_",
          c("probit", "logit", "cloglog")),
   "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp",
-  "vrdp2d", "cdp_rk", "cdp_rkg"
+  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail"
 )
 
 test_that("every fused kernel's custom JVP is the exact derivative of its value", {
@@ -30,10 +30,14 @@ test_that("with the native kernels loaded, every probit and bivariate JVP matche
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()
   ks <- c(paste0(c("simple", "dpsdt", "mixture", "source_mixture"), "_probit"),
-          "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp", "vrdp2d")
+          "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp", "vrdp2d",
+          "cdp_rk", "cdp_rkg", "cdp_rkg_tail")
   res <- .run_py_check("native_jvp_check.py", c(lib, paste(ks, collapse = ",")))
   expect_true(res$ffi_loaded)
-  for (k in ks) expect_lt(res[[k]], 1e-6, label = paste(k, "native JVP vs finite differences"))
+  for (k in ks) {
+    tol <- if (k == "cdp_rkg_tail") 1e-5 else 1e-6
+    expect_lt(res[[k]], tol, label = paste(k, "native JVP vs finite differences"))
+  }
 })
 
 test_that("f32 mode agrees with f64 to single-precision rounding", {
@@ -51,7 +55,8 @@ test_that("bivariate normal rectangle and CDF are accurate, native and JAX paths
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()
   res <- .run_py_check("bvn_check.py", c(lib,
-                                         testthat::test_path("fixtures", "bvn_tail_ref.csv")))
+                                         testthat::test_path("fixtures", "bvn_tail_ref.csv"),
+                                         testthat::test_path("fixtures", "cdp_cell_ref.csv")))
   expect_lt(res$rect_abs_err, 1e-9)
   expect_lt(res$rect_rel_err, 1e-6)
   expect_lt(res$tail_rel_err, 1e-8)
@@ -64,4 +69,7 @@ test_that("bivariate normal rectangle and CDF are accurate, native and JAX paths
   expect_lt(res$ffi_vs_jax_cdf, 1e-8)
   expect_lt(res$probit_cell_rel_err, 1e-8)
   expect_lt(res$probit_cell_fd_err, 1e-5)
+  expect_lt(res$cdp_cell_rel_err, 1e-10)
+  expect_lt(res$cdp_cell_jax_rel_err, 1e-10)
+  expect_true(res$cdp_cell_empty_ok)
 })

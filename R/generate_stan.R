@@ -928,11 +928,11 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     real p_Band = link_diff(z_lo, z_hi);
     real p_Know = p_Band - p_Remember - p_Guess;
 
-    // Soft clamp
-    real kk = 10000.0;
-    probs[1] = log1p_exp(kk * p_Remember) / kk;
-    probs[2] = log1p_exp(kk * p_Know) / kk;
-    probs[3] = log1p_exp(kk * p_Guess) / kk;
+    probs[1] = p_Remember;
+    probs[2] = p_Know >= 1e-6 ? p_Know
+      : exp(cdp_log_cell(2, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi));
+    probs[3] = p_Guess >= 1e-6 ? p_Guess
+      : exp(cdp_log_cell(3, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi));
     return probs;
   }')
     }
@@ -1219,6 +1219,15 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$has_know_crit)) {
     lines <- c(lines, "", "  // know_crit (know criterion) fixed effects",
                "  int<lower=1> P_know_crit;", "  matrix[N, P_know_crit] X_know_crit;")
+    if (isTRUE(model_data$stan_data$kc_knob == 1)) {
+      lines <- c(lines,
+                 "  int<lower=0, upper=1> kc_knob;",
+                 "  int<lower=1> N_guess;",
+                 "  array[N_guess] int<lower=1, upper=N> guess_idx;",
+                 "  array[N_guess] int<lower=1, upper=J> guess_band;",
+                 "  vector[P_know_crit] kc_v;",
+                 "  matrix[P_know_crit, P_know_crit - 1] kc_Bperp;")
+    }
   }
   if (isTRUE(model_data$has_dprime_L)) {
     lines <- c(lines, "", "  int<lower=1> P_dprime_L;", "  matrix[N, P_dprime_L] X_dprime_L;")
@@ -1410,7 +1419,11 @@ generate_parameters_block_v2 <- function(model_data, family) {
     lines <- c(lines, "  vector[P_rec_crit] beta_rec_crit;  // Recollection criterion")
   }
   if (isTRUE(model_data$has_know_crit)) {
-    lines <- c(lines, "  vector[P_know_crit] beta_know_crit;  // Know criterion (R/K/G)")
+    if (isTRUE(model_data$stan_data$kc_knob == 1)) {
+      lines <- c(lines, "  vector[P_know_crit - 1] know_crit_free;", "  real know_crit_slack;")
+    } else {
+      lines <- c(lines, "  vector[P_know_crit] beta_know_crit;  // Know criterion (R/K/G)")
+    }
   }
   if (isTRUE(model_data$has_dprime_L)) lines <- c(lines, "  vector[P_dprime_L] beta_dprime_L;  // Lure d'")
   if (isTRUE(model_data$has_sigma_L)) lines <- c(lines, "  vector[P_sigma_L] beta_sigma_L;  // Lure sigma (log scale)")
@@ -1617,9 +1630,35 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
   }
 
   lines <- c(lines, generate_smooth_transformed_params(model_data))
+  if (isTRUE(model_data$stan_data$kc_knob == 1)) lines <- c(lines, generate_know_crit_knob(model_data))
 
   lines <- c(lines, "}")
   paste(lines, collapse = "\n")
+}
+
+generate_know_crit_knob <- function(model_data) {
+  kc_lines <- generate_param_lp("know_crit", model_data$know_crit_fixed, model_data$know_crit_random,
+                                model_data$smooth_data[["know_crit"]])
+  kc_lines <- gsub("beta_know_crit", "beta_kc_perp", kc_lines, fixed = TRUE)
+  rc_lines <- if (isTRUE(model_data$has_rec_crit)) {
+    generate_param_lp("rec_crit", model_data$rec_crit_fixed, model_data$rec_crit_random,
+                      model_data$smooth_data[["rec_crit"]])
+  } else {
+    "    real rec_crit_n = 1.5;"
+  }
+  c("  vector[P_know_crit] beta_know_crit;",
+    "  {",
+    "    vector[P_know_crit] beta_kc_perp = kc_Bperp * know_crit_free;",
+    "    real kc_t = negative_infinity();",
+    "    for (g in 1:N_guess) {",
+    "    int n = guess_idx[g];",
+    rc_lines,
+    kc_lines,
+    generate_thresh_code_cdp(model_data),
+    "    kc_t = fmax(kc_t, tau[guess_band[g]] - rec_crit_n - know_crit_n);",
+    "    }",
+    "    beta_know_crit = beta_kc_perp + (kc_t + exp(know_crit_slack)) * kc_v;",
+    "  }")
 }
 
 generate_re_transform_v2 <- function(param_name, group, re) {
@@ -1899,7 +1938,8 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   pl[] <- rapply(pl, to_stan_prior, classes = "character", how = "replace")
 
   lines <- c("model {")
-  
+  if (isTRUE(model_data$stan_data$kc_knob == 1)) lines <- c(lines, "  target += know_crit_slack;")
+
   generate_fixed_priors <- function(dpar, coef_names, beta_name) {
     coef_priors <- pl$b_coef[grepl(paste0("^", dpar, "_"), names(pl$b_coef))]
     
@@ -2652,7 +2692,7 @@ generate_cdp_likelihood_code <- function(model_data) {
                "        real tau_lo = tau[old_idx];",
                "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        vector[3] rkg = compute_rkg_probs(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi);",
-               "        ll = log(rkg[rk[n]]);",
+               "        ll = log(fmax(rkg[rk[n]], 1e-300));",
                "      } else {",
                "        // 'New' response (below tau[1])",
                "        real z_tau1 = (tau[1] - mu_M) / sigma_M;",
@@ -2665,7 +2705,7 @@ generate_cdp_likelihood_code <- function(model_data) {
                "        real tau_lo = tau[old_idx];",
                "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        vector[3] rkg_l = compute_rkg_probs(0, 1, 0, 1, c_R, c_K, tau_lo, tau_hi);",
-               "        ll = log(rkg_l[rk[n]]);",
+               "        ll = log(fmax(rkg_l[rk[n]], 1e-300));",
                "      } else {",
                "        // Correct rejection",
                "        real z_tau1_l = tau[1] / sigma_M_l;",
