@@ -50,7 +50,7 @@ test_that("plot() default dpar and summary() diagnostics banner work", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
 
   p <- plot(fit)

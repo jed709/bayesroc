@@ -14,7 +14,9 @@
 #' central anchor (`thresh_mid`) plus strictly-positive, log-scale spacings
 #' (`log_gaps`) between successive thresholds, which enforces ordering. Set
 #' criterion priors via `dpar = "thresh_mid"` (overall criterion location) and
-#' `dpar = "log_gaps"` (threshold spread).
+#' `dpar = "log_gaps"` (threshold spread). With `gap_link = "softplus"` the
+#' `log_gaps` prior applies to the unconstrained gap parameters that the
+#' softplus maps to spacings.
 #'
 #' @param prior The prior as a distribution call, e.g. `"normal(0, 1)"`,
 #'   `"student_t(3, 0, 2.5)"`, or `"lkj(2)"`. Supported on both backends:
@@ -277,7 +279,6 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       lambda_L = "normal(0, 1.5)",
       thresh_mid = "normal(0, 1.5)",
       log_gaps = "normal(0, 1)",
-      raw_gaps = "normal(0, 1)",
       thresh_mid2 = "normal(0, 1.5)",
       log_gaps2 = "normal(0, 1)"
     ),

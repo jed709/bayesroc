@@ -267,16 +267,24 @@ build_numpyro_config <- function(model) {
   config$n_thresh <- n_thresh
   config$thresh_mid_idx <- ceiling(n_thresh / 2)
 
+  gaps_key <- "log_gaps"
+  gaps2_key <- "log_gaps2"
   config$prior_thresh_mid <- get_fixed_prior(prior_lookup, "thresh_mid")
-  config$prior_log_gaps <- get_fixed_prior(prior_lookup, "log_gaps")
+  config$prior_log_gaps <- get_fixed_prior(prior_lookup, gaps_key)
   n_gaps_jax <- max(0L, n_thresh - 1L)
   if (n_gaps_jax > 0) {
     config$prior_log_gaps_per_gap <- vapply(seq_len(n_gaps_jax), function(k)
-      get_fixed_prior(prior_lookup, "log_gaps", coef = sprintf("[%d]", k)),
+      get_fixed_prior(prior_lookup, gaps_key, coef = sprintf("[%d]", k)),
       character(1))
   }
   config$prior_thresh_mid2 <- get_fixed_prior(prior_lookup, "thresh_mid2")
-  config$prior_log_gaps2 <- get_fixed_prior(prior_lookup, "log_gaps2")
+  config$prior_log_gaps2 <- get_fixed_prior(prior_lookup, gaps2_key)
+  n_gaps2_jax <- if (!is.null(md$K2)) max(0L, md$K2 - 2L) else 0L
+  if (n_gaps2_jax > 0) {
+    config$prior_log_gaps2_per_gap <- vapply(seq_len(n_gaps2_jax), function(k)
+      get_fixed_prior(prior_lookup, gaps2_key, coef = sprintf("[%d]", k)),
+      character(1))
+  }
 
   crit <- md$criterion
   if (!is.null(crit)) {
@@ -290,7 +298,12 @@ build_numpyro_config <- function(model) {
   }
 
   crit2 <- md$criterion2
-  if (!is.null(crit2) && !is.null(crit2$X) && isTRUE(crit2$n_coef > 1L)) {
+  if (isTRUE(md$varying_source_criteria) && isTRUE(md$stan_data$P_criterion2_cov > 0)) {
+    config$crit2_cov <- list(X = as.matrix(md$stan_data$X_criterion2_cov),
+                             col_names = as.list(crit2$cov_names))
+  }
+  if (!isTRUE(md$varying_source_criteria) &&
+      !is.null(crit2) && !is.null(crit2$X) && isTRUE(crit2$n_coef > 1L)) {
     c2_cols <- crit2$col_names
     if (length(c2_cols) == 0 || all(!nzchar(c2_cols))) {
       c2_cols <- colnames(crit2$X)
@@ -441,7 +454,8 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                     sampler = "nuts", control = list(), save_loglik = TRUE,
                     chain_method = "parallel", python = NULL,
                     progress_bar = TRUE, loglik_precision = "f32",
-                    keep_re = FALSE, warm_state = NULL, save_state = FALSE) {
+                    keep_re = FALSE, warm_state = NULL, save_state = FALSE,
+                    init_values = NULL, worker = NULL, worker_token = NULL) {
 
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("Package 'jsonlite' is required for the JAX backend.")
@@ -461,28 +475,35 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
 
   tmp_dir <- tempfile("numpyro_")
   dir.create(tmp_dir)
+  on.exit(unlink(tmp_dir, recursive = TRUE), add = TRUE)
   config_file <- file.path(tmp_dir, "config.json")
   result_file <- file.path(tmp_dir, "results.json")
 
   if (is.null(init_strategy)) init_strategy <- "prior"
   fit_args <- list(
     config = config,
-    chains = as.integer(chains),
-    warmup = as.integer(warmup),
-    samples = as.integer(samples),
-    seed = as.integer(seed),
-    result_file = result_file,
-    init_strategy = init_strategy,
-    init_radius  = if (is.numeric(init)) as.numeric(init) else 2.0,
-    sampler = sampler,
-    control = if (length(control)) control else NULL,
-    step_size = if (is.null(step_size)) 1.0 else as.numeric(step_size),
-    save_loglik = isTRUE(save_loglik),
-    keep_re = isTRUE(keep_re),
-    warm_state = if (is.null(warm_state)) NULL else
-      normalizePath(warm_state, winslash = "/", mustWork = TRUE),
-    save_state = isTRUE(save_state),
-    state_file = if (isTRUE(save_state)) "state.pkl" else NULL
+    fit_kwargs = list(
+      chains = as.integer(chains),
+      warmup = as.integer(warmup),
+      samples = as.integer(samples),
+      seed = as.integer(seed),
+      target_accept_prob = as.numeric(adapt_delta),
+      max_tree_depth = as.integer(max_treedepth),
+      step_size = if (is.null(step_size)) 1.0 else as.numeric(step_size),
+      thinning = as.integer(thin),
+      chain_method = chain_method,
+      progress_bar = isTRUE(progress_bar),
+      init_strategy = init_strategy,
+      init_radius = if (is.numeric(init)) as.numeric(init) else 2.0,
+      sampler = sampler,
+      control = if (length(control)) control else NULL,
+      save_loglik = isTRUE(save_loglik),
+      keep_re = isTRUE(keep_re),
+      warm_state = if (is.null(warm_state)) NULL else
+        normalizePath(warm_state, winslash = "/", mustWork = TRUE),
+      save_state = isTRUE(save_state),
+      init_values = init_values
+    )
   )
 
   fit_args_json <- rapply(fit_args, function(x) {
@@ -496,131 +517,6 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
   jsonlite::write_json(fit_args_json, config_file, auto_unbox = TRUE,
                        digits = 17, null = "null")
 
-  device_count <- if (identical(chain_method, "sequential")) 1L else as.integer(chains)
-
-  nuts_f32 <- identical(sampler, "nuts") && identical(control$precision, "f32")
-
-  bvn_lib <- .bvn_ffi_lib(python)
-  xla_cache <- .xla_cache_dir()
-  runner_script <- file.path(tmp_dir, "run_fit.py")
-  writeLines(c(
-    "import sys, os, json",
-    if (!is.null(bvn_lib)) paste0("os.environ['BAYESROC_BVN_FFI'] = ", deparse(bvn_lib)),
-    paste0("os.environ['BAYESROC_XLA_CACHE'] = ", deparse(xla_cache)),
-    paste0("os.environ['XLA_FLAGS'] = '--xla_force_host_platform_device_count=", device_count, "'"),
-    if (nuts_f32) "os.environ['BAYESROC_ENABLE_X64'] = '0'  # NUTS float32 mode",
-    paste0("sys.path.insert(0, ", deparse(dirname(py_script)), ")"),
-    paste0("os.chdir(", deparse(tmp_dir), ")"),
-    "",
-    "# Read config",
-    "with open('config.json', 'r') as f:",
-    "    args = json.load(f)",
-    "",
-    "config = args['config']",
-    "result_file = args['result_file']",
-    "",
-    "# Convert list-of-lists back to list-of-lists (numpy will handle)",
-    "import numpy as np",
-    "def convert_matrices(obj):",
-    "    if isinstance(obj, dict):",
-    "        for k, v in obj.items():",
-    "            if k in ('X', 'Z', 'X_crit') and isinstance(v, list) and len(v) > 0 and isinstance(v[0], list):",
-    "                obj[k] = [list(map(float, row)) for row in v]",
-    "            else:",
-    "                convert_matrices(v)",
-    "    elif isinstance(obj, list):",
-    "        for item in obj:",
-    "            if isinstance(item, dict):",
-    "                convert_matrices(item)",
-    "convert_matrices(config)",
-    "",
-    "# Import and run",
-    "from numpyro_backend import fit_model",
-    "",
-    "result = fit_model(",
-    "    config=config,",
-    paste0("    chains=", as.integer(chains), ","),
-    paste0("    warmup=", as.integer(warmup), ","),
-    paste0("    samples=", as.integer(samples), ","),
-    paste0("    seed=", as.integer(seed), ","),
-    paste0("    target_accept_prob=", adapt_delta, ","),
-    paste0("    max_tree_depth=", as.integer(max_treedepth), ","),
-    "    step_size=args.get('step_size', 1.0),",
-    paste0("    thinning=", as.integer(thin), ","),
-    paste0("    chain_method=", shQuote(chain_method), ","),
-    paste0("    progress_bar=", if (isTRUE(progress_bar)) "True" else "False", ","),
-    paste0("    init_strategy=", shQuote(init_strategy), ","),
-    paste0("    init_radius=", as.numeric(fit_args$init_radius), ","),
-    "    sampler=args.get('sampler', 'nuts'),",
-    "    control=args.get('control', None),",
-    "    save_loglik=args.get('save_loglik', True),",
-    "    keep_re=args.get('keep_re', False),",
-    "    warm_state=args.get('warm_state', None),",
-    "    save_state=args.get('save_state', False),",
-    ")",
-    "",
-    "# Save results as JSON-compatible format",
-    "output = {",
-    "    'elapsed': result['elapsed'],",
-    "    'samples': {},",
-    "    'extra_fields': {}",
-    "}",
-    "",
-    "# Save samples as .npy files (fast binary), record filenames in JSON",
-    "for k, v in result['samples'].items():",
-    "    fname = f'sample_{k}.npy'",
-    "    np.save(fname, v)",
-    "    output['samples'][k] = fname",
-    "",
-    "for k, v in result['extra_fields'].items():",
-    "    fname = f'extra_{k}.npy'",
-    "    np.save(fname, v)",
-    "    output['extra_fields'][k] = fname",
-    "",
-    "if result.get('state') is not None:",
-    "    import pickle",
-    "    with open('state.pkl', 'wb') as fh:",
-    "        pickle.dump(result['state'], fh)",
-    "    output['state'] = 'state.pkl'",
-    "",
-    "with open(result_file, 'w') as f:",
-    "    json.dump(output, f)",
-    "",
-    "# Print diagnostic warnings (only if problems detected)",
-    "ef = result['extra_fields']",
-    "smp = args.get('sampler', 'nuts')",
-    "warnings = []",
-    "if 'diverging' in ef:",
-    "    n_div = int(ef['diverging'].sum())",
-    "    n_total = ef['diverging'].size",
-    "    if n_div > 0:",
-    "        warnings.append(f'WARNING: {n_div} of {n_total} ({100*n_div/n_total:.1f}%) transitions ended with a divergence.')",
-    "if smp != 'drghmc' and 'energy' in ef:",
-    "    n_chains = ef['energy'].shape[0]",
-    "    low_bfmi = []",
-    "    for c in range(n_chains):",
-    "        e = ef['energy'][c]",
-    "        de = np.diff(e)",
-    "        bfmi = np.sum(de**2) / np.sum((e - np.mean(e))**2)",
-    "        if bfmi < 0.3:",
-    "            low_bfmi.append((c+1, bfmi))",
-    "    if low_bfmi:",
-    "        chains_str = ', '.join(f'chain {c} (E-BFMI={b:.3f})' for c, b in low_bfmi)",
-    "        warnings.append(f'WARNING: Low E-BFMI for {chains_str}.')",
-    paste0("if 'num_steps' in ef:"),
-    paste0("    max_steps = 2**", as.integer(max_treedepth)),
-    "    n_hit = int((ef['num_steps'] >= max_steps).sum())",
-    "    n_total = ef['num_steps'].size",
-    "    if n_hit > 0:",
-    paste0("        warnings.append(f'WARNING: {n_hit} of {n_total} ({100*n_hit/n_total:.1f}%) transitions hit max treedepth (", max_treedepth, ").')"),
-    "if 'dr_stage' in ef:",
-    "    rej = float((ef['dr_stage'] < 0).mean())",
-    "    if rej > 0.30:",
-    "        warnings.append(f'WARNING: DR-G-HMC rejection fraction {100*rej:.0f}%; adaptation may be insufficient.')",
-    "for w in warnings:",
-    "    print(w)"
-  ), runner_script)
-
   chain_note <- if (identical(chain_method, "sequential")) ", sequential" else ""
   if (identical(sampler, "drghmc")) {
     message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
@@ -630,41 +526,32 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
             warmup, " warmup, ", samples, " samples)...")
   }
 
-  if (!requireNamespace("processx", quietly = TRUE)) {
-    stop("Package 'processx' is required for the JAX backend.\n",
-         "Install it with: install.packages('processx')")
-  }
-
-  proc <- processx::process$new(
-    python, args = runner_script,
-    stdout = "|", stderr = "|",
-    cleanup = TRUE, cleanup_tree = TRUE
-  )
-
-  on.exit({
-    if (proc$is_alive()) {
-      message("\nKilling NumPyro subprocess...")
-      proc$kill_tree()
+  if (!is.null(worker)) {
+    .jax_worker_run(worker, config_file, tmp_dir, token = worker_token)
+  } else {
+    if (!requireNamespace("processx", quietly = TRUE)) {
+      stop("Package 'processx' is required for the JAX backend.\n",
+           "Install it with: install.packages('processx')")
     }
-  }, add = TRUE)
-
-  while (proc$is_alive()) {
-    proc$poll_io(200)
-    out <- proc$read_output()
-    err <- proc$read_error()
-    if (nzchar(out)) cat(out)
-    if (nzchar(err)) cat(err)
-  }
-  out <- proc$read_output()
-  err <- proc$read_error()
-  if (nzchar(out)) cat(out)
-  if (nzchar(err)) cat(err)
-
-  exit_code <- proc$get_exit_status()
-
-  if (exit_code != 0) {
-    stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
-         "Check the Python output above for details.")
+    env <- .jax_env(python, chains, chain_method, sampler, control)
+    proc <- processx::process$new(
+      python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
+      env = env, wd = dirname(py_script),
+      stdout = "|", stderr = "|",
+      cleanup = TRUE, cleanup_tree = TRUE
+    )
+    on.exit({
+      if (proc$is_alive()) {
+        message("\nKilling NumPyro subprocess...")
+        proc$kill_tree()
+      }
+    }, add = TRUE)
+    .stream_process(proc)
+    exit_code <- proc$get_exit_status()
+    if (exit_code != 0) {
+      stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
+           "Check the Python output above for details.")
+    }
   }
 
   if (!file.exists(result_file)) {
@@ -696,11 +583,11 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     src <- file.path(tmp_dir, result_meta$state)
     if (file.exists(src)) {
       state_path <- tempfile("bayesroc_state_", fileext = ".pkl")
-      file.copy(src, state_path, overwrite = TRUE)
+      if (!isTRUE(file.copy(src, state_path, overwrite = TRUE))) {
+        stop("Could not copy the sampler state to '", state_path, "'.", call. = FALSE)
+      }
     }
   }
-
-  unlink(tmp_dir, recursive = TRUE)
 
   list(
     samples = samples_list,
@@ -782,4 +669,103 @@ read_npy <- function(path) {
   if (isFALSE(opt)) return("0")
   if (is.character(opt) && nzchar(opt)) return(normalizePath(opt, winslash = "/", mustWork = FALSE))
   normalizePath(file.path(tools::R_user_dir("bayesroc", "cache"), "xla"), winslash = "/", mustWork = FALSE)
+}
+
+.jax_init_values <- function(init, chains) {
+  if (is.function(init)) {
+    init <- lapply(seq_len(chains), function(ch) {
+      if ("chain_id" %in% names(formals(init))) init(chain_id = ch) else init()
+    })
+  }
+  if (length(init) != chains || !all(vapply(init, is.list, logical(1)))) {
+    stop("`init` must be a function or a list of ", chains,
+         " per-chain named lists.", call. = FALSE)
+  }
+  lapply(init, function(ch) {
+    if (length(ch) && is.null(names(ch))) {
+      stop("Each per-chain `init` list must be named by parameter.", call. = FALSE)
+    }
+    lapply(ch, function(v) if (is.array(v) && length(dim(v)) > 2L)
+      stop("`init` arrays with more than 2 dimensions are not supported.", call. = FALSE)
+      else v)
+  })
+}
+
+# =============================================================================
+# Subprocess Environment and Persistent Worker
+# =============================================================================
+
+.jax_env <- function(python, chains, chain_method = "parallel", sampler = "nuts",
+                     control = list(), precision = NULL) {
+  device_count <- if (identical(chain_method, "sequential")) 1L else as.integer(chains)
+  f32 <- identical(precision %||% control$precision, "f32") && identical(sampler, "nuts")
+  bvn_lib <- .bvn_ffi_lib(python)
+  c("current",
+    XLA_FLAGS = paste0("--xla_force_host_platform_device_count=", device_count),
+    BAYESROC_XLA_CACHE = .xla_cache_dir(),
+    BAYESROC_BVN_FFI = if (is.null(bvn_lib)) "" else bvn_lib,
+    BAYESROC_ENABLE_X64 = if (f32) "0" else "1")
+}
+
+.stream_process <- function(proc) {
+  while (proc$is_alive()) {
+    proc$poll_io(200)
+    out <- proc$read_output()
+    err <- proc$read_error()
+    if (nzchar(out)) cat(out)
+    if (nzchar(err)) cat(err)
+  }
+  out <- proc$read_output()
+  err <- proc$read_error()
+  if (nzchar(out)) cat(out)
+  if (nzchar(err)) cat(err)
+}
+
+.jax_worker_start <- function(python = NULL, chains = 4L, chain_method = "parallel",
+                              sampler = "nuts", control = list()) {
+  python <- python %||% find_python_with_jax()
+  py_dir <- dirname(find_backend_script())
+  ctrl <- tempfile("bayesroc_worker_")
+  dir.create(ctrl)
+  proc <- processx::process$new(
+    python, args = c(file.path(py_dir, "worker.py"), "--serve", ctrl),
+    env = .jax_env(python, chains, chain_method, sampler, control), wd = py_dir,
+    stdout = "|", stderr = "|", cleanup = TRUE, cleanup_tree = TRUE)
+  structure(list(proc = proc, ctrl = ctrl, python = python), class = "bayesroc_worker")
+}
+
+.jax_worker_stop <- function(worker) {
+  if (!inherits(worker, "bayesroc_worker")) return(invisible(NULL))
+  try(file.create(file.path(worker$ctrl, "stop")), silent = TRUE)
+  try(worker$proc$wait(timeout = 5000), silent = TRUE)
+  if (worker$proc$is_alive()) worker$proc$kill_tree()
+  unlink(worker$ctrl, recursive = TRUE)
+  invisible(NULL)
+}
+
+.jax_worker_run <- function(worker, config_file, out_dir, token = NULL) {
+  req <- file.path(worker$ctrl, paste0("req_", basename(out_dir), ".json"))
+  jsonlite::write_json(list(config = normalizePath(config_file, winslash = "/"),
+                            out = normalizePath(out_dir, winslash = "/"),
+                            token = token),
+                       paste0(req, ".tmp"), auto_unbox = TRUE, null = "null")
+  file.rename(paste0(req, ".tmp"), req)
+  done <- file.path(out_dir, "DONE")
+  errf <- file.path(out_dir, "ERROR")
+  repeat {
+    worker$proc$poll_io(100)
+    out <- worker$proc$read_output()
+    err <- worker$proc$read_error()
+    if (nzchar(out)) cat(out)
+    if (nzchar(err)) cat(err)
+    if (file.exists(done)) break
+    if (file.exists(errf)) {
+      stop("The JAX worker failed:\n", paste(utils::tail(readLines(errf), 12), collapse = "\n"),
+           call. = FALSE)
+    }
+    if (!worker$proc$is_alive()) {
+      stop("The JAX worker process exited before returning a result.", call. = FALSE)
+    }
+  }
+  invisible(out_dir)
 }

@@ -8,9 +8,9 @@ test_that("Stan: seed makes fits reproducible", {
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   a <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 200, iter_sampling = 200, refresh = 0)
+                iter_warmup = 200, iter_sampling = 200, refresh = 50)
   b <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 200, iter_sampling = 200, refresh = 0)
+                iter_warmup = 200, iter_sampling = 200, refresh = 50)
   expect_identical(.bd1(a), .bd1(b))
 })
 
@@ -19,7 +19,7 @@ test_that("Stan: thin keeps every k-th draw", {
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fs <- fit_broc(m, backend = "stan", seed = 1, chains = 2, parallel_chains = 2,
-                 iter_warmup = 200, iter_sampling = 400, thin = 2, refresh = 0)
+                 iter_warmup = 200, iter_sampling = 400, thin = 2, refresh = 50)
   expect_equal(nrow(posterior::as_draws_matrix(fs$draws(variables = "beta_dprime[1]"))), 400)
 })
 

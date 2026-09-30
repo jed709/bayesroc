@@ -36,16 +36,20 @@ test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
   expect_false(any(grepl("divergent|treedepth", banner)))
 })
 
-test_that("drghmc: control knobs plumb through; unknown keys warn", {
+test_that("drghmc: control knobs plumb through; unknown keys and short warmup error", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
             batch_likelihood = TRUE)
-  expect_warning(
+  expect_error(
     fit_broc(m, backend = "jax", sampler = "drghmc", control = list(bogus = 1),
              iter_warmup = 200, iter_sampling = 200, chains = 4,
              progress_bar = FALSE),
-    "unknown control keys")
+    "Unknown control key")
+  expect_error(
+    fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 5,
+             iter_sampling = 200, chains = 4, progress_bar = FALSE),
+    "needs iter_warmup >= control")
   fj <- fit_broc(m, backend = "jax", sampler = "drghmc",
                  control = list(precision = "f32"), seed = 1,
                  iter_warmup = 800, iter_sampling = 1500, chains = 4,
@@ -60,4 +64,48 @@ test_that("drghmc requires the jax backend", {
             batch_likelihood = TRUE)
   expect_error(fit_broc(m, backend = "stan", sampler = "drghmc"),
                "requires backend = 'jax'")
+})
+
+test_that("drghmc accepts sample counts that are not a multiple of the chunk length", {
+  skip_if_no_jax()
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), .fixture_univariate())
+  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
+                iter_warmup = 200, iter_sampling = 1001, seed = 3, progress_bar = FALSE)
+  expect_equal(posterior::niterations(f$.draws_array), 1001L)
+  f2 <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
+                 iter_warmup = 200, iter_sampling = 1001, thin = 7, seed = 3, progress_bar = FALSE)
+  expect_equal(posterior::niterations(f2$.draws_array), 143L)
+})
+
+test_that("drghmc recovers NUTS posterior means and SDs for dr_k 2 and 3", {
+  skip_if_no_jax()
+  d <- .fixture_univariate(sigma = 1.3, n_per = 400)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  vars <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
+  ref <- fit_broc(m, backend = "jax", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
+                  seed = 5, progress_bar = FALSE)
+  rs <- posterior::summarise_draws(posterior::subset_draws(ref$.draws_array, variable = vars),
+                                   "mean", "sd", "mcse_mean")
+  for (k in 2:3) {
+    f <- fit_broc(m, backend = "jax", sampler = "drghmc", control = list(dr_k = k),
+                  chains = 4, iter_warmup = 1000, iter_sampling = 4000, seed = 6,
+                  progress_bar = FALSE)
+    fs <- posterior::summarise_draws(posterior::subset_draws(f$.draws_array, variable = vars),
+                                     "mean", "sd", "mcse_mean")
+    se <- sqrt(rs$mcse_mean^2 + fs$mcse_mean^2)
+    expect_true(all(abs(fs$mean - rs$mean) < 5 * se), label = paste("means, dr_k", k))
+    expect_true(all(abs(fs$sd / rs$sd - 1) < 0.1), label = paste("SDs, dr_k", k))
+  }
+})
+
+test_that("drghmc seeds do not share random streams", {
+  skip_if_no_jax()
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), .fixture_univariate())
+  a <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
+                iter_warmup = 100, iter_sampling = 100, seed = 1, progress_bar = FALSE)
+  b <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
+                iter_warmup = 100, iter_sampling = 100, seed = 94, progress_bar = FALSE)
+  v <- "beta_dprime[1]"
+  expect_false(isTRUE(all.equal(as.numeric(a$.draws_array[, , v]),
+                                as.numeric(b$.draws_array[, , v]))))
 })

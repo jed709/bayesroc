@@ -65,7 +65,7 @@
   mp <- suppressMessages(broc(cfg$formula, cfg$data, counts = cfg$counts, batch_likelihood = FALSE))
   mb <- suppressMessages(broc(cfg$formula, cfg$data, counts = cfg$counts, batch_likelihood = TRUE))
   A <- list(backend = "stan", iter_warmup = 300, iter_sampling = 300, chains = 2,
-            parallel_chains = 2, refresh = 0, show_messages = FALSE)
+            parallel_chains = 2, refresh = 50, show_messages = FALSE)
   fp <- suppressMessages(do.call(fit_broc, c(list(mp), A)))
   fb <- suppressMessages(do.call(fit_broc, c(list(mb), A)))
   sp <- fp$summary(); sb <- fb$summary()

@@ -629,6 +629,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     gap_link = gap_link,
     formula = brf_obj,
     batch_likelihood = use_batch,
+    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_cpp
   )
 
@@ -1285,6 +1286,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
     criterion2_cond <- extract_conditional_from_parsed(parsed$criterion2)
 
+    if (isTRUE(family$varying_source_criteria) && !isTRUE(parsed$criterion2$fixed$intercept)) {
+      parsed$criterion2$fixed$intercept <- TRUE
+      criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
+    }
     criterion2 <- build_criterion_structure(criterion2_fixed_formula, parsed$criterion2$random, data, K2,
                                             conditional_terms = criterion2_cond,
                                             parsed_fixed = parsed$criterion2$fixed)
@@ -1298,6 +1303,14 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       smooth_data[["criterion2"]] <- crit2_smooth_info
       criterion2 <- append_smooth_null_space(criterion2, crit2_smooth_info)
       stan_data <- add_smooth_to_stan_data(stan_data, "criterion2", crit2_smooth_info)
+    }
+
+    if (isTRUE(family$varying_source_criteria)) {
+      c2_names <- colnames(criterion2$X) %||% criterion2$coef_names
+      cov_cols <- which(c2_names != "(Intercept)")
+      criterion2$cov_names <- c2_names[cov_cols]
+      stan_data$P_criterion2_cov <- length(cov_cols)
+      stan_data$X_criterion2_cov <- criterion2$X[, cov_cols, drop = FALSE]
     }
 
     stan_data$P_criterion2 <- criterion2$n_coef
@@ -1998,21 +2011,25 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param file_refit If `FALSE` (default), an existing `file` is loaded and
 #'   sampling is skipped; if `TRUE`, the model is refit and the file overwritten.
 #'   Ignored when `file` is `NULL`.
-#' @param save_loglik If `TRUE` (default), the per-observation log-likelihood is
-#'   kept so the saved fit supports [loo()]. If `FALSE`, `log_lik` is dropped when
-#'   the fit is saved.
-#' @param loo If `TRUE`, PSIS-LOO is computed at fit time and the on-disk
-#'   log-likelihood file is deleted afterwards. Default `FALSE`.
+#' @param save_loglik Keep the per-observation log-likelihood so [loo()] works on
+#'   the fit and on a fit saved with [save_broc_fit()] or `file =`. `NULL`
+#'   (default) keeps it unless `loo = TRUE`, whose result is stored on the fit
+#'   instead; `TRUE` always keeps it; `FALSE` drops it.
+#' @param loo If `TRUE`, PSIS-LOO is computed at fit time and stored on the fit
+#'   (`fit$.loo`, also saved with the fit). Default `FALSE`.
 #' @param loo_cores Number of worker processes used when `loo = TRUE` (default 4).
 #' @param loglik_precision Storage precision for the log-likelihood sidecar,
-#'   `"f32"` (default) or `"f64"`.
+#'   `"f32"` (default) or `"f64"`. With the Stan backend the values are read from
+#'   CmdStan's CSV output, so their precision is also limited by `sig_figs`.
 #' @param keep_re If `TRUE`, per-level random-effect draws are retained (JAX
 #'   backend). Default `FALSE`, which stores only population-level parameters.
-#' @param re_store Codec for random-effect draws when the fit is saved: `"f32"`
-#'   (default), `"f64"`, `"int16"` or `"int8"`. [save_broc_fit()] uses it unless
+#' @param re_store Codec for random-effect draws when the fit is saved: `"f64"`
+#'   (default, lossless), `"f32"`, `"int16"` or `"int8"`. [save_broc_fit()] uses it unless
 #'   given its own `re_store`.
 #' @param warm_state Optional path to a state file written by `save_state`, used
-#'   to resume sampling without repeating warmup (JAX backend).
+#'   to resume sampling without repeating warmup (JAX backend). The file is a
+#'   Python pickle, and loading a pickle can run arbitrary code: only pass state
+#'   files that bayesroc wrote on your own machine.
 #' @param save_state If `TRUE`, the post-warmup sampler state is saved so a later
 #'   fit can resume from it via `warm_state`. Default `FALSE`.
 #' @param ... Additional arguments forwarded to cmdstanr's `$sample()` (Stan
@@ -2054,12 +2071,12 @@ fit_broc <- function(model,
                     seed = NULL,
                     file = NULL,
                     file_refit = FALSE,
-                    save_loglik = TRUE,
+                    save_loglik = NULL,
                     loo = FALSE,
                     loo_cores = 4,
                     loglik_precision = c("f32", "f64"),
                     keep_re = FALSE,
-                    re_store = c("f32", "f64", "int16", "int8"),
+                    re_store = c("f64", "f32", "int16", "int8"),
                     warm_state = NULL,
                     save_state = FALSE,
                     num_warmup = NULL,
@@ -2068,6 +2085,7 @@ fit_broc <- function(model,
                     ...) {
   loglik_precision <- match.arg(loglik_precision)
   re_store <- match.arg(re_store)
+  save_loglik <- if (is.null(save_loglik)) !isTRUE(loo) else isTRUE(save_loglik)
 
   backend <- match.arg(backend)
   sampler <- match.arg(sampler)
@@ -2105,12 +2123,21 @@ fit_broc <- function(model,
   .ctrl <- if (is.list(control)) control else list()
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
-                    "adapt_windows", "eps_c", "mass_start", "precision")
-  .unknown <- setdiff(names(.ctrl),
-                      if (sampler == "drghmc") .drghmc_keys else .nuts_keys)
+                    "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
+                    "precision")
+  .valid <- if (sampler == "drghmc") .drghmc_keys else .nuts_keys
+  .unknown <- setdiff(names(.ctrl), .valid)
   if (length(.unknown)) {
-    warning("Ignoring unknown control keys for sampler '", sampler, "': ",
-            paste(.unknown, collapse = ", "), call. = FALSE)
+    stop("Unknown control key(s) for sampler '", sampler, "': ",
+         paste(.unknown, collapse = ", "), ". Valid keys: ",
+         paste(.valid, collapse = ", "), call. = FALSE)
+  }
+  if (sampler == "drghmc" && is.null(warm_state)) {
+    .windows <- .ctrl$adapt_windows %||% 10L
+    if (iter_warmup < .windows) {
+      stop("sampler = 'drghmc' needs iter_warmup >= control$adapt_windows (", .windows,
+           "); got ", iter_warmup, ".", call. = FALSE)
+    }
   }
   if (sampler == "nuts" && !is.null(.ctrl$precision) && backend != "jax") {
     warning("control$precision is JAX-only; ignored for the Stan backend.",
@@ -2146,6 +2173,12 @@ fit_broc <- function(model,
       init_strategy_jax <- "numeric"
     }
   }
+  init_values_jax <- NULL
+  if (backend == "jax" && (is.function(init) || is.list(init))) {
+    init_values_jax <- .jax_init_values(init, chains)
+    init_strategy_jax <- "numeric"
+    init <- 2
+  }
 
   if (!inherits(model, "broc_model")) {
     if (inherits(model, "brf")) {
@@ -2161,7 +2194,12 @@ fit_broc <- function(model,
 
   if (backend == "jax") {
     # ---- JAX/NumPyro backend ----
-    if (...length() > 0) {
+    .dots <- list(...)
+    .worker <- .dots$.worker
+    .worker_token <- .dots$.worker_token
+    .dots$.worker <- NULL
+    .dots$.worker_token <- NULL
+    if (length(.dots) > 0) {
       warning("Arguments in `...` are forwarded to cmdstanr (Stan backend) only ",
               "and are ignored by the JAX backend.", call. = FALSE)
     }
@@ -2187,6 +2225,9 @@ fit_broc <- function(model,
       loglik_precision = loglik_precision,
       keep_re = keep_re,
       warm_state = warm_state,
+      init_values = init_values_jax,
+      worker = .worker,
+      worker_token = .worker_token,
       save_state = save_state
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)
@@ -2219,55 +2260,12 @@ fit_broc <- function(model,
     stop("Package 'cmdstanr' is required.")
   }
 
-  .muffle_stan_header_warnings <- function(expr) {
-    withCallingHandlers(expr, warning = function(w) {
-      if (grepl("overloaded-virtual|model_base_crtp|was hidden",
-                conditionMessage(w))) {
-        invokeRestart("muffleWarning")
-      }
-    })
-  }
-
-  stan_file <- tempfile(fileext = ".stan")
-  writeLines(model$stan_code, stan_file)
-
   t0 <- proc.time()["elapsed"]
-
-  batch_compile_opts <- list()
-  if (isTRUE(model$batch_likelihood) && !is.null(model$batch_cpp)) {
-    core_hpp <- system.file("stan/batch_sdt_core.hpp", package = "bayesroc")
-    if (core_hpp == "") {
-      core_hpp <- file.path(find.package("bayesroc", quiet = TRUE), "stan", "batch_sdt_core.hpp")
-      if (!file.exists(core_hpp)) {
-        pkg_root <- system.file(package = "bayesroc")
-        core_hpp <- file.path(pkg_root, "stan", "batch_sdt_core.hpp")
-      }
-    }
-
-    batch_hpp <- tempfile(fileext = ".hpp")
-    hpp_lines <- c(
-      sprintf('#include "%s"', core_hpp),
-      "",
-      model$batch_cpp$cpp_code
-    )
-    writeLines(hpp_lines, batch_hpp)
-
-    batch_compile_opts <- list(
-      user_header = batch_hpp,
-      stanc_options = list("allow-undefined" = TRUE)
-    )
-  }
 
   stan_refresh <- if (isTRUE(progress_bar)) refresh else 0
 
   if (isTRUE(model$threads)) {
-    compile_args <- list(stan_file, cpp_options = list(stan_threads = TRUE))
-    if (length(batch_compile_opts) > 0) {
-      compile_args$user_header <- batch_compile_opts$user_header
-      compile_args$stanc_options <- batch_compile_opts$stanc_options
-    }
-    mod <- .muffle_stan_header_warnings(
-      do.call(cmdstanr::cmdstan_model, compile_args))
+    mod <- .compile_broc_stan(model, threads = TRUE)
     tpc <- if (!is.null(threads_per_chain)) threads_per_chain else 2L
     N <- model$stan_data$N
     model$stan_data$grainsize <- max(1L, as.integer(N / (2L * tpc)))
@@ -2291,15 +2289,7 @@ fit_broc <- function(model,
     if (!is.null(threads_per_chain)) {
       warning("threads_per_chain ignored: model was not built with threads = TRUE")
     }
-    if (length(batch_compile_opts) > 0) {
-      mod <- .muffle_stan_header_warnings(
-        cmdstanr::cmdstan_model(stan_file,
-          user_header = batch_compile_opts$user_header,
-          stanc_options = batch_compile_opts$stanc_options))
-    } else {
-      mod <- .muffle_stan_header_warnings(
-        cmdstanr::cmdstan_model(stan_file))
-    }
+    mod <- .compile_broc_stan(model)
     stan_fit <- mod$sample(
       data = model$stan_data,
       chains = chains,
@@ -2318,6 +2308,7 @@ fit_broc <- function(model,
   }
 
   elapsed <- as.numeric(proc.time()["elapsed"] - t0)
+  stan_fit <- .recover_dropped_chains(stan_fit, chains)
 
   stan_side <- NULL
   if (isTRUE(save_loglik) || isTRUE(loo)) {
@@ -2352,7 +2343,7 @@ fit_broc <- function(model,
     res <- loo.broc_fit(fit, cores = loo_cores)
     attr(res, "broc_loo_type") <- "trial"
     fit$.loo <- res
-    fit <- suppressMessages(drop_loglik(fit))
+    if (!isTRUE(save_loglik)) fit <- suppressMessages(drop_loglik(fit))
   }
   fit
 }
@@ -2615,6 +2606,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
+    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_cpp
   )
 
@@ -2876,6 +2868,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
+    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_info
   )
 
@@ -2979,4 +2972,61 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   new_names <- gsub("criterion", "cutpoints1", new_names)
   names(stan_data) <- new_names
   stan_data
+}
+
+.compile_broc_stan <- function(model, threads = FALSE) {
+  stan_file <- tempfile(fileext = ".stan")
+  writeLines(model$stan_code, stan_file)
+  args <- list(stan_file)
+  if (isTRUE(threads)) args$cpp_options <- list(stan_threads = TRUE)
+  if (isTRUE(model$batch_requested) && is.null(model$batch_cpp)) {
+    fam <- model$family
+    message("The fused batch likelihood does not support family '",
+            if (is.list(fam)) fam$family %||% "?" else fam, "'",
+            if (is.list(fam) && !is.null(fam$link$name)) paste0(" with link '", fam$link$name, "'"),
+            "; compiling the plain Stan likelihood (slower). Set ",
+            "broc(batch_likelihood = FALSE) to silence this.")
+  }
+  if (isTRUE(model$batch_likelihood) && !is.null(model$batch_cpp)) {
+    core_hpp <- system.file("stan/batch_sdt_core.hpp", package = "bayesroc")
+    if (core_hpp == "") {
+      core_hpp <- file.path(find.package("bayesroc", quiet = TRUE), "stan", "batch_sdt_core.hpp")
+      if (!file.exists(core_hpp)) {
+        core_hpp <- file.path(system.file(package = "bayesroc"), "stan", "batch_sdt_core.hpp")
+      }
+    }
+    batch_hpp <- tempfile(fileext = ".hpp")
+    writeLines(c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code), batch_hpp)
+    args$user_header <- batch_hpp
+    args$stanc_options <- list("allow-undefined" = TRUE)
+  }
+  .muffle_stan_header_warnings(do.call(cmdstanr::cmdstan_model, args))
+}
+
+.muffle_stan_header_warnings <- function(expr) {
+  withCallingHandlers(expr, warning = function(w) {
+    if (grepl("overloaded-virtual|model_base_crtp|was hidden", conditionMessage(w))) {
+      invokeRestart("muffleWarning")
+    }
+  })
+}
+
+.recover_dropped_chains <- function(stan_fit, chains) {
+  kept <- stan_fit$num_chains()
+  if (kept >= chains) return(stan_fit)
+  files <- stan_fit$output_files(include_failed = TRUE)
+  rebuilt <- tryCatch(
+    suppressWarnings(cmdstanr::as_cmdstan_fit(files, check_diagnostics = FALSE)),
+    error = function(e) NULL)
+  if (!is.null(rebuilt) && rebuilt$num_chains() == chains &&
+      all(posterior::ndraws(rebuilt$draws("lp__")) ==
+          posterior::ndraws(stan_fit$draws("lp__")) / kept * chains)) {
+    warning(sprintf(paste0("cmdstanr reported %d of %d chains as failed, but every chain's ",
+                           "output is complete; all %d chains were read back from their CSV files."),
+                    chains - kept, chains, chains), call. = FALSE)
+    return(rebuilt)
+  }
+  stop(sprintf(paste0("%d of %d Stan chains failed and their output is incomplete; ",
+                      "refusing to return a fit built from a subset of chains. ",
+                      "Inspect the chains' output or refit."), chains - kept, chains), call. = FALSE)
 }
