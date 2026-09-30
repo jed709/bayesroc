@@ -124,7 +124,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 }
 
 .as_is_old <- function(v) {
-  if (is.factor(v)) as.numeric(as.character(v)) else as.numeric(v)
+  suppressWarnings(if (is.factor(v)) as.numeric(as.character(v)) else as.numeric(v))
 }
 
 #' Specify a Bayesian SDT Model
