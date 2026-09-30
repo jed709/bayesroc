@@ -1,3 +1,10 @@
+#include <algorithm>
+#include <xmmintrin.h>
+#include <atomic>
+#include <memory>
+#include <thread>
+#include <vector>
+
 #include "xla/ffi/api/ffi.h"
 #include "bayesroc/bvn_simd.h"
 
@@ -49,7 +56,132 @@ ffi::Error BvnCdf4Impl(ffi::Buffer<ffi::F64> i0, ffi::Buffer<ffi::F64> i1, ffi::
   return ffi::Error::Success();
 }
 
+template <typename F>
+void pool_for(ffi::ThreadPool& pool, int64_t n, int64_t grain, F body) {
+  int64_t threads = pool.num_threads();
+  int64_t nchunks = grain > 0 ? n / grain : 0;
+  if (threads <= 1 || nchunks <= 1) {
+    body(int64_t(0), n);
+    return;
+  }
+  struct State {
+    std::atomic<int64_t> next{0}, done{0};
+    int64_t n, chunk, nchunks;
+    F body;
+    State(int64_t n_, int64_t c_, int64_t k_, F b) : n(n_), chunk(c_), nchunks(k_), body(std::move(b)) {}
+    void work() {
+      for (int64_t c; (c = next.fetch_add(1, std::memory_order_relaxed)) < nchunks;) {
+        int64_t i0 = c * chunk;
+        body(i0, std::min(n, i0 + chunk));
+        done.fetch_add(1, std::memory_order_release);
+      }
+    }
+  };
+  int64_t chunk = ((n + nchunks - 1) / nchunks + 3) & ~int64_t(3);
+  nchunks = (n + chunk - 1) / chunk;
+  auto st = std::make_shared<State>(n, chunk, nchunks, std::move(body));
+  for (int64_t k = 1; k < std::min(threads, nchunks); ++k) pool.Schedule([st] { st->work(); });
+  st->work();
+  while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
 }
+
+ffi::Error ProbitCellImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::Buffer<ffi::F64> zhi,
+                          ffi::ResultBuffer<ffi::F64> lp, ffi::ResultBuffer<ffi::F64> glo,
+                          ffi::ResultBuffer<ffi::F64> ghi) {
+  const double *l = zlo.typed_data(), *h = zhi.typed_data();
+  double *a = lp->typed_data(), *b = glo->typed_data(), *c = ghi->typed_data();
+  pool_for(pool, zlo.element_count(), 8192,
+           [=](int64_t i0, int64_t i1) { bvn::probit_cell_range(i0, i1, l, h, a, b, c); });
+  return ffi::Error::Success();
+}
+
+void rect_k(int64_t n, const double* const* i, double* const* o) {
+  bvn::rect_array(n, i[0], i[1], i[2], i[3], i[4], o[0], o[1], o[2], o[3], o[4], o[5]);
+}
+
+void cdf_k(int64_t n, const double* const* i, double* const* o) {
+  bvn::cdf_array(n, i[0], i[1], i[2], o[0], o[1], o[2], o[3]);
+}
+
+ffi::Error ProbitDiffImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::Buffer<ffi::F64> zhi,
+                          ffi::ResultBuffer<ffi::F64> D, ffi::ResultBuffer<ffi::F64> pl,
+                          ffi::ResultBuffer<ffi::F64> ph) {
+  const double *l = zlo.typed_data(), *h = zhi.typed_data();
+  double *a = D->typed_data(), *b = pl->typed_data(), *c = ph->typed_data();
+  pool_for(pool, zlo.element_count(), 8192,
+           [=](int64_t i0, int64_t i1) { bvn::probit_diff_range(i0, i1, l, h, a, b, c); });
+  return ffi::Error::Success();
+}
+
+struct FlushDenormals {
+  unsigned saved;
+  FlushDenormals() : saved(_mm_getcsr()) { _mm_setcsr(saved | 0x8040); }
+  ~FlushDenormals() { _mm_setcsr(saved); }
+};
+
+template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
+ffi::Error F32Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
+  if (args.size() != NI || rets.size() != NO) return ffi::Error::InvalidArgument("bayesroc: f32 arity");
+  const float* fin[NI];
+  float* fout[NO];
+  int64_t n = 0;
+  for (int a = 0; a < NI; ++a) {
+    auto b = args.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    fin[a] = static_cast<const float*>(b.value().untyped_data());
+    n = b.value().element_count();
+  }
+  for (int a = 0; a < NO; ++a) {
+    auto b = rets.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    fout[a] = static_cast<float*>(b.value()->untyped_data());
+  }
+  thread_local std::vector<double> buf;
+  if (buf.size() < size_t((NI + NO) * n)) buf.resize((NI + NO) * n);
+  FlushDenormals ftz;
+  const double* din[NI];
+  double* dout[NO];
+  for (int a = 0; a < NI; ++a) {
+    double* d = buf.data() + a * n;
+    for (int64_t k = 0; k < n; ++k) d[k] = fin[a][k];
+    din[a] = d;
+  }
+  for (int a = 0; a < NO; ++a) dout[a] = buf.data() + (NI + a) * n;
+  K(n, din, dout);
+  for (int a = 0; a < NO; ++a)
+    for (int64_t k = 0; k < n; ++k) fout[a][k] = static_cast<float>(dout[a][k]);
+  return ffi::Error::Success();
+}
+
+}
+
+#define BAYESROC_F32(NAME, NI, NO, K)                                               \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F32Impl<NI, NO, K>),                           \
+                                ffi::Ffi::Bind().RemainingArgs().RemainingRets())
+
+BAYESROC_F32(BayesrocBvnRectF32, 5, 6, rect_k);
+BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
+BAYESROC_F32(BayesrocVrdp2dF32, 14, 11, bvn::vrdp_array);
+BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
+BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitDiff, ProbitDiffImpl,
+                              ffi::Ffi::Bind()
+                                  .Ctx<ffi::ThreadPool>()
+                                  .Arg<ffi::Buffer<ffi::F64>>()
+                                  .Arg<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>());
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitCell, ProbitCellImpl,
+                              ffi::Ffi::Bind()
+                                  .Ctx<ffi::ThreadPool>()
+                                  .Arg<ffi::Buffer<ffi::F64>>()
+                                  .Arg<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>()
+                                  .Ret<ffi::Buffer<ffi::F64>>());
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnRect, BvnRectImpl,
                               ffi::Ffi::Bind()

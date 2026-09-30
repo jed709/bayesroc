@@ -22,7 +22,6 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax.scipy.stats import norm as _jax_norm_orig
 from jax.scipy.special import expit as jax_expit
 
 jax.config.update("jax_enable_x64", os.environ.get("BAYESROC_ENABLE_X64", "1") != "0")
@@ -43,52 +42,6 @@ if _cache and _cache != "0":
 
 _PHI_D = 0.3989422804014327
 
-def _poly_phi(x):
-    """Fast polynomial approximation of the standard normal CDF.
-    Max absolute error: 7.5e-8, sufficient for MCMC.
-    """
-    ax = jnp.abs(x)
-    t = 1.0 / (1.0 + 0.2316419 * ax)
-    p = _PHI_D * jnp.exp(-0.5 * x * x) * (
-        t * (0.319381530 + t * (-0.356563782 + t * (
-            1.781477937 + t * (-1.821255978 + t * 1.330274429)))))
-    return jnp.where(x >= 0, 1.0 - p, p)
-
-def _poly_phi_pair(x):
-    """(_poly_phi(x), its exact derivative) sharing one exp; the derivative is
-    phi-weight times a degree-6 polynomial in t = 1 / (1 + 0.2316419 |x|)."""
-    t = 1.0 / (1.0 + 0.2316419 * jnp.abs(x))
-    e = _PHI_D * jnp.exp(-0.5 * x * x)
-    p = e * t * (0.319381530 + t * (-0.356563782 + t * (
-        1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    G = 1.3787727090824242 + t * (-2.9180615078705534 + t * (9.303925945620334 + t * (
-        -15.71822236097206 + t * (14.843177660082445 + t * (-7.430322503492646 + t * 1.5407364812748756)))))
-    return jnp.where(x >= 0, 1.0 - p, p), e * G
-
-
-def _poly_phi_deriv(x):
-    """Exact derivative of _poly_phi (not the Gaussian pdf it approximates)."""
-    ax = jnp.abs(x)
-    t = 1.0 / (1.0 + 0.2316419 * ax)
-    s = t * (0.319381530 + t * (-0.356563782 + t * (
-        1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    ds = 0.319381530 + t * (2.0 * -0.356563782 + t * (
-        3.0 * 1.781477937 + t * (4.0 * -1.821255978 + t * 5.0 * 1.330274429)))
-    return _PHI_D * jnp.exp(-0.5 * x * x) * (ax * s + 0.2316419 * t * t * ds)
-
-class _JaxNormWrapper:
-    """Drop-in replacement for jax.scipy.stats.norm with polynomial cdf."""
-    @staticmethod
-    def cdf(x):
-        return _poly_phi(x)
-    @staticmethod
-    def pdf(x):
-        return _jax_norm_orig.pdf(x)
-    @staticmethod
-    def logpdf(x):
-        return _jax_norm_orig.logpdf(x)
-
-jax_norm = _JaxNormWrapper()
 
 import numpyro
 import numpyro.distributions as dist
@@ -185,7 +138,7 @@ def _link_fns(link_name):
         return jax_expit, lambda x: jax_expit(x) * (1.0 - jax_expit(x))
     if link_name == "cloglog":
         return _cloglog_cdf, _cloglog_pdf
-    return _Phi, _poly_phi_deriv
+    return (lambda x: _probit_triple(x)[0]), (lambda x: _probit_triple(x)[1])
 
 
 _OPEN = 1e10
@@ -200,15 +153,19 @@ def _pfloor():
     return 1e-300 if jax.config.jax_enable_x64 else 1e-37
 
 
-def _poly_phi_triple(x):
-    """_poly_phi_pair plus the tail mass q = min(Phi, 1 - Phi) from the same terms."""
-    t = 1.0 / (1.0 + 0.2316419 * jnp.abs(x))
-    e = _PHI_D * jnp.exp(-0.5 * x * x)
-    q = e * t * (0.319381530 + t * (-0.356563782 + t * (
-        1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    G = 1.3787727090824242 + t * (-2.9180615078705534 + t * (9.303925945620334 + t * (
-        -15.71822236097206 + t * (14.843177660082445 + t * (-7.430322503492646 + t * 1.5407364812748756)))))
-    return jnp.where(x >= 0, 1.0 - q, q), e * G, q
+def _link_cell_fn(link_name):
+    """(P(lo < Z < hi), pdf(lo), pdf(hi)) for the link's latent distribution, with each pdf
+    the exact derivative of the CDF used for the probability. Probit uses the native kernel
+    (Phi to ~1e-9 relative in both tails) when it is loaded."""
+    if link_name == "probit":
+        def cell(lo, hi):
+            lo, hi = jnp.broadcast_arrays(jnp.asarray(lo), jnp.asarray(hi))
+            D, neg_pdf_lo, pdf_hi = _phi_diff(lo, hi)
+            return D, -neg_pdf_lo, pdf_hi
+        return cell
+    diff = _link_diff_fn(link_name)
+    pdf = _link_fns(link_name)[1]
+    return lambda lo, hi: (diff(lo, hi), pdf(lo), pdf(hi))
 
 
 def _link_diff_fn(link_name):
@@ -224,18 +181,6 @@ def _link_diff_fn(link_name):
                              _cloglog_cdf(hi) - _cloglog_cdf(lo))
         return diff
     return lambda lo, hi: _phi_diff(lo, hi)[0]
-
-
-def link_cdf(x, link_name):
-    """CDF for the link function (probit, logit, or cloglog)."""
-    if link_name == "probit":
-        return jax_norm.cdf(x)
-    elif link_name == "logit":
-        return jax_expit(x)
-    elif link_name == "cloglog":
-        return _cloglog_cdf(x)
-    else:
-        raise ValueError(f"Unknown link: {link_name}")
 
 
 # =============================================================================
@@ -364,18 +309,6 @@ from jax import custom_jvp
 # Bivariate normal: rectangle and CDF with exact derivatives
 # =============================================================================
 
-def _poly_phi_and_deriv(x):
-    ax = jnp.abs(x)
-    t = 1.0 / (1.0 + 0.2316419 * ax)
-    s = t * (0.319381530 + t * (-0.356563782 + t * (
-        1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    ds = 0.319381530 + t * (2.0 * -0.356563782 + t * (
-        3.0 * 1.781477937 + t * (4.0 * -1.821255978 + t * 5.0 * 1.330274429)))
-    e = _PHI_D * jnp.exp(-0.5 * x * x)
-    p = e * s
-    return jnp.where(x >= 0, 1.0 - p, p), e * (ax * s + 0.2316419 * t * t * ds), p
-
-
 _SIN_C = [(-1.0) ** k / float(np.prod(np.arange(1, 2 * k + 2))) for k in range(11)]
 _ASIN_P = [4.253011369004428248960E-3, -6.019598008014123785661E-1, 5.444622390564711410273E0,
            -1.626247967210700244449E1, 1.956261983317594739197E1, -8.198089802484824371615E0]
@@ -496,10 +429,6 @@ def _acc_phi_and_deriv(x):
     return jnp.where(x >= 0, 1.0 - q, q), e * G, q
 
 
-def _acc_Phi(x):
-    return _acc_phi_and_deriv(x)[0]
-
-
 def _acc_phi_deriv(x):
     return _acc_phi_and_deriv(x)[1]
 
@@ -510,9 +439,37 @@ def _acc_phi_diff(z_lo, z_hi):
     return jnp.where(z_lo >= 0, Ql - Qh, Ph - Pl), -dl, dh
 
 
+_PROBIT_C = (0.23164256724403792, 0.2316161018958152, 0.21963988229322737, 0.19034147705499127, 0.182843173379805, 0.023627126024141354, 0.3261383197776697, -0.4226294412990229, 0.566393164718276, -0.42518433981895243, 0.14839140546152088, -0.019505298125989647)
+_PROBIT_G = (1.0000028804980357, -0.00011425112737684096, 0.001956685225065126, -0.019177470139476724, 0.12026315990835201, -0.510972748965256, 1.5177140282601391, -3.1995984292291655, 4.79844987841736, -5.063837790314006, 3.656934740253874, -1.7097165426172967, 0.46231487164147905, -0.05421893181564818)
+
+
+_PROBIT32_C = (0.23193557115619975, 0.22641403663893195, 0.25867795829003176, 0.029693243246920797,
+               0.5723460328090683, -0.5135716343748198, 0.6254146800669893, -0.17759562815820015)
+_PROBIT32_G = (1.0012677808125376, -0.023836510222320806, 0.1930096132521973, -0.8836349552755781,
+               2.522398546253241, -4.660402762116997, 5.579909961288564, -4.180390403547215,
+               1.780787510474899, -0.3291087099060719)
+
+
+def _probit_triple(x):
+    """Phi(x), its exact derivative, and the tail mass min(Phi, 1 - Phi) as phi(x) t C(t),
+    C degree 11 in t = 1 / (1 + 0.2316419 |x|): ~1e-9 relative in both tails. The same
+    polynomial as the native kernel."""
+    t = 1.0 / (1.0 + 0.2316419 * jnp.abs(x))
+    e = _PHI_D * jnp.exp(-0.5 * x * x)
+    C, G = (_PROBIT32_C, _PROBIT32_G) if x.dtype == jnp.float32 else (_PROBIT_C, _PROBIT_G)
+    q = e * t * _horner(C[::-1], t)
+    return jnp.where(x >= 0, 1.0 - q, q), e * _horner(G[::-1], t), q
+
+
 def _phi_diff(z_lo, z_hi):
-    Ph, dh, Qh = _poly_phi_and_deriv(z_hi)
-    Pl, dl, Ql = _poly_phi_and_deriv(z_lo)
+    """(Phi(z_hi) - Phi(z_lo), -phi(z_lo), phi(z_hi)), differenced on the side of zero the
+    interval lies on; the native kernel (~1e-9 relative in both tails) when it is loaded."""
+    z_lo, z_hi = jnp.broadcast_arrays(jnp.asarray(z_lo), jnp.asarray(z_hi))
+    if _BVN_FFI and z_lo.dtype == jnp.float64:
+        D, pdf_lo, pdf_hi = _native_call("probit_diff", 3, [z_lo, z_hi])
+        return D, -pdf_lo, pdf_hi
+    Ph, dh, Qh = _probit_triple(z_hi)
+    Pl, dl, Ql = _probit_triple(z_lo)
     return jnp.where(z_lo >= 0, Ql - Qh, Ph - Pl), -dl, dh
 
 
@@ -538,18 +495,49 @@ def _dw_cdf_grads_jax(h, k, rho):
 
 _BVN_FFI = False
 if os.environ.get("BAYESROC_BVN_FFI"):
+    import ctypes
     try:
-        import ctypes
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
-        jax.ffi.register_ffi_target("bayesroc_bvn_rect", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnRect), platform="cpu")
-        jax.ffi.register_ffi_target("bayesroc_bvn_cdf", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf), platform="cpu")
-        jax.ffi.register_ffi_target("bayesroc_vrdp2d", jax.ffi.pycapsule(_bvn_lib.BayesrocVrdp2d), platform="cpu")
-        jax.ffi.register_ffi_target("bayesroc_bvn_cdf2", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf2), platform="cpu")
-        jax.ffi.register_ffi_target("bayesroc_bvn_cdf4", jax.ffi.pycapsule(_bvn_lib.BayesrocBvnCdf4), platform="cpu")
-        _BVN_FFI = True
+        for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("probit_cell", "ProbitCell"),
+                         ("probit_diff", "ProbitDiff")):
+            jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
+                                        platform="cpu")
+        for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4")):
+            jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
+                                        platform="cpu")
     except Exception as _e:
-        print(f"bayesroc: native bivariate-normal kernel failed to load ({_e}); using the JAX equivalent",
-              file=sys.stderr)
+        raise RuntimeError(f"bayesroc: the native kernel failed to load ({_e}); rebuild it with "
+                           "bayesroc:::.bvn_ffi_lib(rebuild = TRUE)") from _e
+    _BVN_FFI = True
+elif os.environ.get("BAYESROC_PURE_JAX_REFERENCE") != "1":
+    raise RuntimeError("bayesroc: no native kernel given (BAYESROC_BVN_FFI); fits must go through "
+                       "bayesroc's R interface, which builds it")
+
+
+def _native_ok(x):
+    return _BVN_FFI and jnp.asarray(x).dtype in (jnp.float64, jnp.float32)
+
+
+def _native_call(name, n_out, args):
+    """Call a native kernel on same-shaped arrays; f32 inputs go to the kernel's f32 entry,
+    which evaluates in double and rounds the results."""
+    dt = args[0].dtype
+    sd = jax.ShapeDtypeStruct(args[0].shape, dt)
+    target = f"bayesroc_{name}" if dt == jnp.float64 else f"bayesroc_{name}_f32"
+    return tuple(jax.ffi.ffi_call(target, (sd,) * n_out, vmap_method="broadcast_all")(
+        *[jnp.asarray(a, dtype=dt) for a in args]))
+
+
+def _probit_cell_native(z_lo, z_hi):
+    """log P(z_lo < Z < z_hi) and its derivatives in z_lo and z_hi from the native
+    kernel (Phi to ~1e-9 relative in both tails)."""
+    return _native_call("probit_cell", 3, jnp.broadcast_arrays(jnp.asarray(z_lo), jnp.asarray(z_hi)))
+
+
+def _use_probit_native(link_name, x):
+    return link_name == "probit" and _BVN_FFI and x.dtype == jnp.float64
 
 
 _GL32_X, _GL32_W = np.polynomial.legendre.leggauss(32)
@@ -702,12 +690,12 @@ def _with_rect_tail(out, a1, b1, a2, b2, rho):
 
 def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
     """P(z1_lo < Z1 < z1_hi, z2_lo < Z2 < z2_hi; rho) and its exact derivatives in
-    (z1_lo, z1_hi, z2_lo, z2_hi, rho): Drezner-Wesolowsky, 8-node Gauss-Legendre in the angle."""
+    (z1_lo, z1_hi, z2_lo, z2_hi, rho): Drezner-Wesolowsky with the Gauss-Legendre order tiered
+    on |rho|, and a log-space quadrature for cells below 1e-6."""
     args = [jnp.asarray(a) for a in (z1_lo, z1_hi, z2_lo, z2_hi, rho)]
     args = jnp.broadcast_arrays(*args)
-    if _BVN_FFI and args[0].dtype == jnp.float64:
-        sd = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
-        return tuple(jax.ffi.ffi_call("bayesroc_bvn_rect", (sd,) * 6, vmap_method="broadcast_all")(*args))
+    if _native_ok(args[0]):
+        return _native_call("bvn_rect", 6, args)
     return _with_rect_tail(_dw_rect_grads_jax(*args), *args)
 
 
@@ -722,10 +710,8 @@ def _bvn_cdf_multi(pairs, extras, rho):
     ks = arrs[1:2 * n:2]
     xs = arrs[2 * n:2 * n + m]
     r = arrs[-1]
-    if _BVN_FFI and r.dtype == jnp.float64 and (n, m) in ((2, 1), (4, 2)):
-        sd = jax.ShapeDtypeStruct(r.shape, jnp.float64)
-        out = jax.ffi.ffi_call(f"bayesroc_bvn_cdf{n}", (sd,) * (8 * n + 2 * m),
-                               vmap_method="broadcast_all")(*hs, *ks, *xs, r)
+    if _native_ok(r) and (n, m) in ((2, 1), (4, 2)):
+        out = _native_call(f"bvn_cdf{n}", 8 * n + 2 * m, [*hs, *ks, *xs, r])
         return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
                                                                  for j in range(m)]
     res = []
@@ -753,23 +739,21 @@ def _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_l
                    dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S):
     """vrdp2d log p and its partials (dprime_F, dprime_R, source_d, lambda, sigma_item,
     sigma_S, c1_hi, c1_lo, c2_hi, c2_lo) in one native pass; None when unavailable."""
-    if not _BVN_FFI or jnp.asarray(c1_hi).dtype != jnp.float64:
+    if not _native_ok(c1_hi):
         return None
-    f = lambda a: jnp.asarray(a, dtype=jnp.float64)
+    dt = jnp.asarray(c1_hi).dtype
+    f = lambda a: jnp.asarray(a, dtype=dt)
     args = [f(c1_hi), f(c1_lo), f(c2_hi), f(c2_lo), f(has1_hi), f(has1_lo), f(has2_hi), f(has2_lo),
             f(dprime_F), f(dprime_R), f(source_d), f(lambda_val), f(sigma_item), f(sigma_S)]
-    args = jnp.broadcast_arrays(*args)
-    sd = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
-    return tuple(jax.ffi.ffi_call("bayesroc_vrdp2d", (sd,) * 11, vmap_method="broadcast_all")(*args))
+    return _native_call("vrdp2d", 11, jnp.broadcast_arrays(*args))
 
 
 def _bvn_cdf(h, k, rho):
-    """P(Z1 < h, Z2 < k; rho) and its exact derivatives in (h, k, rho): Drezner-Wesolowsky,
-    8-node Gauss-Legendre in the angle, 20-node where |rho| > 0.9."""
+    """P(Z1 < h, Z2 < k; rho) and its exact derivatives in (h, k, rho): Drezner-Wesolowsky with
+    the Gauss-Legendre order tiered on |rho|, and the log-space tail path below 1e-6."""
     args = jnp.broadcast_arrays(*[jnp.asarray(a) for a in (h, k, rho)])
-    if _BVN_FFI and args[0].dtype == jnp.float64:
-        sd = jax.ShapeDtypeStruct(args[0].shape, jnp.float64)
-        return tuple(jax.ffi.ffi_call("bayesroc_bvn_cdf", (sd,) * 4, vmap_method="broadcast_all")(*args))
+    if _native_ok(args[0]):
+        return _native_call("bvn_cdf", 4, args)
     h, k, r = args
     out = _dw_cdf_grads_jax(h, k, r)
     ninf = jnp.full_like(h, -_OPEN)
@@ -781,13 +765,6 @@ def _bvn_cdf(h, k, rho):
 def _phi(x):
     """Standard normal PDF (double precision)."""
     return jnp.exp(-0.5 * x**2) / jnp.sqrt(2.0 * jnp.pi)
-
-def _Phi(x):
-    """Standard normal CDF — polynomial approximation (max err 7.5e-8).
-    Much faster than erfc-based Phi on CPU (no erf hardware call).
-    """
-    return _poly_phi(x)
-
 
 # =============================================================================
 # Fully-vectorized batch loglik (no vmap)
@@ -805,8 +782,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    _CDF, _PDF = _link_fns(link_name)
-    _DIFF = _link_diff_fn(link_name)
+    _CELL = _link_cell_fn(link_name)
 
     # --- Precompute static structures (Python-time, not trace-time) ---
 
@@ -859,7 +835,9 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
         z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
         z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
 
-        p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
+        if _use_probit_native(link_name, z_lo):
+            return _probit_cell_native(z_lo, z_hi)[0]
+        p = jnp.clip(_CELL(z_lo, z_hi)[0], _pfloor())
         return jnp.log(p)
 
     @_batch_fused.defjvp
@@ -888,14 +866,16 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
         z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
         z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
 
-        p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
-        val = jnp.log(p)
-
-        # --- Analytic gradients ---
-        pdf_hi = _PDF(z_hi)
-        pdf_lo = _PDF(z_lo)
-        d_z_hi = jnp.where(y_idx < K - 1, pdf_hi / p, 0.0)
-        d_z_lo = jnp.where(y_idx > 0, -pdf_lo / p, 0.0)
+        if _use_probit_native(link_name, z_lo):
+            val, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
+            d_z_hi = jnp.where(y_idx < K - 1, g_hi, 0.0)
+            d_z_lo = jnp.where(y_idx > 0, g_lo, 0.0)
+        else:
+            D, pdf_lo, pdf_hi = _CELL(z_lo, z_hi)
+            p = jnp.clip(D, _pfloor())
+            val = jnp.log(p)
+            d_z_hi = jnp.where(y_idx < K - 1, pdf_hi / p, 0.0)
+            d_z_lo = jnp.where(y_idx > 0, -pdf_lo / p, 0.0)
 
         d_lp_d_mu = -(d_z_lo + d_z_hi) / sigma_val
         d_lp_d_sigma = -(d_z_lo * z_lo + d_z_hi * z_hi) / sigma_val
@@ -935,8 +915,8 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    _CDF, _PDF = _link_fns(link_name)
-    _DIFF = _link_diff_fn(link_name)
+    _CELL = _link_cell_fn(link_name)
+    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -1012,7 +992,8 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
         INF = _OPEN
         z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
         z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
-        cell_p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
+        _D_cell_p, _pl_cell_p, _ph_cell_p = _CELL(z_lo, z_hi)
+        cell_p = jnp.clip(_D_cell_p, _pfloor())
 
         is_top = (y == K).astype(jnp.float64)
         p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
@@ -1022,8 +1003,8 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
 
         d_lp_d_cell = (1.0 - lambda_val) / p
 
-        pdf_hi = _PDF(z_hi)
-        pdf_lo = _PDF(z_lo)
+        pdf_hi = _ph_cell_p
+        pdf_lo = _pl_cell_p
         d_cell_d_z_hi = jnp.where(y_idx < K - 1, pdf_hi, 0.0)
         d_cell_d_z_lo = jnp.where(y_idx > 0, -pdf_lo, 0.0)
 
@@ -1069,8 +1050,8 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    _CDF, _PDF = _link_fns(link_name)
-    _DIFF = _link_diff_fn(link_name)
+    _CELL = _link_cell_fn(link_name)
+    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -1149,11 +1130,13 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
 
         z1_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu1) / sigma1_val, INF)
         z1_lo = jnp.where(y_idx > 0, (thresh_lo - mu1) / sigma1_val, -INF)
-        p1 = jnp.clip(_DIFF(z1_lo, z1_hi), _pfloor())
+        _D_p1, _pl_p1, _ph_p1 = _CELL(z1_lo, z1_hi)
+        p1 = jnp.clip(_D_p1, _pfloor())
 
         z2_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu2) / sigma2_val, INF)
         z2_lo = jnp.where(y_idx > 0, (thresh_lo - mu2) / sigma2_val, -INF)
-        p2 = jnp.clip(_DIFF(z2_lo, z2_hi), _pfloor())
+        _D_p2, _pl_p2, _ph_p2 = _CELL(z2_lo, z2_hi)
+        p2 = jnp.clip(_D_p2, _pfloor())
 
         p = jnp.clip(lambda_val * p1 + (1.0 - lambda_val) * p2, _pfloor())
         val = jnp.log(p)
@@ -1163,13 +1146,13 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
         d_lp_d_p1 = lambda_val / p
         d_lp_d_p2 = (1.0 - lambda_val) / p
 
-        pdf1_hi = _PDF(z1_hi)
-        pdf1_lo = _PDF(z1_lo)
+        pdf1_hi = _ph_p1
+        pdf1_lo = _pl_p1
         dp1_dz1_hi = jnp.where(y_idx < K - 1, pdf1_hi, 0.0)
         dp1_dz1_lo = jnp.where(y_idx > 0, -pdf1_lo, 0.0)
 
-        pdf2_hi = _PDF(z2_hi)
-        pdf2_lo = _PDF(z2_lo)
+        pdf2_hi = _ph_p2
+        pdf2_lo = _pl_p2
         dp2_dz2_hi = jnp.where(y_idx < K - 1, pdf2_hi, 0.0)
         dp2_dz2_lo = jnp.where(y_idx > 0, -pdf2_lo, 0.0)
 
@@ -1224,8 +1207,8 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
 
-    _CDF, _PDF = _link_fns(link_name)
-    _DIFF = _link_diff_fn(link_name)
+    _CELL = _link_cell_fn(link_name)
+    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
 
     _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
     for g in range(n_gaps):
@@ -1305,11 +1288,13 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
 
         z_att_hi = jnp.where(y_idx < K - 1, thresh_hi - d_attended, INF)
         z_att_lo = jnp.where(y_idx > 0, thresh_lo - d_attended, -INF)
-        p_att = jnp.clip(_DIFF(z_att_lo, z_att_hi), _pfloor())
+        _D_p_att, _pl_p_att, _ph_p_att = _CELL(z_att_lo, z_att_hi)
+        p_att = jnp.clip(_D_p_att, _pfloor())
 
         z_noise_hi = jnp.where(y_idx < K - 1, thresh_hi, INF)
         z_noise_lo = jnp.where(y_idx > 0, thresh_lo, -INF)
-        p_noise = jnp.clip(_DIFF(z_noise_lo, z_noise_hi), _pfloor())
+        _D_p_noise, _pl_p_noise, _ph_p_noise = _CELL(z_noise_lo, z_noise_hi)
+        p_noise = jnp.clip(_D_p_noise, _pfloor())
 
         p = jnp.clip(lambda_val * p_att + (1.0 - lambda_val) * p_noise, _pfloor())
         val = jnp.log(p)
@@ -1319,13 +1304,13 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
         d_lp_d_patt = lambda_val / p
         d_lp_d_pnoise = (1.0 - lambda_val) / p
 
-        pdf_att_hi = _PDF(z_att_hi)
-        pdf_att_lo = _PDF(z_att_lo)
+        pdf_att_hi = _ph_p_att
+        pdf_att_lo = _pl_p_att
         dpatt_dz_hi = jnp.where(y_idx < K - 1, pdf_att_hi, 0.0)
         dpatt_dz_lo = jnp.where(y_idx > 0, -pdf_att_lo, 0.0)
 
-        pdf_noise_hi = _PDF(z_noise_hi)
-        pdf_noise_lo = _PDF(z_noise_lo)
+        pdf_noise_hi = _ph_p_noise
+        pdf_noise_lo = _pl_p_noise
         dpnoise_dz_hi = jnp.where(y_idx < K - 1, pdf_noise_hi, 0.0)
         dpnoise_dz_lo = jnp.where(y_idx > 0, -pdf_noise_lo, 0.0)
 
@@ -2125,14 +2110,14 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
         z2_rec_hi = jnp.where(has2_hi, (c2_hi - source_d) * inv_sS,  INF)
         z2_rec_lo = jnp.where(has2_lo, (c2_lo - source_d) * inv_sS, -INF)
 
-        P1fh, d1fh, q1fh = _poly_phi_triple(z1_fam_hi)
-        P1fl, d1fl, q1fl = _poly_phi_triple(z1_fam_lo)
-        P2nh, d2nh, q2nh = _poly_phi_triple(z2_hi)
-        P2nl, d2nl, q2nl = _poly_phi_triple(z2_lo)
-        P1rh, d1rh, q1rh = _poly_phi_triple(z1_rec_hi)
-        P1rl, d1rl, q1rl = _poly_phi_triple(z1_rec_lo)
-        P2rh, d2rh, q2rh = _poly_phi_triple(z2_rec_hi)
-        P2rl, d2rl, q2rl = _poly_phi_triple(z2_rec_lo)
+        P1fh, d1fh, q1fh = _probit_triple(z1_fam_hi)
+        P1fl, d1fl, q1fl = _probit_triple(z1_fam_lo)
+        P2nh, d2nh, q2nh = _probit_triple(z2_hi)
+        P2nl, d2nl, q2nl = _probit_triple(z2_lo)
+        P1rh, d1rh, q1rh = _probit_triple(z1_rec_hi)
+        P1rl, d1rl, q1rl = _probit_triple(z1_rec_lo)
+        P2rh, d2rh, q2rh = _probit_triple(z2_rec_hi)
+        P2rl, d2rl, q2rl = _probit_triple(z2_rec_lo)
         D1f = jnp.where(z1_fam_lo >= 0, q1fl - q1fh, P1fh - P1fl)
         D2n = jnp.where(z2_lo >= 0, q2nl - q2nh, P2nh - P2nl)
         D1r = jnp.where(z1_rec_lo >= 0, q1rl - q1rh, P1rh - P1rl)
@@ -2754,7 +2739,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         biv_on = biv_raw > _pfloor()
         bounded_biv = jnp.where(biv_on, biv_raw, _pfloor())
 
-        Pcp, dPcp = _poly_phi_pair(z_cp)
+        Pcp, _, dPcp = _phi_diff(jnp.full_like(z_cp, -INF), z_cp)
         pm, dpm_a, _, dpm_c, dpm_d, dpm_r = _bvn_rect(z_cp, jnp.full_like(z_cp, INF), z2_lo, z2_hi, rho_val)
         marg_raw = Pcp * D_src + pm
         marg_on = marg_raw > _pfloor()

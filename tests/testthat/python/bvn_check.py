@@ -13,7 +13,7 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 import numpyro_backend as nb
 from scipy.stats import multivariate_normal as mvn
-from scipy.special import ndtr
+from scipy.special import ndtr, log_ndtr
 
 
 def bvn(h, k, r):
@@ -68,4 +68,25 @@ if nb._BVN_FFI:
     nb._BVN_FFI = True
     out["ffi_vs_jax_rect"] = float(np.max(np.abs(np.asarray(rect[0]) / np.asarray(jr[0]) - 1)))
     out["ffi_vs_jax_cdf"] = float(np.max(np.abs(np.asarray(cdf[0]) - np.asarray(jc[0]))))
+
+    lo = np.concatenate([rng.uniform(-37, 37, 4000), np.full(200, -1e10), rng.uniform(-8, 8, 200)])
+    hi = lo + np.concatenate([rng.exponential(1.0, 4000), np.zeros(400)])
+    hi[4000:4200] = rng.uniform(-37, 37, 200)
+    hi[4200:] = 1e10
+    up = lo >= 0
+    la, lb = np.where(up, log_ndtr(-lo), log_ndtr(hi)), np.where(up, log_ndtr(-hi), log_ndtr(lo))
+    ref_lp = la + np.log1p(-np.exp(lb - la))
+    ok = np.isfinite(ref_lp) & (ref_lp > -680)
+    lp, glo, ghi = (np.asarray(v) for v in nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi)))
+    out["probit_cell_rel_err"] = float(np.max(np.abs(lp[ok] - ref_lp[ok]) / np.maximum(1, np.abs(ref_lp[ok]))))
+    h = 1e-4 * np.minimum(1, np.abs(hi - lo))
+    fin = ok & (np.abs(lo) < 30) & (np.abs(hi) < 30)
+    fd_lo = (np.asarray(nb._probit_cell_native(jnp.asarray(lo + h), jnp.asarray(hi))[0])
+             - np.asarray(nb._probit_cell_native(jnp.asarray(lo - h), jnp.asarray(hi))[0])) / (2 * h)
+    hh = h
+    fd_hi = (np.asarray(nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi + hh))[0])
+             - np.asarray(nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi - hh))[0])) / (2 * hh)
+    out["probit_cell_fd_err"] = float(max(
+        np.max(np.abs(fd_lo[fin] - glo[fin]) / np.maximum(1, np.abs(glo[fin]))),
+        np.max(np.abs(fd_hi[fin] - ghi[fin]) / np.maximum(1, np.abs(ghi[fin])))))
 print("RESULT " + json.dumps(out))

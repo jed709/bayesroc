@@ -34,7 +34,7 @@ and you cannot share a hand-coded JAX JVP with emitted C++ or Stan strings:
 |---|---|---|
 | Stan (plain) | `R/generate_stan.R`, `R/stan_bvn.R` | Generated Stan; vanilla Stan autodiff. |
 | Stan (batch) | `R/generate_batch_cpp.R`, `inst/stan/batch_sdt_core.hpp` | A per-model C++ function with **analytic** gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
-| JAX | `inst/python/numpyro_backend.py` | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). Bivariate-normal kernels run natively through XLA FFI when a C++ compiler is available (`inst/ffi/bvn_ffi.cc`, `inst/include/bayesroc/bvn_simd.h`), otherwise in pure JAX with identical formulas. |
+| JAX | `inst/python/numpyro_backend.py` | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). Bivariate-normal and f64 probit cells run natively through XLA FFI (`inst/ffi/bvn_ffi.cc`, `inst/include/bayesroc/bvn_simd.h`). The native kernel is required: it is built on first use with the C++ toolchain cmdstanr uses, and the JAX backend stops with a fix-it message if it cannot be built. The pure-JAX kernels remain as test references (`BAYESROC_PURE_JAX_REFERENCE=1`). |
 
 Plain Stan and the batch path share **one** generator (`generate_stan_code_v2`);
 `batch_info` swaps only the likelihood line in the model block. The JAX backend
@@ -89,6 +89,14 @@ run the full suite.
   (pure JAX), `R/stan_bvn.R` (Stan language, plain Stan).
 - **Univariate cells** are differenced on the tail side (Q(lo) - Q(hi) when lo is
   above the median) for every link, so upper-tail cells never cancel to zero.
+- **Probit Phi in JAX** is phi(x) t C(t), t = 1 / (1 + 0.2316419 |x|), returning the value,
+  its exact derivative and the tail mass from one exp. f64: degree-11 C, ~1e-9 relative in
+  both tails, native (`vprobit_triple`, pool-threaded) with `_probit_triple` as the JAX
+  reference. f32: degree-7 C fitted on |x| < 13.5 (beyond it f32 cells underflow), pure JAX;
+  measured faster than a native f32 entry. Stan and batch C++ use exact erfc.
+- **f32 mode:** bivariate native kernels have f32 entries that widen to double, run the f64
+  kernel, and round back (thread-local buffer, flush-to-zero; without those the entry was
+  1.2x slower inside NUTS).
 - **Open bounds** are +-Inf in Stan and C++ and +-1e10 in JAX (so z * phi(z) terms
   stay 0, not NaN). In Stan, standardise a possibly-infinite bound with `bvn_std()`:
   arithmetic on an infinite var poisons the gradient with 0 * Inf.

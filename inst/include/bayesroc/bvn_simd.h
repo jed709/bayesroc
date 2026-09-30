@@ -171,6 +171,101 @@ inline void vpoly_pair(v4d x, v4d& P, v4d& dP) {
   dP = e * G;
 }
 
+constexpr double kProbitC[12] = {0.23164256724403792, 0.2316161018958152, 0.21963988229322737, 0.19034147705499127, 0.182843173379805, 0.023627126024141354, 0.3261383197776697, -0.4226294412990229, 0.566393164718276, -0.42518433981895243, 0.14839140546152088, -0.019505298125989647};
+constexpr double kProbitG[14] = {1.0000028804980357, -0.00011425112737684096, 0.001956685225065126, -0.019177470139476724, 0.12026315990835201, -0.510972748965256, 1.5177140282601391, -3.1995984292291655, 4.79844987841736, -5.063837790314006, 3.656934740253874, -1.7097165426172967, 0.46231487164147905, -0.05421893181564818};
+
+template <int N>
+inline v4d vhorner(const double* c, v4d t) {
+  v4d r = splat(c[N - 1]);
+  for (int k = N - 2; k >= 0; --k) r = splat(c[k]) + t * r;
+  return r;
+}
+
+inline void vprobit_triple(v4d x, v4d& P, v4d& dP, v4d& q) {
+  v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * vabs(x));
+  v4d e = splat(0.3989422804014327) * vexp(splat(-0.5) * x * x);
+  q = e * t * vhorner<12>(kProbitC, t);
+  P = vsel(x >= splat(0.0), splat(1.0) - q, q);
+  dP = e * vhorner<14>(kProbitG, t);
+}
+
+inline void probit_cell4(v4d l, v4d h, v4d& lp, v4d& glo, v4d& ghi) {
+  const v4d zero = splat(0.0), fl = splat(1e-300);
+  v4d Pl, dl, ql, Ph, dh, qh;
+  vprobit_triple(l, Pl, dl, ql);
+  vprobit_triple(h, Ph, dh, qh);
+  v4d D = vsel(l >= zero, ql - qh, Ph - Pl);
+  v4d p = vmax(D, fl);
+  v4d inv = vsel(D > fl, splat(1.0) / p, zero);
+  lp = vlog(p);
+  glo = -dl * inv;
+  ghi = dh * inv;
+}
+
+inline void probit_diff4(v4d l, v4d h, v4d& D, v4d& pl, v4d& ph) {
+  v4d Pl, ql, Ph, qh;
+  vprobit_triple(l, Pl, pl, ql);
+  vprobit_triple(h, Ph, ph, qh);
+  D = vsel(l >= splat(0.0), ql - qh, Ph - Pl);
+}
+
+inline void probit_diff_range(int64_t i0, int64_t i1, const double* zlo, const double* zhi, double* D,
+                              double* pl, double* ph) {
+  int64_t i = i0;
+  v4d l, h, a, b, c;
+  for (; i + 4 <= i1; i += 4) {
+    std::memcpy(&l, zlo + i, 32);
+    std::memcpy(&h, zhi + i, 32);
+    probit_diff4(l, h, a, b, c);
+    std::memcpy(D + i, &a, 32);
+    std::memcpy(pl + i, &b, 32);
+    std::memcpy(ph + i, &c, 32);
+  }
+  if (i < i1) {
+    l = splat(-1.0);
+    h = splat(1.0);
+    for (int64_t k = 0; i + k < i1; ++k) {
+      l[k] = zlo[i + k];
+      h[k] = zhi[i + k];
+    }
+    probit_diff4(l, h, a, b, c);
+    for (int64_t k = 0; i + k < i1; ++k) {
+      D[i + k] = a[k];
+      pl[i + k] = b[k];
+      ph[i + k] = c[k];
+    }
+  }
+}
+
+inline void probit_cell_range(int64_t i0, int64_t i1, const double* zlo, const double* zhi, double* lp,
+                              double* glo, double* ghi) {
+  int64_t i = i0;
+  v4d l, h, a, b, c;
+  for (; i + 4 <= i1; i += 4) {
+    std::memcpy(&l, zlo + i, 32);
+    std::memcpy(&h, zhi + i, 32);
+    probit_cell4(l, h, a, b, c);
+    std::memcpy(lp + i, &a, 32);
+    std::memcpy(glo + i, &b, 32);
+    std::memcpy(ghi + i, &c, 32);
+  }
+  if (i < i1) {
+    l = splat(-1.0);
+    h = splat(1.0);
+    for (int64_t k = 0; i + k < i1; ++k) {
+      l[k] = zlo[i + k];
+      h[k] = zhi[i + k];
+    }
+    probit_cell4(l, h, a, b, c);
+    for (int64_t k = 0; i + k < i1; ++k) {
+      lp[i + k] = a[k];
+      glo[i + k] = b[k];
+      ghi[i + k] = c[k];
+    }
+  }
+}
+
+
 using bvn_tail::kPhiC;
 constexpr double kPhiD[18] = {1.1854995356145523, 1.3097573132537195, 0.45298641056440525, 0.10328147437489583, 0.01295638227198467, -0.0003253821430972744, -0.0004287832995995369, -4.434221633584315e-05, 9.551609080045374e-06, 2.278034508995305e-06, -2.1182703839817368e-07, -9.437945361118253e-08, 6.090771522883504e-09, 3.89287566636132e-09, -2.7866990704357154e-10, -1.638034930910627e-10, 1.8902019919991792e-11, 7.084052091904388e-12};
 using bvn_tail::kPhiA;
@@ -508,14 +603,14 @@ inline void vrdp4(const v4d* in, v4d* out) {
   v4d z2rh = vsel(h2h, (c2h - sd) * isS, INF), z2rl = vsel(h2l, (c2l - sd) * isS, NINF);
   v4d P1fh, d1fh, P1fl, d1fl, P2nh, d2nh, P2nl, d2nl, P1rh, d1rh, P1rl, d1rl, P2rh, d2rh, P2rl, d2rl;
   v4d q1fh, q1fl, q2nh, q2nl, q1rh, q1rl, q2rh, q2rl;
-  vpoly_triple(z1fh, P1fh, d1fh, q1fh);
-  vpoly_triple(z1fl, P1fl, d1fl, q1fl);
-  vpoly_triple(z2h, P2nh, d2nh, q2nh);
-  vpoly_triple(z2l, P2nl, d2nl, q2nl);
-  vpoly_triple(z1rh, P1rh, d1rh, q1rh);
-  vpoly_triple(z1rl, P1rl, d1rl, q1rl);
-  vpoly_triple(z2rh, P2rh, d2rh, q2rh);
-  vpoly_triple(z2rl, P2rl, d2rl, q2rl);
+  vprobit_triple(z1fh, P1fh, d1fh, q1fh);
+  vprobit_triple(z1fl, P1fl, d1fl, q1fl);
+  vprobit_triple(z2h, P2nh, d2nh, q2nh);
+  vprobit_triple(z2l, P2nl, d2nl, q2nl);
+  vprobit_triple(z1rh, P1rh, d1rh, q1rh);
+  vprobit_triple(z1rl, P1rl, d1rl, q1rl);
+  vprobit_triple(z2rh, P2rh, d2rh, q2rh);
+  vprobit_triple(z2rl, P2rl, d2rl, q2rl);
   v4d D1f = vsel(z1fl >= zero, q1fl - q1fh, P1fh - P1fl), D2n = vsel(z2l >= zero, q2nl - q2nh, P2nh - P2nl);
   v4d D1r = vsel(z1rl >= zero, q1rl - q1rh, P1rh - P1rl), D2r = vsel(z2rl >= zero, q2rl - q2rh, P2rh - P2rl);
   v4d p1f = vmax(D1f, floor20), p2n = vmax(D2n, floor20), p1r = vmax(D1r, floor20), p2r = vmax(D2r, floor20);
@@ -561,6 +656,7 @@ inline void vrdp_array(int64_t n, const double* const* in, double* const* out) {
       for (int64_t l = 0; i + l < n; ++l) out[a][i + l] = vout[a][l];
   }
 }
+
 
 }
 

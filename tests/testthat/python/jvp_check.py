@@ -3,6 +3,7 @@ import os
 import sys
 
 os.environ.pop("BAYESROC_BVN_FFI", None)
+os.environ["BAYESROC_PURE_JAX_REFERENCE"] = "1"
 
 import numpy as np
 
@@ -17,7 +18,7 @@ import numpyro_backend as nb
 
 def check(f, args, cont_idx, seed=0):
     """Custom-JVP primal vs the plain value, and custom-JVP tangent vs autodiff of the
-    undecorated value function (f.fun). Run without BAYESROC_BVN_FFI so f.fun is pure JAX."""
+    undecorated value function (f.fun). Runs in pure-JAX reference mode so f.fun can be differentiated."""
     rng = np.random.default_rng(seed)
     plain = np.asarray(f(*args))
     if not hasattr(f, "fun"):

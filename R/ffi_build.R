@@ -45,23 +45,20 @@
 .bvn_ffi_lib <- function(python = jax_python(), rebuild = FALSE, quiet = TRUE) {
   if (is.null(python) || !nzchar(python)) return(NULL)
   memo <- .bvn_ffi_state[[python]]
-  if (!rebuild && !is.null(memo)) return(if (nzchar(memo)) memo else NULL)
-  fail <- function(msg) {
-    if (!isTRUE(.bvn_ffi_state$.warned)) {
-      message("bayesroc: native bivariate-normal kernel unavailable (", msg,
-              "); the JAX backend uses its pure-JAX equivalent, which gives the same ",
-              "results more slowly.")
-      .bvn_ffi_state$.warned <- TRUE
-    }
-    .bvn_ffi_state[[python]] <- ""
-    NULL
+  if (!rebuild && !is.null(memo)) return(memo)
+  fail <- function(msg, fix) {
+    stop("bayesroc: the JAX backend needs its native kernel, which could not be built: ", msg,
+         ".
+", fix, call. = FALSE)
   }
+  toolchain <- paste0("Install a C++17 toolchain (the one cmdstanr uses): Rtools on Windows, ",
+                      "the Xcode command-line tools on macOS, g++ on Linux.")
   src <- .bvn_ffi_source_dir()
-  if (is.null(src)) return(fail("sources not found"))
+  if (is.null(src)) return(fail("sources not found", "Reinstall bayesroc."))
   jl <- .jaxlib_ffi_include(python)
-  if (is.null(jl)) return(fail("jax.ffi headers not found"))
+  if (is.null(jl)) return(fail("jax.ffi headers not found", "Update JAX with install_jax()."))
   cxx <- .cxx17_command()
-  if (is.null(cxx)) return(fail("no C++17 compiler"))
+  if (is.null(cxx)) return(fail("no C++17 compiler", toolchain))
   flags <- .bvn_ffi_flags()
   hdr <- file.path(src$include, "bayesroc", c("bvn_simd.h", "bvn_tail.h"))
   key <- paste(c(unname(tools::md5sum(c(src$cc, hdr))), jl$jax_version, jl$include,
@@ -79,16 +76,16 @@
   tmp <- tempfile("bvn_ffi_", tmpdir = cache, fileext = ext)
   args <- c(cxx$args, flags, paste0("-I", shQuote(jl$include)), paste0("-I", shQuote(src$include)),
             "-o", shQuote(tmp), shQuote(src$cc))
-  if (!quiet) message("bayesroc: building native bivariate-normal kernel")
+  if (!quiet) message("bayesroc: building the native likelihood kernels")
   out <- suppressWarnings(system2(cxx$prog, args, stdout = TRUE, stderr = TRUE))
   status <- attr(out, "status")
   if (!is.null(status) && status != 0L || !file.exists(tmp)) {
     unlink(tmp)
-    return(fail(paste0("compilation failed: ", paste(utils::tail(out, 5), collapse = " "))))
+    return(fail(paste0("compilation failed: ", paste(utils::tail(out, 5), collapse = " ")), toolchain))
   }
   if (!file.rename(tmp, lib)) {
     unlink(tmp)
-    if (!file.exists(lib)) return(fail("could not write to the cache directory"))
+    if (!file.exists(lib)) return(fail(paste0("could not write to ", cache), "Make that directory writable."))
   }
   .bvn_ffi_state[[python]] <- normalizePath(lib, winslash = "/")
   .prune_ffi_cache(cache, python, lib, ext)
