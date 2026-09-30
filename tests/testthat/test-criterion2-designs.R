@@ -55,7 +55,7 @@ test_that("criterion2 linear covariate agrees across Stan and JAX", {
             data = d)
 
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                 iter_warmup = 600, iter_sampling = 600, seed = 13, refresh = 0)
+                 iter_warmup = 600, iter_sampling = 600, seed = 13, refresh = 50)
   fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 13, progress_bar = FALSE)
 

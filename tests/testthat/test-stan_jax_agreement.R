@@ -18,10 +18,10 @@ test_that("evsdt: Stan and JAX posterior means agree", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
             batch_likelihood = TRUE)
-  fs <- fit_broc(m, backend = "stan", refresh = 0,
+  fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
-                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   .assert_means_agree(fs, fj, c("beta_dprime[1]", "beta_thresh_mid[1]"))
 })
 
@@ -30,10 +30,10 @@ test_that("uvsdt: Stan and JAX posterior means agree", {
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
             batch_likelihood = TRUE)
-  fs <- fit_broc(m, backend = "stan", refresh = 0,
+  fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
-                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   .assert_means_agree(fs, fj, c("beta_dprime[1]", "beta_sigma[1]"))
 })
 
@@ -45,10 +45,10 @@ test_that("cdp (rotello_2005): Stan and JAX agree on rec/fam/sigma_R/rec_crit", 
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
                 family = cdp(old_levels = 2:6), counts = "count"),
             d, batch_likelihood = TRUE)
-  fs <- fit_broc(m, backend = "stan", refresh = 0,
+  fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
-                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   vars <- c("beta_dprime[1]", "beta_dprime[2]",
             "beta_dprime2[1]", "beta_dprime2[2]",
             "beta_sigma[1]", "beta_sigma[2]",
@@ -61,10 +61,10 @@ test_that("cumulative: Stan and JAX agree", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
             d, batch_likelihood = TRUE)
-  fs <- fit_broc(m, backend = "stan", refresh = 0,
+  fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
-                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   .assert_means_agree(fs, fj,
                       c("beta_mu[1]", "beta_thresh_mid[1]"))
 })
@@ -75,10 +75,10 @@ test_that("bivariate_cumulative: Stan and JAX posterior means agree", {
   m <- broc(brf(resp(y1, y2) ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_cumulative()), d, batch_likelihood = TRUE)
-  fs <- fit_broc(m, backend = "stan", refresh = 0,
+  fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
-                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   .assert_means_agree(fs, fj,
                       c("beta_rho[1]", "beta_thresh_mid[1]", "beta_thresh_mid_2[1]"))
 })
@@ -94,10 +94,10 @@ test_that("crossed REs: predict + plot_roc_curve work on both backends", {
 
   for (backend in c("stan", "jax")) {
     fit <- if (backend == "stan") {
-      fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+      fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
     } else {
-      fit_broc(m, backend = "jax", refresh = 0, seed = 1,
+      fit_broc(m, backend = "jax", refresh = 50, seed = 1,
                iter_warmup = 300, iter_sampling = 300, chains = 4)
     }
 

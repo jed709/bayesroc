@@ -18,6 +18,7 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
 
   if (identical(model_data$gap_link, "softplus")) {
     code <- gsub("beta_log_gaps", "beta_raw_gaps", code)
+    code <- gsub("(?<![A-Za-z0-9_])exp\\(beta_raw_gaps", "log1p_exp(beta_raw_gaps", code, perl = TRUE)
     code <- gsub("log_gaps_prior", "raw_gaps_prior", code)
     code <- gsub("Log-gaps", "Raw-gaps (softplus)", code)
     code <- gsub("exp(log_gap)", "log1p_exp(raw_gap)", code, fixed = TRUE)
@@ -69,13 +70,11 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     lines <- c(lines, '
   real cumulative_lpmf(int y, real mu, int K, vector thresh) {
     if (y == 1) {
-      return log(fmax(link_cdf(thresh[1] - mu), 1e-20));
+      return log(fmax(link_cdf(thresh[1] - mu), 1e-300));
     } else if (y == K) {
-      return log(fmax(1 - link_cdf(thresh[K-1] - mu), 1e-20));
+      return log(fmax(link_ccdf(thresh[K-1] - mu), 1e-300));
     } else {
-      real p_upper = link_cdf(thresh[y] - mu);
-      real p_lower = link_cdf(thresh[y-1] - mu);
-      return log(fmax(p_upper - p_lower, 1e-20));
+      return log(fmax(link_diff(thresh[y-1] - mu, thresh[y] - mu), 1e-300));
     }
   }')
     if (isTRUE(model_data$threads) && is.null(batch_info)) {
@@ -98,11 +97,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     if (y == 1) {
       return log(link_cdf(thresh[1] - mu));
     } else if (y == K) {
-      return log1m(link_cdf(thresh[K-1] - mu));
+      return log(link_ccdf(thresh[K-1] - mu));
     } else {
-      real p_upper = link_cdf(thresh[y] - mu);
-      real p_lower = link_cdf(thresh[y-1] - mu);
-      return log(fmax(p_upper - p_lower, 1e-20));
+      return log(fmax(link_diff(thresh[y-1] - mu, thresh[y] - mu), 1e-300));
     }
   }')
   
@@ -115,11 +112,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     if (y == 1) {
       return log(link_cdf((thresh[1] - mu) / s));
     } else if (y == K) {
-      return log1m(link_cdf((thresh[K-1] - mu) / s));
+      return log(link_ccdf((thresh[K-1] - mu) / s));
     } else {
-      real p_upper = link_cdf((thresh[y] - mu) / s);
-      real p_lower = link_cdf((thresh[y-1] - mu) / s);
-      return log(fmax(p_upper - p_lower, 1e-20));
+      return log(fmax(link_diff((thresh[y-1] - mu) / s, (thresh[y] - mu) / s), 1e-300));
     }
   }')
   }
@@ -131,18 +126,16 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     if (is_old > 0) {
       real mu = is_old * dprime;
       if (y == K) {
-        // P(Y=K | old) = lambda + (1-lambda) * (1 - link_cdf((thresh[K-1] - mu)/sigma))
-        real p_fam = 1 - link_cdf((thresh[K-1] - mu) / sigma);
-        return log(fmax(lambda + (1 - lambda) * p_fam, 1e-20));
+        // P(Y=K | old) = lambda + (1-lambda) * (link_ccdf((thresh[K-1] - mu)/sigma))
+        real p_fam = link_ccdf((thresh[K-1] - mu) / sigma);
+        return log(fmax(lambda + (1 - lambda) * p_fam, 1e-300));
       } else {
-        // P(Y=y | old) = (1-lambda) * [link_cdf((thresh[y]-mu)/sigma) - link_cdf((thresh[y-1]-mu)/sigma)]
+        // P(Y=y | old) = (1-lambda) * [link_diff((thresh[y-1]-mu)/sigma, (thresh[y]-mu)/sigma)]
         real log_prob;
         if (y == 1) {
           log_prob = log(link_cdf((thresh[1] - mu) / sigma));
         } else {
-          real p_upper = link_cdf((thresh[y] - mu) / sigma);
-          real p_lower = link_cdf((thresh[y-1] - mu) / sigma);
-          log_prob = log(fmax(p_upper - p_lower, 1e-20));
+          log_prob = log(fmax(link_diff((thresh[y-1] - mu) / sigma, (thresh[y] - mu) / sigma), 1e-300));
         }
         return log1m(lambda) + log_prob;
       }
@@ -156,16 +149,14 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     if (is_old > 0) {
       real mu = is_old * dprime;
       if (y == K) {
-        real p_fam = 1 - link_cdf(thresh[K-1] - mu);
-        return log(fmax(lambda + (1 - lambda) * p_fam, 1e-20));
+        real p_fam = link_ccdf(thresh[K-1] - mu);
+        return log(fmax(lambda + (1 - lambda) * p_fam, 1e-300));
       } else {
         real log_prob;
         if (y == 1) {
           log_prob = log(link_cdf(thresh[1] - mu));
         } else {
-          real p_upper = link_cdf(thresh[y] - mu);
-          real p_lower = link_cdf(thresh[y-1] - mu);
-          log_prob = log(fmax(p_upper - p_lower, 1e-20));
+          log_prob = log(fmax(link_diff(thresh[y-1] - mu, thresh[y] - mu), 1e-300));
         }
         return log1m(lambda) + log_prob;
       }
@@ -191,13 +182,13 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
         p1 = link_cdf(thresh[1] - mu1);
         p2 = link_cdf(thresh[1] - mu2);
       } else if (y == K) {
-        p1 = 1 - link_cdf(thresh[K-1] - mu1);
-        p2 = 1 - link_cdf(thresh[K-1] - mu2);
+        p1 = link_ccdf(thresh[K-1] - mu1);
+        p2 = link_ccdf(thresh[K-1] - mu2);
       } else {
-        p1 = link_cdf(thresh[y] - mu1) - link_cdf(thresh[y-1] - mu1);
-        p2 = link_cdf(thresh[y] - mu2) - link_cdf(thresh[y-1] - mu2);
+        p1 = link_diff(thresh[y-1] - mu1, thresh[y] - mu1);
+        p2 = link_diff(thresh[y-1] - mu2, thresh[y] - mu2);
       }
-      return log(fmax(lambda * p1 + (1 - lambda) * p2, 1e-20));
+      return log(fmax(lambda * p1 + (1 - lambda) * p2, 1e-300));
     } else {
       return evsdt_lpmf(y | dprime, is_old, K, thresh);
     }
@@ -213,13 +204,13 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
         p1 = link_cdf((thresh[1] - mu1) / sigma);
         p2 = link_cdf((thresh[1] - mu2) / sigma2);
       } else if (y == K) {
-        p1 = 1 - link_cdf((thresh[K-1] - mu1) / sigma);
-        p2 = 1 - link_cdf((thresh[K-1] - mu2) / sigma2);
+        p1 = link_ccdf((thresh[K-1] - mu1) / sigma);
+        p2 = link_ccdf((thresh[K-1] - mu2) / sigma2);
       } else {
-        p1 = link_cdf((thresh[y] - mu1) / sigma) - link_cdf((thresh[y-1] - mu1) / sigma);
-        p2 = link_cdf((thresh[y] - mu2) / sigma2) - link_cdf((thresh[y-1] - mu2) / sigma2);
+        p1 = link_diff((thresh[y-1] - mu1) / sigma, (thresh[y] - mu1) / sigma);
+        p2 = link_diff((thresh[y-1] - mu2) / sigma2, (thresh[y] - mu2) / sigma2);
       }
-      return log(fmax(lambda * p1 + (1 - lambda) * p2, 1e-20));
+      return log(fmax(lambda * p1 + (1 - lambda) * p2, 1e-300));
     } else {
       return evsdt_lpmf(y | dprime, is_old, K, thresh);
     }
@@ -237,13 +228,13 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_lure = link_cdf((thresh[1] + dprime_L) / sigma_L);
       p_ref = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_lure = 1 - link_cdf((thresh[K-1] + dprime_L) / sigma_L);
-      p_ref = 1 - link_cdf(thresh[K-1]);
+      p_lure = link_ccdf((thresh[K-1] + dprime_L) / sigma_L);
+      p_ref = link_ccdf(thresh[K-1]);
     } else {
-      p_lure = link_cdf((thresh[y] + dprime_L) / sigma_L) - link_cdf((thresh[y-1] + dprime_L) / sigma_L);
-      p_ref = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_lure = link_diff((thresh[y-1] + dprime_L) / sigma_L, (thresh[y] + dprime_L) / sigma_L);
+      p_ref = link_diff(thresh[y-1], thresh[y]);
     }
-    return log(fmax(lambda_L * p_lure + (1 - lambda_L) * p_ref, 1e-20));
+    return log(fmax(lambda_L * p_lure + (1 - lambda_L) * p_ref, 1e-300));
   }')
       } else {
         lines <- c(lines, '
@@ -255,13 +246,13 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_lure = link_cdf(thresh[1] + dprime_L);
       p_ref = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_lure = 1 - link_cdf(thresh[K-1] + dprime_L);
-      p_ref = 1 - link_cdf(thresh[K-1]);
+      p_lure = link_ccdf(thresh[K-1] + dprime_L);
+      p_ref = link_ccdf(thresh[K-1]);
     } else {
-      p_lure = link_cdf(thresh[y] + dprime_L) - link_cdf(thresh[y-1] + dprime_L);
-      p_ref = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_lure = link_diff(thresh[y-1] + dprime_L, thresh[y] + dprime_L);
+      p_ref = link_diff(thresh[y-1], thresh[y]);
     }
-    return log(fmax(lambda_L * p_lure + (1 - lambda_L) * p_ref, 1e-20));
+    return log(fmax(lambda_L * p_lure + (1 - lambda_L) * p_ref, 1e-300));
   }')
       }
     }
@@ -295,14 +286,14 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_attended = link_cdf(thresh[1] - d);
       p_nonattended = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_attended = 1 - link_cdf(thresh[K-1] - d);
-      p_nonattended = 1 - link_cdf(thresh[K-1]);
+      p_attended = link_ccdf(thresh[K-1] - d);
+      p_nonattended = link_ccdf(thresh[K-1]);
     } else {
-      p_attended = link_cdf(thresh[y] - d) - link_cdf(thresh[y-1] - d);
-      p_nonattended = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_attended = link_diff(thresh[y-1] - d, thresh[y] - d);
+      p_nonattended = link_diff(thresh[y-1], thresh[y]);
     }
     
-    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
+    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-300));
   }')
     } else if (has_dprime_B) {
       lines <- c(lines, '
@@ -319,14 +310,14 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_attended = link_cdf(thresh[1] - d);
       p_nonattended = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_attended = 1 - link_cdf(thresh[K-1] - d);
-      p_nonattended = 1 - link_cdf(thresh[K-1]);
+      p_attended = link_ccdf(thresh[K-1] - d);
+      p_nonattended = link_ccdf(thresh[K-1]);
     } else {
-      p_attended = link_cdf(thresh[y] - d) - link_cdf(thresh[y-1] - d);
-      p_nonattended = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_attended = link_diff(thresh[y-1] - d, thresh[y] - d);
+      p_nonattended = link_diff(thresh[y-1], thresh[y]);
     }
     
-    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
+    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-300));
   }')
     } else if (has_lambda_B) {
       lines <- c(lines, '
@@ -351,14 +342,14 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_attended = link_cdf(thresh[1] - d);
       p_nonattended = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_attended = 1 - link_cdf(thresh[K-1] - d);
-      p_nonattended = 1 - link_cdf(thresh[K-1]);
+      p_attended = link_ccdf(thresh[K-1] - d);
+      p_nonattended = link_ccdf(thresh[K-1]);
     } else {
-      p_attended = link_cdf(thresh[y] - d) - link_cdf(thresh[y-1] - d);
-      p_nonattended = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_attended = link_diff(thresh[y-1] - d, thresh[y] - d);
+      p_nonattended = link_diff(thresh[y-1], thresh[y]);
     }
     
-    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
+    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-300));
   }')
     } else {
       lines <- c(lines, '
@@ -375,125 +366,28 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p_attended = link_cdf(thresh[1] - d);
       p_nonattended = link_cdf(thresh[1]);
     } else if (y == K) {
-      p_attended = 1 - link_cdf(thresh[K-1] - d);
-      p_nonattended = 1 - link_cdf(thresh[K-1]);
+      p_attended = link_ccdf(thresh[K-1] - d);
+      p_nonattended = link_ccdf(thresh[K-1]);
     } else {
-      p_attended = link_cdf(thresh[y] - d) - link_cdf(thresh[y-1] - d);
-      p_nonattended = link_cdf(thresh[y]) - link_cdf(thresh[y-1]);
+      p_attended = link_diff(thresh[y-1] - d, thresh[y] - d);
+      p_nonattended = link_diff(thresh[y-1], thresh[y]);
     }
     
-    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-20));
+    return log(fmax(lambda * p_attended + (1 - lambda) * p_nonattended, 1e-300));
   }')
     }
   }
   
   if (family_name %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")) {
-    lines <- c(lines, '
-  // Bivariate normal CDF using Owens T function
-  // Computes P(Z1 <= z1, Z2 <= z2) for standard bivariate normal with correlation rho
-  real binormal_cdf_custom(real z1, real z2, real rho) {
-    // Handle the case where both are zero
-    if (z1 == 0 && z2 == 0) {
-      return 0.25 + asin(rho) / (2 * pi());
-    }
-    // Handle edge cases where one of z1 or z2 is zero (avoids division by zero)
-    // When z1=0: P(Z1<=0, Z2<=z2) = 0.5 * Phi(z2) + owens_t(z2, rho) for rho != 0
-    // Using the identity: Phi_2(0, z2, rho) = 0.5 * Phi(z2) when rho=0
-    // More generally: Phi_2(0, z2, rho) = Phi(z2) * 0.5 + owens_t(z2, rho/sqrt(1-0)) 
-    // but safer to use the general formula with small epsilon
-    if (z1 == 0) {
-      // Use limit: as z1->0, owens_t(z1, a1) -> 0 and the formula simplifies
-      // Phi_2(0, z2, rho) = Phi(z2)/2 + owens_t(z2, -rho/sqrt(1-rho^2)) when z2 > 0
-      // But simpler: use tiny offset to avoid exact zero
-      real z1_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2 / z1_safe - rho) / denom;
-      real a2 = (z1_safe / z2 - rho) / denom;
-      real product = z1_safe * z2;
-      real delta = product < 0 || (product == 0 && (z1_safe + z2) < 0);
-      return 0.5 * (Phi(z1_safe) + Phi(z2) - delta) - owens_t(z1_safe, a1) - owens_t(z2, a2);
-    }
-    if (z2 == 0) {
-      real z2_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2_safe / z1 - rho) / denom;
-      real a2 = (z1 / z2_safe - rho) / denom;
-      real product = z1 * z2_safe;
-      real delta = product < 0 || (product == 0 && (z1 + z2_safe) < 0);
-      return 0.5 * (Phi(z1) + Phi(z2_safe) - delta) - owens_t(z1, a1) - owens_t(z2_safe, a2);
-    }
-    // General case: neither z1 nor z2 is zero
-    real denom = abs(rho) < 1.0 ? sqrt((1 + rho) * (1 - rho)) : not_a_number();
-    real a1 = (z2 / z1 - rho) / denom;
-    real a2 = (z1 / z2 - rho) / denom;
-    real product = z1 * z2;
-    real delta = product < 0 || (product == 0 && (z1 + z2) < 0);
-    return 0.5 * (Phi(z1) + Phi(z2) - delta) - owens_t(z1, a1) - owens_t(z2, a2);
-  }
-
-  // Compute bivariate probability for response cell (resp1, resp2)
-  // mu1, mu2: means on each dimension
-  // sigma1, sigma2: SDs on each dimension
-  // c1, c2: threshold vectors for each dimension
-  // rho: correlation
+    lines <- c(lines, .stan_bvn_functions(), '
   real compute_bivariate_prob(int resp1, int resp2, int K1, int K2,
                               real mu1, real mu2, real sigma1, real sigma2,
                               vector c1, vector c2, real rho) {
-    // Standardize thresholds
-    vector[K1-1] z1 = (c1 - mu1) / sigma1;
-    vector[K2-1] z2 = (c2 - mu2) / sigma2;
-    
-    // Fast path: when rho = 0, bivariate factors into product of univariates
-    if (rho == 0) {
-      real p1;
-      real p2;
-      if (resp1 == 1) p1 = Phi(z1[1]);
-      else if (resp1 == K1) p1 = 1 - Phi(z1[K1-1]);
-      else p1 = Phi(z1[resp1]) - Phi(z1[resp1-1]);
-      if (resp2 == 1) p2 = Phi(z2[1]);
-      else if (resp2 == K2) p2 = 1 - Phi(z2[K2-1]);
-      else p2 = Phi(z2[resp2]) - Phi(z2[resp2-1]);
-      return p1 * p2;
-    }
-    
-    // Handle all 9 possible cases (corners, edges, interior)
-    if (resp1 == 1 && resp2 == 1) {
-      return binormal_cdf_custom(z1[1], z2[1], rho);
-    }
-    else if (resp1 == 1 && resp2 == K2) {
-      return Phi(z1[1]) - binormal_cdf_custom(z1[1], z2[K2-1], rho);
-    }
-    else if (resp1 == K1 && resp2 == 1) {
-      return Phi(z2[1]) - binormal_cdf_custom(z2[1], z1[K1-1], rho);
-    }
-    else if (resp1 == K1 && resp2 == K2) {
-      return 1 - Phi(z1[K1-1]) - Phi(z2[K2-1]) + binormal_cdf_custom(z1[K1-1], z2[K2-1], rho);
-    }
-    else if (resp1 == 1) {
-      return binormal_cdf_custom(z1[1], z2[resp2], rho) - 
-             binormal_cdf_custom(z1[1], z2[resp2-1], rho);
-    }
-    else if (resp2 == 1) {
-      return binormal_cdf_custom(z1[resp1], z2[1], rho) - 
-             binormal_cdf_custom(z1[resp1-1], z2[1], rho);
-    }
-    else if (resp1 == K1) {
-      return Phi(z2[resp2]) - Phi(z2[resp2-1]) - 
-             binormal_cdf_custom(z1[K1-1], z2[resp2], rho) + 
-             binormal_cdf_custom(z1[K1-1], z2[resp2-1], rho);
-    }
-    else if (resp2 == K2) {
-      return Phi(z1[resp1]) - Phi(z1[resp1-1]) - 
-             binormal_cdf_custom(z2[K2-1], z1[resp1], rho) + 
-             binormal_cdf_custom(z1[resp1-1], z2[K2-1], rho);
-    }
-    else {
-      // Full interior case
-      return binormal_cdf_custom(z1[resp1], z2[resp2], rho) - 
-             binormal_cdf_custom(z1[resp1], z2[resp2-1], rho) - 
-             binormal_cdf_custom(z1[resp1-1], z2[resp2], rho) + 
-             binormal_cdf_custom(z1[resp1-1], z2[resp2-1], rho);
-    }
+    real a1 = resp1 == 1 ? negative_infinity() : (c1[resp1 - 1] - mu1) / sigma1;
+    real b1 = resp1 == K1 ? positive_infinity() : (c1[resp1] - mu1) / sigma1;
+    real a2 = resp2 == 1 ? negative_infinity() : (c2[resp2 - 1] - mu2) / sigma2;
+    real b2 = resp2 == K2 ? positive_infinity() : (c2[resp2] - mu2) / sigma2;
+    return bvn_rect(a1, b1, a2, b2, rho);
   }')
 
     if (isTRUE(model_data$bounded)) {
@@ -531,62 +425,13 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
     else {
       real z_cp = (cp - mu_I) / sigma_I;
-
-      // Below-cp: independent, source ~ N(0, sigma_cond)
-      {
-        real z_ylo_b = (resp_det == 1) ? -8.0 : (c1[resp_det-1] - mu_I) / sigma_I;
-        real prob_below = 0.0;
-        if (resp_src == 1) {
-          real zs_hi = c2[1] / sigma_cond;
-          prob_below = (Phi(z_cp) - Phi(z_ylo_b)) * Phi(zs_hi);
-        }
-        else if (resp_src == K2) {
-          real zs_lo = c2[K2-1] / sigma_cond;
-          prob_below = (Phi(z_cp) - Phi(z_ylo_b)) * (1 - Phi(zs_lo));
-        }
-        else {
-          real zs_lo = c2[resp_src-1] / sigma_cond;
-          real zs_hi = c2[resp_src] / sigma_cond;
-          prob_below = (Phi(z_cp) - Phi(z_ylo_b)) * (Phi(zs_hi) - Phi(zs_lo));
-        }
-        prob += prob_below;
-      }
-
-      // Above-cp: standard bivariate
-      {
-        real z_yhi_a = (resp_det == K1) ? 8.0 : (c1[resp_det] - mu_I) / sigma_I;
-        vector[K2-1] z2_a = (c2 - mu_S) / sigma_S;
-        real prob_above = 0.0;
-
-        if (resp_src == 1 && resp_det == K1) {
-          prob_above = Phi(z2_a[1]) - binormal_cdf_custom(z_cp, z2_a[1], rho);
-        }
-        else if (resp_src == K2 && resp_det == K1) {
-          prob_above = 1 - Phi(z2_a[K2-1]) - Phi(z_cp)
-                       + binormal_cdf_custom(z_cp, z2_a[K2-1], rho);
-        }
-        else if (resp_src == 1) {
-          prob_above = binormal_cdf_custom(z_yhi_a, z2_a[1], rho)
-                     - binormal_cdf_custom(z_cp, z2_a[1], rho);
-        }
-        else if (resp_src == K2) {
-          prob_above = Phi(z_yhi_a) - Phi(z_cp)
-                     - binormal_cdf_custom(z_yhi_a, z2_a[K2-1], rho)
-                     + binormal_cdf_custom(z_cp, z2_a[K2-1], rho);
-        }
-        else if (resp_det == K1) {
-          prob_above = Phi(z2_a[resp_src]) - Phi(z2_a[resp_src-1])
-                     - binormal_cdf_custom(z_cp, z2_a[resp_src], rho)
-                     + binormal_cdf_custom(z_cp, z2_a[resp_src-1], rho);
-        }
-        else {
-          prob_above = binormal_cdf_custom(z_yhi_a, z2_a[resp_src], rho)
-                     - binormal_cdf_custom(z_yhi_a, z2_a[resp_src-1], rho)
-                     - binormal_cdf_custom(z_cp, z2_a[resp_src], rho)
-                     + binormal_cdf_custom(z_cp, z2_a[resp_src-1], rho);
-        }
-        prob += prob_above;
-      }
+      real z_ylo = resp_det == 1 ? negative_infinity() : (c1[resp_det - 1] - mu_I) / sigma_I;
+      real z_yhi = resp_det == K1 ? positive_infinity() : (c1[resp_det] - mu_I) / sigma_I;
+      real s_lo = resp_src == 1 ? negative_infinity() : c2[resp_src - 1];
+      real s_hi = resp_src == K2 ? positive_infinity() : c2[resp_src];
+      prob = exp(bvn_log_interval(z_ylo, z_cp)
+                 + bvn_log_interval(bvn_std(s_lo, 0, sigma_cond), bvn_std(s_hi, 0, sigma_cond)))
+             + bvn_rect(z_cp, z_yhi, bvn_std(s_lo, mu_S, sigma_S), bvn_std(s_hi, mu_S, sigma_S), rho);
     }
 
     return prob;
@@ -638,7 +483,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
 
     // Compute probability and return log
     real p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
 
     if (isTRUE(model_data$varying_source_criteria)) {
@@ -666,7 +511,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     // Use source thresholds for this item response level
     vector[K2-1] c2 = to_vector(c2_varying[y1, ]);
     real p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
     }
 
@@ -697,7 +542,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     } else {
       p = compute_bounded_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
     }
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
 
       if (isTRUE(model_data$varying_source_criteria)) {
@@ -726,7 +571,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     } else {
       p = compute_bounded_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
     }
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
       }
     }
@@ -756,7 +601,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       c2 = to_vector(c2_varying[y1, ]);
     }
     real p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
       } else {
         lines <- c(lines, '
@@ -789,7 +634,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     } else {
       p = compute_bounded_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
     }
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
       }
     }
@@ -798,9 +643,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (family_name == "bivariate_dp") {
     lines <- c(lines, '
   real univariate_cell_prob(int resp, int K, real mu, real sigma, vector thresh) {
-    if (resp == 1) return Phi((thresh[1] - mu) / sigma);
-    else if (resp == K) return 1 - Phi((thresh[K-1] - mu) / sigma);
-    else return Phi((thresh[resp] - mu) / sigma) - Phi((thresh[resp-1] - mu) / sigma);
+    real lo = resp == 1 ? negative_infinity() : (thresh[resp - 1] - mu) / sigma;
+    real hi = resp == K ? positive_infinity() : (thresh[resp] - mu) / sigma;
+    return link_diff(lo, hi);
   }')
 
     if (isTRUE(model_data$bounded)) {
@@ -811,43 +656,15 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
                                        real sigma_I, real sigma_S,
                                        real rho, vector c2) {
 
-    if (abs(rho) < 1e-10) {
-      // Independent: marginal source is N(mu_S, sigma_S^2)
-      if (resp_src == 1) return Phi((c2[1] - mu_S) / sigma_S);
-      else if (resp_src == K2) return 1 - Phi((c2[K2-1] - mu_S) / sigma_S);
-      else return Phi((c2[resp_src] - mu_S) / sigma_S) - Phi((c2[resp_src-1] - mu_S) / sigma_S);
-    }
-
+    real s_lo = resp_src == 1 ? negative_infinity() : c2[resp_src - 1];
+    real s_hi = resp_src == K2 ? positive_infinity() : c2[resp_src];
+    if (abs(rho) < 1e-10) return exp(bvn_log_interval(bvn_std(s_lo, mu_S, sigma_S), bvn_std(s_hi, mu_S, sigma_S)));
     real cp = mu_I - sigma_I * mu_S / (rho * sigma_S);
     real sigma_cond = sigma_S * sqrt(1 - rho * rho);
     real z_cp = (cp - mu_I) / sigma_I;
-    real p_below = Phi(z_cp);
-
-    real prob = 0.0;
-
-    // Below-cp: source ~ N(0, sigma_cond)
-    if (resp_src == 1)
-      prob += p_below * Phi(c2[1] / sigma_cond);
-    else if (resp_src == K2)
-      prob += p_below * (1 - Phi(c2[K2-1] / sigma_cond));
-    else
-      prob += p_below * (Phi(c2[resp_src] / sigma_cond) - Phi(c2[resp_src-1] / sigma_cond));
-
-    // Above-cp: standard BVN, marginal for source in bin k with item > cp
-    {
-      vector[K2-1] z2 = (c2 - mu_S) / sigma_S;
-
-      if (resp_src == 1)
-        prob += Phi(z2[1]) - binormal_cdf_custom(z_cp, z2[1], rho);
-      else if (resp_src == K2)
-        prob += 1 - Phi(z2[K2-1]) - Phi(z_cp) + binormal_cdf_custom(z_cp, z2[K2-1], rho);
-      else
-        prob += Phi(z2[resp_src]) - Phi(z2[resp_src-1])
-              - binormal_cdf_custom(z_cp, z2[resp_src], rho)
-              + binormal_cdf_custom(z_cp, z2[resp_src-1], rho);
-    }
-
-    return prob;
+    return exp(bvn_log_interval(negative_infinity(), z_cp)
+               + bvn_log_interval(bvn_std(s_lo, 0, sigma_cond), bvn_std(s_hi, 0, sigma_cond)))
+           + bvn_rect(z_cp, positive_infinity(), bvn_std(s_lo, mu_S, sigma_S), bvn_std(s_hi, mu_S, sigma_S), rho);
   }')
     }
 
@@ -872,7 +689,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     // New items: standard bivariate, no recollection
     if (item_type == 1) {
       real p = compute_bivariate_prob(y1, y2, K1, K2, 0.0, 0.0, 1.0, 1.0, c1, c2, rho_N);
-      return log(fmax(p, 1e-20));
+      return log(fmax(p, 1e-300));
     }
 
     real mu1; real mu2; real sigma1; real sigma2; real rho;
@@ -903,7 +720,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       else if (item_type == 3 && y2 == K2) p3 = R_I_eff * R_S_eff;
     }
 
-    return log(fmax(p1 + p2 + p3, 1e-20));
+    return log(fmax(p1 + p2 + p3, 1e-300));
   }', dp_src_A, dp_src_B, biv_fn,
     if (bounded) {
       sprintf('\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);')
@@ -923,7 +740,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     if (item_type == 1) {
       vector[K2-1] c2 = to_vector(c2_varying[y1, ]);
       real p = compute_bivariate_prob(y1, y2, K1, K2, 0.0, 0.0, 1.0, 1.0, c1, c2, rho_N);
-      return log(fmax(p, 1e-20));
+      return log(fmax(p, 1e-300));
     }
 
     real mu1; real mu2; real sigma1; real sigma2; real rho;
@@ -952,7 +769,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       else if (item_type == 3 && y2 == K2) p3 = R_I_eff * R_S_eff;
     }
 
-    return log(fmax(p1 + p2 + p3, 1e-20));
+    return log(fmax(p1 + p2 + p3, 1e-300));
   }', dp_src_A, dp_src_B, biv_fn,
       if (bounded) {
         '\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);'
@@ -981,7 +798,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
 
     if (item_type == 1) {
       real p = compute_bivariate_prob(y1, y2, K1, K2, 0.0, 0.0, 1.0, 1.0, c1, c2, rho_N);
-      return log(fmax(p, 1e-20));
+      return log(fmax(p, 1e-300));
     }
 
     real mu1; real mu2; real sigma1; real sigma2; real rho;
@@ -1009,7 +826,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       else if (item_type == 3 && y2 == K2) p3 = R_I_eff * R_S_eff;
     }
 
-    return log(fmax(p1 + p2 + p3, 1e-20));
+    return log(fmax(p1 + p2 + p3, 1e-300));
   }', dp_src_A, dp_src_B, biv_fn,
       if (bounded) {
         '\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);'
@@ -1025,54 +842,22 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
                                          real mu1, real mu2,
                                          vector c1, vector c2, real rho) {
     real p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, 1.0, 1.0, c1, c2, rho);
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
   }
 
   if (family_name == "cdp") {
-    lines <- c(lines, '
-  // Bivariate normal CDF using Owens T function (shared with bivariate_sdt)
+    lines <- c(lines, .stan_bvn_functions(), '
   real binormal_cdf_cdp(real z1, real z2, real rho) {
-    if (z1 == 0 && z2 == 0) {
-      return 0.25 + asin(rho) / (2 * pi());
-    }
-    if (z1 == 0) {
-      real z1_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2 / z1_safe - rho) / denom;
-      real a2 = (z1_safe / z2 - rho) / denom;
-      real product = z1_safe * z2;
-      real delta = product < 0 || (product == 0 && (z1_safe + z2) < 0);
-      return 0.5 * (Phi(z1_safe) + Phi(z2) - delta) - owens_t(z1_safe, a1) - owens_t(z2, a2);
-    }
-    if (z2 == 0) {
-      real z2_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2_safe / z1 - rho) / denom;
-      real a2 = (z1 / z2_safe - rho) / denom;
-      real product = z1 * z2_safe;
-      real delta = product < 0 || (product == 0 && (z1 + z2_safe) < 0);
-      return 0.5 * (Phi(z1) + Phi(z2_safe) - delta) - owens_t(z1, a1) - owens_t(z2_safe, a2);
-    }
-    real denom = abs(rho) < 1.0 ? sqrt((1 + rho) * (1 - rho)) : not_a_number();
-    real a1 = (z2 / z1 - rho) / denom;
-    real a2 = (z1 / z2 - rho) / denom;
-    real product = z1 * z2;
-    real delta = product < 0 || (product == 0 && (z1 + z2) < 0);
-    return 0.5 * (Phi(z1) + Phi(z2) - delta) - owens_t(z1, a1) - owens_t(z2, a2);
+    return bvn_rect(negative_infinity(), z1, negative_infinity(), z2, rho);
   }
-  
-  // P(R > c_R, tau_lo < M < tau_hi) - "Remember" response in confidence band
+
   real binormal_strip_upper(real z_cR, real z_tau_lo, real z_tau_hi, real rho) {
-    real p_upper = Phi(z_tau_hi) - binormal_cdf_cdp(z_cR, z_tau_hi, rho);
-    real p_lower = Phi(z_tau_lo) - binormal_cdf_cdp(z_cR, z_tau_lo, rho);
-    return fmax(p_upper - p_lower, 1e-20);
+    return fmax(bvn_rect(z_cR, positive_infinity(), z_tau_lo, z_tau_hi, rho), 1e-300);
   }
-  
-  // P(R <= c_R, tau_lo < M < tau_hi) - "Know" response in confidence band
+
   real binormal_strip_lower(real z_cR, real z_tau_lo, real z_tau_hi, real rho) {
-    real p_band = Phi(z_tau_hi) - Phi(z_tau_lo);
-    return fmax(p_band - binormal_strip_upper(z_cR, z_tau_lo, z_tau_hi, rho), 1e-20);
+    return fmax(bvn_rect(negative_infinity(), z_cR, z_tau_lo, z_tau_hi, rho), 1e-300);
   }')
 
     if (isTRUE(model_data$stan_data$n_rkg == 3)) {
@@ -1087,7 +872,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     real z_cK = (c_K - mu_F) / sigma_F;
     real mu_M = mu_R + mu_F;
     real sigma_M = sqrt(square(sigma_R) + square(sigma_F));
-    real z_c = (c - mu_M) / sigma_M;
+    real z_c = bvn_std(c, mu_M, sigma_M);
     real rho = sigma_R / sigma_M;
     return Phi(z_s) * Phi(z_cK) + binormal_cdf_cdp(z_cR, z_c, rho)
            - binormal_cdf_cdp(z_s, z_c, rho);
@@ -1107,14 +892,14 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
 
     // Standardized thresholds
     real z_lo = (tau_lo - mu_M) / sigma_M;
-    real z_hi = (tau_hi - mu_M) / sigma_M;
+    real z_hi = bvn_std(tau_hi, mu_M, sigma_M);
 
     // SHARED: Phi2(z_cR, z_hi/z_lo, rho) -- used by both Remember and Guess
     real bv_cR_hi = binormal_cdf_cdp(z_cR, z_hi, rho);
     real bv_cR_lo = binormal_cdf_cdp(z_cR, z_lo, rho);
 
     // REMEMBER: P(R > c_R, tau_lo < M < tau_hi)
-    real p_Remember = (Phi(z_hi) - bv_cR_hi) - (Phi(z_lo) - bv_cR_lo);
+    real p_Remember = bvn_rect(z_cR, positive_infinity(), z_lo, z_hi, rho);
 
     // GUESS: G(tau_hi) - G(tau_lo) -- inlined to reuse bv_cR
     // G(c) = Phi(z_s)*Phi(z_cK_F) + Phi2(z_cR, z_c, rho) - Phi2(z_s, z_c, rho)
@@ -1140,7 +925,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
     real p_Guess = G_hi - G_lo;
 
     // KNOW: remainder
-    real p_Band = Phi(z_hi) - Phi(z_lo);
+    real p_Band = link_diff(z_lo, z_hi);
     real p_Know = p_Band - p_Remember - p_Guess;
 
     // Soft clamp
@@ -1155,86 +940,6 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
 
   if (family_name == "vrdp2d") {
     lines <- c(lines, '
-  // Bivariate normal CDF using Owens T function (same as bivariate_sdt)
-  real binormal_cdf_vrdp(real z1, real z2, real rho) {
-    if (z1 == 0 && z2 == 0) {
-      return 0.25 + asin(rho) / (2 * pi());
-    }
-    if (z1 == 0) {
-      real z1_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2 / z1_safe - rho) / denom;
-      real a2 = (z1_safe / z2 - rho) / denom;
-      real product = z1_safe * z2;
-      real delta = product < 0 || (product == 0 && (z1_safe + z2) < 0);
-      return 0.5 * (Phi(z1_safe) + Phi(z2) - delta) - owens_t(z1_safe, a1) - owens_t(z2, a2);
-    }
-    if (z2 == 0) {
-      real z2_safe = 1e-10;
-      real denom = sqrt((1 + rho) * (1 - rho));
-      real a1 = (z2_safe / z1 - rho) / denom;
-      real a2 = (z1 / z2_safe - rho) / denom;
-      real product = z1 * z2_safe;
-      real delta = product < 0 || (product == 0 && (z1 + z2_safe) < 0);
-      return 0.5 * (Phi(z1) + Phi(z2_safe) - delta) - owens_t(z1, a1) - owens_t(z2_safe, a2);
-    }
-    real denom = abs(rho) < 1.0 ? sqrt((1 + rho) * (1 - rho)) : not_a_number();
-    real a1 = (z2 / z1 - rho) / denom;
-    real a2 = (z1 / z2 - rho) / denom;
-    real product = z1 * z2;
-    real delta = product < 0 || (product == 0 && (z1 + z2) < 0);
-    return 0.5 * (Phi(z1) + Phi(z2) - delta) - owens_t(z1, a1) - owens_t(z2, a2);
-  }
-
-  // Compute bivariate probability for response cell (resp1, resp2) 
-  // rho = 0 means circular (uncorrelated) distribution
-  real compute_bivariate_prob_vrdp(int resp1, int resp2, int K1, int K2,
-                                   real mu1, real mu2, real sigma1, real sigma2,
-                                   vector c1, vector c2, real rho) {
-    // Standardize thresholds
-    vector[K1-1] z1 = (c1 - mu1) / sigma1;
-    vector[K2-1] z2 = (c2 - mu2) / sigma2;
-    
-    // Handle all 9 possible cases (corners, edges, interior)
-    if (resp1 == 1 && resp2 == 1) {
-      return binormal_cdf_vrdp(z1[1], z2[1], rho);
-    }
-    else if (resp1 == 1 && resp2 == K2) {
-      return Phi(z1[1]) - binormal_cdf_vrdp(z1[1], z2[K2-1], rho);
-    }
-    else if (resp1 == K1 && resp2 == 1) {
-      return Phi(z2[1]) - binormal_cdf_vrdp(z2[1], z1[K1-1], rho);
-    }
-    else if (resp1 == K1 && resp2 == K2) {
-      return 1 - Phi(z1[K1-1]) - Phi(z2[K2-1]) + binormal_cdf_vrdp(z1[K1-1], z2[K2-1], rho);
-    }
-    else if (resp1 == 1) {
-      return binormal_cdf_vrdp(z1[1], z2[resp2], rho) - 
-             binormal_cdf_vrdp(z1[1], z2[resp2-1], rho);
-    }
-    else if (resp2 == 1) {
-      return binormal_cdf_vrdp(z1[resp1], z2[1], rho) - 
-             binormal_cdf_vrdp(z1[resp1-1], z2[1], rho);
-    }
-    else if (resp1 == K1) {
-      return Phi(z2[resp2]) - Phi(z2[resp2-1]) - 
-             binormal_cdf_vrdp(z1[K1-1], z2[resp2], rho) + 
-             binormal_cdf_vrdp(z1[K1-1], z2[resp2-1], rho);
-    }
-    else if (resp2 == K2) {
-      return Phi(z1[resp1]) - Phi(z1[resp1-1]) - 
-             binormal_cdf_vrdp(z2[K2-1], z1[resp1], rho) + 
-             binormal_cdf_vrdp(z1[resp1-1], z2[K2-1], rho);
-    }
-    else {
-      // Full interior case
-      return binormal_cdf_vrdp(z1[resp1], z2[resp2], rho) - 
-             binormal_cdf_vrdp(z1[resp1], z2[resp2-1], rho) - 
-             binormal_cdf_vrdp(z1[resp1-1], z2[resp2], rho) + 
-             binormal_cdf_vrdp(z1[resp1-1], z2[resp2-1], rho);
-    }
-  }
-
   // 2D-VRDP log-likelihood for a single observation
   // Since rho=0 for all distributions, bivariate normal factors into product of univariates:
   // P(X <= x, Y <= y | rho=0) = Phi(x) * Phi(y)
@@ -1250,13 +955,9 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   
   // Helper: compute univariate cell probability
   real univariate_cell_prob(int resp, int K, real mu, real sigma, vector thresh) {
-    if (resp == 1) {
-      return Phi((thresh[1] - mu) / sigma);
-    } else if (resp == K) {
-      return 1 - Phi((thresh[K-1] - mu) / sigma);
-    } else {
-      return Phi((thresh[resp] - mu) / sigma) - Phi((thresh[resp-1] - mu) / sigma);
-    }
+    real lo = resp == 1 ? negative_infinity() : (thresh[resp - 1] - mu) / sigma;
+    real hi = resp == K ? positive_infinity() : (thresh[resp] - mu) / sigma;
+    return link_diff(lo, hi);
   }
   
   real vrdp2d_lpmf_custom(int y1, int y2, int item_type, int K1, int K2,
@@ -1289,7 +990,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p = (1.0 - R) * p_fam + R * p_rec;
     }
     
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }
   
   // Version with source criteria varying by item response
@@ -1326,7 +1027,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       p = (1.0 - R) * p_fam + R * p_rec;
     }
     
-    return log(fmax(p, 1e-20));
+    return log(fmax(p, 1e-300));
   }')
   }
   
@@ -1355,12 +1056,30 @@ generate_link_cdf_wrapper <- function(link) {
   // Probit link (standard normal CDF)
   real link_cdf(real x) {
     return Phi(x);
+  }
+
+  real link_ccdf(real x) {
+    return 0.5 * erfc(x * 0.7071067811865476);
+  }
+
+  real link_diff(real lo, real hi) {
+    if (lo >= 0) return link_ccdf(lo) - link_ccdf(hi);
+    return link_ccdf(-hi) - link_ccdf(-lo);
   }')
   } else if (link_name == "logit") {
     return('
   // Logit link (logistic CDF)
   real link_cdf(real x) {
     return inv_logit(x);
+  }
+
+  real link_ccdf(real x) {
+    return inv_logit(-x);
+  }
+
+  real link_diff(real lo, real hi) {
+    if (lo >= 0) return link_ccdf(lo) - link_ccdf(hi);
+    return link_ccdf(-hi) - link_ccdf(-lo);
   }')
   } else if (link_name == "cloglog") {
     return('
@@ -1368,6 +1087,15 @@ generate_link_cdf_wrapper <- function(link) {
   real link_cdf(real x) {
     real xc = fmin(x, 700.0);
     return -expm1(-exp(xc));
+  }
+
+  real link_ccdf(real x) {
+    return exp(-exp(fmin(x, 700.0)));
+  }
+
+  real link_diff(real lo, real hi) {
+    if (lo >= -0.36651292058166435) return link_ccdf(lo) - link_ccdf(hi);
+    return -expm1(-exp(fmin(hi, 700.0))) + expm1(-exp(fmin(lo, 700.0)));
   }')
   } else {
     stop("Unknown link function: ", link_name)
@@ -1510,6 +1238,10 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$has_criterion2)) {
     lines <- c(lines, "", "  // Criterion2 (discrimination) fixed effects design matrix",
                "  int<lower=1> P_criterion2;", "  matrix[N, P_criterion2] X_criterion2;")
+    if (isTRUE(model_data$varying_source_criteria)) {
+      lines <- c(lines, "  int<lower=0> P_criterion2_cov;",
+                 "  matrix[N, P_criterion2_cov] X_criterion2_cov;")
+    }
   }
   
   all_groups <- get_all_groups(model_data)
@@ -1688,6 +1420,11 @@ generate_parameters_block_v2 <- function(model_data, family) {
       lines <- c(lines,
                  "  vector[K1] beta_thresh_mid_2_varying;  // Mid-anchor source threshold for each item level",
                  "  matrix[K1, K2-2] beta_log_gaps_2_varying;  // Log-gaps for each item level")
+      if (.has_crit2_cov(model_data)) {
+        lines <- c(lines,
+                   "  vector[P_criterion2_cov] beta_thresh_mid_2_cov;",
+                   "  matrix[K2-2, P_criterion2_cov] beta_log_gaps_2_cov;")
+      }
       if (identical(model_data$new_source_criteria, "shared")) {
         lines <- c(lines,
                    "  real beta_thresh_mid_2_new;  // Mid-anchor source threshold for new items (shared)",
@@ -2008,6 +1745,11 @@ build_reduce_sum_args <- function(model_data, family) {
     if (isTRUE(model_data$varying_source_criteria)) {
       add("vector beta_thresh_mid_2_varying", "beta_thresh_mid_2_varying")
       add("matrix beta_log_gaps_2_varying", "beta_log_gaps_2_varying")
+      if (.has_crit2_cov(model_data)) {
+        add("data matrix X_criterion2_cov", "X_criterion2_cov")
+        add("vector beta_thresh_mid_2_cov", "beta_thresh_mid_2_cov")
+        add("matrix beta_log_gaps_2_cov", "beta_log_gaps_2_cov")
+      }
       if (identical(model_data$new_source_criteria, "shared")) {
         add("real beta_thresh_mid_2_new", "beta_thresh_mid_2_new")
         add("vector beta_log_gaps_2_new", "beta_log_gaps_2_new")
@@ -2207,7 +1949,7 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  gaps_prior_key <- if (identical(model_data$gap_link, "softplus")) "raw_gaps" else "log_gaps"
+  gaps_prior_key <- "log_gaps"
   thresh_mid_prior <- get_fixed_prior(pl, "thresh_mid")
   lines <- c(lines, sprintf("  beta_thresh_mid ~ %s;", thresh_mid_prior))
   if (model_data$K > 2) {
@@ -2305,12 +2047,17 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   }
   if (isTRUE(model_data$has_criterion2)) {
     thresh_mid_2_prior <- get_fixed_prior(pl, "thresh_mid2")
-    gaps2_key <- if (identical(model_data$gap_link, "softplus")) "raw_gaps" else "log_gaps2"
+    gaps2_key <- "log_gaps2"
     log_gaps_2_prior <- get_fixed_prior(pl, gaps2_key)
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines,
                  sprintf("  beta_thresh_mid_2_varying ~ %s;", thresh_mid_2_prior),
                  sprintf("  to_vector(beta_log_gaps_2_varying) ~ %s;", log_gaps_2_prior))
+      if (.has_crit2_cov(model_data)) {
+        lines <- c(lines,
+                   sprintf("  beta_thresh_mid_2_cov ~ %s;", thresh_mid_2_prior),
+                   sprintf("  to_vector(beta_log_gaps_2_cov) ~ %s;", log_gaps_2_prior))
+      }
       if (identical(model_data$new_source_criteria, "shared")) {
         lines <- c(lines,
                    sprintf("  beta_thresh_mid_2_new ~ %s;", thresh_mid_2_prior),
@@ -2903,26 +2650,26 @@ generate_cdp_likelihood_code <- function(model_data) {
                "      if (is_old_resp == 1) {",
                "        // 'Old' response - use R/K/G",
                "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? 20.0 : tau[old_idx + 1];",
+               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        vector[3] rkg = compute_rkg_probs(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi);",
                "        ll = log(rkg[rk[n]]);",
                "      } else {",
                "        // 'New' response (below tau[1])",
                "        real z_tau1 = (tau[1] - mu_M) / sigma_M;",
-               "        ll = normal_lcdf(z_tau1 | 0, 1);",
+               "        ll = bvn_log_interval(negative_infinity(), z_tau1);",
                "      }",
                "    } else {",
                "      // Lure trial",
                "      if (is_old_resp == 1) {",
                "        // 'Old' response (false alarm) - use R/K/G with lure params",
                "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? 20.0 : tau[old_idx + 1];",
+               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        vector[3] rkg_l = compute_rkg_probs(0, 1, 0, 1, c_R, c_K, tau_lo, tau_hi);",
                "        ll = log(rkg_l[rk[n]]);",
                "      } else {",
                "        // Correct rejection",
                "        real z_tau1_l = tau[1] / sigma_M_l;",
-               "        ll = normal_lcdf(z_tau1_l | 0, 1);",
+               "        ll = bvn_log_interval(negative_infinity(), z_tau1_l);",
                "      }",
                "    }")
   } else {
@@ -2935,9 +2682,9 @@ generate_cdp_likelihood_code <- function(model_data) {
                "      if (is_old_resp == 1) {",
                "        // 'Old' response - use R/K",
                "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? 20.0 : tau[old_idx + 1];",
+               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        real z_tau_lo = (tau_lo - mu_M) / sigma_M;",
-               "        real z_tau_hi = (tau_hi - mu_M) / sigma_M;",
+               "        real z_tau_hi = bvn_std(tau_hi, mu_M, sigma_M);",
                "        ",
                "        if (rk[n] == 1) {",
                "          // Remember",
@@ -2949,7 +2696,7 @@ generate_cdp_likelihood_code <- function(model_data) {
                "      } else {",
                "        // 'New' response (below tau[1])",
                "        real z_tau1 = (tau[1] - mu_M) / sigma_M;",
-               "        ll = normal_lcdf(z_tau1 | 0, 1);",
+               "        ll = bvn_log_interval(negative_infinity(), z_tau1);",
                "      }",
                "    } else {",
                "      // Lure trial",
@@ -2958,7 +2705,7 @@ generate_cdp_likelihood_code <- function(model_data) {
                "      if (is_old_resp == 1) {",
                "        // 'Old' response (false alarm) - use R/K",
                "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? 20.0 : tau[old_idx + 1];",
+               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
                "        real z_tau_lo_l = tau_lo / sigma_M_l;",
                "        real z_tau_hi_l = tau_hi / sigma_M_l;",
                "        ",
@@ -2970,7 +2717,7 @@ generate_cdp_likelihood_code <- function(model_data) {
                "      } else {",
                "        // Correct rejection",
                "        real z_tau1_l = tau[1] / sigma_M_l;",
-               "        ll = normal_lcdf(z_tau1_l | 0, 1);",
+               "        ll = bvn_log_interval(negative_infinity(), z_tau1_l);",
                "      }",
                "    }")
   }
@@ -3056,88 +2803,76 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
   lines
 }
 
+.has_crit2_cov <- function(model_data) {
+  isTRUE(model_data$varying_source_criteria) &&
+    isTRUE(model_data$stan_data$P_criterion2_cov > 0)
+}
+
 #' Generate threshold code for vrdp2d with varying source criteria
 #' @noRd
 generate_thresh_code_vrdp2d_varying <- function(model_data) {
 
   varying_re_mode <- if (!is.null(model_data$varying_re)) model_data$varying_re else "shared"
+  re_list <- if (!is.null(model_data$criterion2)) model_data$criterion2$random else NULL
 
-  has_re <- !is.null(model_data$criterion2) && !is.null(model_data$criterion2$random) &&
-    length(model_data$criterion2$random) > 0
-
-  re_info <- NULL
-  if (has_re) {
-    group <- names(model_data$criterion2$random)[1]
-    re <- model_data$criterion2$random[[group]]
-    re_var_name <- if (!is.null(re$cor_id)) {
+  mid_terms <- character(0)
+  gap_terms <- character(0)
+  for (group in names(re_list)) {
+    re <- re_list[[group]]
+    v <- if (!is.null(re$cor_id)) {
       sprintf("u_criterion2_%s_from_%s", group, re$cor_id)
     } else {
       sprintf("u_criterion2_%s", group)
     }
-    re_info <- list(group = group, var_name = re_var_name, re = re)
+    if (varying_re_mode == "full") {
+      mid_terms <- c(mid_terms, sprintf("%s[%s[n], (k1-1)*(K2-1)+mid_thresh2]", v, group))
+      gap_terms <- c(gap_terms, sprintf("%s[%s[n], (k1-1)*(K2-1)+k2]", v, group))
+    } else if (varying_re_mode == "per_bin" && re$dim > 1) {
+      mid_terms <- c(mid_terms, sprintf("%s[%s[n], k1]", v, group))
+    } else {
+      mid_terms <- c(mid_terms, sprintf("%s[%s[n]]", v, group))
+    }
   }
+  has_cov <- .has_crit2_cov(model_data)
+  sm_terms <- function(row_expr) {
+    out <- character(0)
+    for (sm in model_data$smooth_data[["criterion2"]]) {
+      for (comp in sm$components) {
+        for (ki in seq_along(comp$Zs_list)) {
+          out <- c(out, sprintf("Zs_criterion2_%s_%d[n, ] * s_criterion2_%s_%d[%s, ]'",
+                                comp$san_label, ki, comp$san_label, ki, row_expr))
+        }
+      }
+    }
+    out
+  }
+  if (has_cov) mid_terms <- c(mid_terms, "X_criterion2_cov[n, ] * beta_thresh_mid_2_cov")
+  mid_terms <- c(mid_terms, sm_terms("1"))
+  up_terms <- c(gap_terms,
+                if (has_cov) "X_criterion2_cov[n, ] * beta_log_gaps_2_cov[k2-mid_thresh2, ]'",
+                sm_terms("1 + k2-mid_thresh2"))
+  down_terms <- c(gap_terms,
+                  if (has_cov) "X_criterion2_cov[n, ] * beta_log_gaps_2_cov[K2-1-mid_thresh2+k2_down, ]'",
+                  sm_terms("1 + K2-1-mid_thresh2+k2_down"))
+  plus <- function(x) if (length(x)) paste0(" + ", paste(x, collapse = " + ")) else ""
 
-  lines <- c(
+  c(
     "    // Source thresholds varying by item response (mid-anchor)",
     "    matrix[K1, K2-1] thresh2_varying;",
     "    for (k1 in 1:K1) {",
-    "      // Build source thresholds for item response level k1"
+    sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[k1]%s;",
+            plus(mid_terms)),
+    "      for (k2 in (mid_thresh2+1):(K2-1)) {",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[k1, k2-mid_thresh2]%s);",
+            plus(up_terms)),
+    "      }",
+    "      for (k2_down in 1:(mid_thresh2-1)) {",
+    "        int k2 = mid_thresh2 - k2_down;",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[k1, K2-1-mid_thresh2+k2_down]%s);",
+            plus(down_terms)),
+    "      }",
+    "    }"
   )
-
-  mid_thresh_line <- sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[k1]")
-
-  if (has_re) {
-    if (varying_re_mode == "shared") {
-      mid_thresh_line <- paste0(mid_thresh_line,
-                                sprintf(" + %s[%s[n]];", re_info$var_name, re_info$group))
-    } else if (varying_re_mode == "per_bin") {
-      if (re_info$re$dim == 1) {
-        mid_thresh_line <- paste0(mid_thresh_line,
-                                  sprintf(" + %s[%s[n]];", re_info$var_name, re_info$group))
-      } else {
-        mid_thresh_line <- paste0(mid_thresh_line,
-                                  sprintf(" + %s[%s[n], k1];", re_info$var_name, re_info$group))
-      }
-    } else if (varying_re_mode == "full") {
-      mid_thresh_line <- paste0(mid_thresh_line,
-                                sprintf(" + %s[%s[n], (k1-1)*(K2-1)+mid_thresh2];", re_info$var_name, re_info$group))
-    }
-  } else {
-    mid_thresh_line <- paste0(mid_thresh_line, ";")
-  }
-  lines <- c(lines, mid_thresh_line)
-
-  if (has_re && varying_re_mode == "full") {
-    lines <- c(lines,
-               "      for (k2 in (mid_thresh2+1):(K2-1)) {",
-               sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[k1, k2-mid_thresh2] + %s[%s[n], (k1-1)*(K2-1)+k2]);",
-                       re_info$var_name, re_info$group),
-               "      }")
-  } else {
-    lines <- c(lines,
-               "      for (k2 in (mid_thresh2+1):(K2-1)) {",
-               "        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[k1, k2-mid_thresh2]);",
-               "      }")
-  }
-
-  if (has_re && varying_re_mode == "full") {
-    lines <- c(lines,
-               "      for (k2_down in 1:(mid_thresh2-1)) {",
-               "        int k2 = mid_thresh2 - k2_down;",
-               sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[k1, K2-1-mid_thresh2+k2_down] + %s[%s[n], (k1-1)*(K2-1)+k2]);",
-                       re_info$var_name, re_info$group),
-               "      }")
-  } else {
-    lines <- c(lines,
-               "      for (k2_down in 1:(mid_thresh2-1)) {",
-               "        int k2 = mid_thresh2 - k2_down;",
-               "        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[k1, K2-1-mid_thresh2+k2_down]);",
-               "      }")
-  }
-
-  lines <- c(lines, "    }")
-
-  lines
 }
 
 #' Generate threshold code for CDP model

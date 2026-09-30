@@ -4,6 +4,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <vector>
+
+#include "bvn_tail.h"
 
 namespace bvn {
 
@@ -144,6 +147,18 @@ struct PhiV {
   v4d P, dP, Q;
 };
 
+inline void vpoly_triple(v4d x, v4d& P, v4d& dP, v4d& q) {
+  v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * vabs(x));
+  v4d e = splat(0.3989422804014327) * vexp(splat(-0.5) * x * x);
+  q = e * t * (splat(0.319381530) + t * (splat(-0.356563782) + t * (splat(1.781477937) +
+               t * (splat(-1.821255978) + t * splat(1.330274429)))));
+  v4d G = splat(1.3787727090824242) + t * (splat(-2.9180615078705534) + t * (splat(9.303925945620334) +
+          t * (splat(-15.71822236097206) + t * (splat(14.843177660082445) +
+          t * (splat(-7.430322503492646) + t * splat(1.5407364812748756))))));
+  P = vsel(x >= splat(0.0), splat(1.0) - q, q);
+  dP = e * G;
+}
+
 inline void vpoly_pair(v4d x, v4d& P, v4d& dP) {
   v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * vabs(x));
   v4d e = splat(0.3989422804014327) * vexp(splat(-0.5) * x * x);
@@ -156,10 +171,10 @@ inline void vpoly_pair(v4d x, v4d& P, v4d& dP) {
   dP = e * G;
 }
 
-constexpr double kPhiC[19] = {0.5893276044905619, 0.47231061768868227, 0.1485473376619552, 0.03611913148900286, 0.006378297104388951, 0.0006592194044005224, -1.1534346994167076e-05, -1.541999589462102e-05, -1.4350295963176838e-06, 2.671384604629693e-07, 5.842069382918476e-08, -4.878387335732758e-09, -2.0166300903829314e-09, 1.2065191939381096e-10, 7.135408878679637e-11, -4.885139134318498e-12, -2.630066125081603e-12, 2.7380131795870467e-13, 9.691376820174753e-14};
+using bvn_tail::kPhiC;
 constexpr double kPhiD[18] = {1.1854995356145523, 1.3097573132537195, 0.45298641056440525, 0.10328147437489583, 0.01295638227198467, -0.0003253821430972744, -0.0004287832995995369, -4.434221633584315e-05, 9.551609080045374e-06, 2.278034508995305e-06, -2.1182703839817368e-07, -9.437945361118253e-08, 6.090771522883504e-09, 3.89287566636132e-09, -2.7866990704357154e-10, -1.638034930910627e-10, 1.8902019919991792e-11, 7.084052091904388e-12};
-constexpr double kPhiA = 0.015;
-constexpr double kPhiB = 1.0;
+using bvn_tail::kPhiA;
+using bvn_tail::kPhiB;
 
 template <int K>
 inline v4d clenshaw(const double* co, v4d u) {
@@ -192,9 +207,17 @@ constexpr double kW8[8] = {0.10122853629037706, 0.22238103445337443, 0.313706645
                            0.36268378337836166, 0.3137066458778869, 0.22238103445337443, 0.10122853629037706};
 constexpr double kX20[20] = {-0.993128599185095, -0.9639719272779138, -0.912234428251326, -0.8391169718222188, -0.7463319064601508, -0.636053680726515, -0.5108670019508271, -0.37370608871541955, -0.22778585114164507, -0.07652652113349734, 0.07652652113349734, 0.22778585114164507, 0.37370608871541955, 0.5108670019508271, 0.636053680726515, 0.7463319064601508, 0.8391169718222188, 0.912234428251326, 0.9639719272779138, 0.993128599185095};
 constexpr double kW20[20] = {0.017614007139150893, 0.040601429800386446, 0.06267204833410879, 0.08327674157670471, 0.1019301198172407, 0.1181945319615186, 0.1316886384491769, 0.1420961093183824, 0.14917298647260424, 0.15275338713072628, 0.15275338713072628, 0.14917298647260424, 0.1420961093183824, 0.1316886384491769, 0.1181945319615186, 0.1019301198172407, 0.08327674157670471, 0.06267204833410879, 0.040601429800386446, 0.017614007139150893};
+constexpr double kX12[12] = {-0.9815606342467192, -0.9041172563704748, -0.7699026741943047, -0.5873179542866175, -0.3678314989981802, -0.1252334085114689, 0.1252334085114689, 0.3678314989981802, 0.5873179542866175, 0.7699026741943047, 0.9041172563704748, 0.9815606342467192};
+constexpr double kW12[12] = {0.04717533638651141, 0.10693932599531907, 0.16007832854334642, 0.20316742672306573, 0.2334925365383546, 0.2491470458134027, 0.2491470458134027, 0.2334925365383546, 0.20316742672306573, 0.16007832854334642, 0.10693932599531907, 0.04717533638651141};
+constexpr double kX10[10] = {-0.9739065285171717, -0.8650633666889845, -0.6794095682990244, -0.4333953941292472, -0.14887433898163122, 0.14887433898163122, 0.4333953941292472, 0.6794095682990244, 0.8650633666889845, 0.9739065285171717};
+constexpr double kW10[10] = {0.06667134430868814, 0.1494513491505804, 0.219086362515982, 0.2692667193099965, 0.2955242247147528, 0.2955242247147528, 0.2692667193099965, 0.219086362515982, 0.1494513491505804, 0.06667134430868814};
+constexpr double kX14[14] = {-0.9862838086968124, -0.9284348836635735, -0.827201315069765, -0.6872929048116855, -0.5152486363581541, -0.31911236892788974, -0.10805494870734367, 0.10805494870734367, 0.31911236892788974, 0.5152486363581541, 0.6872929048116855, 0.827201315069765, 0.9284348836635735, 0.9862838086968124};
+constexpr double kW14[14] = {0.03511946033175175, 0.08015808715975999, 0.12151857068790331, 0.15720316715819363, 0.18553839747793788, 0.20519846372129572, 0.21526385346315793, 0.21526385346315793, 0.20519846372129572, 0.18553839747793788, 0.15720316715819363, 0.12151857068790331, 0.08015808715975999, 0.03511946033175175};
+constexpr double kX16[16] = {-0.9894009349916499, -0.9445750230732326, -0.8656312023878318, -0.755404408355003, -0.6178762444026438, -0.45801677765722737, -0.2816035507792589, -0.09501250983763744, 0.09501250983763744, 0.2816035507792589, 0.45801677765722737, 0.6178762444026438, 0.755404408355003, 0.8656312023878318, 0.9445750230732326, 0.9894009349916499};
+constexpr double kW16[16] = {0.027152459411754176, 0.062253523938647456, 0.0951585116824926, 0.12462897125553407, 0.1495959888165767, 0.16915651939500265, 0.18260341504492364, 0.18945061045506864, 0.18945061045506864, 0.18260341504492364, 0.16915651939500265, 0.1495959888165767, 0.12462897125553407, 0.0951585116824926, 0.062253523938647456, 0.027152459411754176};
 constexpr double kInv4Pi = 0.07957747154594767;
 constexpr double kRhoMax = 0.999999;
-constexpr double kRhoSwitch = 0.9;
+constexpr double kRhoTier[5] = {0.75, 0.85, 0.9, 0.925, 0.97};
 
 struct CornerV {
   v4d I, dh, dk, dA;
@@ -243,28 +266,27 @@ inline CornerV csel(v4i m, const CornerV& a, const CornerV& b) {
 inline bool any_lane(v4i m) { return (m[0] | m[1] | m[2] | m[3]) != 0; }
 inline bool all_lanes(v4i m) { return (m[0] & m[1] & m[2] & m[3]) != 0; }
 
-template <int NC, bool Adaptive>
+template <int NC, int M>
+inline void corners_n(const v4d* H, const v4d* K, v4d A, const double* X, const double* W, CornerV* out) {
+  Nodes<M> nd;
+  vnodes<M>(A, X, W, nd);
+  for (int c = 0; c < NC; ++c) out[c] = vcorner<M>(H[c], K[c], A, W, nd);
+}
+
+template <int NC>
 inline void corners(const v4d* H, const v4d* K, v4d rho, v4d& r, v4d& dAdr, CornerV* out) {
   r = vmin(vmax(rho, splat(-kRhoMax)), splat(kRhoMax));
   v4d A = vasin(r);
   dAdr = vsel(vabs(rho) < splat(kRhoMax), splat(1.0) / vsqrt(splat(1.0) - r * r), splat(0.0));
-  v4i hi = Adaptive ? (vabs(r) > splat(kRhoSwitch)) : (v4i){0, 0, 0, 0};
-  CornerV lo8[NC], hi20[NC];
-  if (!all_lanes(hi)) {
-    Nodes<8> nd;
-    vnodes<8>(A, kX8, kW8, nd);
-    for (int c = 0; c < NC; ++c) lo8[c] = vcorner<8>(H[c], K[c], A, kW8, nd);
-  }
-  if (any_lane(hi)) {
-    Nodes<20> nd;
-    vnodes<20>(A, kX20, kW20, nd);
-    for (int c = 0; c < NC; ++c) hi20[c] = vcorner<20>(H[c], K[c], A, kW20, nd);
-  }
-  for (int c = 0; c < NC; ++c) {
-    if (!any_lane(hi)) out[c] = lo8[c];
-    else if (all_lanes(hi)) out[c] = hi20[c];
-    else out[c] = csel(hi, hi20[c], lo8[c]);
-  }
+  v4d ar = vabs(r);
+  double m = ar[0];
+  for (int l = 1; l < 4; ++l) m = ar[l] > m ? ar[l] : m;
+  if (!(m >= kRhoTier[0])) corners_n<NC, 8>(H, K, A, kX8, kW8, out);
+  else if (m < kRhoTier[1]) corners_n<NC, 10>(H, K, A, kX10, kW10, out);
+  else if (m < kRhoTier[2]) corners_n<NC, 12>(H, K, A, kX12, kW12, out);
+  else if (m < kRhoTier[3]) corners_n<NC, 14>(H, K, A, kX14, kW14, out);
+  else if (m < kRhoTier[4]) corners_n<NC, 16>(H, K, A, kX16, kW16, out);
+  else corners_n<NC, 20>(H, K, A, kX20, kW20, out);
 }
 
 inline void vphi_diff(v4d lo, v4d hi, v4d& D, v4d& dlo, v4d& dhi) {
@@ -274,12 +296,26 @@ inline void vphi_diff(v4d lo, v4d hi, v4d& D, v4d& dlo, v4d& dhi) {
   dhi = H.dP;
 }
 
-inline void rect4(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d& d1h,
-                  v4d& d2l, v4d& d2h, v4d& drho) {
-  v4d H[4] = {b1, a1, b1, a1}, K[4] = {b2, b2, a2, a2};
-  CornerV c[4];
-  v4d r, dAdr;
-  corners<4, false>(H, K, rho, r, dAdr, c);
+template <int M>
+inline void rect4m(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d& d1h,
+                   v4d& d2l, v4d& d2h, v4d& drho) {
+  constexpr int NC = ((M >> 0) & 1) + ((M >> 1) & 1) + ((M >> 2) & 1) + ((M >> 3) & 1);
+  const v4d zero = splat(0.0);
+  CornerV c[4] = {{zero, zero, zero, zero}, {zero, zero, zero, zero},
+                  {zero, zero, zero, zero}, {zero, zero, zero, zero}};
+  v4d r, dAdr = zero;
+  if constexpr (NC > 0) {
+    const v4d Hall[4] = {b1, a1, b1, a1}, Kall[4] = {b2, b2, a2, a2};
+    v4d H[NC], K[NC];
+    CornerV cc[NC];
+    int q = 0;
+    for (int j = 0; j < 4; ++j)
+      if ((M >> j) & 1) { H[q] = Hall[j]; K[q] = Kall[j]; ++q; }
+    corners<NC>(H, K, rho, r, dAdr, cc);
+    q = 0;
+    for (int j = 0; j < 4; ++j)
+      if ((M >> j) & 1) c[j] = cc[q++];
+  }
   v4d D1, D1l, D1h, D2, D2l, D2h;
   vphi_diff(a1, b1, D1, D1l, D1h);
   vphi_diff(a2, b2, D2, D2l, D2h);
@@ -291,50 +327,71 @@ inline void rect4(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d
   drho = (c[0].dA - c[1].dA - c[2].dA + c[3].dA) * dAdr;
 }
 
+inline void rect4(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d& d1h,
+                  v4d& d2l, v4d& d2h, v4d& drho) {
+  rect4m<15>(a1, b1, a2, b2, rho, p, d1l, d1h, d2l, d2h, drho);
+}
+
+using Rect4Fn = void (*)(v4d, v4d, v4d, v4d, v4d, v4d&, v4d&, v4d&, v4d&, v4d&, v4d&);
+constexpr Rect4Fn kRect4[16] = {rect4m<0>, rect4m<1>, rect4m<2>, rect4m<3>, rect4m<4>, rect4m<5>,
+                                rect4m<6>, rect4m<7>, rect4m<8>, rect4m<9>, rect4m<10>, rect4m<11>,
+                                rect4m<12>, rect4m<13>, rect4m<14>, rect4m<15>};
+
+inline bool finite_bound(double x) { return std::fabs(x) < 1e9; }
+
+inline void rect_tail_fix(int64_t j, const double* a1, const double* b1, const double* a2,
+                          const double* b2, const double* rho, double* p, double* d1l, double* d1h,
+                          double* d2l, double* d2h, double* drho) {
+  if (p[j] >= bvn_tail::kTailSwitch) return;
+  if (std::isnan(a1[j]) || std::isnan(b1[j]) || std::isnan(a2[j]) || std::isnan(b2[j]) || std::isnan(rho[j])) return;
+  bvn_tail::Rect r = bvn_tail::rect(a1[j], b1[j], a2[j], b2[j], rho[j]);
+  p[j] = r.p;
+  d1l[j] = r.d1l;
+  d1h[j] = r.d1h;
+  d2l[j] = r.d2l;
+  d2h[j] = r.d2h;
+  drho[j] = r.drho;
+}
+
 inline void rect_array(int64_t n, const double* a1, const double* b1, const double* a2,
                        const double* b2, const double* rho, double* p, double* d1l, double* d1h,
                        double* d2l, double* d2h, double* drho) {
-  int64_t i = 0;
-  for (; i + 4 <= n; i += 4) {
-    v4d A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5;
-    std::memcpy(&A1, a1 + i, 32);
-    std::memcpy(&B1, b1 + i, 32);
-    std::memcpy(&A2, a2 + i, 32);
-    std::memcpy(&B2, b2 + i, 32);
-    std::memcpy(&R, rho + i, 32);
-    rect4(A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5);
-    std::memcpy(p + i, &P, 32);
-    std::memcpy(d1l + i, &O1, 32);
-    std::memcpy(d1h + i, &O2, 32);
-    std::memcpy(d2l + i, &O3, 32);
-    std::memcpy(d2h + i, &O4, 32);
-    std::memcpy(drho + i, &O5, 32);
+  std::vector<int32_t> perm(n);
+  std::vector<uint8_t> pat(n);
+  int64_t cnt[17] = {0};
+  for (int64_t i = 0; i < n; ++i) {
+    bool fa1 = finite_bound(a1[i]), fb1 = finite_bound(b1[i]);
+    bool fa2 = finite_bound(a2[i]), fb2 = finite_bound(b2[i]);
+    int m = (fb1 && fb2) | ((fa1 && fb2) << 1) | ((fb1 && fa2) << 2) | ((fa1 && fa2) << 3);
+    pat[i] = static_cast<uint8_t>(m);
+    ++cnt[m + 1];
   }
-  if (i < n) {
-    v4d A1 = splat(0), B1 = splat(0), A2 = splat(0), B2 = splat(0), R = splat(0), P, O1, O2, O3, O4, O5;
-    for (int64_t l = 0; i + l < n; ++l) {
-      A1[l] = a1[i + l];
-      B1[l] = b1[i + l];
-      A2[l] = a2[i + l];
-      B2[l] = b2[i + l];
-      R[l] = rho[i + l];
-    }
-    rect4(A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5);
-    for (int64_t l = 0; i + l < n; ++l) {
-      p[i + l] = P[l];
-      d1l[i + l] = O1[l];
-      d1h[i + l] = O2[l];
-      d2l[i + l] = O3[l];
-      d2h[i + l] = O4[l];
-      drho[i + l] = O5[l];
+  for (int m = 0; m < 16; ++m) cnt[m + 1] += cnt[m];
+  int64_t pos[16];
+  for (int m = 0; m < 16; ++m) pos[m] = cnt[m];
+  for (int64_t i = 0; i < n; ++i) perm[pos[pat[i]]++] = static_cast<int32_t>(i);
+  for (int m = 0; m < 16; ++m) {
+    for (int64_t s0 = cnt[m]; s0 < cnt[m + 1]; s0 += 4) {
+      int64_t lanes = cnt[m + 1] - s0 < 4 ? cnt[m + 1] - s0 : 4;
+      v4d A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5;
+      for (int l = 0; l < 4; ++l) {
+        int64_t j = perm[s0 + (l < lanes ? l : 0)];
+        A1[l] = a1[j]; B1[l] = b1[j]; A2[l] = a2[j]; B2[l] = b2[j]; R[l] = rho[j];
+      }
+      kRect4[m](A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5);
+      for (int l = 0; l < lanes; ++l) {
+        int64_t j = perm[s0 + l];
+        p[j] = P[l]; d1l[j] = O1[l]; d1h[j] = O2[l]; d2l[j] = O3[l]; d2h[j] = O4[l]; drho[j] = O5[l];
+      }
     }
   }
+  for (int64_t j = 0; j < n; ++j) rect_tail_fix(j, a1, b1, a2, b2, rho, p, d1l, d1h, d2l, d2h, drho);
 }
 
 inline void cdf4(v4d h, v4d k, v4d rho, v4d& p, v4d& dh, v4d& dk, v4d& drho) {
   CornerV c[1];
   v4d r, dAdr;
-  corners<1, true>(&h, &k, rho, r, dAdr, c);
+  corners<1>(&h, &k, rho, r, dAdr, c);
   PhiV H = vacc_phi(h), K = vacc_phi(k);
   p = H.P * K.P + c[0].I;
   dh = H.dP * K.P + c[0].dh;
@@ -346,7 +403,7 @@ template <int NP, int NM>
 inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* out) {
   CornerV c[NP];
   v4d r, dAdr;
-  corners<NP, true>(H, K, rho, r, dAdr, c);
+  corners<NP>(H, K, rho, r, dAdr, c);
   for (int q = 0; q < NP; ++q) {
     PhiV Ph = vacc_phi(H[q]), Pk = vacc_phi(K[q]);
     v4d* o = out + 8 * q;
@@ -385,6 +442,19 @@ inline void cdf_multi_array(int64_t n, const double* const* in, double* const* o
     for (int a = 0; a < NO; ++a)
       for (int64_t l = 0; i + l < n; ++l) out[a][i + l] = O[a][l];
   }
+  const double* r = in[NI - 1];
+  for (int q = 0; q < NP; ++q) {
+    const double* h = in[q];
+    const double* k = in[NP + q];
+    for (int64_t j = 0; j < n; ++j) {
+      if (out[8 * q][j] >= bvn_tail::kTailSwitch || std::isnan(h[j]) || std::isnan(k[j]) || std::isnan(r[j])) continue;
+      bvn_tail::Rect t = bvn_tail::rect(-bvn_tail::kInf, h[j], -bvn_tail::kInf, k[j], r[j]);
+      out[8 * q][j] = t.p;
+      out[8 * q + 1][j] = t.d1h;
+      out[8 * q + 2][j] = t.d2h;
+      out[8 * q + 3][j] = t.drho;
+    }
+  }
 }
 
 inline void cdf_array(int64_t n, const double* h, const double* k, const double* rho, double* p,
@@ -416,28 +486,38 @@ inline void cdf_array(int64_t n, const double* h, const double* k, const double*
       drho[i + l] = O3[l];
     }
   }
+  for (int64_t j = 0; j < n; ++j) {
+    if (p[j] >= bvn_tail::kTailSwitch || std::isnan(h[j]) || std::isnan(k[j]) || std::isnan(rho[j])) continue;
+    bvn_tail::Rect r = bvn_tail::rect(-bvn_tail::kInf, h[j], -bvn_tail::kInf, k[j], rho[j]);
+    p[j] = r.p;
+    dh[j] = r.d1h;
+    dk[j] = r.d2h;
+    drho[j] = r.drho;
+  }
 }
 
 inline void vrdp4(const v4d* in, v4d* out) {
   const v4d c1h = in[0], c1l = in[1], c2h = in[2], c2l = in[3];
   const v4i h1h = in[4] > splat(0.5), h1l = in[5] > splat(0.5), h2h = in[6] > splat(0.5), h2l = in[7] > splat(0.5);
   const v4d dpF = in[8], dpR = in[9], sd = in[10], lam = in[11], si = in[12], sS = in[13];
-  const v4d INF = splat(20.0), NINF = splat(-20.0), zero = splat(0.0), floor20 = splat(1e-20);
+  const v4d INF = splat(1e10), NINF = splat(-1e10), zero = splat(0.0), floor20 = splat(1e-300);
   v4d isi = splat(1.0) / si, isS = splat(1.0) / sS, murec = dpF + dpR;
   v4d z1fh = vsel(h1h, (c1h - dpF) * isi, INF), z1fl = vsel(h1l, (c1l - dpF) * isi, NINF);
   v4d z2h = vsel(h2h, c2h, INF), z2l = vsel(h2l, c2l, NINF);
   v4d z1rh = vsel(h1h, (c1h - murec) * isi, INF), z1rl = vsel(h1l, (c1l - murec) * isi, NINF);
   v4d z2rh = vsel(h2h, (c2h - sd) * isS, INF), z2rl = vsel(h2l, (c2l - sd) * isS, NINF);
   v4d P1fh, d1fh, P1fl, d1fl, P2nh, d2nh, P2nl, d2nl, P1rh, d1rh, P1rl, d1rl, P2rh, d2rh, P2rl, d2rl;
-  vpoly_pair(z1fh, P1fh, d1fh);
-  vpoly_pair(z1fl, P1fl, d1fl);
-  vpoly_pair(z2h, P2nh, d2nh);
-  vpoly_pair(z2l, P2nl, d2nl);
-  vpoly_pair(z1rh, P1rh, d1rh);
-  vpoly_pair(z1rl, P1rl, d1rl);
-  vpoly_pair(z2rh, P2rh, d2rh);
-  vpoly_pair(z2rl, P2rl, d2rl);
-  v4d D1f = P1fh - P1fl, D2n = P2nh - P2nl, D1r = P1rh - P1rl, D2r = P2rh - P2rl;
+  v4d q1fh, q1fl, q2nh, q2nl, q1rh, q1rl, q2rh, q2rl;
+  vpoly_triple(z1fh, P1fh, d1fh, q1fh);
+  vpoly_triple(z1fl, P1fl, d1fl, q1fl);
+  vpoly_triple(z2h, P2nh, d2nh, q2nh);
+  vpoly_triple(z2l, P2nl, d2nl, q2nl);
+  vpoly_triple(z1rh, P1rh, d1rh, q1rh);
+  vpoly_triple(z1rl, P1rl, d1rl, q1rl);
+  vpoly_triple(z2rh, P2rh, d2rh, q2rh);
+  vpoly_triple(z2rl, P2rl, d2rl, q2rl);
+  v4d D1f = vsel(z1fl >= zero, q1fl - q1fh, P1fh - P1fl), D2n = vsel(z2l >= zero, q2nl - q2nh, P2nh - P2nl);
+  v4d D1r = vsel(z1rl >= zero, q1rl - q1rh, P1rh - P1rl), D2r = vsel(z2rl >= zero, q2rl - q2rh, P2rh - P2rl);
   v4d p1f = vmax(D1f, floor20), p2n = vmax(D2n, floor20), p1r = vmax(D1r, floor20), p2r = vmax(D2r, floor20);
   v4d pfam = p1f * p2n, prec = p1r * p2r, oml = splat(1.0) - lam;
   v4d praw = oml * pfam + lam * prec;

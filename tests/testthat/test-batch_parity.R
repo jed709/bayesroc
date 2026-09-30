@@ -2,7 +2,7 @@
 .tol_batch <- 0.03
 
 .fit_stan_short <- function(m) {
-  fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  fit_broc(m, backend = "stan", refresh = 50, seed = 1,
            parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
 }
 

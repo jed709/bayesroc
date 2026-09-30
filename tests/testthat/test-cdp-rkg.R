@@ -35,7 +35,7 @@ test_that("cdp R/K/G agrees across Stan and JAX backends at high rho", {
   m <- cdp_rkg_model(d)
 
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                 iter_warmup = 400, iter_sampling = 400, seed = 3, refresh = 0)
+                 iter_warmup = 400, iter_sampling = 400, seed = 3, refresh = 50)
   fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                  iter_warmup = 400, iter_sampling = 400, seed = 3,
                  progress_bar = FALSE)

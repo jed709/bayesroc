@@ -1019,7 +1019,8 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #'
 #' `criterion` supplies J thresholds \eqn{\tau_1 < \dots < \tau_J} on M, where
 #' J = `length(old_levels)`. A response falls in old bin j when
-#' \eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}); every rating outside
+#' \eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}, evaluated as 20 on the
+#' latent scale, where the normal tail is below double precision); every rating outside
 #' `old_levels` is a single collapsed "new" response,
 #' \deqn{P(\mathrm{new}) = \Phi\left(\frac{\tau_1 - \mu_M}{\sigma_M}\right),}
 #' so graded new-side ratings are pooled rather than modelled separately.
@@ -1034,7 +1035,10 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #' the band.
 #'
 #' Lure means and SDs are fixed at 0 and 1 on both axes, and the R-F correlation
-#' is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010).
+#' is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010). Moran and
+#' Goshen-Gottstein (2015) report a positive R-F correlation and greater
+#' familiarity variance for targets than lures; the second is available through
+#' `sigma_F`, the first is not modelled.
 #'
 #' ## Parameters
 #' \describe{

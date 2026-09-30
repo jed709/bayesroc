@@ -29,14 +29,18 @@ test_that("every fused kernel's custom JVP is the exact derivative of its value"
 test_that("bivariate normal rectangle and CDF are accurate, native and JAX paths agree", {
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()
-  res <- .run_py_check("bvn_check.py", if (is.null(lib)) "" else lib)
-  expect_lt(res$rect_abs_err, 1e-5)
+  res <- .run_py_check("bvn_check.py", c(if (is.null(lib)) '""' else lib,
+                                         testthat::test_path("fixtures", "bvn_tail_ref.csv")))
+  expect_lt(res$rect_abs_err, 1e-9)
+  expect_lt(res$rect_rel_err, 1e-6)
+  expect_lt(res$tail_rel_err, 1e-8)
+  expect_lt(res$tail_fallback_rel_err, 1e-8)
   expect_lt(res$cdf_abs_err, 1e-8)
   expect_lt(res$acc_phi_abs_err, 1e-13)
   expect_lt(res$acc_phi_tail_rel_err, 1e-12)
   if (!is.null(lib)) {
     expect_true(res$ffi_loaded)
-    expect_lt(res$ffi_vs_jax_rect, 1e-13)
-    expect_lt(res$ffi_vs_jax_cdf, 1e-13)
+    expect_lt(res$ffi_vs_jax_rect, 2e-6)
+    expect_lt(res$ffi_vs_jax_cdf, 1e-8)
   }
 })

@@ -526,6 +526,11 @@ get_predict_variables <- function(model, include_re = TRUE) {
       if (K2 > 2) {
         vars <- c(vars, .gap_param(gap_link, "_2_varying"))
       }
+      P_cov <- md$stan_data$P_criterion2_cov %||% 0L
+      if (P_cov > 0) {
+        vars <- c(vars, paste0("beta_thresh_mid_2_cov[", seq_len(P_cov), "]"))
+        if (K2 > 2) vars <- c(vars, .gap_param(gap_link, "_2_cov"))
+      }
       if (identical(md$new_source_criteria, "shared")) {
         vars <- c(vars, "beta_thresh_mid_2_new")
         if (K2 > 2) {
@@ -1248,6 +1253,25 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
 
     thresh2 <- array(0, dim = c(S, N, K1, n_thresh2))
 
+    shift_mid <- matrix(0, nrow = S, ncol = N)
+    shift_gap <- lapply(seq_len(max(0L, n_thresh2 - 1L)), function(g) matrix(0, nrow = S, ncol = N))
+    P_cov <- md$stan_data$P_criterion2_cov %||% 0L
+    if (P_cov > 0) {
+      c2_names <- md$criterion2$coef_names
+      Xc <- data_src$X_criterion2[, which(c2_names != "(Intercept)"), drop = FALSE]
+      b_mid <- draws[, paste0("beta_thresh_mid_2_cov[", seq_len(P_cov), "]"), drop = FALSE]
+      shift_mid <- shift_mid + b_mid %*% t(Xc)
+      gcov <- .gap_param(gap_link, "_2_cov")
+      for (g in seq_along(shift_gap)) {
+        b_g <- draws[, paste0(gcov, "[", g, ",", seq_len(P_cov), "]"), drop = FALSE]
+        shift_gap[[g]] <- shift_gap[[g]] + b_g %*% t(Xc)
+      }
+    }
+    crit2_sm <- compute_criterion_smooth_contribution(
+      draws, data_src$smooth_data, S, N, n_thresh2, pname = "criterion2")
+    shift_mid <- shift_mid + t(crit2_sm$mid)
+    for (g in seq_along(shift_gap)) shift_gap[[g]] <- shift_gap[[g]] + t(crit2_sm$gaps[[g]])
+
     for (b in seq_len(n_bins)) {
       bin_idx <- b
 
@@ -1309,7 +1333,7 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
         }
       }
 
-      thresh2[, , bin_idx, mid2] <- matrix(beta_mid_v[, b], nrow = S, ncol = N) + re_shift
+      thresh2[, , bin_idx, mid2] <- matrix(beta_mid_v[, b], nrow = S, ncol = N) + re_shift + shift_mid
 
       if (n_upper2 > 0) {
         for (k2 in (mid2 + 1):n_thresh2) {
@@ -1346,7 +1370,8 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
           }
 
           thresh2[, , bin_idx, k2] <- thresh2[, , bin_idx, k2 - 1] +
-            .gap_transform(matrix(beta_gap, nrow = S, ncol = N) + re_gap_shift)
+            .gap_transform(matrix(beta_gap, nrow = S, ncol = N) + re_gap_shift + shift_gap[[gap_row]],
+                           gap_link)
         }
       }
 
@@ -1386,7 +1411,8 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
           }
 
           thresh2[, , bin_idx, k2] <- thresh2[, , bin_idx, k2 + 1] -
-            .gap_transform(matrix(beta_gap, nrow = S, ncol = N) + re_gap_shift)
+            .gap_transform(matrix(beta_gap, nrow = S, ncol = N) + re_gap_shift + shift_gap[[gap_row]],
+                           gap_link)
         }
       }
     }
@@ -2473,14 +2499,10 @@ rebuild_design_matrices <- function(model, newdata) {
   is_old_var <- if (!is_cumulative) parsed$response$is_old else ".cumulative_is_old"
   if (is_cumulative) newdata$.cumulative_is_old <- 1L
 
-  strip_smooth_cols <- function(colnames) {
-    colnames[!grepl("^sXs", colnames)]
-  }
-
   if (isTRUE(md$has_dprime_fixed)) {
     src$X_dprime <- rebuild_one_design_matrix(
       md$dprime_fixed$formula, newdata, encoding_vars, is_old_var,
-      ref_colnames = strip_smooth_cols(md$dprime_fixed$coef_names),
+      ref_colnames = drop_smooth_null_space_names(md$dprime_fixed$coef_names),
       conditional_info = md$dprime_fixed$conditional_info,
       train_data = train_data
     )
@@ -2522,7 +2544,7 @@ rebuild_design_matrices <- function(model, newdata) {
       fixed_info <- md[[paste0(pname, "_fixed")]]
       src[[paste0("X_", pname)]] <- rebuild_one_design_matrix(
         fixed_info$formula, newdata, encoding_vars, is_old_var,
-        ref_colnames = strip_smooth_cols(fixed_info$coef_names),
+        ref_colnames = drop_smooth_null_space_names(fixed_info$coef_names),
         conditional_info = fixed_info$conditional_info,
         train_data = train_data
       )

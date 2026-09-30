@@ -6,8 +6,13 @@
 
 #include <stan/math.hpp>
 #include <cmath>
+#include <limits>
+
+#include "../include/bayesroc/bvn_tail.h"
 
 namespace batch_sdt {
+
+constexpr double kPFloor = 1e-300;
 
 // ============================================================
 // Normal PDF / CDF (probit link)
@@ -19,6 +24,14 @@ inline double phi(double x) {
 
 inline double Phi(double x) {
   return 0.5 * std::erfc(-x * 0.7071067811865476);
+}
+
+inline double Qn(double x) {
+  return 0.5 * std::erfc(x * 0.7071067811865476);
+}
+
+inline double Phi_diff(double lo, double hi) {
+  return lo >= 0.0 ? Qn(lo) - Qn(hi) : Phi(hi) - Phi(lo);
 }
 
 // ============================================================
@@ -40,10 +53,8 @@ struct CellResult {
 
 // Interior cell: log(Phi(z_hi) - Phi(z_lo))
 inline CellResult cell_log_prob(double z_lo, double z_hi) {
-  double p_hi = Phi(z_hi);
-  double p_lo = Phi(z_lo);
-  double diff = p_hi - p_lo;
-  if (diff < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  double diff = Phi_diff(z_lo, z_hi);
+  if (diff < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_diff = 1.0 / diff;
   return {std::log(diff), -phi(z_lo) * inv_diff, phi(z_hi) * inv_diff};
 }
@@ -51,14 +62,14 @@ inline CellResult cell_log_prob(double z_lo, double z_hi) {
 // Lowest cell: log(Phi(z))
 inline CellResult edge_lo(double z) {
   double p = Phi(z);
-  if (p < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  if (p < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   return {std::log(p), 0.0, phi(z) / p};
 }
 
 // Highest cell: log(1 - Phi(z))
 inline CellResult edge_hi(double z) {
-  double q = 1.0 - Phi(z);
-  if (q < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  double q = Qn(z);
+  if (q < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   return {std::log(q), -phi(z) / q, 0.0};
 }
 
@@ -132,10 +143,8 @@ struct CellProbResult {
 
 // Interior cell: Phi(z_hi) - Phi(z_lo)
 inline CellProbResult cell_prob(double z_lo, double z_hi) {
-  double p_hi = Phi(z_hi);
-  double p_lo = Phi(z_lo);
-  double diff = p_hi - p_lo;
-  if (diff < 1e-30) diff = 1e-30;
+  double diff = Phi_diff(z_lo, z_hi);
+  if (diff < kPFloor) return {kPFloor, 0.0, 0.0};
   return {diff, -phi(z_lo), phi(z_hi)};
 }
 
@@ -147,7 +156,7 @@ inline CellProbResult edge_lo_prob(double z) {
 
 // Highest cell: 1 - Phi(z)
 inline CellProbResult edge_hi_prob(double z) {
-  double q = 1.0 - Phi(z);
+  double q = Qn(z);
   return {q, -phi(z), 0.0};
 }
 
@@ -165,10 +174,10 @@ struct DpsdtTopResult {
 
 // y == K: P = lambda + (1-lambda)*(1-Phi(z))
 inline DpsdtTopResult dpsdt_top_cell(double z, double lambda) {
-  double Phi_z = Phi(z);
-  double q = 1.0 - Phi_z;
+  double q = Qn(z);
+  double Phi_z = 1.0 - q;
   double P = lambda + (1.0 - lambda) * q;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_P = 1.0 / P;
   double d_z = -(1.0 - lambda) * phi(z) * inv_P;
   double d_lambda = Phi_z * inv_P;
@@ -196,7 +205,7 @@ inline DpsdtNonTopResult dpsdt_non_top_cell(double z_lo, double z_hi,
   double d_lambda = -1.0 / (1.0 - lambda);
   // Guard extreme lambda
   if (1.0 - lambda < 1e-15) d_lambda = 0.0;
-  return {std::log(std::fmax(1.0 - lambda, 1e-20)) + cr.lp,
+  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp,
           cr.d_z_lo, cr.d_z_hi, d_lambda};
 }
 
@@ -233,7 +242,7 @@ inline MixtureCellResult mixture_cell(
   }
 
   double P = lambda * cp1.p + (1.0 - lambda) * cp2.p;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
   double inv_P = 1.0 / P;
 
   return {std::log(P),
@@ -252,6 +261,10 @@ inline double logistic_cdf(double x) {
   return 1.0 / (1.0 + std::exp(-x));
 }
 
+inline double logistic_diff(double lo, double hi) {
+  return lo >= 0.0 ? logistic_cdf(-lo) - logistic_cdf(-hi) : logistic_cdf(hi) - logistic_cdf(lo);
+}
+
 inline double logistic_pdf(double x) {
   double e = std::exp(-std::fabs(x));
   double d = 1.0 + e;
@@ -264,10 +277,8 @@ inline double logistic_pdf(double x) {
 
 // Interior cell: log(F(z_hi) - F(z_lo)) with logistic CDF
 inline CellResult cell_log_prob_logit(double z_lo, double z_hi) {
-  double p_hi = logistic_cdf(z_hi);
-  double p_lo = logistic_cdf(z_lo);
-  double diff = p_hi - p_lo;
-  if (diff < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  double diff = logistic_diff(z_lo, z_hi);
+  if (diff < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_diff = 1.0 / diff;
   return {std::log(diff), -logistic_pdf(z_lo) * inv_diff, logistic_pdf(z_hi) * inv_diff};
 }
@@ -275,14 +286,14 @@ inline CellResult cell_log_prob_logit(double z_lo, double z_hi) {
 // Lowest cell: log(F(z)) with logistic CDF
 inline CellResult edge_lo_logit(double z) {
   double p = logistic_cdf(z);
-  if (p < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  if (p < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   return {std::log(p), 0.0, logistic_pdf(z) / p};
 }
 
 // Highest cell: log(1 - F(z)) with logistic CDF
 inline CellResult edge_hi_logit(double z) {
-  double q = 1.0 - logistic_cdf(z);
-  if (q < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  double q = logistic_cdf(-z);
+  if (q < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   return {std::log(q), -logistic_pdf(z) / q, 0.0};
 }
 
@@ -291,10 +302,8 @@ inline CellResult edge_hi_logit(double z) {
 // ============================================================
 
 inline CellProbResult cell_prob_logit(double z_lo, double z_hi) {
-  double p_hi = logistic_cdf(z_hi);
-  double p_lo = logistic_cdf(z_lo);
-  double diff = p_hi - p_lo;
-  if (diff < 1e-30) diff = 1e-30;
+  double diff = logistic_diff(z_lo, z_hi);
+  if (diff < kPFloor) return {kPFloor, 0.0, 0.0};
   return {diff, -logistic_pdf(z_lo), logistic_pdf(z_hi)};
 }
 
@@ -304,7 +313,7 @@ inline CellProbResult edge_lo_prob_logit(double z) {
 }
 
 inline CellProbResult edge_hi_prob_logit(double z) {
-  double q = 1.0 - logistic_cdf(z);
+  double q = logistic_cdf(-z);
   return {q, -logistic_pdf(z), 0.0};
 }
 
@@ -313,10 +322,10 @@ inline CellProbResult edge_hi_prob_logit(double z) {
 // ============================================================
 
 inline DpsdtTopResult dpsdt_top_cell_logit(double z, double lambda) {
-  double F_z = logistic_cdf(z);
-  double q = 1.0 - F_z;
+  double q = logistic_cdf(-z);
+  double F_z = 1.0 - q;
   double P = lambda + (1.0 - lambda) * q;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_P = 1.0 / P;
   double d_z = -(1.0 - lambda) * logistic_pdf(z) * inv_P;
   double d_lambda = F_z * inv_P;
@@ -333,7 +342,7 @@ inline DpsdtNonTopResult dpsdt_non_top_cell_logit(double z_lo, double z_hi,
   }
   double d_lambda = -1.0 / (1.0 - lambda);
   if (1.0 - lambda < 1e-15) d_lambda = 0.0;
-  return {std::log(std::fmax(1.0 - lambda, 1e-20)) + cr.lp,
+  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp,
           cr.d_z_lo, cr.d_z_hi, d_lambda};
 }
 
@@ -359,7 +368,7 @@ inline MixtureCellResult mixture_cell_logit(
   }
 
   double P = lambda * cp1.p + (1.0 - lambda) * cp2.p;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
   double inv_P = 1.0 / P;
 
   return {std::log(P),
@@ -394,7 +403,7 @@ inline MixtureCellResult source_mixture_cell(
   }
 
   double P = lambda * cp_sig.p + (1.0 - lambda) * cp_ref.p;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
   double inv_P = 1.0 / P;
 
   return {std::log(P),
@@ -427,7 +436,7 @@ inline MixtureCellResult source_mixture_cell_logit(
   }
 
   double P = lambda * cp_sig.p + (1.0 - lambda) * cp_ref.p;
-  if (P < 1e-20) return {std::log(1e-20), 0.0, 0.0, 0.0, 0.0, 0.0};
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
   double inv_P = 1.0 / P;
 
   return {std::log(P),
@@ -461,20 +470,20 @@ inline UniCellResult uni_cell(int y, int K, double mu, double sigma,
   if (y == 1) {
     double z = (thresh[0] - mu) * inv_s;
     double p = Phi(z);
-    if (p < 1e-30) p = 1e-30;
+    if (p < kPFloor) return {kPFloor, 0.0, 0.0, 0.0, 0.0};
     double pdf_z = phi(z);
     return {p, 0.0, pdf_z * inv_s, -pdf_z * inv_s, -pdf_z * z * inv_s};
   } else if (y == K) {
     double z = (thresh[n_thresh - 1] - mu) * inv_s;
-    double q = 1.0 - Phi(z);
-    if (q < 1e-30) q = 1e-30;
+    double q = Qn(z);
+    if (q < kPFloor) return {kPFloor, 0.0, 0.0, 0.0, 0.0};
     double pdf_z = phi(z);
     return {q, -pdf_z * inv_s, 0.0, pdf_z * inv_s, pdf_z * z * inv_s};
   } else {
     double z_lo = (thresh[y - 2] - mu) * inv_s;
     double z_hi = (thresh[y - 1] - mu) * inv_s;
-    double p = Phi(z_hi) - Phi(z_lo);
-    if (p < 1e-30) p = 1e-30;
+    double p = Phi_diff(z_lo, z_hi);
+    if (p < kPFloor) return {kPFloor, 0.0, 0.0, 0.0, 0.0};
     double pdf_lo = phi(z_lo);
     double pdf_hi = phi(z_hi);
     return {p,
@@ -533,7 +542,7 @@ inline Vrdp2dResult vrdp2d_cell(
     auto c1 = uni_cell(y1, K1, 0.0, 1.0, thresh1, n_thresh1);
     auto c2 = uni_cell(y2, K2, 0.0, 1.0, thresh2, n_thresh2);
     double P = c1.p * c2.p;
-    if (P < 1e-20) P = 1e-20;
+    if (P < kPFloor) P = kPFloor;
     res.lp = std::log(P);
     double inv_P = 1.0 / P;
     // d_logP/d_thresh1 = (d_p1/d_thresh1) * p2 / P
@@ -555,7 +564,7 @@ inline Vrdp2dResult vrdp2d_cell(
     double p_rec = c1_rec.p * c2_rec.p;
 
     double P = (1.0 - R) * p_fam + R * p_rec;
-    if (P < 1e-20) P = 1e-20;
+    if (P < kPFloor) P = kPFloor;
     res.lp = std::log(P);
     double inv_P = 1.0 / P;
 
@@ -622,50 +631,15 @@ struct BinormalCdfResult {
 // Bivariate normal CDF: P(Z1 <= z1, Z2 <= z2) with correlation rho
 // Uses Owen's T function (via boost) for forward value,
 // direct analytic formulas for gradients.
+inline bvn_tail::DwNodes& dw_cache() {
+  static thread_local bvn_tail::DwNodes nd;
+  return nd;
+}
+
 inline BinormalCdfResult binormal_cdf_grad(double z1, double z2, double rho) {
-  // Edge case: rho ~= 0 => product of univariates
-  if (std::fabs(rho) < 1e-10) {
-    double p1 = Phi(z1);
-    double p2 = Phi(z2);
-    double phi1 = phi(z1);
-    double phi2 = phi(z2);
-    return {p1 * p2, phi1 * p2, phi2 * p1, phi1 * phi2};
-  }
-
-  // Forward value via Owen's T
-  double z1_safe = (std::fabs(z1) < 1e-10) ? 1e-10 * (z1 >= 0 ? 1.0 : -1.0) : z1;
-  double z2_safe = (std::fabs(z2) < 1e-10) ? 1e-10 * (z2 >= 0 ? 1.0 : -1.0) : z2;
-
-  double denom = std::sqrt((1.0 + rho) * (1.0 - rho));
-  double a1 = (z2_safe / z1_safe - rho) / denom;
-  double a2 = (z1_safe / z2_safe - rho) / denom;
-
-  double product = z1 * z2;
-  double delta = (product < 0.0 || (product == 0.0 && (z1 + z2) < 0.0)) ? 1.0 : 0.0;
-
-  double T1 = boost::math::owens_t(z1_safe, a1);
-  double T2 = boost::math::owens_t(z2_safe, a2);
-  double val = 0.5 * (Phi(z1) + Phi(z2) - delta) - T1 - T2;
-
-  // Clamp to [0, 1]
-  if (val < 0.0) val = 0.0;
-  if (val > 1.0) val = 1.0;
-
-  // Analytic gradients (known identities for bivariate normal CDF):
-  // d Phi_2 / d z1 = phi(z1) * Phi((z2 - rho*z1) / sqrt(1 - rho^2))
-  // d Phi_2 / d z2 = phi(z2) * Phi((z1 - rho*z2) / sqrt(1 - rho^2))
-  // d Phi_2 / d rho = phi_2(z1, z2, rho) = bivariate normal PDF
-  double inv_denom = 1.0 / denom;
-  double d_z1 = phi(z1) * Phi((z2 - rho * z1) * inv_denom);
-  double d_z2 = phi(z2) * Phi((z1 - rho * z2) * inv_denom);
-
-  // Bivariate normal PDF
-  double rho2 = rho * rho;
-  double exponent = -(z1 * z1 - 2.0 * rho * z1 * z2 + z2 * z2) / (2.0 * (1.0 - rho2));
-  // 1/(2*pi) = 0.15915494309189535
-  double d_rho = std::exp(exponent) * 0.15915494309189535 / denom;
-
-  return {val, d_z1, d_z2, d_rho};
+  const double ninf = -std::numeric_limits<double>::infinity();
+  bvn_tail::Rect r = bvn_tail::rect_full(ninf, z1, ninf, z2, rho, dw_cache());
+  return {r.p, r.d1h, r.d2h, r.drho};
 }
 
 
@@ -691,118 +665,12 @@ inline BivariateCellResult bivariate_cell(
     double z1_lo, double z1_hi, bool is_lo1, bool is_hi1,
     double z2_lo, double z2_hi, bool is_lo2, bool is_hi2,
     double rho) {
-
-  // Compute up to 4 binormal CDF values depending on cell type
-  // P = Phi2(z1_hi, z2_hi) - Phi2(z1_lo, z2_hi) - Phi2(z1_hi, z2_lo) + Phi2(z1_lo, z2_lo)
-  // With edge simplifications:
-  //   Phi2(-inf, z) = 0
-  //   Phi2(+inf, z) = Phi(z)
-
-  double P = 0.0;
-  double d_z1_lo = 0.0, d_z1_hi = 0.0;
-  double d_z2_lo = 0.0, d_z2_hi = 0.0;
-  double d_rho = 0.0;
-
-  // Corner: bottom-left (y1==1, y2==1)
-  if (is_lo1 && is_lo2) {
-    auto r = binormal_cdf_grad(z1_hi, z2_hi, rho);
-    P = r.val;
-    d_z1_hi = r.d_z1;
-    d_z2_hi = r.d_z2;
-    d_rho = r.d_rho;
-  }
-  // Corner: bottom-right (y1==1, y2==K2)
-  else if (is_lo1 && is_hi2) {
-    auto r = binormal_cdf_grad(z1_hi, z2_lo, rho);
-    P = Phi(z1_hi) - r.val;
-    double phi1 = phi(z1_hi);
-    d_z1_hi = phi1 - r.d_z1;
-    d_z2_lo = -r.d_z2;
-    d_rho = -r.d_rho;
-  }
-  // Corner: top-left (y1==K1, y2==1)
-  else if (is_hi1 && is_lo2) {
-    auto r = binormal_cdf_grad(z1_lo, z2_hi, rho);
-    P = Phi(z2_hi) - r.val;
-    d_z1_lo = -r.d_z1;
-    double phi2 = phi(z2_hi);
-    d_z2_hi = phi2 - r.d_z2;
-    d_rho = -r.d_rho;
-  }
-  // Corner: top-right (y1==K1, y2==K2)
-  else if (is_hi1 && is_hi2) {
-    auto r = binormal_cdf_grad(z1_lo, z2_lo, rho);
-    P = 1.0 - Phi(z1_lo) - Phi(z2_lo) + r.val;
-    d_z1_lo = -phi(z1_lo) + r.d_z1;
-    d_z2_lo = -phi(z2_lo) + r.d_z2;
-    d_rho = r.d_rho;
-  }
-  // Edge: bottom row (y1==1, interior y2)
-  else if (is_lo1) {
-    auto r_hi = binormal_cdf_grad(z1_hi, z2_hi, rho);
-    auto r_lo = binormal_cdf_grad(z1_hi, z2_lo, rho);
-    P = r_hi.val - r_lo.val;
-    d_z1_hi = r_hi.d_z1 - r_lo.d_z1;
-    d_z2_hi = r_hi.d_z2;
-    d_z2_lo = -r_lo.d_z2;
-    d_rho = r_hi.d_rho - r_lo.d_rho;
-  }
-  // Edge: left column (interior y1, y2==1)
-  else if (is_lo2) {
-    auto r_hi = binormal_cdf_grad(z1_hi, z2_hi, rho);
-    auto r_lo = binormal_cdf_grad(z1_lo, z2_hi, rho);
-    P = r_hi.val - r_lo.val;
-    d_z1_hi = r_hi.d_z1;
-    d_z1_lo = -r_lo.d_z1;
-    d_z2_hi = r_hi.d_z2 - r_lo.d_z2;
-    d_rho = r_hi.d_rho - r_lo.d_rho;
-  }
-  // Edge: top row (y1==K1, interior y2)
-  else if (is_hi1) {
-    auto r_hi = binormal_cdf_grad(z1_lo, z2_hi, rho);
-    auto r_lo = binormal_cdf_grad(z1_lo, z2_lo, rho);
-    P = Phi(z2_hi) - Phi(z2_lo) - r_hi.val + r_lo.val;
-    d_z1_lo = -r_hi.d_z1 + r_lo.d_z1;
-    d_z2_hi = phi(z2_hi) - r_hi.d_z2;
-    d_z2_lo = -phi(z2_lo) + r_lo.d_z2;
-    d_rho = -r_hi.d_rho + r_lo.d_rho;
-  }
-  // Edge: right column (interior y1, y2==K2)
-  else if (is_hi2) {
-    auto r_hi = binormal_cdf_grad(z1_hi, z2_lo, rho);
-    auto r_lo = binormal_cdf_grad(z1_lo, z2_lo, rho);
-    P = Phi(z1_hi) - Phi(z1_lo) - r_hi.val + r_lo.val;
-    d_z1_hi = phi(z1_hi) - r_hi.d_z1;
-    d_z1_lo = -phi(z1_lo) + r_lo.d_z1;
-    d_z2_lo = -r_hi.d_z2 + r_lo.d_z2;
-    d_rho = -r_hi.d_rho + r_lo.d_rho;
-  }
-  // Interior cell
-  else {
-    auto r11 = binormal_cdf_grad(z1_hi, z2_hi, rho);
-    auto r10 = binormal_cdf_grad(z1_hi, z2_lo, rho);
-    auto r01 = binormal_cdf_grad(z1_lo, z2_hi, rho);
-    auto r00 = binormal_cdf_grad(z1_lo, z2_lo, rho);
-    P = r11.val - r10.val - r01.val + r00.val;
-    d_z1_hi = r11.d_z1 - r10.d_z1;
-    d_z1_lo = -r01.d_z1 + r00.d_z1;
-    d_z2_hi = r11.d_z2 - r01.d_z2;
-    d_z2_lo = -r10.d_z2 + r00.d_z2;
-    d_rho = r11.d_rho - r10.d_rho - r01.d_rho + r00.d_rho;
-  }
-
-  // Clamp probability and zero out gradients if clamped
-  if (P < 1e-20) {
-    return {std::log(1e-20), 0.0, 0.0, 0.0, 0.0, 0.0};
-  }
-
-  double inv_P = 1.0 / P;
-  return {std::log(P),
-          d_z1_lo * inv_P,
-          d_z1_hi * inv_P,
-          d_z2_lo * inv_P,
-          d_z2_hi * inv_P,
-          d_rho * inv_P};
+  const double inf = std::numeric_limits<double>::infinity();
+  bvn_tail::Rect r = bvn_tail::rect_full(is_lo1 ? -inf : z1_lo, is_hi1 ? inf : z1_hi,
+                                         is_lo2 ? -inf : z2_lo, is_hi2 ? inf : z2_hi, rho, dw_cache());
+  if (!(r.p > kPFloor)) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
+  double inv_P = 1.0 / r.p;
+  return {r.lp, r.d1l * inv_P, r.d1h * inv_P, r.d2l * inv_P, r.d2h * inv_P, r.drho * inv_P};
 }
 
 
@@ -1042,8 +910,8 @@ inline BivariateDpResult bivariate_dp_cell(
   double p3 = is_corner ? R_I_eff * R_S_eff : 0.0;
 
   double P = p1 + p2 + p3;
-  if (P < 1e-20) {
-    res.lp = std::log(1e-20);
+  if (P < kPFloor) {
+    res.lp = std::log(kPFloor);
     return res;
   }
 
@@ -1114,55 +982,17 @@ struct CdpStripResult {
 
 // Interior strip: both z_lo and z_hi are finite
 inline CdpStripResult cdp_strip_upper(double z_cR, double z_lo, double z_hi, double rho) {
-  // Upper part at z_hi: Phi(z_hi) - Phi2(z_cR, z_hi, rho)
-  auto bv_hi = binormal_cdf_grad(z_cR, z_hi, rho);
-  double u_hi = Phi(z_hi) - bv_hi.val;
-  double du_hi_dzcR = -bv_hi.d_z1;
-  double du_hi_dzhi = phi(z_hi) - bv_hi.d_z2;
-  double du_hi_drho = -bv_hi.d_rho;
-
-  // Upper part at z_lo: Phi(z_lo) - Phi2(z_cR, z_lo, rho)
-  auto bv_lo = binormal_cdf_grad(z_cR, z_lo, rho);
-  double u_lo = Phi(z_lo) - bv_lo.val;
-  double du_lo_dzcR = -bv_lo.d_z1;
-  double du_lo_dzlo = phi(z_lo) - bv_lo.d_z2;
-  double du_lo_drho = -bv_lo.d_rho;
-
-  double p = u_hi - u_lo;
-  if (p < 1e-20) p = 1e-20;
-
-  return {p,
-          du_hi_dzcR - du_lo_dzcR,  // d_p / d_z_cR
-          -du_lo_dzlo,               // d_p / d_z_lo (negative because u_lo is subtracted)
-          du_hi_dzhi,                // d_p / d_z_hi
-          du_hi_drho - du_lo_drho};  // d_p / d_rho
+  const double inf = std::numeric_limits<double>::infinity();
+  bvn_tail::Rect r = bvn_tail::rect_full(z_cR, inf, z_lo, z_hi, rho, dw_cache());
+  return {std::fmax(r.p, kPFloor), r.d1l, r.d2l, r.d2h, r.drho};
 }
 
-// Edge strip for y==1 (z_lo = -inf): strip = Phi(z_hi) - Phi2(z_cR, z_hi, rho)
 inline CdpStripResult cdp_strip_upper_lo_edge(double z_cR, double z_hi, double rho) {
-  auto bv_hi = binormal_cdf_grad(z_cR, z_hi, rho);
-  double p = Phi(z_hi) - bv_hi.val;
-  if (p < 1e-20) p = 1e-20;
-
-  return {p,
-          -bv_hi.d_z1,           // d_p / d_z_cR
-          0.0,                    // d_p / d_z_lo (no lower threshold)
-          phi(z_hi) - bv_hi.d_z2, // d_p / d_z_hi
-          -bv_hi.d_rho};          // d_p / d_rho
+  return cdp_strip_upper(z_cR, -std::numeric_limits<double>::infinity(), z_hi, rho);
 }
 
-// Edge strip for y==K (z_hi = +inf): strip = Phi(-z_cR) - [Phi(z_lo) - Phi2(z_cR, z_lo, rho)]
-// = Phi(-z_cR) - Phi(z_lo) + Phi2(z_cR, z_lo, rho)
 inline CdpStripResult cdp_strip_upper_hi_edge(double z_cR, double z_lo, double rho) {
-  auto bv_lo = binormal_cdf_grad(z_cR, z_lo, rho);
-  double p = Phi(-z_cR) - Phi(z_lo) + bv_lo.val;
-  if (p < 1e-20) p = 1e-20;
-
-  return {p,
-          -phi(-z_cR) + bv_lo.d_z1,    // d_p / d_z_cR: d(Phi(-z_cR))/d(z_cR) = -phi(-z_cR)
-          -(phi(z_lo) - bv_lo.d_z2),    // d_p / d_z_lo = -phi(z_lo) + d(Phi2)/d(z_lo)
-          0.0,                            // d_p / d_z_hi (no upper threshold)
-          bv_lo.d_rho};                   // d_p / d_rho
+  return cdp_strip_upper(z_cR, z_lo, std::numeric_limits<double>::infinity(), rho);
 }
 
 
@@ -1236,7 +1066,7 @@ inline CdpResult cdp_rk_cell(
     // "New" response: P = Phi((tau[0] - mu_M) / sigma_M)
     double z_tau1 = (tau[0] - mu_M) * inv_sM;
     double p = Phi(z_tau1);
-    if (p < 1e-20) p = 1e-20;
+    if (p < kPFloor) p = kPFloor;
     res.lp = std::log(p);
     double d_lp_dz = phi(z_tau1) / p;
 
@@ -1293,9 +1123,9 @@ inline CdpResult cdp_rk_cell(
     d_prob_drho = strip.d_rho;
   } else {
     // Know: P = band - strip_upper
-    double p_band = Phi(z_hi) - Phi(z_lo);
+    double p_band = Phi_diff(z_lo, z_hi);
     prob = p_band - strip.p;
-    if (prob < 1e-20) prob = 1e-20;
+    if (prob < kPFloor) prob = kPFloor;
     // d_prob/d_z_lo = -phi(z_lo) - strip.d_z_lo
     d_prob_dzlo = -phi(z_lo) - strip.d_z_lo;
     // d_prob/d_z_hi = phi(z_hi) - strip.d_z_hi
@@ -1473,7 +1303,7 @@ inline CdpRkgResult cdp_rkg_cell(
     // the previous implementation — this path was already correct.
     double z_tau1 = (tau[0] - mu_M) * inv_sM;
     double p = Phi(z_tau1);
-    if (p < 1e-20) p = 1e-20;
+    if (p < kPFloor) p = kPFloor;
     res.lp = std::log(p);
     double d_lp_dz = phi(z_tau1) / p;
     res.k_hi = 0;
@@ -1503,7 +1333,7 @@ inline CdpRkgResult cdp_rkg_cell(
   // REMEMBER: shared binormal CDF values (reused by G_cdp_grad_reuse)
   BinormalCdfResult bv_hi = binormal_cdf_grad(z_cR, z_hi, rho_val);
   BinormalCdfResult bv_lo = binormal_cdf_grad(z_cR, z_lo, rho_val);
-  double p_band = Phi(z_hi) - Phi(z_lo);
+  double p_band = Phi_diff(z_lo, z_hi);
   double p_R_raw = (Phi(z_hi) - bv_hi.val) - (Phi(z_lo) - bv_lo.val);
 
   // GUESS: G(tau_hi) - G(tau_lo) with c_K acting on F (Wixted/Mickes)
@@ -1527,7 +1357,7 @@ inline CdpRkgResult cdp_rkg_cell(
   else if (rk_n == 2) prob = p_K;
   else prob = p_G;
 
-  if (prob < 1e-20) prob = 1e-20;
+  if (prob < kPFloor) prob = kPFloor;
   res.lp = std::log(prob);
 
   double inv_prob = 1.0 / prob;
@@ -1790,7 +1620,7 @@ inline BivariateResult bounded_bivariate_sdt_cell(
   double z_cp = (cp - mu1) * inv_s1;
   double z_ylo_b = is_lo1 ? -8.0 : (thresh1[y1 - 2] - mu1) * inv_s1;
 
-  double p_det_below = Phi(z_cp) - Phi(z_ylo_b);
+  double p_det_below = Phi_diff(z_ylo_b, z_cp);
 
   // Source probability in below-cp region
   double p_src_below = 0.0;
@@ -1800,11 +1630,11 @@ inline BivariateResult bounded_bivariate_sdt_cell(
     p_src_below = Phi(zs_hi_b);
   } else if (is_hi2) {
     zs_lo_b = thresh2[n_thresh2 - 1] * inv_sc;
-    p_src_below = 1.0 - Phi(zs_lo_b);
+    p_src_below = Qn(zs_lo_b);
   } else {
     zs_lo_b = thresh2[y2 - 2] * inv_sc;
     zs_hi_b = thresh2[y2 - 1] * inv_sc;
-    p_src_below = Phi(zs_hi_b) - Phi(zs_lo_b);
+    p_src_below = Phi_diff(zs_lo_b, zs_hi_b);
   }
 
   double prob_below = p_det_below * p_src_below;
@@ -1824,8 +1654,8 @@ inline BivariateResult bounded_bivariate_sdt_cell(
   double prob_above = std::exp(bc_above.lp);
   P += prob_above;
 
-  if (P < 1e-20) {
-    res.lp = std::log(1e-20);
+  if (P < kPFloor) {
+    res.lp = std::log(kPFloor);
     return res;
   }
 
@@ -2044,12 +1874,12 @@ inline BoundedMarginalResult bounded_marginal_source(
     phi_zs_hi = phi(zs_hi_v);
   } else if (is_hi2) {
     zs_lo_v = thresh2[n_thresh2 - 1] * inv_sc;
-    p_src_below = 1.0 - Phi(zs_lo_v);
+    p_src_below = Qn(zs_lo_v);
     phi_zs_lo = phi(zs_lo_v);
   } else {
     zs_lo_v = thresh2[y2 - 2] * inv_sc;
     zs_hi_v = thresh2[y2 - 1] * inv_sc;
-    p_src_below = Phi(zs_hi_v) - Phi(zs_lo_v);
+    p_src_below = Phi_diff(zs_lo_v, zs_hi_v);
     phi_zs_lo = phi(zs_lo_v);
     phi_zs_hi = phi(zs_hi_v);
   }
@@ -2058,27 +1888,13 @@ inline BoundedMarginalResult bounded_marginal_source(
 
   // Above-cp: standard BVN marginal
   // prob_above = Phi(z2_hi) - Phi(z2_lo) - Phi2(z_cp, z2_hi, rho) + Phi2(z_cp, z2_lo, rho)
-  double z2_lo_a = is_lo2 ? -8.0 : (thresh2[y2 - 2] - mu2) * inv_s2;
-  double z2_hi_a = is_hi2 ?  8.0 : (thresh2[y2 - 1] - mu2) * inv_s2;
-
-  // Compute binormal_cdf with gradients for all cases
-  // r_lo: Phi2(z_cp, z2_lo_a, rho), r_hi: Phi2(z_cp, z2_hi_a, rho)
-  BinormalCdfResult r_lo = {}, r_hi = {};
-  double prob_above = 0.0;
-  double phi_z2_lo = is_lo2 ? 0.0 : phi(z2_lo_a);
-  double phi_z2_hi = is_hi2 ? 0.0 : phi(z2_hi_a);
-
-  if (is_lo2) {
-    r_hi = binormal_cdf_grad(z_cp, z2_hi_a, rho);
-    prob_above = Phi(z2_hi_a) - r_hi.val;
-  } else if (is_hi2) {
-    r_lo = binormal_cdf_grad(z_cp, z2_lo_a, rho);
-    prob_above = 1.0 - Phi(z2_lo_a) - Phi(z_cp) + r_lo.val;
-  } else {
-    r_hi = binormal_cdf_grad(z_cp, z2_hi_a, rho);
-    r_lo = binormal_cdf_grad(z_cp, z2_lo_a, rho);
-    prob_above = Phi(z2_hi_a) - Phi(z2_lo_a) - r_hi.val + r_lo.val;
-  }
+  const double inf = std::numeric_limits<double>::infinity();
+  double z2_lo_a = is_lo2 ? -inf : (thresh2[y2 - 2] - mu2) * inv_s2;
+  double z2_hi_a = is_hi2 ? inf : (thresh2[y2 - 1] - mu2) * inv_s2;
+  bvn_tail::Rect above = bvn_tail::rect_full(z_cp, inf, z2_lo_a, z2_hi_a, rho, dw_cache());
+  double prob_above = above.p;
+  double A_cp = above.d1l, A_lo = above.d2l, A_hi = above.d2h;
+  double zlo_A = is_lo2 ? 0.0 : z2_lo_a * A_lo, zhi_A = is_hi2 ? 0.0 : z2_hi_a * A_hi;
 
   res.p = p_below + prob_above;
 
@@ -2086,21 +1902,7 @@ inline BoundedMarginalResult bounded_marginal_source(
   // d_mu2: through z_cp (below det + above z1_lo) and z2 (above)
   // dz2/dmu2 = -inv_s2
   double dp_below_dmu2 = phi_zcp * dz_cp_dmu2 * p_src_below;
-  double dp_above_dmu2 = 0.0;
-  if (is_lo2) {
-    // prob_above = Phi(z2_hi) - Phi2(z_cp, z2_hi, rho)
-    dp_above_dmu2 = phi_z2_hi * (-inv_s2)
-                  - (r_hi.d_z1 * dz_cp_dmu2 + r_hi.d_z2 * (-inv_s2));
-  } else if (is_hi2) {
-    // prob_above = 1 - Phi(z2_lo) - Phi(z_cp) + Phi2(z_cp, z2_lo, rho)
-    dp_above_dmu2 = -phi_z2_lo * (-inv_s2) - phi_zcp * dz_cp_dmu2
-                  + (r_lo.d_z1 * dz_cp_dmu2 + r_lo.d_z2 * (-inv_s2));
-  } else {
-    // prob_above = Phi(z2_hi) - Phi(z2_lo) - Phi2(z_cp, z2_hi, rho) + Phi2(z_cp, z2_lo, rho)
-    dp_above_dmu2 = phi_z2_hi * (-inv_s2) - phi_z2_lo * (-inv_s2)
-                  - (r_hi.d_z1 * dz_cp_dmu2 + r_hi.d_z2 * (-inv_s2))
-                  + (r_lo.d_z1 * dz_cp_dmu2 + r_lo.d_z2 * (-inv_s2));
-  }
+  double dp_above_dmu2 = A_cp * dz_cp_dmu2 - (A_lo + A_hi) * inv_s2;
   res.d_mu2 = dp_below_dmu2 + dp_above_dmu2;
 
   // d_sigma2: through z_cp, sigma_cond (below src zs), z2 (above)
@@ -2115,30 +1917,14 @@ inline BoundedMarginalResult bounded_marginal_source(
     dp_below_ds2_src = p_below_det * (phi_zs_hi * (-zs_hi_v * inv_s2)
                                     - phi_zs_lo * (-zs_lo_v * inv_s2));
   }
-  double dp_above_ds2 = 0.0;
-  if (is_lo2) {
-    dp_above_ds2 = phi_z2_hi * (-z2_hi_a * inv_s2)
-                 - (r_hi.d_z1 * dz_cp_ds2 + r_hi.d_z2 * (-z2_hi_a * inv_s2));
-  } else if (is_hi2) {
-    dp_above_ds2 = -phi_z2_lo * (-z2_lo_a * inv_s2) - phi_zcp * dz_cp_ds2
-                 + (r_lo.d_z1 * dz_cp_ds2 + r_lo.d_z2 * (-z2_lo_a * inv_s2));
-  } else {
-    dp_above_ds2 = phi_z2_hi * (-z2_hi_a * inv_s2) - phi_z2_lo * (-z2_lo_a * inv_s2)
-                 - (r_hi.d_z1 * dz_cp_ds2 + r_hi.d_z2 * (-z2_hi_a * inv_s2))
-                 + (r_lo.d_z1 * dz_cp_ds2 + r_lo.d_z2 * (-z2_lo_a * inv_s2));
-  }
+  double dp_above_ds2 = A_cp * dz_cp_ds2 - (zlo_A + zhi_A) * inv_s2;
   res.d_sigma2 = dp_below_ds2_det + dp_below_ds2_src + dp_above_ds2;
 
   // d_thresh2_lo (when not lo edge): through zs_lo (below) and z2_lo (above)
   // dzs_lo/dthresh2_lo = inv_sc, dz2_lo/dthresh2_lo = inv_s2
   if (!is_lo2) {
     double dp_below_dt2lo = p_below_det * (-phi_zs_lo * inv_sc);
-    double dp_above_dt2lo = 0.0;
-    if (is_hi2) {
-      dp_above_dt2lo = -phi_z2_lo * inv_s2 + r_lo.d_z2 * inv_s2;
-    } else {
-      dp_above_dt2lo = -phi_z2_lo * inv_s2 + r_lo.d_z2 * inv_s2;
-    }
+    double dp_above_dt2lo = A_lo * inv_s2;
     res.d_thresh2_lo = dp_below_dt2lo + dp_above_dt2lo;
   }
 
@@ -2146,12 +1932,7 @@ inline BoundedMarginalResult bounded_marginal_source(
   // dzs_hi/dthresh2_hi = inv_sc, dz2_hi/dthresh2_hi = inv_s2
   if (!is_hi2) {
     double dp_below_dt2hi = p_below_det * phi_zs_hi * inv_sc;
-    double dp_above_dt2hi = 0.0;
-    if (is_lo2) {
-      dp_above_dt2hi = phi_z2_hi * inv_s2 - r_hi.d_z2 * inv_s2;
-    } else {
-      dp_above_dt2hi = phi_z2_hi * inv_s2 - r_hi.d_z2 * inv_s2;
-    }
+    double dp_above_dt2hi = A_hi * inv_s2;
     res.d_thresh2_hi = dp_below_dt2hi + dp_above_dt2hi;
   }
 
@@ -2171,17 +1952,7 @@ inline BoundedMarginalResult bounded_marginal_source(
     dp_src_below_drho = (phi_zs_hi * zs_hi_v - phi_zs_lo * zs_lo_v) * zs_rho_factor;
   }
   double dp_below_drho = dp_below_det_drho * p_src_below + p_below_det * dp_src_below_drho;
-  double dp_above_drho = 0.0;
-  if (is_lo2) {
-    // prob_above = Phi(z2_hi) - Phi2(z_cp, z2_hi, rho); z2_hi indep of rho
-    dp_above_drho = -(r_hi.d_z1 * dz_cp_drho + r_hi.d_rho);
-  } else if (is_hi2) {
-    // prob_above = 1 - Phi(z2_lo) - Phi(z_cp) + Phi2(z_cp, z2_lo, rho)
-    dp_above_drho = -phi_zcp * dz_cp_drho + (r_lo.d_z1 * dz_cp_drho + r_lo.d_rho);
-  } else {
-    dp_above_drho = -(r_hi.d_z1 * dz_cp_drho + r_hi.d_rho)
-                  + (r_lo.d_z1 * dz_cp_drho + r_lo.d_rho);
-  }
+  double dp_above_drho = A_cp * dz_cp_drho + above.drho;
   res.d_rho = dp_below_drho + dp_above_drho;
 
   return res;
@@ -2280,8 +2051,8 @@ inline BivariateDpResult bounded_bivariate_dp_cell(
   if (is_corner) p3 = R_I_eff * R_S_eff;
 
   double P = p1 + p2 + p3;
-  if (P < 1e-20) {
-    res.lp = std::log(1e-20);
+  if (P < kPFloor) {
+    res.lp = std::log(kPFloor);
     return res;
   }
 

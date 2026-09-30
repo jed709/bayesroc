@@ -63,7 +63,7 @@
   cxx <- .cxx17_command()
   if (is.null(cxx)) return(fail("no C++17 compiler"))
   flags <- .bvn_ffi_flags()
-  hdr <- file.path(src$include, "bayesroc", "bvn_simd.h")
+  hdr <- file.path(src$include, "bayesroc", c("bvn_simd.h", "bvn_tail.h"))
   key <- paste(c(unname(tools::md5sum(c(src$cc, hdr))), jl$jax_version, jl$include,
                  cxx$prog, cxx$args, flags, R.version$platform), collapse = "|")
   tag <- substr(digest_string(key), 1, 16)
@@ -90,7 +90,19 @@
     if (!file.exists(lib)) return(fail("could not write to the cache directory"))
   }
   .bvn_ffi_state[[python]] <- normalizePath(lib, winslash = "/")
+  .prune_ffi_cache(cache, python, lib, ext)
   .bvn_ffi_state[[python]]
+}
+
+.prune_ffi_cache <- function(cache, python, lib, ext) {
+  idx_file <- file.path(cache, "index.rds")
+  idx <- tryCatch(readRDS(idx_file), error = function(e) list())
+  idx[[normalizePath(python, winslash = "/", mustWork = FALSE)]] <- basename(lib)
+  idx <- idx[vapply(idx, function(f) file.exists(file.path(cache, f)), logical(1))]
+  try(saveRDS(idx, idx_file), silent = TRUE)
+  stale <- setdiff(list.files(cache, pattern = paste0("^bvn_ffi_.*\\", ext, "$")), unlist(idx))
+  if (length(stale)) suppressWarnings(unlink(file.path(cache, stale)))
+  invisible(NULL)
 }
 
 digest_string <- function(x) {

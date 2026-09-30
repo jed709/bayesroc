@@ -942,6 +942,11 @@ build_batch_signature <- function(model_data, family_name, params) {
       if (K2_val > 2) {
         add_param("matrix", "beta_log_gaps_2_varying")
       }
+      if (.crit2_has_cov(model_data)) {
+        add_data_tpl("matrix", "X_criterion2_cov")
+        add_param("vector", "beta_thresh_mid_2_cov")
+        if (K2_val > 2) add_param("matrix", "beta_log_gaps_2_cov")
+      }
       if (identical(params$.new_source_criteria, "shared")) {
         add_param("real", "beta_thresh_mid_2_new")
         if (K2_val > 2) {
@@ -1272,12 +1277,16 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   is_crit_intercept_only_early <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   if (has_crit_re) {
     L$add("  Eigen::VectorXd exp_eff_gaps(n_gaps);")
+    .dgap_decl(L, params, "exp_eff_gaps", "Eigen::VectorXd", "n_gaps")
   } else {
     L$add("  Eigen::VectorXd pop_exp_gaps(n_gaps);")
     gap_fn <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap_d(g)))" else "std::exp(pop_gap_d(g))"
     L$add(sprintf("  for (int g = 0; g < n_gaps; ++g) pop_exp_gaps(g) = %s;", gap_fn))
+    .dgap_decl(L, params, "pop_exp_gaps", "Eigen::VectorXd", "n_gaps")
+    .dgap_set(L, params, "  for (int g = 0; g < n_gaps; ++g) ", "pop_exp_gaps(g)", "pop_gap_d(g)")
     if (!is_crit_intercept_only_early || !is.null(params$.smooth_data[["criterion"]])) {
       L$add("  Eigen::VectorXd obs_exp_gaps(n_gaps);  // per-obs exp(gap) for multi-predictor or smooth")
+      .dgap_decl(L, params, "obs_exp_gaps", "Eigen::VectorXd", "n_gaps")
     }
   }
   if (has_two_responses) {
@@ -1317,22 +1326,35 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
       gap_fn2_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
       L$add("  for (int k1 = 0; k1 < K1; ++k1)")
       L$add(sprintf("    for (int g = 0; g < n_gaps2; ++g) vary_exp_gaps2(k1, g) = %s;", gap_fn2_raw))
+      .dgap_decl(L, params, "vary_exp_gaps2", "Eigen::MatrixXd", "K1, n_gaps2")
+      if (.varying_per_obs(model_data, params)) {
+        L$add("  Eigen::VectorXd exp_eff_gaps2(n_gaps2);")
+        .dgap_decl(L, params, "exp_eff_gaps2", "Eigen::VectorXd", "n_gaps2")
+      }
+      .dgap_set(L, params, "  for (int k1 = 0; k1 < K1; ++k1) for (int g = 0; g < n_gaps2; ++g) ",
+                "vary_exp_gaps2(k1, g)", "vary_gaps2_d(k1, g)")
       if (identical(params$.new_source_criteria, "shared")) {
         gap_fn_new_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(new_gaps2_d(g)))" else "std::exp(new_gaps2_d(g))"
         L$add("  Eigen::VectorXd new_exp_gaps2(n_gaps2);")
         L$add(sprintf("  for (int g = 0; g < n_gaps2; ++g) new_exp_gaps2(g) = %s;", gap_fn_new_raw))
+        .dgap_decl(L, params, "new_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
+        .dgap_set(L, params, "  for (int g = 0; g < n_gaps2; ++g) ", "new_exp_gaps2(g)", "new_gaps2_d(g)")
       }
     } else if (has_crit2_re) {
       L$add("  Eigen::VectorXd exp_eff_gaps2(n_gaps2);")
+      .dgap_decl(L, params, "exp_eff_gaps2", "Eigen::VectorXd", "n_gaps2")
     } else {
       L$add("  Eigen::VectorXd pop_exp_gaps2(n_gaps2);")
       gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap2_d(g)))" else "std::exp(pop_gap2_d(g))"
       L$add(sprintf("  for (int g = 0; g < n_gaps2; ++g) pop_exp_gaps2(g) = %s;", gap_fn2))
+      .dgap_decl(L, params, "pop_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
+      .dgap_set(L, params, "  for (int g = 0; g < n_gaps2; ++g) ", "pop_exp_gaps2(g)", "pop_gap2_d(g)")
       crit2_early <- model_data$criterion2
       is_crit2_int_only_early <- is.null(crit2_early) ||
         isTRUE(crit2_early$is_intercept_only) || crit2_early$n_coef == 1
       if (!is_crit2_int_only_early || !is.null(params$.smooth_data[["criterion2"]])) {
         L$add("  Eigen::VectorXd obs_exp_gaps2(n_gaps2);  // per-obs exp(gap): multi-predictor or smooth")
+        .dgap_decl(L, params, "obs_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
       }
     }
   }
@@ -1366,7 +1388,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   emit_thresh_computation(L, model_data, params, has_crit_re)
   if (has_two_responses) {
     L$add("")
-    if (isTRUE(params$.varying_source_criteria)) {
+    if (.varying_per_obs(model_data, params)) {
+      emit_thresh2_varying_obs(L, model_data, params)
+    } else if (isTRUE(params$.varying_source_criteria)) {
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("    // Varying source thresholds: use shared new-response thresholds for 'new' responses, yn-based for 'old' responses")
         L$add("    if (is_new_response[yn - 1] == 1) {")
@@ -1865,6 +1889,12 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
       if (K2_val > 2) {
         L$add("  const Eigen::MatrixXd vary_gaps2_d = value_of(beta_log_gaps_2_varying);")
       }
+      if (.crit2_has_cov(model_data)) {
+        L$add("  const Eigen::MatrixXd Xc2_d = value_of(X_criterion2_cov);")
+        L$add("  const int P_cov2 = Xc2_d.cols();")
+        L$add("  const Eigen::VectorXd cov_mid2_d = value_of(beta_thresh_mid_2_cov);")
+        if (K2_val > 2) L$add("  const Eigen::MatrixXd cov_gaps2_d = value_of(beta_log_gaps_2_cov);")
+      }
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("  const double new_mid2_d = value_of(beta_thresh_mid_2_new);")
         if (K2_val > 2) {
@@ -2226,6 +2256,10 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("  double grad_new_mid2 = 0.0;")
         L$add("  Eigen::VectorXd grad_new_gaps2 = Eigen::VectorXd::Zero(n_gaps2);")
+      }
+      if (.crit2_has_cov(model_data)) {
+        L$add("  Eigen::VectorXd grad_cov_mid2 = Eigen::VectorXd::Zero(P_cov2);")
+        L$add("  Eigen::MatrixXd grad_cov_gaps2 = Eigen::MatrixXd::Zero(n_gaps2, P_cov2);")
       }
       crit2_re_idx <- 0
       if (!is.null(params$criterion2$random)) {
@@ -2881,6 +2915,22 @@ emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_i
   }
 }
 
+# Derivative of the gap link at the raw gap: exp for "log" (equal to the gap value,
+# so d_<vec> aliases <vec>), sigmoid for "softplus".
+.dgap_decl <- function(L, params, name, type, dims) {
+  if (identical(params$.gap_link, "softplus")) {
+    L$add(sprintf("  %s d_%s(%s);", type, name, dims))
+  } else {
+    L$add(sprintf("  const %s& d_%s = %s;", type, name, name))
+  }
+}
+
+.dgap_set <- function(L, params, prefix, lhs, raw) {
+  if (identical(params$.gap_link, "softplus")) {
+    L$add(sprintf("%sd_%s = 1.0 / (1.0 + std::exp(-(%s)));", prefix, lhs, raw))
+  }
+}
+
 # ============================================================================
 # Threshold computation
 # ============================================================================
@@ -2927,6 +2977,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
     }
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
+    .dgap_set(L, params, "      ", "exp_eff_gaps(gi)", "eff_gap")
     L$add("      thresh_n(k) = thresh_n(k - 1) + exp_eff_gaps(gi);")
     L$add("    }")
 
@@ -2947,6 +2998,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
     }
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
+    .dgap_set(L, params, "      ", "exp_eff_gaps(gi)", "eff_gap")
     L$add("      thresh_n(k) = thresh_n(k + 1) - exp_eff_gaps(gi);")
     L$add("    }")
 
@@ -2978,6 +3030,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add(sprintf("      double egval = %s;", sprintf(gap_fn, "gval")))
       L$add("      thresh_n(k) = thresh_n(k - 1) + egval;")
       L$add("      obs_exp_gaps(gi) = egval;")
+      .dgap_set(L, params, "      ", "obs_exp_gaps(gi)", "gval")
     } else {
       L$add("      thresh_n(k) = thresh_n(k - 1) + pop_exp_gaps(gi);")
     }
@@ -2996,6 +3049,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add(sprintf("      double egval = %s;", sprintf(gap_fn, "gval")))
       L$add("      thresh_n(k) = thresh_n(k + 1) - egval;")
       L$add("      obs_exp_gaps(gi) = egval;")
+      .dgap_set(L, params, "      ", "obs_exp_gaps(gi)", "gval")
     } else {
       L$add("      thresh_n(k) = thresh_n(k + 1) - pop_exp_gaps(gi);")
     }
@@ -3507,6 +3561,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
                                        pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
+    .dgap_set(L, params, "      ", "exp_eff_gaps2(gi)", "eff_gap2")
     L$add("      thresh2_n(k) = thresh2_n(k - 1) + exp_eff_gaps2(gi);")
     L$add("    }")
 
@@ -3528,6 +3583,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
     emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
                                        pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
+    .dgap_set(L, params, "      ", "exp_eff_gaps2(gi)", "eff_gap2")
     L$add("      thresh2_n(k) = thresh2_n(k + 1) - exp_eff_gaps2(gi);")
     L$add("    }")
 
@@ -3561,6 +3617,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
       L$add("      thresh2_n(k) = thresh2_n(k - 1) + egval2;")
       L$add("      obs_exp_gaps2(gi) = egval2;")
+      .dgap_set(L, params, "      ", "obs_exp_gaps2(gi)", "gval2")
     } else {
       L$add("      thresh2_n(k) = thresh2_n(k - 1) + pop_exp_gaps2(gi);")
     }
@@ -3580,6 +3637,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
       L$add("      thresh2_n(k) = thresh2_n(k + 1) - egval2;")
       L$add("      obs_exp_gaps2(gi) = egval2;")
+      .dgap_set(L, params, "      ", "obs_exp_gaps2(gi)", "gval2")
     } else {
       L$add("      thresh2_n(k) = thresh2_n(k + 1) - pop_exp_gaps2(gi);")
     }
@@ -3837,10 +3895,12 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
 
   varying_sc <- isTRUE(params$.varying_source_criteria)
 
-  if (varying_sc) {
+  if (.varying_per_obs(model_data, params)) {
+    emit_grad_thresh2_varying_obs(L, model_data, params, "vr.k2_lo", "vr.k2_hi", d_lo2, d_hi2)
+  } else if (varying_sc) {
     L$add("    {")
     L$add("      int bin = yn - 1;")
-    L$add("      Eigen::VectorXd bin_exp_gaps = vary_exp_gaps2.row(bin).transpose();")
+    L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
     L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
     L$add("      auto propagate_vary = [&](int k, double d) {")
     L$add("        mid_ref += d;")
@@ -3861,11 +3921,11 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
       if (is_crit2_intercept_only) {
         L$add("    if (vr.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(vr.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
-        L$add("          exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
+        L$add("          d_exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
         L$add("    }")
         L$add("    if (vr.k2_hi >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(vr.k2_hi, %s, mid2, n_thresh2, n_upper2,", d_hi2))
-        L$add("          exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
+        L$add("          d_exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
         L$add("    }")
       } else {
         L$add("    auto propagate_mp2 = [&](int k, double d) {")
@@ -3873,13 +3933,13 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add("      g_crit2_mid += d;")
         L$add("      if (k > mid2) {")
         L$add("        for (int j = 0; j <= k - mid2 - 1; ++j) {")
-        L$add("          double g = d * exp_eff_gaps2(j);")
+        L$add("          double g = d * d_exp_eff_gaps2(j);")
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("          g_crit2_gaps(j) += g;")
         L$add("        }")
         L$add("      } else if (k < mid2) {")
         L$add("        for (int j = n_upper2; j <= n_upper2 + (mid2 - k - 1); ++j) {")
-        L$add("          double g = d * (-exp_eff_gaps2(j));")
+        L$add("          double g = d * (-d_exp_eff_gaps2(j));")
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("          g_crit2_gaps(j) += g;")
         L$add("        }")
@@ -3902,7 +3962,7 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
 
     } else {
       has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
-      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "obs_exp_gaps2" else "pop_exp_gaps2"
+      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "d_obs_exp_gaps2" else "d_pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (vr.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(vr.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
@@ -3937,10 +3997,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
         L$add("      double g_sm2_gap = 0.0;")
-        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo > mid2 && gi <= vr.k2_lo - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_lo2))
-        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi > mid2 && gi <= vr.k2_hi - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_hi2))
-        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_lo - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_lo2))
-        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_hi - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_hi2))
+        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo > mid2 && gi <= vr.k2_lo - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_lo2))
+        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi > mid2 && gi <= vr.k2_hi - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_hi2))
+        L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_lo - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_lo2))
+        L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_hi - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_hi2))
         emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
@@ -4461,11 +4521,11 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
     if (is_crit_intercept_only) {
       L$add("    if (k_lo >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(k_lo, %s, mid, n_thresh, n_upper,", d_lo))
-      L$add("          exp_eff_gaps, grad_thresh_mid_pop, grad_log_gaps_pop, g_crit_mid, g_crit_gaps);")
+      L$add("          d_exp_eff_gaps, grad_thresh_mid_pop, grad_log_gaps_pop, g_crit_mid, g_crit_gaps);")
       L$add("    }")
       L$add("    if (k_hi >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(k_hi, %s, mid, n_thresh, n_upper,", d_hi))
-      L$add("          exp_eff_gaps, grad_thresh_mid_pop, grad_log_gaps_pop, g_crit_mid, g_crit_gaps);")
+      L$add("          d_exp_eff_gaps, grad_thresh_mid_pop, grad_log_gaps_pop, g_crit_mid, g_crit_gaps);")
       L$add("    }")
     } else {
       emit_multi_predictor_thresh_grad_with_re(L, d_lo, d_hi, params)
@@ -4478,9 +4538,9 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
       L$add("      auto scatter_sm = [&](int k, double d) {")
       L$add("        g_sm_mid += d;")
       L$add("        if (k > mid) {")
-      L$add("          for (int j = 0; j <= k - mid - 1; ++j) g_sm_gaps(j) += d * exp_eff_gaps(j);")
+      L$add("          for (int j = 0; j <= k - mid - 1; ++j) g_sm_gaps(j) += d * d_exp_eff_gaps(j);")
       L$add("        } else if (k < mid) {")
-      L$add("          for (int j = n_upper; j <= n_upper + (mid - k - 1); ++j) g_sm_gaps(j) += d * (-exp_eff_gaps(j));")
+      L$add("          for (int j = n_upper; j <= n_upper + (mid - k - 1); ++j) g_sm_gaps(j) += d * (-d_exp_eff_gaps(j));")
       L$add("        }")
       L$add("      };")
       L$add(sprintf("      if (k_lo >= 0) scatter_sm(k_lo, %s);", d_lo))
@@ -4496,7 +4556,7 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
 
   } else {
     if (is_crit_intercept_only) {
-      gaps_vec <- if (is.null(params$.smooth_data[["criterion"]])) "pop_exp_gaps" else "obs_exp_gaps"
+      gaps_vec <- if (is.null(params$.smooth_data[["criterion"]])) "d_pop_exp_gaps" else "d_obs_exp_gaps"
       L$add("    if (k_lo >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad(k_lo, %s, mid, n_thresh, n_upper,", d_lo))
       L$add(sprintf("          %s, grad_thresh_mid_pop, grad_log_gaps_pop);", gaps_vec))
@@ -4513,10 +4573,10 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
       emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_mid", "0")
       L$add("    for (int gi = 0; gi < n_gaps; ++gi) {")
       L$add("      double g_sm_gap = 0.0;")
-      L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_lo))
-      L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * obs_exp_gaps(gi);", d_hi))
-      L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_lo))
-      L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-obs_exp_gaps(gi));", d_hi))
+      L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * d_obs_exp_gaps(gi);", d_lo))
+      L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * d_obs_exp_gaps(gi);", d_hi))
+      L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-d_obs_exp_gaps(gi));", d_lo))
+      L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-d_obs_exp_gaps(gi));", d_hi))
       emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_gap", "1 + gi")
       L$add("    }")
     }
@@ -4560,13 +4620,13 @@ emit_multi_predictor_thresh_grad_with_re <- function(L, d_lo, d_hi, params = lis
   L$add("      g_crit_mid += d;")
   L$add("      if (k > mid) {")
   L$add("        for (int j = 0; j <= k - mid - 1; ++j) {")
-  L$add("          double g = d * exp_eff_gaps(j);")
+  L$add("          double g = d * d_exp_eff_gaps(j);")
   L$add("          for (int p = 0; p < P_crit; ++p) grad_log_gaps_pop(j, p) += g * X_crit_d(n, p);")
   L$add("          g_crit_gaps(j) += g;")
   L$add("        }")
   L$add("      } else if (k < mid) {")
   L$add("        for (int j = n_upper; j <= n_upper + (mid - k - 1); ++j) {")
-  L$add("          double g = d * (-exp_eff_gaps(j));")
+  L$add("          double g = d * (-d_exp_eff_gaps(j));")
   L$add("          for (int p = 0; p < P_crit; ++p) grad_log_gaps_pop(j, p) += g * X_crit_d(n, p);")
   L$add("          g_crit_gaps(j) += g;")
   L$add("        }")
@@ -4585,12 +4645,12 @@ emit_multi_predictor_thresh_grad_no_re <- function(L, d_lo, d_hi, params = list(
   L$add("      for (int p = 0; p < P_crit; ++p) grad_thresh_mid_pop(p) += d * X_crit_d(n, p);")
   L$add("      if (k > mid) {")
   L$add("        for (int j = 0; j <= k - mid - 1; ++j) {")
-  L$add("          double g = d * obs_exp_gaps(j);")
+  L$add("          double g = d * d_obs_exp_gaps(j);")
   L$add("          for (int p = 0; p < P_crit; ++p) grad_log_gaps_pop(j, p) += g * X_crit_d(n, p);")
   L$add("        }")
   L$add("      } else if (k < mid) {")
   L$add("        for (int j = n_upper; j <= n_upper + (mid - k - 1); ++j) {")
-  L$add("          double g = d * (-obs_exp_gaps(j));")
+  L$add("          double g = d * (-d_obs_exp_gaps(j));")
   L$add("          for (int p = 0; p < P_crit; ++p) grad_log_gaps_pop(j, p) += g * X_crit_d(n, p);")
   L$add("        }")
   L$add("      }")
@@ -4959,6 +5019,10 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
       emit_pack_vec(L, "beta_thresh_mid_2_varying", "grad_vary_mid2")
       if (K2_val > 2) {
         emit_pack_mat(L, "beta_log_gaps_2_varying", "grad_vary_gaps2")
+      }
+      if (.crit2_has_cov(model_data)) {
+        emit_pack_vec(L, "beta_thresh_mid_2_cov", "grad_cov_mid2")
+        if (K2_val > 2) emit_pack_mat(L, "beta_log_gaps_2_cov", "grad_cov_gaps2")
       }
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("    operands.push_back(beta_thresh_mid_2_new);")
@@ -5878,17 +5942,19 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
 
   varying_sc <- isTRUE(params$.varying_source_criteria)
 
-  if (varying_sc) {
+  if (.varying_per_obs(model_data, params)) {
+    emit_grad_thresh2_varying_obs(L, model_data, params, "bv.k2_lo", "bv.k2_hi", d_lo2, d_hi2)
+  } else if (varying_sc) {
     new_shared <- identical(params$.new_source_criteria, "shared")
     if (new_shared) {
       L$add("    if (is_new_response[yn - 1] == 1) {")
       L$add("      // New response: propagate to shared new-response thresholds")
-      L$add(sprintf("      if (bv.k2_lo >= 0) batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2, new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_lo2))
-      L$add(sprintf("      if (bv.k2_hi >= 0) batch_sdt::propagate_thresh_grad(bv.k2_hi, %s, mid2, n_thresh2, n_upper2, new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_hi2))
+      L$add(sprintf("      if (bv.k2_lo >= 0) batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_lo2))
+      L$add(sprintf("      if (bv.k2_hi >= 0) batch_sdt::propagate_thresh_grad(bv.k2_hi, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_hi2))
       L$add("    } else {")
       L$add("      // Old response: propagate to varying thresholds for this detection bin")
       L$add("      int bin = yn - 1;")
-      L$add("      Eigen::VectorXd bin_exp_gaps = vary_exp_gaps2.row(bin).transpose();")
+      L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
       L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
       L$add("      auto propagate_vary = [&](int k, double d) {")
       L$add("        mid_ref += d;")
@@ -5901,7 +5967,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     } else {
       L$add("    {")
       L$add("      int bin = yn - 1;")
-      L$add("      Eigen::VectorXd bin_exp_gaps = vary_exp_gaps2.row(bin).transpose();")
+      L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
       L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
       L$add("      auto propagate_vary = [&](int k, double d) {")
       L$add("        mid_ref += d;")
@@ -5923,11 +5989,11 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       if (is_crit2_intercept_only) {
         L$add("    if (bv.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(bv.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
-        L$add("          exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
+        L$add("          d_exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
         L$add("    }")
         L$add("    if (bv.k2_hi >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad_with_re(bv.k2_hi, %s, mid2, n_thresh2, n_upper2,", d_hi2))
-        L$add("          exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
+        L$add("          d_exp_eff_gaps2, grad_thresh_mid2_pop, grad_log_gaps2_pop, g_crit2_mid, g_crit2_gaps);")
         L$add("    }")
       } else {
         L$add("    auto propagate_mp2 = [&](int k, double d) {")
@@ -5935,13 +6001,13 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
         L$add("      g_crit2_mid += d;")
         L$add("      if (k > mid2) {")
         L$add("        for (int j = 0; j <= k - mid2 - 1; ++j) {")
-        L$add("          double g = d * exp_eff_gaps2(j);")
+        L$add("          double g = d * d_exp_eff_gaps2(j);")
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("          g_crit2_gaps(j) += g;")
         L$add("        }")
         L$add("      } else if (k < mid2) {")
         L$add("        for (int j = n_upper2; j <= n_upper2 + (mid2 - k - 1); ++j) {")
-        L$add("          double g = d * (-exp_eff_gaps2(j));")
+        L$add("          double g = d * (-d_exp_eff_gaps2(j));")
         L$add("          for (int p = 0; p < P_crit2; ++p) grad_log_gaps2_pop(j, p) += g * X_crit2_d(n, p);")
         L$add("          g_crit2_gaps(j) += g;")
         L$add("        }")
@@ -5961,7 +6027,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       emit_crit2_re_grad_scatter(L, model_data, params)
     } else {
       has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
-      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "obs_exp_gaps2" else "pop_exp_gaps2"
+      gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "d_obs_exp_gaps2" else "d_pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (bv.k2_lo >= 0) {")
         L$add(sprintf("      batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2,", d_lo2))
@@ -5996,14 +6062,145 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
         L$add("      double g_sm2_gap = 0.0;")
-        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo > mid2 && gi <= bv.k2_lo - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_lo2))
-        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi > mid2 && gi <= bv.k2_hi - mid2 - 1) g_sm2_gap += %s * obs_exp_gaps2(gi);", d_hi2))
-        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_lo - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_lo2))
-        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_hi - 1)) g_sm2_gap += %s * (-obs_exp_gaps2(gi));", d_hi2))
+        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo > mid2 && gi <= bv.k2_lo - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_lo2))
+        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi > mid2 && gi <= bv.k2_hi - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_hi2))
+        L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_lo - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_lo2))
+        L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_hi - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_hi2))
         emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
       }
     }
   }
+}
+
+# ============================================================================
+# Varying source criteria: per-observation thresholds (covariates, REs, smooths)
+# ============================================================================
+
+.crit2_has_cov <- function(model_data) {
+  isTRUE(model_data$varying_source_criteria) &&
+    isTRUE(model_data$stan_data$P_criterion2_cov > 0)
+}
+
+.varying_per_obs <- function(model_data, params) {
+  isTRUE(params$.varying_source_criteria) &&
+    (.crit2_has_cov(model_data) ||
+       length(params$criterion2$random) > 0 ||
+       !is.null(params$.smooth_data[["criterion2"]]))
+}
+
+.varying_re_cols <- function(model_data, re) {
+  mode <- model_data$varying_re %||% "shared"
+  if (mode == "full") {
+    list(mid = "bin * n_thresh2 + mid2", gap = "bin * n_thresh2 + %s")
+  } else if (mode == "per_bin" && isTRUE(re$dim > 1)) {
+    list(mid = "bin", gap = NULL)
+  } else {
+    list(mid = "0", gap = NULL)
+  }
+}
+
+emit_thresh2_varying_obs <- function(L, model_data, params) {
+  gap_fn <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(%s))" else "std::exp(%s)"
+  has_cov <- .crit2_has_cov(model_data)
+  new_shared <- identical(params$.new_source_criteria, "shared")
+  res <- params$criterion2$random
+  re_lines <- function(target, which, k_expr) {
+    i <- 0
+    for (group in names(res)) {
+      i <- i + 1
+      cols <- .varying_re_cols(model_data, res[[group]])
+      col <- if (which == "mid") cols$mid else if (!is.null(cols$gap)) sprintf(cols$gap, k_expr) else NULL
+      if (!is.null(col)) L$add(sprintf("      %s += u_crit2_%d_d(g_%s, %s);", target, i, group, col))
+    }
+  }
+  side <- function(upper) {
+    if (upper) {
+      L$add("      for (int k = mid2 + 1; k < n_thresh2; ++k) {")
+      L$add("        int gi = k - mid2 - 1;")
+    } else {
+      L$add("      for (int kd = 1; kd <= mid2; ++kd) {")
+      L$add("        int k = mid2 - kd;")
+      L$add("        int gi = n_upper2 + kd - 1;")
+    }
+    L$add("        double eg = vary_gaps2_d(bin, gi);")
+    if (has_cov) L$add("        for (int p = 0; p < P_cov2; ++p) eg += Xc2_d(n, p) * cov_gaps2_d(gi, p);")
+    re_lines("  eg", "gap", "k")
+    emit_criterion_smooth_contribution(L, params$.smooth_data, "eg", "1 + gi", pname = "criterion2")
+    L$add(sprintf("        exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eg")))
+    .dgap_set(L, params, "        ", "exp_eff_gaps2(gi)", "eg")
+    L$add(if (upper) "        thresh2_n(k) = thresh2_n(k - 1) + exp_eff_gaps2(gi);"
+          else "        thresh2_n(k) = thresh2_n(k + 1) - exp_eff_gaps2(gi);")
+    L$add("      }")
+  }
+  L$add("    {")
+  L$add("      const int bin = yn - 1;")
+  if (new_shared) {
+    L$add("      if (is_new_response[yn - 1] == 1) {")
+    L$add("        thresh2_n = thresh2_new_vec;")
+    L$add("      } else {")
+  }
+  L$add("      double m2 = vary_mid2_d(bin);")
+  if (has_cov) L$add("      for (int p = 0; p < P_cov2; ++p) m2 += Xc2_d(n, p) * cov_mid2_d(p);")
+  re_lines("m2", "mid", NULL)
+  emit_criterion_smooth_contribution(L, params$.smooth_data, "m2", "0", pname = "criterion2")
+  L$add("      thresh2_n(mid2) = m2;")
+  side(TRUE)
+  side(FALSE)
+  if (new_shared) L$add("      }")
+  L$add("    }")
+}
+
+emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, d_hi2) {
+  has_cov <- .crit2_has_cov(model_data)
+  new_shared <- identical(params$.new_source_criteria, "shared")
+  res <- params$criterion2$random
+  L$add("    {")
+  L$add("      const int bin = yn - 1;")
+  if (new_shared) {
+    L$add("      if (is_new_response[yn - 1] == 1) {")
+    L$add(sprintf("        if (%s >= 0) batch_sdt::propagate_thresh_grad(%s, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", lo, lo, d_lo2))
+    L$add(sprintf("        if (%s >= 0) batch_sdt::propagate_thresh_grad(%s, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", hi, hi, d_hi2))
+    L$add("      } else {")
+  }
+  L$add("      double g_crit2_mid = 0.0;")
+  L$add("      Eigen::VectorXd g_crit2_gaps = Eigen::VectorXd::Zero(n_gaps2);")
+  L$add("      auto prop2 = [&](int k, double d) {")
+  L$add("        g_crit2_mid += d;")
+  L$add("        if (k > mid2) { for (int j = 0; j <= k - mid2 - 1; ++j) g_crit2_gaps(j) += d * d_exp_eff_gaps2(j); }")
+  L$add("        else if (k < mid2) { for (int j = n_upper2; j <= n_upper2 + (mid2 - k - 1); ++j) g_crit2_gaps(j) -= d * d_exp_eff_gaps2(j); }")
+  L$add("      };")
+  L$add(sprintf("      if (%s >= 0) prop2(%s, %s);", lo, lo, d_lo2))
+  L$add(sprintf("      if (%s >= 0) prop2(%s, %s);", hi, hi, d_hi2))
+  L$add("      grad_vary_mid2(bin) += g_crit2_mid;")
+  L$add("      for (int j = 0; j < n_gaps2; ++j) grad_vary_gaps2(bin, j) += g_crit2_gaps(j);")
+  if (has_cov) {
+    L$add("      for (int p = 0; p < P_cov2; ++p) {")
+    L$add("        const double x = Xc2_d(n, p);")
+    L$add("        grad_cov_mid2(p) += g_crit2_mid * x;")
+    L$add("        for (int j = 0; j < n_gaps2; ++j) grad_cov_gaps2(j, p) += g_crit2_gaps(j) * x;")
+    L$add("      }")
+  }
+  if (!is.null(params$.smooth_data[["criterion2"]])) {
+    emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0", pname = "criterion2")
+    L$add("      for (int gi = 0; gi < n_gaps2; ++gi) {")
+    emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+                                   pname = "criterion2")
+    L$add("      }")
+  }
+  i <- 0
+  for (group in names(res)) {
+    i <- i + 1
+    cols <- .varying_re_cols(model_data, res[[group]])
+    L$add(sprintf("      grad_u_crit2_%d(g_%s, %s) += g_crit2_mid;", i, group, cols$mid))
+    if (!is.null(cols$gap)) {
+      L$add("      for (int j = 0; j < n_gaps2; ++j) {")
+      L$add("        const int col = j < n_upper2 ? mid2 + 1 + j : mid2 - 1 - (j - n_upper2);")
+      L$add(sprintf("        grad_u_crit2_%d(g_%s, %s) += g_crit2_gaps(j);", i, group, sprintf(cols$gap, "col")))
+      L$add("      }")
+    }
+  }
+  if (new_shared) L$add("      }")
+  L$add("    }")
 }

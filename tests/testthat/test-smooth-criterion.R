@@ -54,9 +54,9 @@ test_that("criterion smooth agrees across batch C++, plain Stan and JAX", {
                   batch_likelihood = FALSE)
 
   fb <- fit_broc(m_batch, backend = "stan", chains = 2, parallel_chains = 2,
-                 iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 0)
+                 iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 50)
   fp <- fit_broc(m_plain, backend = "stan", chains = 2, parallel_chains = 2,
-                 iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 0)
+                 iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 50)
   fj <- fit_broc(m_batch, backend = "jax", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 11, progress_bar = FALSE)
 

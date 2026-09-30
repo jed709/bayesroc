@@ -36,6 +36,15 @@ A = [jnp.asarray(v) for v in (z1l, z1h, z2l, z2h, rho)]
 rect = nb._bvn_rect(*A)
 ref = np.array([bvn(z1h[i], z2h[i], rho[i]) - bvn(z1l[i], z2h[i], rho[i])
                 - bvn(z1h[i], z2l[i], rho[i]) + bvn(z1l[i], z2l[i], rho[i]) for i in range(n)])
+big = ref > 1e-4
+
+fx = np.genfromtxt(sys.argv[3], delimiter=",", skip_header=1)
+fx[:, :4] = np.where(np.isinf(fx[:, :4]), np.sign(fx[:, :4]) * 1e10, fx[:, :4])
+tail = nb._bvn_rect(*[jnp.asarray(fx[:, j]) for j in range(5)])
+tail_rel = np.abs(np.expm1(np.log(np.asarray(tail[0])) - fx[:, 5]))
+tail_fb = nb._with_rect_tail(nb._dw_rect_grads_jax(*[jnp.asarray(fx[:, j]) for j in range(5)]),
+                             *[jnp.asarray(fx[:, j]) for j in range(5)])
+tail_fb_rel = np.abs(np.expm1(np.log(np.asarray(tail_fb[0])) - fx[:, 5]))
 cdf = nb._bvn_cdf(A[1], A[3], A[4])
 ref_cdf = np.array([bvn(z1h[i], z2h[i], rho[i]) for i in range(n)])
 xs = np.linspace(-37.0, 37.0, 2001)
@@ -45,13 +54,18 @@ refQ = ndtr(-np.abs(xs))
 out = {
     "ffi_loaded": bool(nb._BVN_FFI),
     "rect_abs_err": float(np.max(np.abs(np.asarray(rect[0]) - ref))),
+    "rect_rel_err": float(np.max(np.abs(np.asarray(rect[0])[big] / ref[big] - 1))),
+    "tail_rel_err": float(tail_rel.max()),
+    "tail_fallback_rel_err": float(tail_fb_rel.max()),
     "cdf_abs_err": float(np.max(np.abs(np.asarray(cdf[0]) - ref_cdf))),
     "acc_phi_abs_err": float(np.max(np.abs(np.asarray(P) - ndtr(xs)))),
     "acc_phi_tail_rel_err": float(np.max(np.abs(np.asarray(Q) - refQ) / refQ)),
 }
 if nb._BVN_FFI:
-    jr = nb._dw_rect_grads_jax(*A)
-    jc = nb._dw_cdf_grads_jax(A[1], A[3], A[4])
-    out["ffi_vs_jax_rect"] = float(max(np.max(np.abs(np.asarray(a) - np.asarray(b))) for a, b in zip(rect, jr)))
-    out["ffi_vs_jax_cdf"] = float(max(np.max(np.abs(np.asarray(a) - np.asarray(b))) for a, b in zip(cdf, jc)))
+    nb._BVN_FFI = False
+    jr = nb._bvn_rect(*A)
+    jc = nb._bvn_cdf(A[1], A[3], A[4])
+    nb._BVN_FFI = True
+    out["ffi_vs_jax_rect"] = float(np.max(np.abs(np.asarray(rect[0]) / np.asarray(jr[0]) - 1)))
+    out["ffi_vs_jax_cdf"] = float(np.max(np.abs(np.asarray(cdf[0]) - np.asarray(jc[0]))))
 print("RESULT " + json.dumps(out))

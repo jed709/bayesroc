@@ -26,7 +26,7 @@ test_that("evsd: smoke", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
             batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit)
@@ -37,7 +37,7 @@ test_that("uvsd: smoke", {
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
             batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit)
@@ -48,7 +48,7 @@ test_that("dpsd: smoke", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, lambda ~ 1, family = dpsd()), d,
             batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit)
@@ -60,7 +60,7 @@ test_that("mixture: smoke", {
   m <- broc(brf(item_resp | is_old ~ 1,
                 dprime2 ~ 1, lambda ~ 1, family = mixture()), d,
             batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit)
@@ -71,7 +71,7 @@ test_that("source_mixture: smoke", {
   d <- .fixture_source_mixture()
   m <- broc(brf(item_resp | source ~ 1, lambda ~ 1, family = source_mixture()),
             d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
@@ -85,7 +85,7 @@ test_that("bivariate_gaussian: smoke", {
   m <- broc(brf(resp(y1, y2) | item_type ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_gaussian()), d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit, pp_check_types = "bars")
@@ -98,7 +98,7 @@ test_that("bivariate_dp: smoke", {
                 discrim ~ 1, lambda ~ 1, lambda2 ~ 1,
                 criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_dp()), d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit, pp_check_types = "bars")
@@ -111,7 +111,7 @@ test_that("vrdp2d: smoke", {
                 dprime2 ~ 1, discrim ~ 1, lambda ~ 1,
                 criterion ~ 1, criterion2 ~ 1,
                 family = vrdp2d()), d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   .assert_post_fit_works(fit, pp_check_types = "bars")
@@ -122,7 +122,7 @@ test_that("cumulative: smoke", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
             d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
@@ -139,7 +139,7 @@ test_that("bivariate_cumulative: smoke", {
   m <- broc(brf(resp(y1, y2) ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_cumulative()), d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
@@ -159,7 +159,7 @@ test_that("cdp: smoke (rotello_2005)", {
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
                 family = cdp(old_levels = 2:6), counts = "count"),
             d, batch_likelihood = TRUE)
-  fit <- fit_broc(m, backend = "stan", refresh = 0,
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,
                   iter_warmup = .fast_iter, iter_sampling = .fast_iter)
   s <- summary(fit); expect_s3_class(s, "broc_summary")

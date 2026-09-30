@@ -3,7 +3,7 @@
 .bridge_chains <- 2
 
 .fit_bridge <- function(m) {
-  fit_broc(m, backend = "stan", refresh = 0, parallel_chains = .bridge_chains,
+  fit_broc(m, backend = "stan", refresh = 50, parallel_chains = .bridge_chains,
            chains = .bridge_chains, iter_warmup = .bridge_iter,
            iter_sampling = .bridge_iter)
 }
