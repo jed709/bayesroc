@@ -32,9 +32,9 @@ and you cannot share a hand-coded JAX JVP with emitted C++ or Stan strings:
 
 | Path | File | What it emits / does |
 |---|---|---|
-| Stan (plain) | `R/generate_stan.R` (~4.4k lines) | Generated Stan; vanilla Stan autodiff. |
-| Stan (batch) | `R/generate_batch_cpp.R` (~6.4k lines) | A per-model C++ function with **analytic** gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
-| JAX | `inst/python/numpyro_backend.py` (~4.8k lines) | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). |
+| Stan (plain) | `R/generate_stan.R`, `R/stan_bvn.R` | Generated Stan; vanilla Stan autodiff. |
+| Stan (batch) | `R/generate_batch_cpp.R`, `inst/stan/batch_sdt_core.hpp` | A per-model C++ function with **analytic** gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
+| JAX | `inst/python/numpyro_backend.py` | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). Bivariate-normal kernels run natively through XLA FFI when a C++ compiler is available (`inst/ffi/bvn_ffi.cc`, `inst/include/bayesroc/bvn_simd.h`), otherwise in pure JAX with identical formulas. |
 
 Plain Stan and the batch path share **one** generator (`generate_stan_code_v2`);
 `batch_info` swaps only the likelihood line in the model block. The JAX backend
@@ -64,8 +64,9 @@ run the full suite.
 - `broc(..., batch_likelihood = TRUE)` is the **default**. It builds the batch
   C++ (no extra toolchain beyond cmdstanr -- it uses `user_header`, not FFI).
 - `generate_batch_cpp()` returns `NULL` for any family/config it can't emit, and
-  the model **silently falls back to plain Stan**. That NULL return is the single
-  source of truth for batch support -- there is no separate allowlist.
+  the model falls back to plain Stan with a message at compile time. That NULL
+  return is the single source of truth for batch support -- there is no separate
+  allowlist.
 - `backend = "jax"` runs NumPyro in a **subprocess** (`processx`, not reticulate,
   to avoid RStudio DLL conflicts). R writes a JSON config + reads `.npy` results;
   Python discovery is shared by `.python_candidate_paths()` (R/jax_backend.R).
@@ -76,19 +77,34 @@ run the full suite.
   middle anchor `thresh_mid` plus ordered positive **gaps** under a `gap_link`
   (`"log"` default, or `"softplus"`). All three generators must build thresholds
   the same way (cumsum from the mid anchor).
-- **Bivariate cell probabilities:** analytic via Owen's-T binormal CDF
-  (`inst/python/owens_t_jax.py`, and the Stan/C++ equivalents) and GL10 rectangle
-  integrals where needed.
+- **Bivariate cell probabilities:** every cell is one rectangle probability
+  P(a1 < Z1 < b1, a2 < Z2 < b2; rho), never an inclusion-exclusion of CDFs built by
+  the caller. The rectangle is Drezner-Wesolowsky Gauss-Legendre in the angle with a
+  node count tiered on |rho| (8/10/12/14/16/20 at |rho| edges .75/.85/.9/.925/.97;
+  <=1e-6 relative on cells >= 1e-6), corners at infinity skipped, and a tail path for
+  cells < 1e-6 (log-space Gauss-Legendre over the log-concave conditional integrand
+  around its Newton-located mode; ~1e-9 relative down to exp(-700)). One algorithm,
+  four implementations kept in lockstep: `bvn_simd.h` (native SIMD, JAX),
+  `bvn_tail.h` (scalar, batch C++ and the native tail), `_dw_*`/`_rect_tail_jax`
+  (pure JAX), `R/stan_bvn.R` (Stan language, plain Stan).
+- **Univariate cells** are differenced on the tail side (Q(lo) - Q(hi) when lo is
+  above the median) for every link, so upper-tail cells never cancel to zero.
+- **Open bounds** are +-Inf in Stan and C++ and +-1e10 in JAX (so z * phi(z) terms
+  stay 0, not NaN). In Stan, standardise a possibly-infinite bound with `bvn_std()`:
+  arithmetic on an infinite var poisons the gradient with 0 * Inf.
 
 ## Numerical landmines (don't relearn these the hard way)
 
-- **Clip-floor JVP guard:** a fused JVP whose primal returns `log(clip(prob, 1e-20))`
-  is *flat* where prob underflows, so the true gradient there is 0. If the JVP
-  multiplies a finite analytic `dp` by `inv_prob = 1/clip(prob, 1e-20)` it
-  produces ~1e20 gradients that silently freeze NUTS (0 divergences, but ESS
-  collapses). Guard every such site: `jnp.where(prob > 1e-15, 1/clip(prob, 1e-20), 0)`.
-  Primals that use `log(prob)` *without* a clip are fine -- `1/prob` is the
-  consistent gradient there; do not add a guard.
+- **Probability floors sit at the float underflow limit** (1e-300 in double,
+  1e-37 in JAX float32 via `_pfloor()`), not 1e-20. A floor above the smallest
+  representable cell makes the log-likelihood flat with zero gradient below it; a
+  chain started in that region (e.g. Stan's random inits) can settle in a spurious
+  mode that ignores the observation. Where a JVP divides by a clipped probability,
+  zero the gradient where the clip is active so value and tangent stay consistent.
+- **Stan's `normal_lcdf` has an approximate hand-written derivative** (~1e-5
+  relative); use `bvn_log_interval()` instead.
+- **Pure-JAX bivariate code must be compiled** (`jit`): the |rho|-tier `lax.switch`
+  under eager autodiff builds every branch op by op and can take many GB.
 - **Owen's-T tail stability / inverse-Mills:** SDT JVPs must use tail-stable forms;
   avoid `phi * exp(-logcdf)` patterns that evaluate to `0 * inf`.
 
@@ -103,6 +119,11 @@ run the full suite.
 | `R/generate_batch_cpp.R` | per-model batch C++ (analytic gradients) |
 | `inst/stan/batch_sdt_core.hpp` | batch C++ support header |
 | `inst/python/numpyro_backend.py` | JAX fused custom-JVP likelihoods |
+| `inst/python/drghmc.py` | DR-G-HMC sampler (`sampler = "drghmc"`), exact warm continuation |
+| `inst/include/bayesroc/bvn_simd.h`, `bvn_tail.h`, `inst/ffi/bvn_ffi.cc`, `R/ffi_build.R` | native bivariate-normal kernels, built on the user's machine and cached in `tools::R_user_dir()` |
+| `R/stan_bvn.R` | Stan-language mirror of the bivariate-normal kernel |
+| `R/loo.R`, `R/npy.R` | streamed PSIS-LOO over the on-disk log-likelihood (`.npy`) |
+| `R/autostop.R`, `R/compact.R` | ESS-targeted fitting rounds; compact storage of random-effect draws |
 | `R/jax_backend.R`, `R/install_jax.R` | JAX subprocess + Python discovery/venv mgmt |
 | `R/broc_model.R` | `broc()` + `fit_broc()` orchestration |
 | `R/broc_fit.R` | `broc_fit` S3 object + save/load |

@@ -165,7 +165,8 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 
 `log_lik` is written to an `.npy` sidecar rather than held in the draws array,
 and `loo()` streams it in column chunks sized to available RAM. Both backends
-produce the same sidecar, so `loo()` behaves identically on Stan and JAX.
+write the same sidecar format and `loo()` treats them the same way. Stan's values
+come from its CSV output, so they carry CmdStan's output precision (`sig_figs`).
 
 ```r
 fit <- fit_broc(model, loo = TRUE)   # LOO at fit time, sidecar reclaimed
@@ -180,15 +181,17 @@ For aggregated (`counts =`) fits, `loo()` defaults to leave-one-trial-out;
 `type = "cell"` gives the leave-one-row-out partition that brms `weights()`
 produces. The two are not comparable via `loo_compare()`.
 
-Sidecars are not persisted alongside a saved fit unless asked:
-`save_broc_fit(fit, "f.rds", include_loglik = TRUE)`.
+`save_broc_fit()` (and `fit_broc(file = )`) writes the sidecar next to the saved
+fit as `<file>_loglik.npy` whenever the fit kept its log-likelihood, so `loo()`
+works after `load_broc_fit()`; pass `include_loglik = FALSE` to skip it.
 
 ## Sampling to an ESS target
 
 `autostop_broc()` adds rounds of draws until rank-normalised bulk and tail ESS
 clear per-class floors. With `restart = "warm"` the chains continue from saved
 sampler state, so later rounds skip warmup entirely and the pooled draws are
-identical to one long run.
+identical to one long run. All rounds run in one persistent Python process, so the
+model is built and the sampler compiled once.
 
 ```r
 fit <- autostop_broc(model,

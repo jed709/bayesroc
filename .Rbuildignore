@@ -7,7 +7,7 @@
 ^benchmarks$
 ^ddm_pilot$
 ^debug_bounded_jax$
-^__pycache__$
+__pycache__
 ^test_lr_.*\.py$
 ^test_bivariate_cumulative\.R$
 ^test_config\.rds$
