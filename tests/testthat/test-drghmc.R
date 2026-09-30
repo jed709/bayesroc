@@ -109,3 +109,19 @@ test_that("drghmc seeds do not share random streams", {
   expect_false(isTRUE(all.equal(as.numeric(a$.draws_array[, , v]),
                                 as.numeric(b$.draws_array[, , v]))))
 })
+
+test_that("drghmc runs chains sequentially when parallel_chains < chains", {
+  skip_if_no_jax()
+  d <- .fixture_univariate(sigma = 1.3)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  fit <- function(pc) fit_broc(m, backend = "jax", sampler = "drghmc", seed = 7, chains = 2,
+                               parallel_chains = pc, iter_warmup = 200, iter_sampling = 300,
+                               progress_bar = FALSE)
+  fs <- fit(1)
+  fp <- fit(2)
+  expect_equal(dim(fs$.draws_array)[1:2], c(300L, 2L))
+  v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
+  ms <- colMeans(posterior::as_draws_matrix(fs$draws(variables = v)))
+  mp <- colMeans(posterior::as_draws_matrix(fp$draws(variables = v)))
+  expect_lt(max(abs(ms - mp)), 0.05)
+})

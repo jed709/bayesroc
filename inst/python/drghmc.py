@@ -364,9 +364,25 @@ def _sampler_fns(vg, D, ctrl, parallel):
         U0, g0 = vg(th0)
         return (th0, rho0, U0, g0)
 
-    _map = jax.pmap if parallel else jax.vmap
-    return (_map(setup, in_axes=(0, 0)),
-            _map(scanner, in_axes=(0, None, 0, None, None, None)))
+    return (_chain_map(setup, (0, 0), parallel),
+            _chain_map(scanner, (0, None, 0, None, None, None), parallel))
+
+
+def _chain_map(f, in_axes, parallel):
+    """pmap across devices, or one chain at a time under jit: lax.map keeps each chain's
+    delayed-rejection lax.cond a real branch, where vmap would run every stage for all."""
+    if parallel:
+        return jax.pmap(f, in_axes=in_axes)
+    mapped = [i for i, ax in enumerate(in_axes) if ax == 0]
+
+    def run(*args):
+        def one(xs):
+            full = list(args)
+            for i, x in zip(mapped, xs):
+                full[i] = x
+            return f(*full)
+        return jax.lax.map(one, tuple(args[i] for i in mapped))
+    return jax.jit(run)
 
 
 def _chunk_len(samples):
