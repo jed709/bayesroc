@@ -38,7 +38,12 @@ generate_batch_cpp <- function(model_data, family) {
   stan_partial <- generate_batch_partial_log_lik(sig)
   stan_call_threaded <- generate_batch_reduce_sum_call(sig)
 
+  stan_decl_vec <- sub("  real batch_sdt_loglik(", "  vector batch_sdt_loglik_vec(", stan_decl, fixed = TRUE)
+  stan_call_vec <- sub("  target += batch_sdt_loglik(", "  vector[N] log_lik = batch_sdt_loglik_vec(",
+                       stan_call, fixed = TRUE)
+
   list(cpp_code = cpp, stan_decl = stan_decl, stan_call = stan_call,
+       stan_decl_vec = stan_decl_vec, stan_call_vec = stan_call_vec,
        stan_partial = stan_partial, stan_call_threaded = stan_call_threaded)
 }
 
@@ -1163,6 +1168,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L$add("#ifndef BATCH_SDT_LOGLIK_HPP")
   L$add("#define BATCH_SDT_LOGLIK_HPP")
   L$add("")
+  L$add("inline thread_local Eigen::VectorXd* batch_ll_out = nullptr;")
+  L$add("")
 
   # --- Template declaration ---
   tpl_names <- character(0)
@@ -1454,6 +1461,21 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   emit_operand_packing(L, model_data, family_name, params, has_crit_re,
                        has_crit2_re = has_crit2_re)
 
+  L$add("}")
+  L$add("")
+  L$add("")
+  L$add(sprintf("template <%s>", paste(sprintf("typename %s", tpl_names), collapse = ", ")))
+  L$add("Eigen::VectorXd batch_sdt_loglik_vec(")
+  for (i in seq_along(non_pstream)) {
+    L$add(sprintf("    %s %s,", non_pstream[[i]]$cpp_type, non_pstream[[i]]$stan_name))
+  }
+  L$add("    std::ostream* pstream__) {")
+  L$add("  Eigen::VectorXd out = Eigen::VectorXd::Zero(end_idx - start_idx + 1);")
+  L$add("  batch_ll_out = &out;")
+  L$add(sprintf("  batch_sdt_loglik(%s, pstream__);",
+                paste(vapply(non_pstream, function(a) a$stan_name, ""), collapse = ", ")))
+  L$add("  batch_ll_out = nullptr;")
+  L$add("  return out;")
   L$add("}")
   L$add("")
   L$add("#endif  // BATCH_SDT_LOGLIK_HPP")
@@ -3154,8 +3176,10 @@ emit_likelihood_standard <- function(L, family_name, params) {
 
   if (params$.has_counts) {
     L$add("    total_lp += res.lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = res.lp;")
   } else {
     L$add("    total_lp += res.lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = res.lp;")
   }
 }
 
@@ -3233,8 +3257,10 @@ emit_likelihood_dpsdt <- function(L, params) {
 
   if (params$.has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 
@@ -3418,8 +3444,10 @@ emit_likelihood_mixture <- function(L, params) {
 
   if (params$.has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 
@@ -3506,8 +3534,10 @@ emit_likelihood_source_mixture <- function(L, params) {
 
   if (params$.has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 
@@ -3720,8 +3750,10 @@ emit_likelihood_vrdp2d <- function(L, params) {
 
   if (has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 
@@ -5275,8 +5307,10 @@ emit_likelihood_cdp <- function(L, params) {
   L$add("    double d_thresh_hi = cdp_res.d_thresh_hi;")
   if (has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 
@@ -5566,8 +5600,10 @@ emit_likelihood_bivariate <- function(L, params) {
 
   if (has_counts) {
     L$add("    total_lp += obs_lp * count_n;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
     L$add("    total_lp += obs_lp;")
+    L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   }
 }
 

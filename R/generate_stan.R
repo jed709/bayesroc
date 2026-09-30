@@ -12,7 +12,7 @@ generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
     generate_parameters_block_v2(model_data, family),
     generate_transformed_parameters_block_v2(model_data, family),
     generate_model_block_v2(model_data, family, batch_info = batch_info),
-    generate_generated_quantities_block_v2(model_data, family),
+    generate_generated_quantities_block_v2(model_data, family, batch_info = batch_info),
     sep = "\n"
   )
 
@@ -81,7 +81,8 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
       lines <- c(lines, "", generate_partial_log_lik(model_data, family))
     }
     if (!is.null(batch_info)) {
-      lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl)
+      lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl,
+                   batch_info$stan_decl_vec)
       if (isTRUE(model_data$threads)) {
         lines <- c(lines, "", batch_info$stan_partial)
       }
@@ -1036,7 +1037,8 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   }
 
   if (!is.null(batch_info)) {
-    lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl)
+    lines <- c(lines, "", "  // Batch C++ likelihood (implemented in user header)", batch_info$stan_decl,
+                   batch_info$stan_decl_vec)
     if (isTRUE(model_data$threads)) {
       lines <- c(lines, "", batch_info$stan_partial)
     }
@@ -3581,7 +3583,7 @@ generate_thresh_code <- function(model_data) {
   lines
 }
 
-generate_generated_quantities_block_v2 <- function(model_data, family) {
+generate_generated_quantities_block_v2 <- function(model_data, family, batch_info = NULL) {
   family_name <- if (is.list(family)) family$family else family
   
   lines <- c("generated quantities {")
@@ -3632,6 +3634,11 @@ generate_generated_quantities_block_v2 <- function(model_data, family) {
                               dim_var, dim_var, cor_id, cc$group, cor_id, cc$group))
   }
   
+  if (!is.null(batch_info)) {
+    lines <- c(lines, "", batch_info$stan_call_vec, "}")
+    return(paste(lines, collapse = "
+"))
+  }
   lines <- c(lines, "", "  vector[N] log_lik;", "  for (n in 1:N) {")
   ll_code <- generate_likelihood_code(model_data, family_name)
   ll_str <- paste(ll_code, collapse = "\n")
