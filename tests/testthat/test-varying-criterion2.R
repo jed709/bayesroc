@@ -21,20 +21,6 @@
            family = fam), d, batch_likelihood = batch)
 }
 
-.cmdstan_log_prob <- function(mod, data, draws_csv) {
-  js <- tempfile(fileext = ".json")
-  cmdstanr::write_stan_json(data, js)
-  out <- tempfile(fileext = ".csv")
-  old <- Sys.getenv("PATH")
-  on.exit(Sys.setenv(PATH = old), add = TRUE)
-  Sys.setenv(PATH = paste(file.path(cmdstanr::cmdstan_path(), "stan/lib/stan_math/lib/tbb"),
-                          old, sep = .Platform$path.sep))
-  system2(mod$exe_file(), c("log_prob", paste0("constrained_params=", draws_csv), "data",
-                            paste0("file=", js), "output", paste0("file=", out), "sig_figs=18"),
-          stdout = FALSE, stderr = FALSE)
-  as.matrix(utils::read.csv(out, comment.char = "#"))
-}
-
 test_that("varying source criteria: batch and plain Stan agree with covariates, smooths and REs", {
   skip_if_no_cmdstan()
   d <- .sim_varying_cov()
