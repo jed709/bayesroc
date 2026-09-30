@@ -59,7 +59,7 @@ test_that("bridge: uvsd + RE, incl. epred and allow_new_levels", {
   skip_if_no_cmdstan()
   d <- .fixture_uvsd()
   m <- broc(brf(resp | cond ~ 1 + (1 | sub), criterion ~ 1, sigma ~ 1,
-                family = uvsd()), d, batch_likelihood = TRUE)
+                family = uvsd()), d)
   fit <- .fit_bridge(m)
   .expect_predict_ok(fit)
   nd <- transform(d[1:20, ], sub = 9999L)
@@ -72,16 +72,14 @@ test_that("bridge: uvsd + RE, incl. epred and allow_new_levels", {
 test_that("bridge: bivariate_gaussian (bounded) -- guards bounded sign flip", {
   skip_if_no_cmdstan()
   d <- .fixture_bivariate_sdt()
-  m <- broc(.biv_f(family = bivariate_gaussian(bounded = TRUE)), d,
-            batch_likelihood = TRUE)
+  m <- broc(.biv_f(family = bivariate_gaussian(bounded = TRUE)), d)
   .expect_predict_ok(.fit_bridge(m))
 })
 
 test_that("bridge: bivariate_dp (unbounded) -- guards corner-cell swap", {
   skip_if_no_cmdstan()
   d <- .fixture_bivariate_sdt()
-  m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp()), d,
-            batch_likelihood = TRUE)
+  m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp()), d)
   .expect_predict_ok(.fit_bridge(m))
 })
 
@@ -89,7 +87,7 @@ test_that("bridge: bivariate_dp (bounded) -- guards bounded p1/p2 + sign flip", 
   skip_if_no_cmdstan()
   d <- .fixture_bivariate_sdt()
   m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp(bounded = TRUE)),
-            d, batch_likelihood = TRUE)
+            d)
   .expect_predict_ok(.fit_bridge(m))
 })
 
@@ -99,8 +97,7 @@ test_that("bridge: cdp joint (rating x R/K reconstructed from conditionals)", {
   m <- broc(brf(resp(rating, rk) | is_old ~ condition - 1,
                 fam ~ condition - 1, criterion ~ condition - 1,
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
-                family = cdp(old_levels = 2:6)), d, counts = "count",
-            batch_likelihood = TRUE)
+                family = cdp(old_levels = 2:6)), d, counts = "count")
   fit <- .fit_bridge(m)
   sd <- m$stan_data
   ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))

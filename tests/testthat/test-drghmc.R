@@ -2,8 +2,7 @@
 test_that("drghmc: posterior means agree with nuts (jax)", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fn <- fit_broc(m, backend = "jax", sampler = "nuts", seed = 1,
                  iter_warmup = 500, iter_sampling = 500, chains = 4,
                  progress_bar = FALSE)
@@ -22,8 +21,7 @@ test_that("drghmc: posterior means agree with nuts (jax)", {
 test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fj <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 1,
                  iter_warmup = 800, iter_sampling = 1500, chains = 4,
                  progress_bar = FALSE)
@@ -39,8 +37,7 @@ test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
 test_that("drghmc: control knobs plumb through; unknown keys and short warmup error", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   expect_error(
     fit_broc(m, backend = "jax", sampler = "drghmc", control = list(bogus = 1),
              iter_warmup = 200, iter_sampling = 200, chains = 4,
@@ -60,8 +57,7 @@ test_that("drghmc: control knobs plumb through; unknown keys and short warmup er
 
 test_that("drghmc requires the jax backend", {
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   expect_error(fit_broc(m, backend = "stan", sampler = "drghmc"),
                "requires backend = 'jax'")
 })

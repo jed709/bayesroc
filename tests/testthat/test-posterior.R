@@ -2,8 +2,7 @@
 test_that("posterior_linpred returns S x N matrix", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   lp <- posterior_linpred(fit, dpar = "dprime", ndraws = 100, seed = 1)
@@ -15,8 +14,7 @@ test_that("posterior_linpred returns S x N matrix", {
 test_that("posterior_linpred applies link transform (sigma post-exp)", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   s <- posterior_linpred(fit, dpar = "sigma", ndraws = 50, seed = 1)
@@ -26,8 +24,7 @@ test_that("posterior_linpred applies link transform (sigma post-exp)", {
 test_that("posterior_linpred summary = TRUE returns tidy data frame", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   df <- posterior_linpred(fit, dpar = "dprime", summary = TRUE,
@@ -40,8 +37,7 @@ test_that("posterior_linpred summary = TRUE returns tidy data frame", {
 test_that("posterior_epred returns expected category in [1, K]", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   ep <- posterior_epred(fit, ndraws = 50, seed = 1)
@@ -51,8 +47,7 @@ test_that("posterior_epred returns expected category in [1, K]", {
 test_that("predict(seed = ...) is reproducible", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   p1 <- predict(fit, summary = FALSE, ndraws = 50, seed = 7)
@@ -66,8 +61,7 @@ test_that("allow_new_levels = FALSE errors on new RE level, TRUE works", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
   d$subj <- factor(rep(1:6, length.out = nrow(d)))
-  m <- broc(brf(item_resp | is_old ~ 1 + (1|subj), family = evsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1 + (1|subj), family = evsd()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   new_dat <- data.frame(item_resp = 1L, is_old = 1L,

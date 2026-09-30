@@ -158,8 +158,6 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   Default `FALSE`.
 #' @param gap_link Link for threshold gaps: `"log"` (default) or `"softplus"`.
 #'   `NULL` uses the family default.
-#' @param batch_likelihood If `TRUE` (default), build the fused batch likelihood
-#'   with analytic gradients for the Stan backend.
 #' @return A `broc_model` object, ready to pass to [fit_broc()].
 #'
 #' @examples
@@ -177,8 +175,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #' @export
 broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                 encoding_vars = NULL, counts = NULL,
-                cor_threshold = NULL, threads = NULL, gap_link = NULL,
-                batch_likelihood = TRUE) {
+                cor_threshold = NULL, threads = NULL, gap_link = NULL) {
 
   # --- 1. Normalize input: bare formula -> brf, brf -> use directly ---
   nc <- function(a, b) if (!is.null(a)) a else b
@@ -307,8 +304,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     return(fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
                           cor_threshold = cor_threshold, threads = threads,
-                          gap_link = gap_link,
-                          batch_likelihood = batch_likelihood))
+                          gap_link = gap_link))
   }
 
   # --- Handle bivariate_cumulative family early-return ---
@@ -319,7 +315,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
       cor_threshold = cor_threshold, threads = threads,
-      gap_link = gap_link, batch_likelihood = batch_likelihood))
+      gap_link = gap_link))
   }
 
   if (is.null(criterion)) {
@@ -607,12 +603,12 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
-  use_batch <- isTRUE(batch_likelihood)
+  use_batch <- is.null(.plain_stan_env())
 
   batch_cpp <- NULL
   if (use_batch) {
     batch_cpp <- generate_batch_cpp(model_data, family)
-    if (is.null(batch_cpp)) use_batch <- FALSE
+    if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
   }
 
   stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
@@ -629,7 +625,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     gap_link = gap_link,
     formula = brf_obj,
     batch_likelihood = use_batch,
-    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_cpp
   )
 
@@ -2458,7 +2453,7 @@ apply_encoding_vars <- function(formula, encoding_vars) {
 #' @noRd
 fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
                            cor_threshold = TRUE, threads = FALSE,
-                           gap_link = "log", batch_likelihood = TRUE) {
+                           gap_link = "log") {
   
   if (is.null(mu)) {
     stop("mu formula is required for cumulative() family")
@@ -2606,12 +2601,12 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
-  use_batch <- isTRUE(batch_likelihood)
+  use_batch <- is.null(.plain_stan_env())
 
   batch_cpp <- NULL
   if (use_batch) {
     batch_cpp <- generate_batch_cpp(model_data, family)
-    if (is.null(batch_cpp)) use_batch <- FALSE
+    if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
   }
 
   stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
@@ -2649,7 +2644,6 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
-    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_cpp
   )
 
@@ -2773,7 +2767,7 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
                                      cor_threshold = TRUE, threads = FALSE,
-                                     gap_link = "log", batch_likelihood = TRUE) {
+                                     gap_link = "log") {
 
   if (is.null(mu1)) {
     stop("mu1 (primary) formula is required for bivariate_cumulative() family")
@@ -2888,7 +2882,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
-  use_batch <- isTRUE(batch_likelihood)
+  use_batch <- is.null(.plain_stan_env())
   batch_info <- NULL
   if (use_batch) {
     batch_info <- generate_batch_cpp(model_data, family)
@@ -2911,7 +2905,6 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
-    batch_requested = isTRUE(batch_likelihood),
     batch_cpp = batch_info
   )
 
@@ -3022,14 +3015,6 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   writeLines(model$stan_code, stan_file)
   args <- list(stan_file)
   if (isTRUE(threads)) args$cpp_options <- list(stan_threads = TRUE)
-  if (isTRUE(model$batch_requested) && is.null(model$batch_cpp)) {
-    fam <- model$family
-    message("The fused batch likelihood does not support family '",
-            if (is.list(fam)) fam$family %||% "?" else fam, "'",
-            if (is.list(fam) && !is.null(fam$link$name)) paste0(" with link '", fam$link$name, "'"),
-            "; compiling the plain Stan likelihood (slower). Set ",
-            "broc(batch_likelihood = FALSE) to silence this.")
-  }
   if (isTRUE(model$batch_likelihood) && !is.null(model$batch_cpp)) {
     core_hpp <- system.file("stan/batch_sdt_core.hpp", package = "bayesroc")
     if (core_hpp == "") {

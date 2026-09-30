@@ -34,3 +34,4 @@ __pycache__
 ^tools$
 ^scratch.*
 \.log$
+^dev$

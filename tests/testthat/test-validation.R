@@ -83,10 +83,8 @@ test_that("centered is_old + encoding_vars recodes consistently (no all-zero d')
   f <- brf(item_resp | is_old ~ condition, sigma ~ 1)
 
   m_ctr <- suppressWarnings(
-    broc(f, data = d_ctr, family = uvsd(), encoding_vars = "condition",
-         batch_likelihood = FALSE))
-  m_01 <- broc(f, data = d_01, family = uvsd(), encoding_vars = "condition",
-               batch_likelihood = FALSE)
+    broc(f, data = d_ctr, family = uvsd(), encoding_vars = "condition"))
+  m_01 <- broc(f, data = d_01, family = uvsd(), encoding_vars = "condition")
 
   fx <- m_ctr$model_data$dprime_fixed
   expect_false(any(grepl("new", fx$coef_names)))

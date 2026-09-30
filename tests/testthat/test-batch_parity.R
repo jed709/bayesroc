@@ -7,8 +7,8 @@
 }
 
 .assert_batch_plain_agree <- function(formula, data, vars, tol = .tol_batch) {
-  mb <- broc(formula, data = data, batch_likelihood = TRUE)
-  mp <- broc(formula, data = data, batch_likelihood = FALSE)
+  mb <- broc(formula, data = data)
+  mp <- .broc_plain(formula, data = data)
   expect_true(isTRUE(mb$batch_likelihood))
   expect_false(isTRUE(mp$batch_likelihood))
 

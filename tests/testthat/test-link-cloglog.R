@@ -19,7 +19,7 @@ test_that("link_cloglog() builds a broc_link and is accepted by univariate famil
 })
 
 test_that("cloglog Stan link_cdf is the Gumbel-min CDF", {
-  code <- generate_link_cdf_wrapper(link_cloglog())
+  code <- .plain_stan_dev_env()$generate_link_cdf_wrapper(link_cloglog())
   expect_match(code, "-expm1\\(-exp\\(xc\\)\\)")
 })
 
@@ -39,9 +39,9 @@ test_that("non-probit links: batch C++ matches plain Stan in value and gradient"
   )
   for (nm in names(cases)) {
     cs <- cases[[nm]]
-    mb <- suppressMessages(broc(cs[[1]](cs[[3]]), cs[[2]], batch_likelihood = TRUE))
+    mb <- suppressMessages(broc(cs[[1]](cs[[3]]), cs[[2]]))
     expect_false(is.null(mb$batch_cpp), label = nm)
-    mp <- suppressMessages(broc(cs[[1]](cs[[3]]), cs[[2]], batch_likelihood = FALSE))
+    mp <- suppressMessages(.broc_plain(cs[[1]](cs[[3]]), cs[[2]]))
     r <- .stan_parity(mp, mb)
     expect_lt(r$lp, 1e-8, label = paste(nm, "log density"))
     expect_lt(r$grad, 1e-8, label = paste(nm, "gradient"))
@@ -78,8 +78,7 @@ test_that("R-side cloglog CDF matches the Gumbel-min CDF and the JAX clamp", {
 test_that("evsd + cloglog: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_gumbel_min(n_per = 400)
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",

@@ -17,8 +17,8 @@
 }
 
 .varying_model <- function(d, f2, fam, batch = TRUE) {
-  broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, f2,
-           family = fam), d, batch_likelihood = batch)
+  .broc_with(batch, brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, f2,
+           family = fam), d)
 }
 
 test_that("varying source criteria: batch and plain Stan agree with covariates, smooths and REs", {

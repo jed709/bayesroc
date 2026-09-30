@@ -62,8 +62,8 @@
 }
 
 .fuzz_one <- function(cfg) {
-  mp <- suppressMessages(broc(cfg$formula, cfg$data, counts = cfg$counts, batch_likelihood = FALSE))
-  mb <- suppressMessages(broc(cfg$formula, cfg$data, counts = cfg$counts, batch_likelihood = TRUE))
+  mp <- suppressMessages(.broc_plain(cfg$formula, cfg$data, counts = cfg$counts))
+  mb <- suppressMessages(broc(cfg$formula, cfg$data, counts = cfg$counts))
   A <- list(backend = "stan", iter_warmup = 300, iter_sampling = 300, chains = 2,
             parallel_chains = 2, refresh = 50, show_messages = FALSE)
   fp <- suppressMessages(do.call(fit_broc, c(list(mp), A)))

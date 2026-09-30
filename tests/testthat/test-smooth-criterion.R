@@ -50,8 +50,7 @@ test_that("criterion smooth agrees across batch C++, plain Stan and JAX", {
   skip_if_no_jax()
   d <- fixture_criterion_smooth()
   m_batch <- broc(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d)
-  m_plain <- broc(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d,
-                  batch_likelihood = FALSE)
+  m_plain <- .broc_plain(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d)
 
   fb <- fit_broc(m_batch, backend = "stan", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 50)

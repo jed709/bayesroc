@@ -72,10 +72,10 @@ test_that("cdp R/K/G predicted probabilities are finite and sum to one", {
 test_that("cdp R/K/G cells far in the tails: batch C++ matches plain Stan", {
   skip_if_no_cmdstan()
   d <- fixture_cdp_rkg()
-  mk <- function(b) suppressMessages(broc(brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1,
+  mk <- function(b) suppressMessages(.broc_with(b, brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1,
                                               rec_crit ~ 1, know_crit ~ 1, sigma_R ~ 1,
                                               family = cdp(old_levels = 2:4)),
-                                          data = d, batch_likelihood = b))
+                                          data = d))
   for (ed in list(list("beta_rec_crit[1]" = 4.5, "beta_know_crit[1]" = 0.3),
                   list("beta_rec_crit[1]" = 0.8, "beta_know_crit[1]" = 4.0),
                   list("beta_rec_crit[1]" = -3.0, "beta_know_crit[1]" = -3.5))) {

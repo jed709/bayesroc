@@ -15,8 +15,8 @@
 test_that("univariate criterion smooth: batch and plain Stan agree in value and gradient", {
   skip_if_no_cmdstan()
   d <- .smooth_data()
-  mk <- function(b) suppressMessages(broc(brf(resp | is_old ~ 1, criterion ~ 1 + s(w, k = 5),
-                                              family = evsd()), d, batch_likelihood = b))
+  mk <- function(b) suppressMessages(.broc_with(b, brf(resp | is_old ~ 1, criterion ~ 1 + s(w, k = 5),
+                                              family = evsd()), d))
   mb <- mk(TRUE)
   expect_false(is.null(mb$batch_cpp))
   r <- .stan_parity(mk(FALSE), mb)
@@ -28,9 +28,9 @@ test_that("univariate criterion smooth: batch and plain Stan agree in value and 
 test_that("criterion2 smooth: batch and plain Stan agree, and predict() matches log_lik", {
   skip_if_no_cmdstan()
   d <- .smooth_data()
-  mk <- function(b) suppressMessages(broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
+  mk <- function(b) suppressMessages(.broc_with(b, brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
                                               criterion ~ 1, criterion2 ~ 1 + s(w, k = 5),
-                                              family = bivariate_gaussian()), d, batch_likelihood = b))
+                                              family = bivariate_gaussian()), d))
   mb <- mk(TRUE)
   r <- .stan_parity(mk(FALSE), mb)
   expect_lt(r$lp, 1e-8)
@@ -66,9 +66,9 @@ test_that("criterion2 smooth: JAX and Stan agree", {
 test_that("cyclic criterion smooth compiles and batch matches plain Stan", {
   skip_if_no_cmdstan()
   d <- .smooth_data()
-  mk <- function(b) suppressMessages(broc(brf(resp | is_old ~ 1,
+  mk <- function(b) suppressMessages(.broc_with(b, brf(resp | is_old ~ 1,
                                               criterion ~ 1 + s(w, bs = "cc", k = 6),
-                                              family = evsd()), d, batch_likelihood = b))
+                                              family = evsd()), d))
   mb <- mk(TRUE)
   expect_true(grepl("s_criterion", mb$stan_code))
   r <- .stan_parity(mk(FALSE), mb)

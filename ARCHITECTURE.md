@@ -32,12 +32,14 @@ and you cannot share a hand-coded JAX JVP with emitted C++ or Stan strings:
 
 | Path | File | What it emits / does |
 |---|---|---|
-| Stan (plain) | `R/generate_stan.R`, `R/stan_bvn.R` | Generated Stan; vanilla Stan autodiff. |
+| Stan (plain, dev only) | `dev/plain_stan.R` (not shipped; `.Rbuildignore`d) | Stan-language likelihood with vanilla Stan autodiff, kept as the independent verification oracle. |
 | Stan (batch) | `R/generate_batch_cpp.R`, `inst/stan/batch_sdt_core.hpp` | A per-model C++ function with **analytic** gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
 | JAX | `inst/python/numpyro_backend.py` | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). Bivariate-normal and f64 probit cells run natively through XLA FFI (`inst/ffi/bvn_ffi.cc`, `inst/include/bayesroc/bvn_simd.h`). The native kernel is required: it is built on first use with the C++ toolchain cmdstanr uses, and the JAX backend stops with a fix-it message if it cannot be built. The pure-JAX kernels remain as test references (`BAYESROC_PURE_JAX_REFERENCE=1`). |
 
 Plain Stan and the batch path share **one** generator (`generate_stan_code_v2`);
-`batch_info` swaps only the likelihood line in the model block. The JAX backend
+`batch_info` swaps only the likelihood lines (functions block, model-block likelihood,
+generated-quantities `log_lik`). Without `batch_info` the generator calls into the
+dev-only file through `.plain_stan_dev()`, which errors in an installed package. The JAX backend
 is wholly separate (different language + transport).
 
 **Consequence:** any change to the likelihood, the gradient math, the threshold
@@ -54,19 +56,23 @@ is enforced by tests, which are the guardrail for any likelihood/gradient edit:
 - `tests/testthat/test-batch_parity.R` — Stan(batch) vs Stan(plain). Plain Stan is
   the **independent autodiff oracle**: batch-C++ and JAX are both *hand-derived*
   gradients, so plain Stan (vanilla autodiff) is the one independent check that
-  catches a shared derivation bug. **Do not remove plain Stan.**
+  catches a shared derivation bug. **Do not remove plain Stan** from `dev/`; the
+  parity tests load it with `.broc_plain()` (tests/testthat/helper-parity.R) and skip
+  when the file is absent (e.g. under `R CMD check` of a built tarball).
 
 When you touch likelihood/gradient code in one generator, change all three and
 run the full suite.
 
-## Backends and `batch_likelihood`
+## Backends
 
-- `broc(..., batch_likelihood = TRUE)` is the **default**. It builds the batch
-  C++ (no extra toolchain beyond cmdstanr -- it uses `user_header`, not FFI).
-- `generate_batch_cpp()` returns `NULL` for any family/config it can't emit, and
-  the model falls back to plain Stan with a message at compile time. That NULL
-  return is the single source of truth for batch support -- there is no separate
-  allowlist.
+- The Stan backend always uses the batch C++ likelihood (no extra toolchain beyond
+  cmdstanr -- it uses `user_header`, not FFI). Its `log_lik` comes from the same
+  kernel (`batch_sdt_loglik_vec`).
+- `generate_batch_cpp()` covers every family/config; a `NULL` return is an internal
+  error at model build.
+- Dev only: `env <- new.env(parent = asNamespace("bayesroc")); sys.source("dev/plain_stan.R", env);
+  options(bayesroc.dev_plain_stan = env)` makes `broc()` emit the plain Stan-language
+  likelihood instead.
 - `backend = "jax"` runs NumPyro in a **subprocess** (`processx`, not reticulate,
   to avoid RStudio DLL conflicts). R writes a JSON config + reads `.npy` results;
   Python discovery is shared by `.python_candidate_paths()` (R/jax_backend.R).
@@ -86,7 +92,7 @@ run the full suite.
   around its Newton-located mode; ~1e-9 relative down to exp(-700)). One algorithm,
   four implementations kept in lockstep: `bvn_simd.h` (native SIMD, JAX),
   `bvn_tail.h` (scalar, batch C++ and the native tail), `_dw_*`/`_rect_tail_jax`
-  (pure JAX), `R/stan_bvn.R` (Stan language, plain Stan).
+  (pure JAX), `dev/plain_stan.R` (Stan language, dev-only plain Stan).
 - **Univariate cells** are differenced on the tail side (Q(lo) - Q(hi) when lo is
   above the median) for every link, so upper-tail cells never cancel to zero.
 - **Probit Phi in JAX** is phi(x) t C(t), t = 1 / (1 + 0.2316419 |x|), returning the value,
@@ -138,13 +144,13 @@ run the full suite.
 | `R/brf.R`, `R/parse_formula.R` | formula composition + parsing |
 | `R/design_matrix.R` | fixed/random/threshold design matrices |
 | `R/families.R` | family definitions, parameter specs, the per-family JVP emit |
-| `R/generate_stan.R` | Stan codegen (plain + batch-likelihood line) |
+| `R/generate_stan.R` | Stan codegen around the batch likelihood |
 | `R/generate_batch_cpp.R` | per-model batch C++ (analytic gradients) |
 | `inst/stan/batch_sdt_core.hpp` | batch C++ support header |
 | `inst/python/numpyro_backend.py` | JAX fused custom-JVP likelihoods |
 | `inst/python/drghmc.py` | DR-G-HMC sampler (`sampler = "drghmc"`), exact warm continuation |
 | `inst/include/bayesroc/bvn_simd.h`, `bvn_tail.h`, `inst/ffi/bvn_ffi.cc`, `R/ffi_build.R` | native bivariate-normal kernels, built on the user's machine and cached in `tools::R_user_dir()` |
-| `R/stan_bvn.R` | Stan-language mirror of the bivariate-normal kernel |
+| `dev/plain_stan.R` | dev-only Stan-language likelihood (incl. the bivariate-normal kernel mirror) |
 | `R/loo.R`, `R/npy.R` | streamed PSIS-LOO over the on-disk log-likelihood (`.npy`) |
 | `R/autostop.R`, `R/compact.R` | ESS-targeted fitting rounds; compact storage of random-effect draws |
 | `R/jax_backend.R`, `R/install_jax.R` | JAX subprocess + Python discovery/venv mgmt |

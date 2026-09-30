@@ -41,7 +41,7 @@ test_that("batch C++ gradients match finite differences: univariate, both gap li
       brf(conf | old ~ 1, criterion ~ 1 + (1 | sub), family = evsd(), gap_link = gl)
     )
     for (i in seq_along(specs)) {
-      m <- broc(specs[[i]], data = d, batch_likelihood = TRUE)
+      m <- broc(specs[[i]], data = d)
       expect_lt(.batch_grad_err(m), 1e-4, label = paste("univariate spec", i, "gap_link", gl))
     }
   }
@@ -60,7 +60,7 @@ test_that("batch C++ gradients match finite differences: bivariate criterion2 de
           family = bivariate_gaussian(), gap_link = gl)
     )
     for (i in seq_along(specs)) {
-      m <- broc(specs[[i]], data = d, batch_likelihood = TRUE)
+      m <- broc(specs[[i]], data = d)
       expect_lt(.batch_grad_err(m, init = 0.5), 1e-4, label = paste("bivariate spec", i, "gap_link", gl))
     }
   }

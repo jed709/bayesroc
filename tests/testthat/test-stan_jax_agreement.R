@@ -16,8 +16,7 @@
 test_that("evsdt: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
@@ -28,8 +27,7 @@ test_that("evsdt: Stan and JAX posterior means agree", {
 test_that("uvsdt: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d,
-            batch_likelihood = TRUE)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
@@ -44,7 +42,7 @@ test_that("cdp (rotello_2005): Stan and JAX agree on rec/fam/sigma_R/rec_crit", 
                 fam ~ condition - 1, criterion ~ condition - 1,
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
                 family = cdp(old_levels = 2:6), counts = "count"),
-            d, batch_likelihood = TRUE)
+            d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
@@ -60,7 +58,7 @@ test_that("cumulative: Stan and JAX agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
-            d, batch_likelihood = TRUE)
+            d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
@@ -74,7 +72,7 @@ test_that("bivariate_cumulative: Stan and JAX posterior means agree", {
   d <- .fixture_bivariate_cumulative()
   m <- broc(brf(resp(y1, y2) ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
-                family = bivariate_cumulative()), d, batch_likelihood = TRUE)
+                family = bivariate_cumulative()), d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
@@ -90,7 +88,7 @@ test_that("crossed REs: predict + plot_roc_curve work on both backends", {
                 criterion ~ 1 + (1 | s | sub) + (1 | i | item),
                 sigma ~ 1 + (1 | s | sub) + (1 | i | item),
                 family = uvsd()),
-            d, batch_likelihood = TRUE)
+            d)
 
   for (backend in c("stan", "jax")) {
     fit <- if (backend == "stan") {

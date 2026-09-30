@@ -5,8 +5,8 @@ test_that("softplus gap link reaches every threshold construction in the generat
     bivariate_gaussian(varying_source_criteria = TRUE, new_source_criteria = "shared", old_levels = 3:4)
   )
   for (fam in fams) {
-    m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
-                  family = fam), d, gap_link = "softplus", batch_likelihood = FALSE)
+    m <- .broc_plain(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+                  family = fam), d, gap_link = "softplus")
     code <- paste(m$stan_code, collapse = "\n")
     expect_false(grepl("(?<![A-Za-z0-9_])exp\\((beta_raw_gaps|beta_log_gaps|raw_gap|log_gap)", code, perl = TRUE))
     expect_false(grepl("beta_log_gaps", code, fixed = TRUE))
@@ -25,7 +25,7 @@ test_that("gap priors reach both backends under either gap link, including per-g
           broc_prior("normal(0.1, 0.2)", class = "b", dpar = "log_gaps2", coef = "[2]"))
   for (gl in c("log", "softplus")) {
     m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
-                  family = bivariate_gaussian()), d, priors = pr, gap_link = gl, batch_likelihood = FALSE)
+                  family = bivariate_gaussian()), d, priors = pr, gap_link = gl)
     code <- paste(m$stan_code, collapse = "\n")
     g1 <- if (gl == "softplus") "beta_raw_gaps" else "beta_log_gaps"
     expect_true(grepl(paste0(g1, ") ~ normal(0, 0.3)"), code, fixed = TRUE) ||
