@@ -72,6 +72,7 @@
   lib <- file.path(cache, paste0("bvn_ffi_", tag, ext))
   if (file.exists(lib) && !rebuild) {
     .bvn_ffi_state[[python]] <- normalizePath(lib, winslash = "/")
+    .prune_ffi_cache(cache, python, lib, ext)
     return(.bvn_ffi_state[[python]])
   }
   dir.create(cache, recursive = TRUE, showWarnings = FALSE)
@@ -96,7 +97,7 @@
 
 .prune_ffi_cache <- function(cache, python, lib, ext) {
   idx_file <- file.path(cache, "index.rds")
-  idx <- tryCatch(readRDS(idx_file), error = function(e) list())
+  idx <- if (file.exists(idx_file)) tryCatch(readRDS(idx_file), error = function(e) list()) else list()
   idx[[normalizePath(python, winslash = "/", mustWork = FALSE)]] <- basename(lib)
   idx <- idx[vapply(idx, function(f) file.exists(file.path(cache, f)), logical(1))]
   try(saveRDS(idx, idx_file), silent = TRUE)
