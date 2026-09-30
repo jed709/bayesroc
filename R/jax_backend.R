@@ -401,6 +401,11 @@ build_numpyro_config <- function(model) {
               n_thresh = n_thresh,
               prior_sds = get_sds_prior(prior_lookup, pname, paste0(comp_suffix, "_", k))
             )
+            base <- paste0(pname, "_", comp_suffix, "_", k)
+            if (base %in% md$smooth_info_bases) {
+              I <- md$stan_data[[paste0("Ism_", base)]]
+              sm_conf$info <- if (n_thresh > 0) lapply(seq_len(n_thresh), function(t) I[t, , , drop = TRUE]) else I
+            }
             config$smooths[[length(config$smooths) + 1]] <- sm_conf
           }
         }

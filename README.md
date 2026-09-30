@@ -155,7 +155,9 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
   `posterior_epred(fit)`, `posterior_linpred(fit)` — S3 methods on the fitted model
 - `?plot_roc_curve` — ROC curve plot
 - `?conditional_smooths` — smooth-term evaluation/plotting (mgcv `s()` / `t2()`
-  are supported in any parameter formula)
+  are supported in any parameter formula). If a model with smooth terms reports
+  divergences, `broc(..., smooth_info = TRUE)` samples the population-level smooth
+  coefficients on a data-informed scale; the posterior is unchanged
 - `?broc_prior` — prior specification
 - `?autostop_broc` — sample in rounds until ESS targets are met (JAX backend)
 - `?drop_loglik` — reclaim a fit's log-likelihood sidecar

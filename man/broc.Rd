@@ -14,7 +14,7 @@ broc(
   cor_threshold = NULL,
   threads = NULL,
   gap_link = NULL,
-  batch_likelihood = TRUE
+  smooth_info = FALSE
 )
 }
 \arguments{
@@ -52,8 +52,13 @@ Default \code{FALSE}.}
 \item{gap_link}{Link for threshold gaps: \code{"log"} (default) or \code{"softplus"}.
 \code{NULL} uses the family default.}
 
-\item{batch_likelihood}{If \code{TRUE} (default), build the fused batch likelihood
-with analytic gradients for the Stan backend.}
+\item{smooth_info}{If \code{TRUE}, sample the coefficients of population-level
+smooth terms on a scale matched to how strongly the data inform them. This
+is an exact change of variables (the posterior is unchanged) that removes
+the divergences smooth terms otherwise produce when their wiggliness SDs are
+weakly identified. Model construction runs a short maximum-likelihood pilot
+to measure that information. Random smooths (\code{bs = "fs"}, \code{"re"}) keep the
+default parameterization. Default \code{FALSE}.}
 }
 \value{
 A \code{broc_model} object, ready to pass to \code{\link[=fit_broc]{fit_broc()}}.

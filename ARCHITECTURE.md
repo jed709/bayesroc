@@ -125,6 +125,17 @@ run the full suite.
   `sdt_model` (`_rkg_knob`). Criterion formulas must therefore span the constant: an
   intercept or a full factor coding (`.check_criterion_designs`), which is also the only
   meaningful form on a latent axis whose zero is the lure mean.
+- **Information-scaled smooths (`broc(smooth_info = TRUE)`, opt-in).** With few informative
+  data a smooth's wiggliness SD spans regimes where the non-centred coefficients are either
+  prior- or data-dominated, and trajectories that reach a large SD diverge. Each population
+  smooth block (one row of a threshold smooth, or a whole dpar smooth) is sampled as
+  s = sd * K^-T w with K K^T = I + sd^2 I_hat and log density -|v|^2/2 - log|K|, an exact change
+  of variables. I_hat = Zs' diag(d) Zs, where d is each observation's curvature in that
+  linear predictor at a maximum-likelihood pilot (random effects and smooths at zero),
+  computed once in R by `.smooth_info_pilot()` through the predict machinery and passed to
+  both backends as data (`Ism_*`), so Stan and JAX sample the same parameterization. Random
+  smooths (`fs`, `re`) are left non-centred: per-factor scaling was tested and fails for
+  nested structures.
 - **float32 potentials are summed relative to an offset.** A float32 sum of N log-likelihood
   terms resolves only ~|U| * 6e-8, which is 0.03 at |U| = 5e5 and swamps energy differences.
   In f32 both samplers subtract a per-observation offset (the log-likelihood at a warmed-up

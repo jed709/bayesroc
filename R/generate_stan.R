@@ -1336,9 +1336,16 @@ iter_smooth_components <- function(model_data, fn) {
 generate_smooth_data_declarations <- function(model_data) {
   iter_smooth_components(model_data, function(pname, suffix, comp, k, n_thresh) {
     zs_name <- paste0("Zs_", pname, "_", suffix, "_", k)
+    base <- paste0(pname, "_", suffix, "_", k)
+    nb <- paste0("nbasis_", base)
+    info <- if (base %in% model_data$smooth_info_bases) {
+      if (n_thresh > 0) sprintf("  array[%d] matrix[%s, %s] Ism_%s;", n_thresh, nb, nb, base)
+      else sprintf("  matrix[%s, %s] Ism_%s;", nb, nb, base)
+    }
     c(sprintf("  // Smooth penalized basis: %s component %d", suffix, k),
       sprintf("  int<lower=1> nbasis_%s_%s_%d;", pname, suffix, k),
-      sprintf("  matrix[N, nbasis_%s_%s_%d] %s;", pname, suffix, k, zs_name))
+      sprintf("  matrix[N, nbasis_%s_%s_%d] %s;", pname, suffix, k, zs_name),
+      info)
   })
 }
 
@@ -1365,7 +1372,23 @@ generate_smooth_transformed_params <- function(model_data) {
   iter_smooth_components(model_data, function(pname, suffix, comp, k, n_thresh) {
     base <- paste0(pname, "_", suffix, "_", k)
     nb <- paste0("nbasis_", pname, "_", suffix, "_", k)
-    if (n_thresh > 0) {
+    if (base %in% model_data$smooth_info_bases) {
+      if (n_thresh > 0) {
+        c(sprintf("  matrix[%d, %s] s_%s;", n_thresh, nb, base),
+          sprintf("  for (t in 1:%d) {", n_thresh),
+          sprintf("    matrix[%s, %s] Kc = cholesky_decompose(add_diag(square(sds_%s[t]) * Ism_%s[t], 1));",
+                  nb, nb, base, base),
+          sprintf("    s_%s[t, ] = sds_%s[t] * mdivide_right_tri_low(zs_%s[t, ], Kc);", base, base, base),
+          "  }")
+      } else {
+        c(sprintf("  vector[%s] s_%s;", nb, base),
+          "  {",
+          sprintf("    matrix[%s, %s] Kc = cholesky_decompose(add_diag(square(sds_%s) * Ism_%s, 1));",
+                  nb, nb, base, base),
+          sprintf("    s_%s = sds_%s * mdivide_right_tri_low(zs_%s', Kc)';", base, base, base),
+          "  }")
+      }
+    } else if (n_thresh > 0) {
       c(sprintf("  matrix[%d, %s] s_%s;", n_thresh, nb, base),
         sprintf("  for (t in 1:%d) s_%s[t, ] = sds_%s[t] * zs_%s[t, ];", n_thresh, base, base, base))
     } else {
@@ -1382,7 +1405,26 @@ generate_smooth_priors <- function(model_data) {
   iter_smooth_components(model_data, function(pname, suffix, comp, k, n_thresh) {
     base <- paste0(pname, "_", suffix, "_", k)
     sds_prior <- get_sds_prior(pl, pname, paste0(suffix, "_", k))
-    if (n_thresh > 0) {
+    nb <- paste0("nbasis_", base)
+    if (base %in% model_data$smooth_info_bases) {
+      if (n_thresh > 0) {
+        c(sprintf("  for (t in 1:%d) {", n_thresh),
+          sprintf("    matrix[%s, %s] Kc = cholesky_decompose(add_diag(square(sds_%s[t]) * Ism_%s[t], 1));",
+                  nb, nb, base, base),
+          sprintf("    row_vector[%s] v = mdivide_right_tri_low(zs_%s[t, ], Kc);", nb, base),
+          "    target += -0.5 * dot_self(v) - sum(log(diagonal(Kc)));",
+          "  }",
+          sprintf("  sds_%s ~ %s;", base, sds_prior))
+      } else {
+        c("  {",
+          sprintf("    matrix[%s, %s] Kc = cholesky_decompose(add_diag(square(sds_%s) * Ism_%s, 1));",
+                  nb, nb, base, base),
+          sprintf("    row_vector[%s] v = mdivide_right_tri_low(zs_%s', Kc);", nb, base),
+          "    target += -0.5 * dot_self(v) - sum(log(diagonal(Kc)));",
+          "  }",
+          sprintf("  sds_%s ~ %s;", base, sds_prior))
+      }
+    } else if (n_thresh > 0) {
       c(sprintf("  to_vector(zs_%s) ~ std_normal();", base),
         sprintf("  sds_%s ~ %s;", base, sds_prior))
     } else {

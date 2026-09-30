@@ -3582,6 +3582,16 @@ def _positive_dist(d):
     return dist.FoldedDistribution(d)
 
 
+def _smooth_info_scale(sd, info, w):
+    """Information-scaled smooth coefficients: s = sd * v with v = K^-T w, K K^T = I + sd^2 info.
+
+    Returns v and the log density of w, -v'v/2 - log|K|, which with s = sd v gives
+    exactly s ~ N(0, sd^2 I)."""
+    Kc = jnp.linalg.cholesky(jnp.eye(w.shape[0], dtype=w.dtype) + sd * sd * info)
+    v = jax.scipy.linalg.solve_triangular(Kc.T, w, lower=False)
+    return v, -0.5 * jnp.dot(v, v) - jnp.sum(jnp.log(jnp.diagonal(Kc)))
+
+
 def _rkg_knob(config):
     """Static setup for sampling the CDP R/K/G know criterion on its feasible set.
 
@@ -4000,13 +4010,24 @@ def sdt_model(config):
         if isinstance(sds_prior, (dist.Normal, dist.StudentT)):
             sds_prior = dist.FoldedDistribution(sds_prior)
 
+        info = sm_conf.get("info")
+        if info is not None:
+            info = jnp.asarray(np.asarray(info, dtype=float).reshape(
+                (n_thresh_sm, dim, dim) if n_thresh_sm > 0 else (dim, dim)), dtype=_FLOAT)
+
         if n_thresh_sm > 0:
             sds = numpyro.sample(f"sds_{param}_{label}_{k}",
                                  sds_prior.expand([n_thresh_sm]))
             zs = numpyro.sample(f"zs_{param}_{label}_{k}",
                                 dist.Normal(0, 1).expand([n_thresh_sm, dim]))
-            s = numpyro.deterministic(f"s_{param}_{label}_{k}",
-                                      sds[:, None] * zs)
+            if info is not None:
+                v, ld = jax.vmap(_smooth_info_scale)(sds, info, zs)
+                numpyro.factor(f"smooth_info_{param}_{label}_{k}",
+                               jnp.sum(ld) - jnp.sum(dist.Normal(0, 1).log_prob(zs)))
+                s = numpyro.deterministic(f"s_{param}_{label}_{k}", sds[:, None] * v)
+            else:
+                s = numpyro.deterministic(f"s_{param}_{label}_{k}",
+                                          sds[:, None] * zs)
             if param == "criterion2":
                 _criterion2_smooth_s.append((Zs, s))
             else:
@@ -4015,7 +4036,13 @@ def sdt_model(config):
             sds = numpyro.sample(f"sds_{param}_{label}_{k}", sds_prior)
             zs = numpyro.sample(f"zs_{param}_{label}_{k}",
                                 dist.Normal(0, 1).expand([dim]))
-            s = numpyro.deterministic(f"s_{param}_{label}_{k}", sds * zs)
+            if info is not None:
+                v, ld = _smooth_info_scale(sds, info, zs)
+                numpyro.factor(f"smooth_info_{param}_{label}_{k}",
+                               ld - jnp.sum(dist.Normal(0, 1).log_prob(zs)))
+                s = numpyro.deterministic(f"s_{param}_{label}_{k}", sds * v)
+            else:
+                s = numpyro.deterministic(f"s_{param}_{label}_{k}", sds * zs)
             offset = Zs @ s
             _apply_re_offset(param, offset, param_values)
 

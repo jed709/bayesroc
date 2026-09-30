@@ -158,6 +158,13 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   Default `FALSE`.
 #' @param gap_link Link for threshold gaps: `"log"` (default) or `"softplus"`.
 #'   `NULL` uses the family default.
+#' @param smooth_info If `TRUE`, sample the coefficients of population-level
+#'   smooth terms on a scale matched to how strongly the data inform them. This
+#'   is an exact change of variables (the posterior is unchanged) that removes
+#'   the divergences smooth terms otherwise produce when their wiggliness SDs are
+#'   weakly identified. Model construction runs a short maximum-likelihood pilot
+#'   to measure that information. Random smooths (`bs = "fs"`, `"re"`) keep the
+#'   default parameterization. Default `FALSE`.
 #' @return A `broc_model` object, ready to pass to [fit_broc()].
 #'
 #' @examples
@@ -175,7 +182,8 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #' @export
 broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                 encoding_vars = NULL, counts = NULL,
-                cor_threshold = NULL, threads = NULL, gap_link = NULL) {
+                cor_threshold = NULL, threads = NULL, gap_link = NULL,
+                smooth_info = FALSE) {
 
   # --- 1. Normalize input: bare formula -> brf, brf -> use directly ---
   nc <- function(a, b) if (!is.null(a)) a else b
@@ -304,7 +312,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     return(fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
                           cor_threshold = cor_threshold, threads = threads,
-                          gap_link = gap_link))
+                          gap_link = gap_link, smooth_info = smooth_info))
   }
 
   # --- Handle bivariate_cumulative family early-return ---
@@ -315,7 +323,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
       cor_threshold = cor_threshold, threads = threads,
-      gap_link = gap_link))
+      gap_link = gap_link, smooth_info = smooth_info))
   }
 
   if (is.null(criterion)) {
@@ -603,6 +611,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
+  si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
+  model_data <- si$model_data
+
   use_batch <- is.null(.plain_stan_env())
 
   batch_cpp <- NULL
@@ -625,7 +636,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     gap_link = gap_link,
     formula = brf_obj,
     batch_likelihood = use_batch,
-    batch_cpp = batch_cpp
+    batch_cpp = batch_cpp,
+    smooth_info = si$pilot
   )
 
   class(result) <- c("broc_model", "list")
@@ -2453,7 +2465,7 @@ apply_encoding_vars <- function(formula, encoding_vars) {
 #' @noRd
 fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
                            cor_threshold = TRUE, threads = FALSE,
-                           gap_link = "log") {
+                           gap_link = "log", smooth_info = FALSE) {
   
   if (is.null(mu)) {
     stop("mu formula is required for cumulative() family")
@@ -2601,6 +2613,9 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
+  si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
+  model_data <- si$model_data
+
   use_batch <- is.null(.plain_stan_env())
 
   batch_cpp <- NULL
@@ -2644,7 +2659,8 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
-    batch_cpp = batch_cpp
+    batch_cpp = batch_cpp,
+    smooth_info = si$pilot
   )
 
   class(result) <- c("broc_model", "cumulative_model", "list")
@@ -2767,7 +2783,7 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
                                      cor_threshold = TRUE, threads = FALSE,
-                                     gap_link = "log") {
+                                     gap_link = "log", smooth_info = FALSE) {
 
   if (is.null(mu1)) {
     stop("mu1 (primary) formula is required for bivariate_cumulative() family")
@@ -2882,6 +2898,9 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
   }
 
+  si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
+  model_data <- si$model_data
+
   use_batch <- is.null(.plain_stan_env())
   batch_info <- NULL
   if (use_batch) {
@@ -2905,7 +2924,8 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     data = data,
     threads = isTRUE(threads),
     batch_likelihood = use_batch,
-    batch_cpp = batch_info
+    batch_cpp = batch_info,
+    smooth_info = si$pilot
   )
 
   class(result) <- c("broc_model", "bivariate_cumulative_model", "list")
