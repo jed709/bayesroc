@@ -20,7 +20,59 @@ static double cfd(std::function<double(double)> f, double x, double h=1e-6) {
   return (f(x+h) - f(x-h)) / (2*h);
 }
 
+template <class L>
+static void link_checks(const std::string& tag) {
+  const double cells[][2] = {{-0.4, 0.7}, {-3.0, -2.5}, {1.5, 2.2}, {-9.0, -8.0}, {2.5, 3.5}, {6.0, 7.5}};
+  for (auto& c : cells) {
+    double zl = c[0], zh = c[1];
+    std::string f = "cell_log_prob_t<" + tag + ">";
+    auto r = cell_log_prob_t<L>(zl, zh);
+    chk(f.c_str(), "d_z_lo", r.d_z_lo, cfd([&](double x) { return cell_log_prob_t<L>(x, zh).lp; }, zl));
+    chk(f.c_str(), "d_z_hi", r.d_z_hi, cfd([&](double x) { return cell_log_prob_t<L>(zl, x).lp; }, zh));
+    f = "edge_lo_t<" + tag + ">";
+    chk(f.c_str(), "d_z_hi", edge_lo_t<L>(zh).d_z_hi, cfd([&](double x) { return edge_lo_t<L>(x).lp; }, zh));
+    f = "edge_hi_t<" + tag + ">";
+    chk(f.c_str(), "d_z_lo", edge_hi_t<L>(zl).d_z_lo, cfd([&](double x) { return edge_hi_t<L>(x).lp; }, zl));
+    for (double lam : {0.1, 0.7}) {
+      f = "dpsdt_top_cell_t<" + tag + ">";
+      auto t = dpsdt_top_cell_t<L>(zl, lam);
+      chk(f.c_str(), "d_z", t.d_z, cfd([&](double x) { return dpsdt_top_cell_t<L>(x, lam).lp; }, zl));
+      chk(f.c_str(), "d_lambda", t.d_lambda, cfd([&](double x) { return dpsdt_top_cell_t<L>(zl, x).lp; }, lam));
+      for (int y : {1, 3}) {
+        f = "dpsdt_non_top_cell_t<" + tag + ">";
+        auto u = dpsdt_non_top_cell_t<L>(zl, zh, lam, y, 6);
+        chk(f.c_str(), "d_z_hi", u.d_z_hi,
+            cfd([&](double x) { return dpsdt_non_top_cell_t<L>(zl, x, lam, y, 6).lp; }, zh));
+        if (y > 1)
+          chk(f.c_str(), "d_z_lo", u.d_z_lo,
+              cfd([&](double x) { return dpsdt_non_top_cell_t<L>(x, zh, lam, y, 6).lp; }, zl));
+        chk(f.c_str(), "d_lambda", u.d_lambda,
+            cfd([&](double x) { return dpsdt_non_top_cell_t<L>(zl, zh, x, y, 6).lp; }, lam));
+      }
+      for (int y : {1, 3, 6}) {
+        f = "mixture_cell_t<" + tag + ">";
+        double a = zl, b = zh, c2 = zl - 0.6, d = zh - 0.4;
+        auto m = mixture_cell_t<L>(a, b, c2, d, lam, y, 6);
+        auto lp = [&](double A, double B, double C, double D, double l) {
+          return mixture_cell_t<L>(A, B, C, D, l, y, 6).lp;
+        };
+        if (y > 1) {
+          chk(f.c_str(), "d_z1_lo", m.d_z1_lo, cfd([&](double x) { return lp(x, b, c2, d, lam); }, a));
+          chk(f.c_str(), "d_z2_lo", m.d_z2_lo, cfd([&](double x) { return lp(a, b, x, d, lam); }, c2));
+        }
+        if (y < 6) {
+          chk(f.c_str(), "d_z1_hi", m.d_z1_hi, cfd([&](double x) { return lp(a, x, c2, d, lam); }, b));
+          chk(f.c_str(), "d_z2_hi", m.d_z2_hi, cfd([&](double x) { return lp(a, b, c2, x, lam); }, d));
+        }
+        chk(f.c_str(), "d_lambda", m.d_lambda, cfd([&](double x) { return lp(a, b, c2, d, x); }, lam));
+      }
+    }
+  }
+}
+
 int main() {
+  link_checks<LogitLink>("logit");
+  link_checks<CloglogLink>("cloglog");
   // ---------- cell_log_prob (probit) : lp wrt z_lo, z_hi ----------
   { double zl=-0.4, zh=0.7; auto r=cell_log_prob(zl,zh);
     chk("cell_log_prob","d_z_lo",r.d_z_lo, cfd([&](double x){return cell_log_prob(x,zh).lp;},zl));

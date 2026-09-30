@@ -25,7 +25,6 @@ generate_batch_cpp <- function(model_data, family) {
   params <- collect_batch_params(model_data, family_name)
 
   link_name <- if (is.list(family) && !is.null(family$link)) family$link$name else "probit"
-  if (identical(link_name, "cloglog")) return(NULL)
   params$.link_name <- link_name
 
   sig <- build_batch_signature(model_data, family_name, params)
@@ -3120,17 +3119,17 @@ emit_likelihood <- function(L, family_name, params) {
   }
 }
 
-#' Get logit suffix for C++ function calls based on link
+#' Link suffix for C++ helper calls ("" for probit)
 #' @noRd
-logit_suffix <- function(params) {
-  if (identical(params$.link_name, "logit")) "_logit" else ""
+link_suffix <- function(params) {
+  if (params$.link_name %in% c("logit", "cloglog")) paste0("_", params$.link_name) else ""
 }
 
 #' Emit standard likelihood (EVSDT, UVSDT, cumulative)
 #' @noRd
 emit_likelihood_standard <- function(L, family_name, params) {
   has_sigma <- isTRUE(params$.has_sigma)
-  lsuf <- logit_suffix(params)
+  lsuf <- link_suffix(params)
 
   z_expr <- if (has_sigma) {
     function(thresh) sprintf("(%s - mu) / s", thresh)
@@ -3164,7 +3163,7 @@ emit_likelihood_standard <- function(L, family_name, params) {
 #' @noRd
 emit_likelihood_dpsdt <- function(L, params) {
   has_sigma <- isTRUE(params$.has_sigma)
-  lsuf <- logit_suffix(params)
+  lsuf <- link_suffix(params)
 
   L$add("    // DPSDT likelihood")
   L$add("    double obs_lp = 0.0;")
@@ -3247,7 +3246,7 @@ emit_likelihood_mixture <- function(L, params) {
   has_dprime2 <- isTRUE(params$.has_dprime2)
   has_lure <- isTRUE(params$.has_lure_mixture)
   has_sigma_L <- isTRUE(params$.has_sigma_L)
-  lsuf <- logit_suffix(params)
+  lsuf <- link_suffix(params)
 
   s1 <- if (has_sigma) "s" else "1.0"
   s2 <- if (has_sigma2) "s2" else "1.0"
@@ -3429,7 +3428,7 @@ emit_likelihood_mixture <- function(L, params) {
 emit_likelihood_source_mixture <- function(L, params) {
   has_dprime_B <- isTRUE(params$.has_dprime_B)
   has_lambda_B <- isTRUE(params$.has_lambda_B)
-  lsuf <- logit_suffix(params)
+  lsuf <- link_suffix(params)
 
   L$add("    // Source mixture SDT likelihood")
   L$add("    double obs_lp = 0.0;")

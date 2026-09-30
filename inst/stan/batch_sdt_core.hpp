@@ -254,129 +254,142 @@ inline MixtureCellResult mixture_cell(
 }
 
 // ============================================================
-// Logistic PDF / CDF (logit link)
+// Non-probit links: CDF, survival, pdf and tail-side difference
 // ============================================================
 
-inline double logistic_cdf(double x) {
-  return 1.0 / (1.0 + std::exp(-x));
-}
+struct LogitLink {
+  static double cdf(double x) { return 1.0 / (1.0 + std::exp(-x)); }
+  static double ccdf(double x) { return cdf(-x); }
+  static double pdf(double x) {
+    double e = std::exp(-std::fabs(x));
+    double d = 1.0 + e;
+    return e / (d * d);
+  }
+  static double diff(double lo, double hi) { return lo >= 0.0 ? ccdf(lo) - ccdf(hi) : cdf(hi) - cdf(lo); }
+};
 
-inline double logistic_diff(double lo, double hi) {
-  return lo >= 0.0 ? logistic_cdf(-lo) - logistic_cdf(-hi) : logistic_cdf(hi) - logistic_cdf(lo);
-}
+struct CloglogLink {
+  static constexpr double kHi = 700.0;
+  static constexpr double kMedian = -0.36651292058166435;
+  static double cdf(double x) { return -std::expm1(-std::exp(std::fmin(x, kHi))); }
+  static double ccdf(double x) { return std::exp(-std::exp(std::fmin(x, kHi))); }
+  static double pdf(double x) {
+    double xc = std::fmin(x, kHi);
+    return std::exp(xc - std::exp(xc));
+  }
+  static double diff(double lo, double hi) {
+    return lo >= kMedian ? ccdf(lo) - ccdf(hi) : cdf(hi) - cdf(lo);
+  }
+};
 
-inline double logistic_pdf(double x) {
-  double e = std::exp(-std::fabs(x));
-  double d = 1.0 + e;
-  return e / (d * d);
-}
-
-// ============================================================
-// Cell log-probability and gradients (logit link)
-// ============================================================
-
-// Interior cell: log(F(z_hi) - F(z_lo)) with logistic CDF
-inline CellResult cell_log_prob_logit(double z_lo, double z_hi) {
-  double diff = logistic_diff(z_lo, z_hi);
+template <class L>
+inline CellResult cell_log_prob_t(double z_lo, double z_hi) {
+  double diff = L::diff(z_lo, z_hi);
   if (diff < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_diff = 1.0 / diff;
-  return {std::log(diff), -logistic_pdf(z_lo) * inv_diff, logistic_pdf(z_hi) * inv_diff};
+  return {std::log(diff), -L::pdf(z_lo) * inv_diff, L::pdf(z_hi) * inv_diff};
 }
 
-// Lowest cell: log(F(z)) with logistic CDF
-inline CellResult edge_lo_logit(double z) {
-  double p = logistic_cdf(z);
+template <class L>
+inline CellResult edge_lo_t(double z) {
+  double p = L::cdf(z);
   if (p < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
-  return {std::log(p), 0.0, logistic_pdf(z) / p};
+  return {std::log(p), 0.0, L::pdf(z) / p};
 }
 
-// Highest cell: log(1 - F(z)) with logistic CDF
-inline CellResult edge_hi_logit(double z) {
-  double q = logistic_cdf(-z);
+template <class L>
+inline CellResult edge_hi_t(double z) {
+  double q = L::ccdf(z);
   if (q < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
-  return {std::log(q), -logistic_pdf(z) / q, 0.0};
+  return {std::log(q), -L::pdf(z) / q, 0.0};
 }
 
-// ============================================================
-// Cell probability (not log) for logit link (mixture models)
-// ============================================================
-
-inline CellProbResult cell_prob_logit(double z_lo, double z_hi) {
-  double diff = logistic_diff(z_lo, z_hi);
+template <class L>
+inline CellProbResult cell_prob_t(double z_lo, double z_hi) {
+  double diff = L::diff(z_lo, z_hi);
   if (diff < kPFloor) return {kPFloor, 0.0, 0.0};
-  return {diff, -logistic_pdf(z_lo), logistic_pdf(z_hi)};
+  return {diff, -L::pdf(z_lo), L::pdf(z_hi)};
 }
 
-inline CellProbResult edge_lo_prob_logit(double z) {
-  double p = logistic_cdf(z);
-  return {p, 0.0, logistic_pdf(z)};
+template <class L>
+inline CellProbResult edge_lo_prob_t(double z) {
+  return {L::cdf(z), 0.0, L::pdf(z)};
 }
 
-inline CellProbResult edge_hi_prob_logit(double z) {
-  double q = logistic_cdf(-z);
-  return {q, -logistic_pdf(z), 0.0};
+template <class L>
+inline CellProbResult edge_hi_prob_t(double z) {
+  return {L::ccdf(z), -L::pdf(z), 0.0};
 }
 
-// ============================================================
-// DPSDT helpers (logit link)
-// ============================================================
-
-inline DpsdtTopResult dpsdt_top_cell_logit(double z, double lambda) {
-  double q = logistic_cdf(-z);
-  double F_z = 1.0 - q;
+template <class L>
+inline DpsdtTopResult dpsdt_top_cell_t(double z, double lambda) {
+  double q = L::ccdf(z);
   double P = lambda + (1.0 - lambda) * q;
   if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
   double inv_P = 1.0 / P;
-  double d_z = -(1.0 - lambda) * logistic_pdf(z) * inv_P;
-  double d_lambda = F_z * inv_P;
-  return {std::log(P), d_z, d_lambda};
+  return {std::log(P), -(1.0 - lambda) * L::pdf(z) * inv_P, L::cdf(z) * inv_P};
 }
 
-inline DpsdtNonTopResult dpsdt_non_top_cell_logit(double z_lo, double z_hi,
-                                                    double lambda, int yn, int K) {
-  CellResult cr;
-  if (yn == 1) {
-    cr = edge_lo_logit(z_hi);
-  } else {
-    cr = cell_log_prob_logit(z_lo, z_hi);
-  }
-  double d_lambda = -1.0 / (1.0 - lambda);
-  if (1.0 - lambda < 1e-15) d_lambda = 0.0;
-  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp,
-          cr.d_z_lo, cr.d_z_hi, d_lambda};
+template <class L>
+inline DpsdtNonTopResult dpsdt_non_top_cell_t(double z_lo, double z_hi, double lambda, int yn, int K) {
+  CellResult cr = yn == 1 ? edge_lo_t<L>(z_hi) : cell_log_prob_t<L>(z_lo, z_hi);
+  double d_lambda = 1.0 - lambda < 1e-15 ? 0.0 : -1.0 / (1.0 - lambda);
+  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp, cr.d_z_lo, cr.d_z_hi, d_lambda};
 }
 
-// ============================================================
-// Mixture SDT helpers (logit link)
-// ============================================================
-
-inline MixtureCellResult mixture_cell_logit(
-    double z1_lo, double z1_hi,
-    double z2_lo, double z2_hi,
-    double lambda, int yn, int K) {
-
+template <class L>
+inline MixtureCellResult mixture_cell_t(double z1_lo, double z1_hi, double z2_lo, double z2_hi,
+                                        double lambda, int yn, int K) {
   CellProbResult cp1, cp2;
   if (yn == 1) {
-    cp1 = edge_lo_prob_logit(z1_hi);
-    cp2 = edge_lo_prob_logit(z2_hi);
+    cp1 = edge_lo_prob_t<L>(z1_hi);
+    cp2 = edge_lo_prob_t<L>(z2_hi);
   } else if (yn == K) {
-    cp1 = edge_hi_prob_logit(z1_lo);
-    cp2 = edge_hi_prob_logit(z2_lo);
+    cp1 = edge_hi_prob_t<L>(z1_lo);
+    cp2 = edge_hi_prob_t<L>(z2_lo);
   } else {
-    cp1 = cell_prob_logit(z1_lo, z1_hi);
-    cp2 = cell_prob_logit(z2_lo, z2_hi);
+    cp1 = cell_prob_t<L>(z1_lo, z1_hi);
+    cp2 = cell_prob_t<L>(z2_lo, z2_hi);
   }
-
   double P = lambda * cp1.p + (1.0 - lambda) * cp2.p;
   if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
   double inv_P = 1.0 / P;
-
   return {std::log(P),
           lambda * cp1.d_z_lo * inv_P,
           lambda * cp1.d_z_hi * inv_P,
           (1.0 - lambda) * cp2.d_z_lo * inv_P,
           (1.0 - lambda) * cp2.d_z_hi * inv_P,
           (cp1.p - cp2.p) * inv_P};
+}
+
+inline CellResult cell_log_prob_logit(double a, double b) { return cell_log_prob_t<LogitLink>(a, b); }
+inline CellResult edge_lo_logit(double z) { return edge_lo_t<LogitLink>(z); }
+inline CellResult edge_hi_logit(double z) { return edge_hi_t<LogitLink>(z); }
+inline DpsdtTopResult dpsdt_top_cell_logit(double z, double l) { return dpsdt_top_cell_t<LogitLink>(z, l); }
+inline DpsdtNonTopResult dpsdt_non_top_cell_logit(double a, double b, double l, int yn, int K) {
+  return dpsdt_non_top_cell_t<LogitLink>(a, b, l, yn, K);
+}
+inline MixtureCellResult mixture_cell_logit(double a, double b, double c, double d, double l, int yn, int K) {
+  return mixture_cell_t<LogitLink>(a, b, c, d, l, yn, K);
+}
+inline MixtureCellResult source_mixture_cell_logit(double a, double b, double c, double d, double l, int yn,
+                                                   int K) {
+  return mixture_cell_t<LogitLink>(a, b, c, d, l, yn, K);
+}
+
+inline CellResult cell_log_prob_cloglog(double a, double b) { return cell_log_prob_t<CloglogLink>(a, b); }
+inline CellResult edge_lo_cloglog(double z) { return edge_lo_t<CloglogLink>(z); }
+inline CellResult edge_hi_cloglog(double z) { return edge_hi_t<CloglogLink>(z); }
+inline DpsdtTopResult dpsdt_top_cell_cloglog(double z, double l) { return dpsdt_top_cell_t<CloglogLink>(z, l); }
+inline DpsdtNonTopResult dpsdt_non_top_cell_cloglog(double a, double b, double l, int yn, int K) {
+  return dpsdt_non_top_cell_t<CloglogLink>(a, b, l, yn, K);
+}
+inline MixtureCellResult mixture_cell_cloglog(double a, double b, double c, double d, double l, int yn, int K) {
+  return mixture_cell_t<CloglogLink>(a, b, c, d, l, yn, K);
+}
+inline MixtureCellResult source_mixture_cell_cloglog(double a, double b, double c, double d, double l, int yn,
+                                                     int K) {
+  return mixture_cell_t<CloglogLink>(a, b, c, d, l, yn, K);
 }
 
 // ============================================================
@@ -400,39 +413,6 @@ inline MixtureCellResult source_mixture_cell(
   } else {
     cp_sig = cell_prob(z_sig_lo, z_sig_hi);
     cp_ref = cell_prob(z_ref_lo, z_ref_hi);
-  }
-
-  double P = lambda * cp_sig.p + (1.0 - lambda) * cp_ref.p;
-  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0, 0.0, 0.0, 0.0};
-  double inv_P = 1.0 / P;
-
-  return {std::log(P),
-          lambda * cp_sig.d_z_lo * inv_P,
-          lambda * cp_sig.d_z_hi * inv_P,
-          (1.0 - lambda) * cp_ref.d_z_lo * inv_P,
-          (1.0 - lambda) * cp_ref.d_z_hi * inv_P,
-          (cp_sig.p - cp_ref.p) * inv_P};
-}
-
-// ============================================================
-// Source mixture helpers (logit link)
-// ============================================================
-
-inline MixtureCellResult source_mixture_cell_logit(
-    double z_sig_lo, double z_sig_hi,
-    double z_ref_lo, double z_ref_hi,
-    double lambda, int yn, int K) {
-
-  CellProbResult cp_sig, cp_ref;
-  if (yn == 1) {
-    cp_sig = edge_lo_prob_logit(z_sig_hi);
-    cp_ref = edge_lo_prob_logit(z_ref_hi);
-  } else if (yn == K) {
-    cp_sig = edge_hi_prob_logit(z_sig_lo);
-    cp_ref = edge_hi_prob_logit(z_ref_lo);
-  } else {
-    cp_sig = cell_prob_logit(z_sig_lo, z_sig_hi);
-    cp_ref = cell_prob_logit(z_ref_lo, z_ref_hi);
   }
 
   double P = lambda * cp_sig.p + (1.0 - lambda) * cp_ref.p;

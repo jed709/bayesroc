@@ -23,12 +23,29 @@ test_that("cloglog Stan link_cdf is the Gumbel-min CDF", {
   expect_match(code, "-expm1\\(-exp\\(xc\\)\\)")
 })
 
-test_that("cloglog has no batch C++ kernel and falls back to plain Stan", {
-  d <- .fixture_gumbel_min(n_per = 50)
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d,
-            batch_likelihood = TRUE)
-  expect_null(generate_batch_cpp(m$model_data, m$family))
-  expect_match(m$stan_code, "expm1\\(-exp")
+test_that("non-probit links: batch C++ matches plain Stan in value and gradient", {
+  skip_if_no_cmdstan()
+  d <- .fixture_gumbel_min(n_per = 150)
+  ds <- .fixture_source_mixture()
+  cases <- list(
+    dpsd_cloglog = list(function(l) brf(item_resp | is_old ~ 1, lambda ~ 1, family = dpsd(link = l)),
+                        d, link_cloglog()),
+    mixture_cloglog = list(function(l) brf(item_resp | is_old ~ 1, dprime2 ~ 1, lambda ~ 1,
+                                           family = mixture(link = l)), d, link_cloglog()),
+    source_mixture_cloglog = list(function(l) brf(item_resp | source ~ 1, lambda ~ 1,
+                                                  family = source_mixture(link = l)), ds, link_cloglog()),
+    mixture_logit = list(function(l) brf(item_resp | is_old ~ 1, dprime2 ~ 1, lambda ~ 1,
+                                         family = mixture(link = l)), d, link_logit())
+  )
+  for (nm in names(cases)) {
+    cs <- cases[[nm]]
+    mb <- suppressMessages(broc(cs[[1]](cs[[3]]), cs[[2]], batch_likelihood = TRUE))
+    expect_false(is.null(mb$batch_cpp), label = nm)
+    mp <- suppressMessages(broc(cs[[1]](cs[[3]]), cs[[2]], batch_likelihood = FALSE))
+    r <- .stan_parity(mp, mb)
+    expect_lt(r$lp, 1e-8, label = paste(nm, "log density"))
+    expect_lt(r$grad, 1e-8, label = paste(nm, "gradient"))
+  }
 })
 
 test_that("evsd + cloglog recovers a Gumbel-min location shift (JAX)", {
