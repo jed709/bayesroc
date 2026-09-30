@@ -8,7 +8,7 @@ the cheapest, most complete check for the analytic-gradient class (where the
 bivariate_dp / bounded gradient bugs were found and fixed).
 
 `test_kernels.cpp` covers: cell_log_prob(+logit), cell_prob, uni_cell,
-binormal_cdf_grad (Owen's T), bivariate_cell, bivariate_sdt_cell,
+binormal_cdf_grad and bivariate_cell (tiered Drezner-Wesolowsky with the tail path, `inst/include/bayesroc/bvn_tail.h`), bivariate_sdt_cell,
 bounded_marginal_source, dpsdt/mixture/vrdp2d cells, cdp_strip,
 bivariate_dp_cell (fast/slow/corner, item types 2/3/new), and
 bounded_bivariate_sdt_cell / bounded_bivariate_dp_cell. (239 checks.)
