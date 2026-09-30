@@ -963,7 +963,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
         z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
         cell_p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
 
-        is_top = (y == K).astype(jnp.float64)
+        is_top = (y == K).astype(_FLOAT)
         p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
         return jnp.log(p)
 
@@ -995,7 +995,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
         _D_cell_p, _pl_cell_p, _ph_cell_p = _CELL(z_lo, z_hi)
         cell_p = jnp.clip(_D_cell_p, _pfloor())
 
-        is_top = (y == K).astype(jnp.float64)
+        is_top = (y == K).astype(_FLOAT)
         p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
         val = jnp.log(p)
 
@@ -1668,22 +1668,22 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         is_split = (z_cp > z1_lo) & (z_cp < z1_hi)
         is_above_only = (z_cp <= z1_lo)
         is_below_only = (z_cp >= z1_hi)
-        is_split_f = is_split.astype(jnp.float64)
-        is_above_only_f = is_above_only.astype(jnp.float64)
-        is_below_only_f = is_below_only.astype(jnp.float64)
+        is_split_f = is_split.astype(_FLOAT)
+        is_above_only_f = is_above_only.astype(_FLOAT)
+        is_below_only_f = is_below_only.astype(_FLOAT)
 
         zs_hi = jnp.where(has2_hi, c2[obs_idx, k2_hi] * inv_sc, INF)
         zs_lo = jnp.where(has2_lo, c2[obs_idx, k2_lo] * inv_sc, -INF)
 
         D_det, dDdet_lo, dDdet_hi = _phi_diff(z1_lo, z_cp_eff)
         D_src, dDsrc_lo, dDsrc_hi = _phi_diff(zs_lo, zs_hi)
-        det_on = (D_det > 0.0).astype(jnp.float64)
-        src_on = (D_src > 0.0).astype(jnp.float64)
+        det_on = (D_det > 0.0).astype(_FLOAT)
+        src_on = (D_src > 0.0).astype(_FLOAT)
         p_det_below = jnp.clip(D_det, 0.0)
         p_src_below = jnp.clip(D_src, 0.0)
         p_below = p_det_below * p_src_below
         pa_raw, dpa_da, dpa_db, dpa_dc, dpa_dd, dpa_drho = _bvn_rect(z_cp_eff, z1_hi, z2_lo, z2_hi, rho_val)
-        above_on = (pa_raw > 0.0).astype(jnp.float64)
+        above_on = (pa_raw > 0.0).astype(_FLOAT)
         p_above = jnp.clip(pa_raw, 0.0)
         P_raw = p_below + p_above
         P = jnp.clip(P_raw, _pfloor())
@@ -1896,7 +1896,7 @@ def _make_fused_batch_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
         bp_raw, dp_dz1_lo, dp_dz1_hi, dp_dz2_lo, dp_dz2_hi, dp_biv_drho = _bvn_rect(
             z1_lo, z1_hi, z2_lo, z2_hi, rho_val)
-        biv_on = (bp_raw > _pfloor()).astype(jnp.float64)
+        biv_on = (bp_raw > _pfloor()).astype(_FLOAT)
         dp_dz1_lo = dp_dz1_lo * biv_on
         dp_dz1_hi = dp_dz1_hi * biv_on
         dp_dz2_lo = dp_dz2_lo * biv_on
@@ -1911,7 +1911,7 @@ def _make_fused_batch_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         p1_comp = (1.0 - R_I_eff) * biv_prob
 
         p2_raw, dp2s_dlo, dp2s_dhi = _phi_diff(z2_lo, z2_hi)
-        p2_on = (p2_raw > _pfloor()).astype(jnp.float64)
+        p2_on = (p2_raw > _pfloor()).astype(_FLOAT)
         p2_source = jnp.clip(p2_raw, _pfloor())
         is_y1_top = (y1 == K1)
         p2_comp = jnp.where(is_y1_top, R_I_eff * (1.0 - R_S_eff) * p2_source, 0.0)
@@ -3344,7 +3344,7 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
         old_level_map_0 = jnp.array(old_level_map, dtype=jnp.int32)
         y_expanded = y[:, None]
         match = (y_expanded == old_level_map_0[None, :])
-        is_old_resp = jnp.any(match, axis=1).astype(jnp.float64)
+        is_old_resp = jnp.any(match, axis=1).astype(_FLOAT)
         old_idx = jnp.argmax(match, axis=1)
 
         log_lik = fused_loglik_cdp(
