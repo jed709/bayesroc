@@ -11,8 +11,29 @@ test_that("npy sidecar round-trips in every read layout", {
   expect_equal(.read_loglik_CDN(p), ll)
 
   ref_sn <- matrix(aperm(ll, c(2, 1, 3)), nrow = C * D, ncol = N)
-  expect_equal(.read_loglik_SN_full(p), ref_sn)
+  expect_equal(.read_loglik_SN_cols(p, 1L, N), ref_sn)
   expect_equal(.read_loglik_SN_cols(p, 5L, 9L), ref_sn[, 5:9])
+  expect_equal(.read_loglik_SN_cols(p, 3L, 14L, block = 7L), ref_sn[, 3:14])
+})
+
+test_that("npy reader rejects layouts it cannot stream", {
+  p <- tempfile(fileext = ".npy")
+  con <- file(p, "wb")
+  hdr <- "{'descr': '<f8', 'fortran_order': True, 'shape': (2, 3, 4), }"
+  hdr <- paste0(hdr, strrep(" ", (64L - ((11L + nchar(hdr)) %% 64L)) %% 64L), "\n")
+  writeBin(as.raw(c(0x93, charToRaw("NUMPY"), 1L, 0L)), con)
+  writeBin(as.integer(nchar(hdr)), con, size = 2, endian = "little")
+  writeBin(charToRaw(hdr), con)
+  writeBin(rnorm(24), con)
+  close(con)
+  expect_error(.loglik_meta(p), "Fortran order")
+
+  q <- tempfile(fileext = ".npy")
+  con <- file(q, "wb")
+  .npy_write_prefix(con, c(2L, 3L, 4L), ">f8")
+  writeBin(rnorm(24), con, endian = "big")
+  close(con)
+  expect_error(.loglik_meta(q), "little-endian")
 })
 
 test_that("f32 recode preserves shape and value to single precision", {

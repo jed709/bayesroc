@@ -2,6 +2,11 @@
 # .npy Header I/O
 # =============================================================================
 
+.npy_dtype <- function(precision) {
+  precision <- match.arg(precision, c("f64", "f32"))
+  if (precision == "f32") list(size = 4L, descr = "<f4") else list(size = 8L, descr = "<f8")
+}
+
 .npy_header_str <- function(shape, descr = "<f8") {
   shp_str <- if (length(shape) == 1) paste0(shape, ",") else paste(shape, collapse = ", ")
   hdr <- sprintf("{'descr': '%s', 'fortran_order': False, 'shape': (%s), }", descr, shp_str)
@@ -27,24 +32,19 @@
   shp <- regmatches(hdr, regexec("'shape':\\s*\\(([^)]*)\\)", hdr))[[1]][2]
   shp <- as.integer(strsplit(trimws(gsub(",\\s*$", "", shp)), ",\\s*")[[1]])
   if (!length(shp) || any(is.na(shp))) shp <- 1L
+  if (grepl("'fortran_order':\\s*True", hdr))
+    stop("'", basename(path), "' is stored in Fortran order; expected C order.", call. = FALSE)
   list(shape = shp,
        descr = regmatches(hdr, regexec("'descr':\\s*'([^']+)'", hdr))[[1]][2],
        offset = 8L + hl_size + as.integer(hl))
 }
 
-#' Write a numeric array to .npy
-#' @noRd
-write_npy <- function(x, path, precision = c("f64", "f32")) {
-  precision <- match.arg(precision)
-  sz <- if (precision == "f32") 4L else 8L
-  descr <- if (precision == "f32") "<f4" else "<f8"
-  x <- as.array(x)
-  shp <- dim(x); if (is.null(shp)) shp <- length(x)
-  data <- if (length(shp) == 1) as.numeric(x) else as.numeric(aperm(x, rev(seq_along(shp))))
-  con <- file(path, "wb"); on.exit(close(con))
-  .npy_write_prefix(con, shp, descr)
-  writeBin(data, con, size = sz, endian = "little")
-  invisible(path)
+.npy_float_size <- function(descr, path) {
+  isz <- suppressWarnings(as.integer(regmatches(descr, regexpr("[0-9]+$", descr))))
+  if (!length(isz) || is.na(isz) || !grepl("^[<|=]f(4|8)$", descr))
+    stop("'", basename(path), "': expected little-endian f4/f8 log_lik, got dtype '",
+         descr, "'.", call. = FALSE)
+  isz
 }
 
 # =============================================================================
@@ -56,33 +56,28 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
   if (length(shp) != 3L)
     stop(".loglik_meta: expected 3-D [chain, draw, N] log_lik, got shape (",
          paste(shp, collapse = ", "), ").", call. = FALSE)
-  isz <- as.integer(regmatches(h$descr, regexpr("[0-9]+$", h$descr)))
-  if (is.na(isz) || !grepl("^[<|=]?f", h$descr))
-    stop(".loglik_meta: expected float log_lik, got dtype '", h$descr, "'.", call. = FALSE)
+  isz <- .npy_float_size(h$descr, path)
   list(C = shp[1], D = shp[2], N = shp[3], S = as.double(shp[1]) * shp[2],
        isz = isz, offset = h$offset, descr = h$descr, shape = shp)
 }
 
-.read_loglik_SN_full <- function(path, block = 512L) {
-  m <- .loglik_meta(path); S <- as.integer(m$S); N <- m$N; isz <- m$isz
-  out <- matrix(0, nrow = S, ncol = N)
-  con <- file(path, "rb"); on.exit(close(con))
-  seek(con, m$offset, origin = "start")
-  s0 <- 1L
-  while (s0 <= S) {
-    b <- min(block, S - s0 + 1L)
-    v <- readBin(con, "double", b * N, size = isz, endian = "little")
-    out[s0:(s0 + b - 1L), ] <- matrix(v, nrow = b, ncol = N, byrow = TRUE)
-    s0 <- s0 + b
-  }
-  out
-}
-
-.read_loglik_SN_cols <- function(path, j0, j1) {
+.read_loglik_SN_cols <- function(path, j0, j1, block = 512L) {
   m <- .loglik_meta(path); S <- as.integer(m$S); N <- m$N; isz <- m$isz
   nc <- as.integer(j1 - j0 + 1L)
   out <- matrix(0, nrow = S, ncol = nc)
   con <- file(path, "rb"); on.exit(close(con))
+  if (2 * nc >= N) {
+    seek(con, m$offset, origin = "start")
+    s0 <- 1L
+    while (s0 <= S) {
+      b <- min(block, S - s0 + 1L)
+      v <- matrix(readBin(con, "double", b * N, size = isz, endian = "little"),
+                  nrow = b, ncol = N, byrow = TRUE)
+      out[s0:(s0 + b - 1L), ] <- v[, j0:j1, drop = FALSE]
+      s0 <- s0 + b
+    }
+    return(out)
+  }
   base <- m$offset + as.double(j0 - 1L) * isz
   rowbytes <- as.double(N) * isz
   for (s in seq_len(S)) {
@@ -116,9 +111,7 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
 # =============================================================================
 
 .write_loglik_npy_from_array <- function(ll, path, precision = c("f64", "f32")) {
-  precision <- match.arg(precision)
-  sz <- if (precision == "f32") 4L else 8L
-  descr <- if (precision == "f32") "<f4" else "<f8"
+  dt <- .npy_dtype(match.arg(precision)); sz <- dt$size; descr <- dt$descr
   d <- dim(ll)
   if (length(d) != 3L)
     stop(".write_loglik_npy_from_array: expected [chain, draw, N] array.", call. = FALSE)
@@ -133,8 +126,7 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
 
 .recode_loglik_npy <- function(src, dst, precision = "f32", block = 512L) {
   m <- .loglik_meta(src)
-  sz <- if (precision == "f32") 4L else 8L
-  descr <- if (precision == "f32") "<f4" else "<f8"
+  dt <- .npy_dtype(precision); sz <- dt$size; descr <- dt$descr
   ci <- file(src, "rb"); co <- file(dst, "wb"); on.exit({ close(ci); close(co) })
   seek(ci, m$offset, origin = "start")
   .npy_write_prefix(co, m$shape, descr)
@@ -149,22 +141,20 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
 }
 
 .emit_loglik_side <- function(src, side, precision = "f32") {
-  tsz <- if (precision == "f32") 4L else 8L
-  if (.loglik_meta(src)$isz == tsz) file.copy(src, side, overwrite = TRUE)
-  else .recode_loglik_npy(src, side, precision)
+  if (.loglik_meta(src)$isz == .npy_dtype(precision)$size) {
+    if (!isTRUE(file.copy(src, side, overwrite = TRUE)))
+      stop("Could not write the log-likelihood file '", side, "'.", call. = FALSE)
+  } else {
+    .recode_loglik_npy(src, side, precision)
+  }
   invisible(side)
 }
 
 .merge_loglik_npy <- function(paths, restart, out_path, chunk = 64e6) {
-  hs <- lapply(paths, .npy_header); shp <- lapply(hs, `[[`, "shape")
-  descr <- hs[[1]]$descr
+  hs <- lapply(paths, .loglik_meta); shp <- lapply(hs, `[[`, "shape")
+  descr <- hs[[1]]$descr; isz <- hs[[1]]$isz
   if (any(vapply(hs, function(h) h$descr, "") != descr))
     stop(".merge_loglik_npy: log_lik files have mixed dtypes.", call. = FALSE)
-  isz <- as.integer(regmatches(descr, regexpr("[0-9]+$", descr)))
-  if (is.na(isz) || !grepl("^[<|=]?f", descr))
-    stop(".merge_loglik_npy: expected float log_lik files, got '", descr, "'.", call. = FALSE)
-  if (any(vapply(shp, length, 1L) != 3L))
-    stop(".merge_loglik_npy: expected 3-D [chain, draw, N] log_lik.", call. = FALSE)
 
   copy_block <- function(con_in, con_out, nbytes) {
     while (nbytes > 0) {
@@ -220,8 +210,7 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
   files <- stan_fit$output_files()
   files <- files[file.exists(files)]
   if (!length(files)) return(NULL)
-  sz <- if (precision == "f32") 4L else 8L
-  descr <- if (precision == "f32") "<f4" else "<f8"
+  dt <- .npy_dtype(precision); sz <- dt$size; descr <- dt$descr
 
   con <- NULL
   N <- NULL
@@ -276,7 +265,19 @@ write_npy <- function(x, path, precision = c("f64", "f32")) {
   if (length(out) != 1L || !is.finite(out)) NA_real_ else out
 }
 
+.ram_probe <- new.env(parent = emptyenv())
+
 .free_ram_gb <- function() {
+  now <- Sys.time()
+  if (!is.null(.ram_probe$at) && difftime(now, .ram_probe$at, units = "secs") < 60) {
+    return(.ram_probe$gb)
+  }
+  .ram_probe$gb <- .free_ram_gb_uncached()
+  .ram_probe$at <- now
+  .ram_probe$gb
+}
+
+.free_ram_gb_uncached <- function() {
   out <- tryCatch({
     if (.Platform$OS.type == "windows") {
       x <- system2("powershell", c("-NoProfile", "-Command",

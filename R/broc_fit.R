@@ -27,7 +27,8 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
                         elapsed = NULL, draws_array = NULL,
                         max_treedepth = 10L, sampler = "nuts",
                         save_loglik = TRUE,
-                        diagnostics = NULL, loglik_path = NULL) {
+                        diagnostics = NULL, loglik_path = NULL,
+                        loglik_owned = !is.null(loglik_path), loo = NULL) {
 
   self <- new.env(parent = emptyenv())
 
@@ -42,6 +43,11 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$.save_loglik <- isTRUE(save_loglik)
   self$.diagnostics <- diagnostics
   self$.loglik_path <- loglik_path
+  self$.loglik_owned <- isTRUE(loglik_owned) && !is.null(loglik_path)
+  self$.loo <- loo
+  reg.finalizer(self, function(e) {
+    if (.owned_sidecar(e)) unlink(e$.loglik_path)
+  })
 
   use_cmdstan <- backend == "stan" && !is.null(backend_fit)
 
@@ -49,9 +55,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$draws <- function(variables = NULL, format = "array") {
     if (identical(variables, "log_lik") && !is.null(self$.loglik_path)) {
       if (!file.exists(self$.loglik_path)) {
-        stop("The log_lik sidecar '", basename(self$.loglik_path),
-             "' is gone. Refit with save_loglik = TRUE, or use loo = TRUE to ",
-             "compute LOO at fit time.", call. = FALSE)
+        stop(.missing_sidecar_msg(self$.loglik_path), call. = FALSE)
       }
       ll <- .read_loglik_CDN(self$.loglik_path)
       arr <- aperm(ll, c(2, 1, 3))
@@ -142,13 +146,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
       nc <- self$.num_chains
       if (identical(self$.sampler, "drghmc")) {
         return(list(
-          ebfmi = if (!is.null(ef$energy)) {
-            vapply(seq_len(nc), function(ch) {
-              e <- ef$energy[ch, ]; de <- diff(e)
-              sum(de^2) / sum((e - mean(e))^2)
-            }, numeric(1))
-          } else rep(NA_real_, nc),
-          accept = if (!is.null(ef$accept_prob)) mean(ef$accept_prob) else NA_real_,
+          accept = if (!is.null(ef$accepted)) mean(ef$accepted) else NA_real_,
           dr_stage = if (!is.null(ef$dr_stage)) {
             s <- ef$dr_stage
             c(s1 = mean(s == 1), s2 = mean(s == 2),
@@ -239,9 +237,10 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' @param compress Compression for `saveRDS`. Default `FALSE` (fast; posterior
 #'   draws barely compress). Set `"gzip"`/`"xz"` for a smaller, slower file.
 #' @param verbose If `TRUE` (default), print a brief progress message.
-#' @param include_loglik Whether to write `log_lik` (needed for [loo()]). `NULL`
+#' @param include_loglik Whether to keep `log_lik` (needed for [loo()]). `NULL`
 #'   (default) follows the fit's `fit_broc(save_loglik = )` setting; `TRUE`/`FALSE`
-#'   overrides it for this save.
+#'   overrides it for this save. When kept, the on-disk log-likelihood is written
+#'   next to `file` as `<file>_loglik.npy`.
 #' @return Invisibly returns `file`.
 #' @seealso [load_broc_fit()].
 #' @examples
@@ -257,7 +256,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' @export
 save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
                           include_loglik = NULL,
-                          re_store = c("f32", "f64", "int16", "int8")) {
+                          re_store = c("f64", "f32", "int16", "int8")) {
   if (!inherits(fit, "broc_fit")) {
     stop("`fit` must be a broc_fit object.", call. = FALSE)
   }
@@ -265,7 +264,7 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
   backend <- fit$.backend %||% "stan"
   keep_ll <- if (!is.null(include_loglik)) isTRUE(include_loglik)
              else isTRUE(fit$.save_loglik %||% TRUE)
-  persist_side <- isTRUE(include_loglik)
+  persist_side <- keep_ll
 
   if (verbose) {
     message("Saving broc_fit to ", file, "...")
@@ -277,7 +276,9 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
     side <- paste0(tools::file_path_sans_ext(file), "_loglik.npy")
     if (!identical(normalizePath(fit$.loglik_path, winslash = "/", mustWork = FALSE),
                    normalizePath(side, winslash = "/", mustWork = FALSE))) {
-      file.copy(fit$.loglik_path, side, overwrite = TRUE)
+      if (!isTRUE(file.copy(fit$.loglik_path, side, overwrite = TRUE))) {
+        stop("Could not write the log-likelihood file '", side, "'.", call. = FALSE)
+      }
     }
   }
 
@@ -300,7 +301,8 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       draws_array      = da,
       save_loglik      = FALSE,
       loglik_sidecar   = NULL,
-      diagnostics      = fit$diagnostic_summary()
+      diagnostics      = fit$diagnostic_summary(),
+      loo              = fit$.loo
     )
   } else {
     bundle_backend_fit <- if (backend == "stan") {
@@ -326,7 +328,8 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       sampler          = fit$.sampler %||% "nuts",
       draws_array      = fit$.draws_array,
       save_loglik      = TRUE,
-      loglik_sidecar   = if (is.null(side)) NULL else basename(side)
+      loglik_sidecar   = if (is.null(side)) NULL else basename(side),
+      loo              = fit$.loo
     )
   }
   if (!is.null(bundle$draws_array)) {
@@ -374,9 +377,15 @@ load_broc_fit <- function(file) {
   side <- NULL
   if (!is.null(obj$loglik_sidecar)) {
     cand <- file.path(dirname(file), obj$loglik_sidecar)
-    if (file.exists(cand)) side <- cand
+    if (file.exists(cand)) {
+      side <- cand
+    } else {
+      warning("The log-likelihood file '", obj$loglik_sidecar, "' saved with this fit ",
+              "was not found next to '", basename(file), "'; loo() is unavailable ",
+              "unless it is restored there.", call. = FALSE)
+    }
   }
-  new_broc_fit(
+  fit <- new_broc_fit(
     backend_fit  = obj$backend_fit,
     model        = obj$model,
     backend      = obj$backend,
@@ -388,8 +397,14 @@ load_broc_fit <- function(file) {
     sampler      = obj$sampler %||% "nuts",
     save_loglik  = obj$save_loglik %||% TRUE,
     diagnostics  = obj$diagnostics,
-    loglik_path  = side
+    loglik_path  = side,
+    loglik_owned = FALSE,
+    loo          = obj$loo
   )
+  if (is.null(side) && (!is.null(obj$loglik_sidecar) || !isTRUE(obj$save_loglik))) {
+    fit$.loglik_dropped <- TRUE
+  }
+  fit
 }
 
 # =============================================================================

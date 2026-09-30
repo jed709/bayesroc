@@ -2,7 +2,7 @@
 # Draw Packing
 # =============================================================================
 
-.RE_STORE <- c("f32", "f64", "int16", "int8")
+.RE_STORE <- c("f64", "f32", "int16", "int8")
 .ZSTD_LEVEL <- 9L
 
 .byte_shuffle   <- function(b, w) if (w <= 1L) b else as.vector(t(matrix(b, nrow = w)))
@@ -16,8 +16,26 @@
 }
 
 .zd <- function(b, zstd) {
-  if (isTRUE(zstd)) qs2::zstd_decompress_raw(b)
-  else memDecompress(b, type = "xz")
+  if (!isTRUE(zstd)) return(memDecompress(b, type = "xz"))
+  if (!.have_qs2()) {
+    stop("This fit was saved with zstd compression; install the 'qs2' package ",
+         "to load it.", call. = FALSE)
+  }
+  qs2::zstd_decompress_raw(b)
+}
+
+.PACK_BLOCK <- 2^26
+
+.pack_blocks <- function(x, write) {
+  n <- length(x)
+  if (n <= .PACK_BLOCK) return(.zc(write(x)))
+  starts <- seq(1, n, by = .PACK_BLOCK)
+  lapply(starts, function(s) .zc(write(x[s:min(n, s + .PACK_BLOCK - 1)])))
+}
+
+.unpack_blocks <- function(raw, zstd, read) {
+  if (is.raw(raw)) return(read(.zd(raw, zstd)))
+  unlist(lapply(raw, function(b) read(.zd(b, zstd))), use.names = FALSE)
 }
 
 .col_range <- function(M) {
@@ -27,7 +45,7 @@
   list(min = mn, max = mx)
 }
 
-.pack_array <- function(arr, store = "f32") {
+.pack_array <- function(arr, store = "f64") {
   store <- match.arg(store, .RE_STORE)
   d <- dim(arr); if (is.null(d)) d <- length(arr)
   x <- as.double(arr)
@@ -35,45 +53,43 @@
     stop(".pack_array: non-finite values not supported.", call. = FALSE)
   }
   has_qs2 <- .have_qs2()
-  if (store == "f64") {
-    return(list(codec = "f64", dim = d, qs2 = has_qs2,
-                raw = .zc(.byte_shuffle(writeBin(x, raw(), 8L, "little"), 8L))))
-  }
-  if (store == "f32") {
-    return(list(codec = "f32", dim = d, qs2 = has_qs2,
-                raw = .zc(.byte_shuffle(writeBin(x, raw(), 4L, "little"), 4L))))
+  if (store %in% c("f64", "f32")) {
+    w <- if (store == "f64") 8L else 4L
+    return(list(codec = store, dim = d, qs2 = has_qs2,
+                raw = .pack_blocks(x, function(v)
+                  .byte_shuffle(writeBin(v, raw(), w, "little"), w))))
   }
   S <- prod(d[1:2]); P <- length(x) %/% S
   M <- matrix(x, S, P)
   rg <- .col_range(M); rng <- rg$max - rg$min; rng[rng <= 0] <- 1
   lv <- if (store == "int16") 65535 else 255
-  codes <- round(sweep(sweep(M, 2, rg$min, "-"), 2, rng, "/") * lv)
+  codes <- as.integer(round(sweep(sweep(M, 2, rg$min, "-"), 2, rng, "/") * lv))
   b <- if (store == "int16") {
-    .byte_shuffle(writeBin(as.integer(codes) - 32768L, raw(), 2L, "little"), 2L)
+    .pack_blocks(codes - 32768L, function(v)
+      .byte_shuffle(writeBin(v, raw(), 2L, "little"), 2L))
   } else {
-    writeBin(as.integer(codes) - 128L, raw(), 1L, "little")
+    .pack_blocks(codes - 128L, function(v) writeBin(v, raw(), 1L, "little"))
   }
   list(codec = store, dim = d, qs2 = has_qs2, min = rg$min, max = rg$max,
-       raw = .zc(b))
+       raw = b)
 }
 
 .unpack_array <- function(p) {
   d <- p$dim; n <- prod(d)
-  if (p$codec == "f64") {
-    return(array(readBin(.byte_unshuffle(.zd(p$raw, p$qs2), 8L), "double", n, 8L,
-                         endian = "little"), d))
-  }
-  if (p$codec == "f32") {
-    return(array(readBin(.byte_unshuffle(.zd(p$raw, p$qs2), 4L), "double", n, 4L,
-                         endian = "little"), d))
+  if (p$codec %in% c("f64", "f32")) {
+    w <- if (p$codec == "f64") 8L else 4L
+    return(array(.unpack_blocks(p$raw, p$qs2, function(b)
+      readBin(.byte_unshuffle(b, w), "double", length(b) %/% w, w, endian = "little")), d))
   }
   S <- prod(d[1:2]); P <- n %/% S
   lv <- if (p$codec == "int16") 65535 else 255
   ints <- if (p$codec == "int16") {
-    readBin(.byte_unshuffle(.zd(p$raw, p$qs2), 2L), "integer", n, 2L,
-            endian = "little") + 32768L
+    .unpack_blocks(p$raw, p$qs2, function(b)
+      readBin(.byte_unshuffle(b, 2L), "integer", length(b) %/% 2L, 2L,
+              endian = "little")) + 32768L
   } else {
-    readBin(.zd(p$raw, p$qs2), "integer", n, 1L, endian = "little") + 128L
+    .unpack_blocks(p$raw, p$qs2, function(b)
+      readBin(b, "integer", length(b), 1L, endian = "little")) + 128L
   }
   M <- matrix(ints, S, P); rng <- p$max - p$min; rng[rng <= 0] <- 1
   array(as.double(sweep(sweep(M / lv, 2, rng, "*"), 2, p$min, "+")), d)
@@ -94,6 +110,7 @@
   arr <- as.array(sub)
   packed <- list(data = .pack_array(arr, re_store),
                  vars = re_vars,
+                 order = vars,
                  store = re_store)
   keep <- setdiff(vars, re_vars)
   list(draws = posterior::subset_draws(da, variable = keep), packed = packed)
@@ -105,5 +122,7 @@
   if (is.null(packed)) return(da)
   arr <- .unpack_array(packed$data)
   dimnames(arr) <- list(iteration = NULL, chain = NULL, variable = packed$vars)
-  posterior::bind_draws(da, posterior::as_draws_array(arr), along = "variable")
+  out <- posterior::bind_draws(da, posterior::as_draws_array(arr), along = "variable")
+  if (!is.null(packed$order)) out <- posterior::subset_draws(out, variable = packed$order)
+  out
 }

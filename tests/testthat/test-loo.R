@@ -4,9 +4,9 @@ test_that("loo() returns a valid loo object and loo_compare() ranks models", {
   d <- .fixture_univariate(sigma = 1.3)
   m_ev <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
   m_uv <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  f_ev <- fit_broc(m_ev, backend = "stan", refresh = 0, seed = 1,
+  f_ev <- fit_broc(m_ev, backend = "stan", refresh = 50, seed = 1,
                    parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
-  f_uv <- fit_broc(m_uv, backend = "stan", refresh = 0, seed = 1,
+  f_uv <- fit_broc(m_uv, backend = "stan", refresh = 50, seed = 1,
                    parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
 
   l_ev <- loo(f_ev, cores = 1)
@@ -29,7 +29,7 @@ test_that("loo() on an aggregated fit reproduces the trial-level result", {
   expect_lt(nrow(agg), nrow(d))
 
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
 
   l <- loo(f, cores = 1)

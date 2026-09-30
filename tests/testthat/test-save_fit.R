@@ -15,7 +15,7 @@ test_that("Stan: save_broc_fit()/load_broc_fit() survive loss of temp CSVs", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                   parallel_chains = 2, chains = 2,
                   iter_warmup = 200, iter_sampling = 200)
   ref <- .draws_mean(fit)
@@ -38,18 +38,18 @@ test_that("fit_broc(file=) saves, reloads instead of refitting, and refits on de
   path <- tempfile()
   rds  <- paste0(path, ".rds")
 
-  fit <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                   parallel_chains = 2, chains = 2,
                   iter_warmup = 200, iter_sampling = 200, file = path)
   expect_true(file.exists(rds))
   ref <- .draws_mean(fit)
 
-  fit_loaded <- fit_broc(m, backend = "stan", refresh = 0, seed = 999,
+  fit_loaded <- fit_broc(m, backend = "stan", refresh = 50, seed = 999,
                          parallel_chains = 2, chains = 2,
                          iter_warmup = 200, iter_sampling = 200, file = path)
   expect_equal(.draws_mean(fit_loaded), ref, tolerance = 1e-8)
 
-  fit_refit <- fit_broc(m, backend = "stan", refresh = 0, seed = 7,
+  fit_refit <- fit_broc(m, backend = "stan", refresh = 50, seed = 7,
                         parallel_chains = 2, chains = 2,
                         iter_warmup = 200, iter_sampling = 200,
                         file = path, file_refit = TRUE)

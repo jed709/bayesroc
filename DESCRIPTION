@@ -14,7 +14,6 @@ RoxygenNote: 7.3.3
 Depends:
     R (>= 4.1.0)
 Imports:
-    qs2,
     stats,
     utils,
     tools,
@@ -28,6 +27,7 @@ Imports:
     bayesplot,
     rstantools
 Suggests:
+    qs2,
     ggplot2,
     ggdist,
     knitr,

@@ -10,7 +10,7 @@ test_that("Stan fits write a log_lik sidecar and keep it out of the draws array"
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
 
   expect_true(!is.null(f$.loglik_path))
@@ -29,25 +29,29 @@ test_that("streamed loo matches the brute-force trial-level oracle", {
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
                 loglik_precision = "f64")
 
   l <- loo(f, cores = 1)
   expect_equal(dim(l)[2], nrow(fx$trial))
 
-  ll <- as.matrix(f$draws(variables = "log_lik", format = "matrix"))
+  pr <- predict(f, type = "response", summary = FALSE)
+  y <- m$stan_data$y
+  ll <- vapply(seq_along(y), function(n) log(pr[, n, y[n]]), numeric(dim(pr)[1]))
+  expect_equal(ll, unname(unclass(as.matrix(f$draws(variables = "log_lik", format = "matrix")))),
+               tolerance = 1e-5, ignore_attr = TRUE)
   cnt <- m$stan_data$counts
   ll_exp <- ll[, rep.int(seq_len(ncol(ll)), cnt), drop = FALSE]
   cid <- rep(seq_len(f$num_chains()), each = nrow(ll) / f$num_chains())
   ref <- loo::loo(ll_exp, r_eff = loo::relative_eff(exp(ll_exp), chain_id = cid),
                   cores = 1)
 
-  expect_equal(l$estimates, ref$estimates, tolerance = 1e-8)
-  expect_equal(l$pointwise[, "elpd_loo"], ref$pointwise[, "elpd_loo"],
-               tolerance = 1e-8)
+  expect_equal(l$estimates, ref$estimates, tolerance = 1e-5)
+  expect_equal(unname(l$pointwise[, "elpd_loo"]), unname(ref$pointwise[, "elpd_loo"]),
+               tolerance = 1e-5)
   expect_equal(unname(l$diagnostics$pareto_k), unname(ref$diagnostics$pareto_k),
-               tolerance = 1e-8)
+               tolerance = 1e-4)
 
   l4 <- loo(f, cores = 4)
   expect_equal(l4$estimates, l$estimates, tolerance = 1e-8)
@@ -60,7 +64,7 @@ test_that("chunking does not change the streamed result", {
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
                 loglik_precision = "f64")
   wide <- loo(f, cores = 1)
@@ -73,7 +77,7 @@ test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
                 loo = TRUE)
 
@@ -87,7 +91,7 @@ test_that("drop_loglik frees a temp sidecar and disables loo", {
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
   p <- f$.loglik_path
   expect_true(file.exists(p))
@@ -95,6 +99,17 @@ test_that("drop_loglik frees a temp sidecar and disables loo", {
   f <- suppressMessages(drop_loglik(f))
   expect_false(file.exists(p))
   expect_null(f$.loglik_path)
+  expect_error(loo(f, cores = 1), "No log_lik is available")
+})
+
+test_that("r_eff survives log_lik far below exp() underflow", {
+  set.seed(3)
+  ll <- matrix(rnorm(400 * 5, -900, 0.5), 400, 5)
+  cid <- rep(1:4, each = 100)
+  r <- .stable_r_eff(ll, cid, 1)
+  expect_true(all(is.finite(r)))
+  ref <- loo::relative_eff(exp(ll + 900), chain_id = cid)
+  expect_equal(unname(r), unname(ref), tolerance = 0.05)
 })
 
 test_that("loo() errors actionably once log_lik is gone", {
@@ -111,23 +126,52 @@ test_that("save_broc_fit persists the sidecar only when asked", {
   skip_if_no_cmdstan()
   fx <- .agg_fixture()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  f <- fit_broc(m, backend = "stan", refresh = 0, seed = 1,
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
                 loglik_precision = "f64")
   ref <- loo(f, cores = 1)$estimates
 
   plain <- tempfile(fileext = ".rds")
-  suppressMessages(save_broc_fit(f, plain, verbose = FALSE))
+  suppressMessages(save_broc_fit(f, plain, verbose = FALSE, include_loglik = FALSE))
   expect_false(file.exists(paste0(tools::file_path_sans_ext(plain), "_loglik.npy")))
 
   kept <- tempfile(fileext = ".rds")
-  suppressMessages(save_broc_fit(f, kept, verbose = FALSE, include_loglik = TRUE))
+  suppressMessages(save_broc_fit(f, kept, verbose = FALSE))
   side <- paste0(tools::file_path_sans_ext(kept), "_loglik.npy")
   expect_true(file.exists(side))
 
   f2 <- load_broc_fit(kept)
   expect_equal(normalizePath(f2$.loglik_path), normalizePath(side))
   expect_equal(loo(f2, cores = 1)$estimates, ref, tolerance = 1e-8)
+
+  f2 <- suppressMessages(drop_loglik(f2))
+  expect_true(file.exists(side))
+  expect_equal(loo(f2, cores = 1)$estimates, ref, tolerance = 1e-8)
+
+  unlink(side)
+  expect_warning(f3 <- load_broc_fit(kept), "was not found")
+  expect_error(loo(f3, cores = 1), "No log_lik is available")
+})
+
+test_that("a fit-time loo result survives save and load", {
+  skip_if_no_cmdstan()
+  fx <- .agg_fixture()
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
+  f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
+                parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
+                loo = TRUE)
+  file <- tempfile(fileext = ".rds")
+  suppressMessages(save_broc_fit(f, file, verbose = FALSE))
+  f2 <- load_broc_fit(file)
+  expect_equal(loo(f2)$estimates, f$.loo$estimates)
+  expect_error(loo(f2, type = "cell"), "only a stored type = 'trial'")
+
+  k <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
+                parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
+                loo = TRUE, save_loglik = TRUE)
+  expect_true(file.exists(k$.loglik_path))
+  expect_equal(dim(suppressWarnings(loo(k, cores = 1, type = "cell")))[2],
+               nrow(fx$agg))
 })
 
 test_that("keep_re controls whether JAX returns per-level RE draws", {
@@ -163,7 +207,7 @@ test_that("Stan and JAX sidecars agree on the same model", {
   skip_if_no_jax()
   fx <- .agg_fixture(n_per = 120)
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
-  fs <- fit_broc(m, backend = "stan", refresh = 0, seed = 2,
+  fs <- fit_broc(m, backend = "stan", refresh = 50, seed = 2,
                  parallel_chains = 2, chains = 2,
                  iter_warmup = 300, iter_sampling = 300)
   fj <- fit_broc(m, backend = "jax", seed = 2, chains = 2, parallel_chains = 2,

@@ -17,13 +17,25 @@
   if (!is.null(p) && file.exists(p)) p else NULL
 }
 
-.under_tempdir <- function(p) {
-  if (is.null(p) || !nzchar(p) || !file.exists(p)) return(FALSE)
-  root <- normalizePath(dirname(tempdir()), winslash = "/", mustWork = FALSE)
+.missing_sidecar_msg <- function(p) {
+  paste0("The log-likelihood file '", basename(p), "' no longer exists. Files written ",
+         "during a session are temporary; keep log_lik across sessions with ",
+         "save_broc_fit() or fit_broc(file = ), not saveRDS(). Otherwise refit.")
+}
+
+.owned_sidecar <- function(fit) {
+  p <- fit$.loglik_path
+  if (!isTRUE(fit$.loglik_owned) || is.null(p) || !nzchar(p) || !file.exists(p)) return(FALSE)
+  root <- paste0(normalizePath(tempdir(), winslash = "/", mustWork = FALSE), "/")
   startsWith(normalizePath(p, winslash = "/", mustWork = FALSE), root)
 }
 
 #' Delete a fit's temporary log_lik sidecar to reclaim disk
+#'
+#' Only a log-likelihood file that bayesroc itself wrote to this session's
+#' temporary directory is deleted; a file saved with [save_broc_fit()] is left
+#' in place. After dropping, [loo()] is unavailable for the fit on either
+#' backend (a stored `fit$.loo` is kept).
 #'
 #' @param fit A `broc_fit`.
 #' @return The slimmed fit, invisibly.
@@ -32,17 +44,20 @@ drop_loglik <- function(fit) {
   stopifnot(inherits(fit, "broc_fit"))
   p <- fit$.loglik_path
   freed <- 0
-  if (!is.null(p) && file.exists(p) && .under_tempdir(p)) {
+  if (.owned_sidecar(fit)) {
     freed <- as.double(file.size(p))
     unlink(p)
     fit$.loglik_path <- NULL
+    fit$.loglik_owned <- FALSE
+    fit$.loglik_dropped <- TRUE
   } else if (!is.null(p) && !file.exists(p)) {
     fit$.loglik_path <- NULL
+    fit$.loglik_dropped <- TRUE
   }
   kept <- !is.null(fit$.loglik_path)
   message(sprintf("drop_loglik: freed %.2f GB%s. ", freed / 1e9,
                   if (freed == 0) " (nothing to remove)" else ""),
-          if (kept) "A persistent sidecar remains; loo() still works."
+          if (kept) "A saved log-likelihood file remains; loo() still works."
           else "loo() is unavailable for this fit until it is refit.")
   invisible(fit)
 }
@@ -66,7 +81,7 @@ drop_loglik <- function(fit) {
 #' @param cores PSOCK workers for PSIS (default 4).
 #' @param type CV partition for aggregated fits: `"trial"` (default) or
 #'   `"cell"`. Ignored for trial-level fits.
-#' @param chunk_mb Per-worker column-chunk size in MB. `NULL` auto-sizes.
+#' @param chunk_mb Per-worker column-chunk size in MiB. `NULL` auto-sizes.
 #' @param mem_budget_gb Total RAM budget for the pool; `NULL` uses ~60% of free.
 #' @param ... Additional arguments passed to [loo::loo()].
 #' @return A `loo` object.
@@ -88,7 +103,18 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
 
   counts <- .broc_counts(fit)
   path <- .loglik_path(fit)
-  cleanup <- NULL
+
+  if (is.null(path) && !is.null(fit$.loglik_path)) {
+    stop(.missing_sidecar_msg(fit$.loglik_path), call. = FALSE)
+  }
+  if (is.null(path) && (isTRUE(fit$.loglik_dropped) || !is.null(cached))) {
+    stop("No log_lik is available for this fit",
+         if (!is.null(cached)) paste0(" (only a stored type = '",
+                                      attr(cached, "broc_loo_type") %||% "trial",
+                                      "' loo result is kept)"),
+         ". Refit with save_loglik = TRUE to run loo(type = '", type, "').",
+         call. = FALSE)
+  }
 
   if (is.null(path)) {
     ll <- tryCatch(
@@ -112,10 +138,8 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
   } else if (!is.null(counts) && all(counts == 1L)) {
     counts <- NULL
   }
-  if (!is.null(cleanup)) on.exit(unlink(cleanup), add = TRUE)
-
   .loo_stream(path, counts = counts, type = type, cores = cores,
-              chunk_mb = chunk_mb, mem_budget_gb = mem_budget_gb)
+              chunk_mb = chunk_mb, mem_budget_gb = mem_budget_gb, ...)
 }
 
 .loo_in_memory <- function(ll, fit, counts, type, cores, ...) {
@@ -125,30 +149,43 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
     ll <- ll * rep(counts, each = S)
     counts <- NULL
   }
-  r_eff <- loo::relative_eff(exp(ll), chain_id = chain_id, cores = cores)
+  if (!all(is.finite(ll))) {
+    warning(sum(!is.finite(ll)), " non-finite log_lik replaced with -1e6", call. = FALSE)
+    ll[!is.finite(ll)] <- -1e6
+  }
+  r_eff <- .stable_r_eff(ll, chain_id, cores)
   res <- loo::loo(ll, r_eff = r_eff, cores = cores, ...)
   if (is.null(counts)) return(res)
   .expand_loo_by_counts(res$pointwise, res$diagnostics$pareto_k,
                         res$diagnostics$n_eff, counts, S)
 }
 
+.stable_r_eff <- function(ll, chain_id, cores) {
+  lik <- exp(sweep(ll, 2L, apply(ll, 2L, max)))
+  r_eff <- loo::relative_eff(lik, chain_id = chain_id, cores = cores)
+  r_eff[!is.finite(r_eff)] <- 1
+  r_eff
+}
+
+.LOO_CHUNK_COPIES <- 9
+
 .loo_stream <- function(path, counts, type, cores = 4, chunk_mb = NULL,
-                        mem_budget_gb = NULL) {
+                        mem_budget_gb = NULL, ...) {
+  loo_args <- list(...)
   meta <- .loglik_meta(path)
   C <- meta$C; D <- meta$D; N <- meta$N; S <- as.integer(meta$S)
   chain_id <- rep(seq_len(C), each = D)
   n_workers <- max(1L, min(as.integer(cores), N))
 
-  FOOT <- 9
   budget_gb <- mem_budget_gb
   if (is.null(budget_gb)) {
     fr <- .free_ram_gb()
     budget_gb <- if (is.na(fr)) 8 else max(2, 0.6 * fr)
   }
   budget_cols <- max(1L, floor(budget_gb * 2^30 /
-                                 (as.double(n_workers) * FOOT * S * 8)))
+                                 (as.double(n_workers) * .LOO_CHUNK_COPIES * S * 8)))
   user_cols <- if (is.null(chunk_mb)) budget_cols else
-    max(1L, floor(chunk_mb * 1e6 / (as.double(S) * 8)))
+    max(1L, floor(chunk_mb * 2^20 / (as.double(S) * 8)))
   cols_per_chunk <- max(1L, min(budget_cols, user_cols))
   n_chunks <- min(N, max(n_workers, ceiling(N / cols_per_chunk)))
 
@@ -172,13 +209,8 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
                                         sum(!is.finite(ll))))
         ll[!is.finite(ll)] <- -1e6
       }
-      r_eff <- loo::relative_eff(exp(ll), chain_id = chain_id)
-      if (any(is.na(r_eff))) {
-        captured <- c(captured, sprintf("%d NA r_eff replaced with 1.0",
-                                        sum(is.na(r_eff))))
-        r_eff[is.na(r_eff)] <- 1
-      }
-      loo::loo(ll, r_eff = r_eff, cores = 1)
+      r_eff <- .stable_r_eff(ll, chain_id, 1)
+      do.call(loo::loo, c(list(ll, r_eff = r_eff, cores = 1), loo_args))
     }, warning = function(w) {
       captured[[length(captured) + 1L]] <<- conditionMessage(w)
       invokeRestart("muffleWarning")
@@ -194,8 +226,8 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
     parallel::clusterEvalQ(cl, library(loo))
     fn_env <- environment(.read_loglik_SN_cols)
     parallel::clusterExport(cl, c(".read_loglik_SN_cols", ".loglik_meta",
-                                  ".npy_header"), envir = fn_env)
-    parallel::clusterExport(cl, c("path", "chain_id", "wcounts"),
+                                  ".npy_header", ".stable_r_eff"), envir = fn_env)
+    parallel::clusterExport(cl, c("path", "chain_id", "wcounts", "loo_args"),
                             envir = environment())
     environment(worker) <- globalenv()
     res <- parallel::clusterApplyLB(cl, ranges, worker)
