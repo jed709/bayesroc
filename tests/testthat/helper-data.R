@@ -35,7 +35,7 @@ library(bayesroc)
   sub_re  <- rnorm(n_sub, 0, 0.4)
   item_re <- rnorm(n_item, 0, 0.4)
   rows <- expand.grid(sub = seq_len(n_sub), item = seq_len(n_item))
-  rows$is_old <- rep(c(0L, 1L), length.out = nrow(rows))
+  rows$is_old <- as.integer((rows$sub + rows$item) %% 2L == 0L)
   mu <- ifelse(rows$is_old == 1L, 1.0, 0) + sub_re[rows$sub] + item_re[rows$item]
   rows$item_resp <- as.integer(cut(rnorm(nrow(rows), mu, 1), c(-Inf, thresh, Inf)))
   rows$sub  <- factor(rows$sub)
