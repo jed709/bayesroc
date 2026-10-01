@@ -38,6 +38,23 @@ resp <- function(response1, response2) {
 #' @inheritParams broc
 #' @return A `brf` object: the model specification to pass to [broc()].
 #'
+#' @section Random effects:
+#' Group-level terms follow lme4/brms syntax. `(1 + x | g)` estimates every
+#' correlation among the term's effects; `(1 + x || g)` keeps the effects of
+#' different terms uncorrelated (it is shorthand for `(1 | g) + (0 + x | g)`).
+#' Several terms for one grouping factor may be given; their effects are
+#' correlated within a term and uncorrelated across terms. `(1 | id | g)` in
+#' several parameter formulas correlates those parameters' effects.
+#'
+#' On the thresholds (`criterion`, `criterion2`) every term has one effect per
+#' threshold component (the middle threshold and each gap), and by default those
+#' are correlated with one another within the term. Wrapping the grouping factor
+#' as `gr(g, cor_thresholds = FALSE)` makes the threshold components uncorrelated
+#' with one another while keeping each component's correlations across terms:
+#' `(1 + x | gr(g, cor_thresholds = FALSE))` correlates each threshold's
+#' intercept with its own slope only, and
+#' `(1 + x || gr(g, cor_thresholds = FALSE))` makes every effect independent.
+#'
 #' @examples
 #' # Standard SDT
 #' brf(conf | old ~ cond + (1|subj),
@@ -56,7 +73,7 @@ resp <- function(response1, response2) {
 #' brf(rating ~ cond, cutpoints ~ 1 + (1|subj))
 #' @export
 brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
-                 counts = NULL, cor_threshold = NULL, threads = NULL,
+                 counts = NULL, threads = NULL,
                  gap_link = NULL) {
 
   if (!inherits(formula, "formula")) {
@@ -109,7 +126,6 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
     family = family,
     encoding_vars = encoding_vars,
     counts = counts,
-    cor_threshold = cor_threshold,
     threads = threads,
     gap_link = gap_link
   )

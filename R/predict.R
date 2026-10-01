@@ -1206,7 +1206,7 @@ sample_criterion_new_u <- function(draws, crit_random, criterion_name, S, md) {
               call. = FALSE)
       next
     }
-    use_corr <- isTRUE(md$cor_threshold) && isTRUE(re$correlated) && re$dim > 1
+    use_corr <- isTRUE(re$correlated) && re$dim > 1
     cache[[group]] <- sample_new_u_correlated(
       draws, criterion_name, group, dim = re$dim, n_new = n_new, S = S,
       correlated = use_corr)

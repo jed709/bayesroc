@@ -74,6 +74,16 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
   re_list <- list()
   
   for (re in re_terms) {
+    if (any(!vapply(c(list(re), re$parts), function(p) isTRUE(p$cor_thresholds %||% TRUE), logical(1)))) {
+      stop("gr(", re$group, ", cor_thresholds = FALSE) applies only to threshold parameters ",
+           "(criterion, criterion2): other parameters have one effect per term.", call. = FALSE)
+    }
+    if (!is.null(re$parts)) {
+      structs <- lapply(re$parts, function(p)
+        build_random_effects_structure(list(p), data, encoding_vars, is_old_var)[[p$group]])
+      re_list[[re$group]] <- .combine_re_parts(structs, re$parts, nrow(data))
+      next
+    }
     group <- re$group
     
     if (is.factor(data[[group]])) {
@@ -243,6 +253,7 @@ build_random_effects_structure <- function(re_terms, data, encoding_vars = NULL,
     }
   }
   
+  for (g in names(re_list)) re_list[[g]] <- .finalize_re_blocks(re_list[[g]], re_list[[g]]$dim, 1L)
   re_list
 }
 
@@ -342,6 +353,13 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
 
   re_list <- list()
   for (re in re_terms) {
+    if (!is.null(re$parts)) {
+      structs <- lapply(re$parts, function(p)
+        build_criterion_structure(formula, list(p), data, n_thresh, conditional_terms,
+                                  parsed_fixed)$random[[p$group]])
+      re_list[[re$group]] <- .combine_re_parts(structs, re$parts, nrow(data), n_thresh = n_thresh)
+      next
+    }
     group <- re$group
 
     if (is.factor(data[[group]])) {
@@ -482,6 +500,12 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     }
   }
 
+  for (re in re_terms) {
+    st <- re_list[[re$group]]
+    re_list[[re$group]] <- .finalize_re_blocks(st, st$n_re_terms %||% 1L, n_thresh,
+                                               cor_thresholds = re$cor_thresholds %||% TRUE)
+  }
+
   list(
     X = X,
     n_coef = n_coef,
@@ -492,4 +516,77 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     fixed_formula = fixed_formula,
     conditional_info = crit_cond_info
   )
+}
+
+# =============================================================================
+# Random-effect correlation blocks
+# =============================================================================
+
+.re_part_Z <- function(st, N) {
+  if (isTRUE(st$use_z_matrix)) return(as.matrix(st$Z))
+  R <- st$n_re_terms %||% st$dim
+  Z <- matrix(0, N, R, dimnames = list(NULL, st$level_names %||% "(Intercept)"))
+  if (!is.null(st$term_idx)) {
+    ok <- which(st$term_idx > 0)
+    Z[cbind(ok, st$term_idx[ok])] <- 1
+  } else {
+    Z[, 1] <- 1
+  }
+  Z
+}
+
+.re_col_set <- function(n_cols, correlated, offset = 0L) {
+  if (isTRUE(correlated)) rep(offset + 1L, n_cols) else offset + seq_len(n_cols)
+}
+
+.re_cor_blocks <- function(R, C, col_set, set_cor_thresholds) {
+  blocks <- list()
+  for (s in unique(col_set)) {
+    js <- which(col_set == s) - 1L
+    if (isTRUE(set_cor_thresholds[[as.character(s)]])) {
+      blocks[[length(blocks) + 1L]] <- sort(as.vector(outer(js, (seq_len(C) - 1L) * R, "+"))) + 1L
+    } else {
+      for (k in seq_len(C) - 1L) blocks[[length(blocks) + 1L]] <- k * R + js + 1L
+    }
+  }
+  blocks[lengths(blocks) > 1L]
+}
+
+.finalize_re_blocks <- function(st, R, C, cor_thresholds = TRUE) {
+  if (is.null(st$col_set)) {
+    st$col_set <- .re_col_set(R, st$correlated)
+    st$set_cor_thresholds <- stats::setNames(rep(isTRUE(cor_thresholds), length(unique(st$col_set))),
+                                             unique(st$col_set))
+  }
+  st$cor_blocks <- .re_cor_blocks(R, C, st$col_set, st$set_cor_thresholds)
+  st$correlated <- length(st$cor_blocks) > 0
+  st
+}
+
+.combine_re_parts <- function(structs, parts, N, n_thresh = NULL) {
+  Zs <- lapply(structs, .re_part_Z, N = N)
+  col_set <- integer(0)
+  set_ct <- logical(0)
+  for (i in seq_along(Zs)) {
+    cs <- .re_col_set(ncol(Zs[[i]]), parts[[i]]$correlated, offset = max(c(0L, col_set)))
+    col_set <- c(col_set, cs)
+    set_ct[as.character(unique(cs))] <- isTRUE(parts[[i]]$cor_thresholds %||% TRUE)
+  }
+  Z <- do.call(cbind, Zs)
+  first <- structs[[1]]
+  R <- ncol(Z)
+  st <- list(group = first$group, group_idx = first$group_idx, n_groups = first$n_groups,
+             level_names = colnames(Z), term = NULL, term_idx = NULL, Z = Z, use_z_matrix = TRUE,
+             correlated = TRUE, cor_id = NULL, col_set = col_set, set_cor_thresholds = set_ct,
+             is_encoding = any(vapply(structs, function(x) isTRUE(x$is_encoding), logical(1))))
+  if (is.null(n_thresh)) {
+    st$dim <- R
+    st$type <- "interaction"
+    st$re_formula <- NULL
+  } else {
+    st$dim <- n_thresh * R
+    st$n_cond_levels <- R
+    st$n_re_terms <- R
+  }
+  st
 }

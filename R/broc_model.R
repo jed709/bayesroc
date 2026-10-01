@@ -150,9 +150,6 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   also be set in [brf()]; a value in broc() takes precedence.
 #' @param counts Name of a column giving per-row trial counts, for aggregated
 #'   (count) data rather than one row per trial. May also be set in [brf()].
-#' @param cor_threshold If `TRUE` (default), random effects on the K-1 thresholds
-#'   are modeled jointly (correlated) via the threshold parameterization; `FALSE`
-#'   treats them as independent.
 #' @param threads If `TRUE`, enable within-chain `reduce_sum` threading for the
 #'   Stan backend (set the thread count per chain via `fit_broc(threads_per_chain=)`).
 #'   Default `FALSE`.
@@ -182,7 +179,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #' @export
 broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                 encoding_vars = NULL, counts = NULL,
-                cor_threshold = NULL, threads = NULL, gap_link = NULL,
+                threads = NULL, gap_link = NULL,
                 smooth_info = FALSE) {
 
   # --- 1. Normalize input: bare formula -> brf, brf -> use directly ---
@@ -208,7 +205,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   family <- nc(family, nc(brf_obj$family, evsd()))
   encoding_vars <- nc(encoding_vars, brf_obj$encoding_vars)
   counts <- nc(counts, brf_obj$counts)
-  cor_threshold <- nc(cor_threshold, nc(brf_obj$cor_threshold, TRUE))
   threads <- nc(threads, nc(brf_obj$threads, FALSE))
   gap_link <- match.arg(nc(gap_link, nc(brf_obj$gap_link, "log")),
                          c("log", "softplus"))
@@ -216,9 +212,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), cdp(), or vrdp2d()")
   }
 
-  if (!is.logical(cor_threshold) || length(cor_threshold) != 1) {
-    stop("cor_threshold must be TRUE or FALSE")
-  }
 
   # --- 2b. Up-front data validation ----------------------------------------
   validate_broc_data(data, brf_obj, family, encoding_vars, counts)
@@ -311,7 +304,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (family$family == "cumulative") {
     return(fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
-                          cor_threshold = cor_threshold, threads = threads,
+                          threads = threads,
                           gap_link = gap_link, smooth_info = smooth_info))
   }
 
@@ -322,7 +315,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       cutpoints1 = criterion, cutpoints2 = criterion2,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
-      cor_threshold = cor_threshold, threads = threads,
+      threads = threads,
       gap_link = gap_link, smooth_info = smooth_info))
   }
 
@@ -585,7 +578,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   prior_lookup <- build_prior_lookup(priors, family = family)
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
-                                 cor_threshold = cor_threshold,
                                  encoding_vars = encoding_vars)
   model_data$prior_lookup <- prior_lookup
   model_data$threads <- isTRUE(threads)
@@ -693,7 +685,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 }
 
 build_model_data <- function(parsed, data, family, counts = NULL,
-                             cor_threshold = TRUE, encoding_vars = NULL) {
+                             encoding_vars = NULL) {
   
   N <- nrow(data)
   K <- length(unique(data[[parsed$response$response]]))
@@ -1364,7 +1356,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stan_data$X_criterion2 <- criterion2$X
 
     varying_re_mode <- if (!is.null(family$varying_re)) family$varying_re else "shared"
-    cor_threshold_flag <- cor_threshold
 
     if (isTRUE(family$varying_source_criteria) && !is.null(criterion2$random)) {
       n_bins <- K
@@ -1383,42 +1374,21 @@ build_model_data <- function(parsed, data, family, counts = NULL,
           criterion2$random[[group]]$varying_re_mode <- "full"
         }
         criterion2$random[[group]]$n_bins <- n_bins
-        
-        if (!cor_threshold_flag && !is.null(re$cor_id)) {
-          warning("cor_threshold = FALSE: criterion2 random effects cannot participate in ",
-                  "cross-parameter correlation group '", re$cor_id, "'. ",
-                  "The cor_id is being ignored for criterion2 threshold REs.",
-                  call. = FALSE)
-          criterion2$random[[group]]$cor_id <- NULL
-        }
-        if (!cor_threshold_flag) {
-          criterion2$random[[group]]$correlated <- FALSE
-        }
-      }
-    }
-    
-    if (!isTRUE(family$varying_source_criteria) && !cor_threshold_flag && !is.null(criterion2$random)) {
-      for (group in names(criterion2$random)) {
-        if (!is.null(criterion2$random[[group]]$cor_id)) {
-          warning("cor_threshold = FALSE: criterion2 random effects cannot participate in ",
-                  "cross-parameter correlation group '", criterion2$random[[group]]$cor_id, "'.",
-                  call. = FALSE)
-          criterion2$random[[group]]$cor_id <- NULL
-        }
-        criterion2$random[[group]]$correlated <- FALSE
+        ct <- unname(re$set_cor_thresholds %||% TRUE)[1]
+        criterion2$random[[group]]$cor_blocks <- .re_cor_blocks(1L, criterion2$random[[group]]$dim, 1L,
+                                                                c("1" = isTRUE(ct)))
+        criterion2$random[[group]]$correlated <- length(criterion2$random[[group]]$cor_blocks) > 0
       }
     }
   }
 
-  if (!cor_threshold && !is.null(criterion$random)) {
-    for (group in names(criterion$random)) {
-      if (!is.null(criterion$random[[group]]$cor_id)) {
-        warning("cor_threshold = FALSE: criterion random effects cannot participate in ",
-                "cross-parameter correlation group '", criterion$random[[group]]$cor_id, "'.",
-                call. = FALSE)
-        criterion$random[[group]]$cor_id <- NULL
+  for (crit in list(criterion$random, criterion2$random)) {
+    for (re in crit) {
+      if (!is.null(re$cor_id) && !all(unlist(re$set_cor_thresholds %||% TRUE))) {
+        stop("gr(", re$group, ", cor_thresholds = FALSE) cannot be combined with a cross-parameter ",
+             "correlation group (| ", re$cor_id, " |): a correlation group correlates all of its effects.",
+             call. = FALSE)
       }
-      criterion$random[[group]]$correlated <- FALSE
     }
   }
   
@@ -1669,7 +1639,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     new_source_criteria = family$new_source_criteria,
     old_levels = family$old_levels,
     varying_re = if (!is.null(family$varying_re)) family$varying_re else "shared",
-    cor_threshold = cor_threshold,
     cross_cor = cross_cor,
     smooth_data = if (length(smooth_data) > 0) smooth_data else NULL,
     stan_data = stan_data
@@ -2468,7 +2437,7 @@ apply_encoding_vars <- function(formula, encoding_vars) {
 #' slopes retained.
 #' @noRd
 fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
-                           cor_threshold = TRUE, threads = FALSE,
+                           threads = FALSE,
                            gap_link = "log", smooth_info = FALSE) {
   
   if (is.null(mu)) {
@@ -2605,7 +2574,6 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   }
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
-                                 cor_threshold = cor_threshold,
                                  encoding_vars = NULL)
   model_data$prior_lookup <- prior_lookup
   model_data$is_cumulative <- TRUE
@@ -2786,7 +2754,7 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 #' @noRd
 fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
-                                     cor_threshold = TRUE, threads = FALSE,
+                                     threads = FALSE,
                                      gap_link = "log", smooth_info = FALSE) {
 
   if (is.null(mu1)) {
@@ -2891,7 +2859,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
   }
 
   model_data <- build_model_data(parsed, data, family, counts = counts,
-                                 cor_threshold = cor_threshold)
+)
   model_data$prior_lookup <- prior_lookup
   model_data$is_bivariate_cumulative <- TRUE
   model_data$threads <- isTRUE(threads)

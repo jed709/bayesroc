@@ -290,16 +290,38 @@ parse_random_effect <- function(re_str) {
   }
   
   terms_parsed <- parse_fixed_effects(terms_str)
-  
+  gr <- .parse_re_group(group)
+
   list(
-    group = group,
+    group = gr$group,
     terms = terms_parsed$terms,
     term_info = terms_parsed$term_info,
     intercept = terms_parsed$intercept,
     correlated = correlated,
     cor_id = cor_id,
+    cor_thresholds = gr$cor_thresholds,
     encoding_vars = terms_parsed$encoding_vars
   )
+}
+
+.parse_re_group <- function(group) {
+  if (!grepl("^gr\\s*\\(", group)) return(list(group = group, cor_thresholds = TRUE))
+  call <- tryCatch(str2lang(group), error = function(e) NULL)
+  if (is.null(call) || !is.call(call) || !identical(call[[1]], as.name("gr")) || length(call) < 2 ||
+      !is.symbol(call[[2]]) || (!is.null(names(call)) && nzchar(names(call)[2]))) {
+    stop("Invalid grouping term '", group, "': use gr(<grouping factor>, cor_thresholds = TRUE/FALSE).",
+         call. = FALSE)
+  }
+  opts <- as.list(call)[-(1:2)]
+  bad <- setdiff(names(opts), "cor_thresholds")
+  if (length(opts) && (is.null(names(opts)) || any(!nzchar(names(opts))) || length(bad))) {
+    stop("gr() in '", group, "' accepts only the named option cor_thresholds.", call. = FALSE)
+  }
+  ct <- if (is.null(opts$cor_thresholds)) TRUE else opts$cor_thresholds
+  if (!is.logical(ct) || length(ct) != 1L || is.na(ct)) {
+    stop("gr(..., cor_thresholds =) must be TRUE or FALSE in '", group, "'.", call. = FALSE)
+  }
+  list(group = as.character(call[[2]]), cor_thresholds = ct)
 }
 
 #' Parse resp() Arguments
@@ -601,19 +623,24 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
   for (pname in all_param_names_with_crit) {
     if (!is.null(parsed[[pname]]) && !is.null(parsed[[pname]]$random)) {
       groups <- sapply(parsed[[pname]]$random, `[[`, "group")
-      dup <- unique(groups[duplicated(groups)])
-      if (length(dup) > 0) {
-        terms_shown <- vapply(parsed[[pname]]$random[groups == dup[1]], function(re) {
-          bar <- if (isTRUE(re$correlated)) "|" else "||"
-          lhs <- c(if (isTRUE(re$intercept)) "1" else "0", re$terms)
-          paste0("(", paste(lhs, collapse = " + "), " ", bar, " ", re$group, ")")
-        }, character(1))
-        stop(sprintf(paste0("Parameter '%s' has %d random-effects terms for grouping factor '%s': %s.\n",
-                            "bayesroc supports one term per grouping factor per parameter. Combine them ",
-                            "into a single term, e.g. (1 + x | %s), or (1 + x || %s) if the effects ",
-                            "should be uncorrelated."),
-                     pname, sum(groups == dup[1]), dup[1],
-                     paste(terms_shown, collapse = " and "), dup[1], dup[1]), call. = FALSE)
+      for (g in unique(groups[duplicated(groups)])) {
+        parts <- parsed[[pname]]$random[groups == g]
+        if (any(vapply(parts, function(re) !is.null(re$cor_id), logical(1)))) {
+          stop(sprintf(paste0("Parameter '%s' has several random-effects terms for grouping factor '%s', ",
+                              "one of them in a cross-parameter correlation group (| id |). A term in a ",
+                              "correlation group must be the only term for its grouping factor in that ",
+                              "parameter."), pname, g), call. = FALSE)
+        }
+        merged <- list(group = g, parts = unname(parts),
+                       terms = unique(unlist(lapply(parts, `[[`, "terms"))),
+                       term_info = unlist(lapply(parts, `[[`, "term_info"), recursive = FALSE),
+                       intercept = any(vapply(parts, function(re) isTRUE(re$intercept), logical(1))),
+                       correlated = TRUE, cor_id = NULL, cor_thresholds = TRUE,
+                       encoding_vars = unique(unlist(lapply(parts, `[[`, "encoding_vars"))))
+        keep <- which(groups == g)
+        parsed[[pname]]$random[[keep[1]]] <- merged
+        parsed[[pname]]$random <- parsed[[pname]]$random[-keep[-1]]
+        groups <- groups[-keep[-1]]
       }
       all_groups <- c(all_groups, groups)
     }

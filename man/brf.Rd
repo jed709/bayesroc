@@ -10,7 +10,6 @@ brf(
   family = NULL,
   encoding_vars = NULL,
   counts = NULL,
-  cor_threshold = NULL,
   threads = NULL,
   gap_link = NULL
 )
@@ -39,10 +38,6 @@ value passed to \code{\link[=broc]{broc()}} takes precedence over one set here.}
 \item{counts}{Name of a column giving per-row trial counts, for aggregated
 (count) data rather than one row per trial. May also be set in \code{\link[=brf]{brf()}}.}
 
-\item{cor_threshold}{If \code{TRUE} (default), random effects on the K-1 thresholds
-are modeled jointly (correlated) via the threshold parameterization; \code{FALSE}
-treats them as independent.}
-
 \item{threads}{If \code{TRUE}, enable within-chain \code{reduce_sum} threading for the
 Stan backend (set the thread count per chain via \code{fit_broc(threads_per_chain=)}).
 Default \code{FALSE}.}
@@ -58,6 +53,25 @@ Formula specification for bayesroc models. The first argument is the formula
 for the primary parameter (d' / mu); each additional formula's left-hand side
 names the parameter it applies to (e.g. \code{criterion}, \code{sigma}, \code{lambda}).
 }
+\section{Random effects}{
+
+Group-level terms follow lme4/brms syntax. \code{(1 + x | g)} estimates every
+correlation among the term's effects; \code{(1 + x || g)} keeps the effects of
+different terms uncorrelated (it is shorthand for \code{(1 | g) + (0 + x | g)}).
+Several terms for one grouping factor may be given; their effects are
+correlated within a term and uncorrelated across terms. \code{(1 | id | g)} in
+several parameter formulas correlates those parameters' effects.
+
+On the thresholds (\code{criterion}, \code{criterion2}) every term has one effect per
+threshold component (the middle threshold and each gap), and by default those
+are correlated with one another within the term. Wrapping the grouping factor
+as \code{gr(g, cor_thresholds = FALSE)} makes the threshold components uncorrelated
+with one another while keeping each component's correlations across terms:
+\code{(1 + x | gr(g, cor_thresholds = FALSE))} correlates each threshold's
+intercept with its own slope only, and
+\code{(1 + x || gr(g, cor_thresholds = FALSE))} makes every effect independent.
+}
+
 \examples{
 # Standard SDT
 brf(conf | old ~ cond + (1|subj),

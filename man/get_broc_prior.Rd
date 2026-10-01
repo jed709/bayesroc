@@ -22,7 +22,7 @@ path; defaults to the family set in the \code{brf}, or \code{\link[=evsd]{evsd()
 \item{user_priors}{Optional priors from \code{\link[=broc_prior]{broc_prior()}} to override defaults.}
 
 \item{...}{Further arguments forwarded to \code{\link[=broc]{broc()}} on the formula/\code{brf} path
-(e.g. \code{encoding_vars}, \code{counts}, \code{cor_threshold}, \code{gap_link}).}
+(e.g. \code{encoding_vars}, \code{counts}, \code{gap_link}).}
 }
 \value{
 A data frame with columns \code{class}, \code{dpar}, \code{coef}, \code{group}, \code{prior},

@@ -125,6 +125,16 @@ run the full suite.
   `sdt_model` (`_rkg_knob`). Criterion formulas must therefore span the constant: an
   intercept or a full factor coding (`.check_criterion_designs`), which is also the only
   meaningful form on a latent axis whose zero is the lure mean.
+- **Random-effect correlations are block-diagonal.** Each grouping factor's effects in a
+  parameter form one structure (several terms for the same factor are merged by column-binding
+  each term's design, `.combine_re_parts`); its dimensions are threshold-major (component k, term j
+  -> k * R + j) and `cor_blocks` lists the correlated subsets: one block per term set (`|` puts a
+  term's columns in one set, `||` gives each column its own), spanning all threshold components
+  unless `gr(g, cor_thresholds = FALSE)`, which splits it per component. A single full block keeps
+  `L_corr_<p>_<g>` as the parameter; otherwise each block is `L_corr_<p>_<g>_b<k>` (LKJ each) and
+  `L_corr_<p>_<g>` is assembled from them (still lower-triangular: blocks keep index order), so
+  `corr_*`, new-level prediction and the u transform are unchanged. Same in Stan and JAX
+  (`_re_corr_cholesky`). Cross-parameter `| id |` groups keep one full block.
 - **Information-scaled smooths (`broc(smooth_info = TRUE)`, opt-in).** With few informative
   data a smooth's wiggliness SD spans regimes where the non-centred coefficients are either
   prior- or data-dominated, and trajectories that reach a large SD diverge. Each population

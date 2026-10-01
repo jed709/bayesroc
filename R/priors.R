@@ -617,7 +617,7 @@ print.prior_lookup <- function(x, ...) {
 #'   `object` is already a model.
 #' @param user_priors Optional priors from [broc_prior()] to override defaults.
 #' @param ... Further arguments forwarded to [broc()] on the formula/`brf` path
-#'   (e.g. `encoding_vars`, `counts`, `cor_threshold`, `gap_link`).
+#'   (e.g. `encoding_vars`, `counts`, `gap_link`).
 #' @return A data frame with columns `class`, `dpar`, `coef`, `group`, `prior`,
 #'   and `source`, where `source` flags whether each row is a package default
 #'   (`"default"`) or was overridden by `user_priors` (`"user"`).

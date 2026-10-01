@@ -418,18 +418,14 @@ generate_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
       dim_var <- sprintf("D_criterion_%s", group)
       lines <- c(lines,
                  sprintf("  matrix[N_%s, %s] u_criterion_%s_raw;", group, dim_var, group),
-                 sprintf("  vector<lower=0>[%s] sigma_criterion_%s;", dim_var, group))
-      if (cor_threshold && isTRUE(re$correlated) && re$dim > 1) {
-        lines <- c(lines,
-                   sprintf("  cholesky_factor_corr[%s] L_corr_criterion_%s;", dim_var, group))
-      }
+                 sprintf("  vector<lower=0>[%s] sigma_criterion_%s;", dim_var, group),
+                 .re_corr_decl(paste0("criterion_", group), re))
     }
   }
   
@@ -445,11 +441,8 @@ generate_parameters_block_v2 <- function(model_data, family) {
         } else {
           lines <- c(lines,
                      sprintf("  matrix[N_%s, %s] u_criterion2_%s_raw;", group, dim_var, group),
-                     sprintf("  vector<lower=0>[%s] sigma_criterion2_%s;", dim_var, group))
-          if (cor_threshold && isTRUE(re$correlated)) {
-            lines <- c(lines,
-                       sprintf("  cholesky_factor_corr[%s] L_corr_criterion2_%s;", dim_var, group))
-          }
+                     sprintf("  vector<lower=0>[%s] sigma_criterion2_%s;", dim_var, group),
+                     .re_corr_decl(paste0("criterion2_", group), re))
         }
       }
     }
@@ -478,11 +471,7 @@ generate_re_params_v2 <- function(param_name, group, re) {
     dim_var <- sprintf("D_%s_%s", param_name, group)
     lines <- c(sprintf("  matrix[N_%s, %s] u_%s_%s_raw;", group, dim_var, param_name, group),
                sprintf("  vector<lower=0>[%s] sigma_%s_%s;", dim_var, param_name, group))
-    if (isTRUE(re$correlated)) {
-      lines <- c(lines,
-                 sprintf("  cholesky_factor_corr[%s] L_corr_%s_%s;", dim_var, param_name, group))
-    }
-    lines
+    c(lines, .re_corr_decl(paste0(param_name, "_", group), re))
   }
 }
 
@@ -516,13 +505,12 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
-  cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
       dim_var <- sprintf("D_criterion_%s", group)
-      if (cor_threshold && isTRUE(re$correlated) && re$dim > 1) {
-        lines <- c(lines, sprintf(
+      if (isTRUE(re$correlated)) {
+        lines <- c(lines, .re_corr_assemble(paste0("criterion_", group), re), sprintf(
           "  matrix[N_%s, %s] u_criterion_%s = u_criterion_%s_raw * diag_pre_multiply(sigma_criterion_%s, L_corr_criterion_%s)';",
           group, dim_var, group, group, group, group))
       } else {
@@ -545,8 +533,8 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
             group, group, group, group))
         } else {
           dim_var <- sprintf("D_criterion2_%s", group)
-          if (cor_threshold && isTRUE(re$correlated)) {
-            lines <- c(lines, sprintf(
+          if (isTRUE(re$correlated)) {
+            lines <- c(lines, .re_corr_assemble(paste0("criterion2_", group), re), sprintf(
               "  matrix[N_%s, %s] u_criterion2_%s = u_criterion2_%s_raw * diag_pre_multiply(sigma_criterion2_%s, L_corr_criterion2_%s)';",
               group, dim_var, group, group, group, group))
           } else {
@@ -621,14 +609,44 @@ generate_re_transform_v2 <- function(param_name, group, re) {
             group, param_name, group, param_name, group, param_name, group)
   } else if (isTRUE(re$correlated)) {
     dim_var <- sprintf("D_%s_%s", param_name, group)
-    sprintf("  matrix[N_%s, %s] u_%s_%s = u_%s_%s_raw * diag_pre_multiply(sigma_%s_%s, L_corr_%s_%s)';",
-            group, dim_var, param_name, group, param_name, group, param_name, group, param_name, group)
+    c(.re_corr_assemble(paste0(param_name, "_", group), re),
+      sprintf("  matrix[N_%s, %s] u_%s_%s = u_%s_%s_raw * diag_pre_multiply(sigma_%s_%s, L_corr_%s_%s)';",
+              group, dim_var, param_name, group, param_name, group, param_name, group, param_name, group))
   } else {
     dim_var <- sprintf("D_%s_%s", param_name, group)
     c(sprintf("  matrix[N_%s, %s] u_%s_%s;", group, dim_var, param_name, group),
       sprintf("  for (d in 1:%s) u_%s_%s[, d] = u_%s_%s_raw[, d] * sigma_%s_%s[d];",
               dim_var, param_name, group, param_name, group, param_name, group))
   }
+}
+
+.re_full_block <- function(re) {
+  length(re$cor_blocks) == 1L && length(re$cor_blocks[[1]]) == re$dim
+}
+
+.re_corr_decl <- function(prefix, re) {
+  if (!isTRUE(re$correlated)) return(character(0))
+  if (.re_full_block(re)) return(sprintf("  cholesky_factor_corr[D_%s] L_corr_%s;", prefix, prefix))
+  vapply(seq_along(re$cor_blocks), function(b)
+    sprintf("  cholesky_factor_corr[%d] L_corr_%s_b%d;", length(re$cor_blocks[[b]]), prefix, b),
+    character(1))
+}
+
+.re_corr_assemble <- function(prefix, re) {
+  if (!isTRUE(re$correlated) || .re_full_block(re)) return(character(0))
+  c(sprintf("  matrix[D_%s, D_%s] L_corr_%s = diag_matrix(rep_vector(1, D_%s));",
+            prefix, prefix, prefix, prefix),
+    vapply(seq_along(re$cor_blocks), function(b) {
+      ix <- paste(re$cor_blocks[[b]], collapse = ", ")
+      sprintf("  L_corr_%s[{%s}, {%s}] = L_corr_%s_b%d;", prefix, ix, ix, prefix, b)
+    }, character(1)))
+}
+
+.re_corr_prior <- function(prefix, re, cor_prior) {
+  if (!isTRUE(re$correlated)) return(character(0))
+  if (.re_full_block(re)) return(sprintf("  L_corr_%s ~ %s;", prefix, cor_prior))
+  vapply(seq_along(re$cor_blocks), function(b) sprintf("  L_corr_%s_b%d ~ %s;", prefix, b, cor_prior),
+         character(1))
 }
 
 to_stan_prior <- function(prior) {
@@ -865,16 +883,12 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
         } else {
           lines <- c(lines, 
                      sprintf("  to_vector(u_%s_%s_raw) ~ std_normal();", pname, group))
-          if (isTRUE(re$correlated)) {
-            lines <- c(lines,
-                       sprintf("  L_corr_%s_%s ~ %s;", pname, group, cor_prior))
-          }
+          lines <- c(lines, .re_corr_prior(paste0(pname, "_", group), re, cor_prior))
         }
       }
     }
   }
   
-  cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
@@ -898,9 +912,7 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
       
       lines <- c(lines,
                  sprintf("  to_vector(u_criterion_%s_raw) ~ std_normal();", group))
-      if (cor_threshold && isTRUE(re$correlated) && re$dim > 1) {
-        lines <- c(lines, sprintf("  L_corr_criterion_%s ~ %s;", group, cor_prior))
-      }
+      lines <- c(lines, .re_corr_prior(paste0("criterion_", group), re, cor_prior))
     }
   }
   
@@ -917,9 +929,7 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
           lines <- c(lines, sprintf("  u_criterion2_%s_raw ~ std_normal();", group))
         } else {
           lines <- c(lines, sprintf("  to_vector(u_criterion2_%s_raw) ~ std_normal();", group))
-          if (cor_threshold && isTRUE(re$correlated)) {
-            lines <- c(lines, sprintf("  L_corr_criterion2_%s ~ %s;", group, cor_prior))
-          }
+          lines <- c(lines, .re_corr_prior(paste0("criterion2_", group), re, cor_prior))
         }
       }
     }
@@ -1183,10 +1193,9 @@ generate_generated_quantities_block_v2 <- function(model_data, family, batch_inf
     }
   }
   
-  cor_threshold <- isTRUE(model_data$cor_threshold)
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
-    if (is.null(re$cor_id) && cor_threshold && isTRUE(re$correlated) && re$dim > 1) {
+    if (is.null(re$cor_id) && isTRUE(re$correlated) && re$dim > 1) {
       dim_var <- sprintf("D_criterion_%s", group)
       lines <- c(lines, sprintf("  matrix[%s, %s] corr_criterion_%s = multiply_lower_tri_self_transpose(L_corr_criterion_%s);",
                                 dim_var, dim_var, group, group))
@@ -1196,7 +1205,7 @@ generate_generated_quantities_block_v2 <- function(model_data, family, batch_inf
   if (isTRUE(model_data$has_criterion2) && !is.null(model_data$criterion2$random)) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
-      if (is.null(re$cor_id) && cor_threshold && isTRUE(re$correlated) && re$dim > 1) {
+      if (is.null(re$cor_id) && isTRUE(re$correlated) && re$dim > 1) {
         dim_var <- sprintf("D_criterion2_%s", group)
         lines <- c(lines, sprintf("  matrix[%s, %s] corr_criterion2_%s = multiply_lower_tri_self_transpose(L_corr_criterion2_%s);",
                                   dim_var, dim_var, group, group))

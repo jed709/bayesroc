@@ -11,7 +11,6 @@ broc(
   priors = NULL,
   encoding_vars = NULL,
   counts = NULL,
-  cor_threshold = NULL,
   threads = NULL,
   gap_link = NULL,
   smooth_info = FALSE
@@ -40,10 +39,6 @@ also be set in \code{\link[=brf]{brf()}}; a value in broc() takes precedence.}
 
 \item{counts}{Name of a column giving per-row trial counts, for aggregated
 (count) data rather than one row per trial. May also be set in \code{\link[=brf]{brf()}}.}
-
-\item{cor_threshold}{If \code{TRUE} (default), random effects on the K-1 thresholds
-are modeled jointly (correlated) via the threshold parameterization; \code{FALSE}
-treats them as independent.}
 
 \item{threads}{If \code{TRUE}, enable within-chain \code{reduce_sum} threading for the
 Stan backend (set the thread count per chain via \code{fit_broc(threads_per_chain=)}).

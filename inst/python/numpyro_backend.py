@@ -3582,6 +3582,23 @@ def _positive_dist(d):
     return dist.FoldedDistribution(d)
 
 
+def _re_corr_cholesky(prefix, conf, dim):
+    """Cholesky factor of a random effect's correlation matrix. With `cor_blocks` (lists of
+    0-based dimensions) the matrix is block-diagonal: each block has its own LKJ factor
+    L_corr_<prefix>_b<k>, assembled into L_corr_<prefix>, which stays lower-triangular
+    because every block keeps its index order."""
+    prior_str = conf.get("prior_cor", "lkj_corr_cholesky(1)")
+    blocks = conf.get("cor_blocks")
+    if not blocks:
+        return numpyro.sample(f"L_corr_{prefix}", parse_prior(prior_str, dim=dim))
+    L = jnp.eye(dim, dtype=_FLOAT)
+    for b, ix in enumerate(blocks):
+        ix = jnp.asarray(ix, dtype=jnp.int32)
+        Lb = numpyro.sample(f"L_corr_{prefix}_b{b + 1}", parse_prior(prior_str, dim=int(ix.shape[0])))
+        L = L.at[ix[:, None], ix[None, :]].set(Lb)
+    return numpyro.deterministic(f"L_corr_{prefix}", L)
+
+
 def _smooth_info_scale(sd, info, w):
     """Information-scaled smooth coefficients: s = sd * v with v = K^-T w, K K^T = I + sd^2 info.
 
@@ -3863,9 +3880,7 @@ def sdt_model(config):
             sds = numpyro.sample(f"sigma_{param}_{group}",
                                   sd_prior.expand([n_terms]))
 
-            cor_prior = parse_prior(re_conf.get("prior_cor", "lkj_corr_cholesky(1)"),
-                                    dim=n_terms)
-            L_corr = numpyro.sample(f"L_corr_{param}_{group}", cor_prior)
+            L_corr = _re_corr_cholesky(f"{param}_{group}", re_conf, n_terms)
             numpyro.deterministic(f"corr_{param}_{group}", L_corr @ L_corr.T)
             L = jnp.diag(sds) @ L_corr
 
@@ -4155,9 +4170,7 @@ def sdt_model(config):
             else:
                 crit_sds = numpyro.sample(f"sigma_criterion_{crit_group}",
                                            crit_sd_prior.expand([n_dims]))
-            crit_cor_prior = parse_prior(
-                crit_re.get("prior_cor", "lkj_corr_cholesky(1)"), dim=n_dims)
-            L_corr_crit = numpyro.sample(f"L_corr_criterion_{crit_group}", crit_cor_prior)
+            L_corr_crit = _re_corr_cholesky(f"criterion_{crit_group}", crit_re, n_dims)
             numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
             L_crit = jnp.diag(crit_sds) @ L_corr_crit
             z_crit = numpyro.sample(f"z_criterion_{crit_group}",
@@ -4270,9 +4283,7 @@ def sdt_model(config):
                 for t in range(c2_n_dims):
                     sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_prior)
                     c2_sds = c2_sds.at[t].set(sd_t)
-                c2_cor_prior = parse_prior(
-                    crit2_re.get("prior_cor", "lkj_corr_cholesky(1)"), dim=c2_n_dims)
-                L_corr_c2 = numpyro.sample(f"L_corr_criterion2_{c2_group}", c2_cor_prior)
+                L_corr_c2 = _re_corr_cholesky(f"criterion2_{c2_group}", crit2_re, c2_n_dims)
                 numpyro.deterministic(f"corr_criterion2_{c2_group}", L_corr_c2 @ L_corr_c2.T)
                 L_c2 = jnp.diag(c2_sds) @ L_corr_c2
                 z_c2 = numpyro.sample(f"z_criterion2_{c2_group}",

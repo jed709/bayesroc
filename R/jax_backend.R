@@ -366,6 +366,9 @@ build_numpyro_config <- function(model) {
         if (!is.null(re$cor_id)) {
           re_conf$cor_id <- re$cor_id
         }
+        if (isTRUE(re$correlated) && !.re_full_block(re)) {
+          re_conf$cor_blocks <- lapply(re$cor_blocks, function(b) as.integer(b - 1L))
+        }
 
         re_conf$prior_sd <- get_sd_prior(prior_lookup, param, re$group)
         re_conf$prior_cor <- get_cor_prior(prior_lookup, param, re$group)
