@@ -30,8 +30,8 @@ test_that("gap priors reach both backends under either gap link, including per-g
     g1 <- if (gl == "softplus") "beta_raw_gaps" else "beta_log_gaps"
     expect_true(grepl(paste0(g1, ") ~ normal(0, 0.3)"), code, fixed = TRUE) ||
                   grepl(paste0(g1, " ~ normal(0, 0.3)"), code, fixed = TRUE))
-    expect_true(grepl(paste0(g1, "_2[2, ] ~ normal(0.1, 0.2)"), code, fixed = TRUE))
-    expect_true(grepl(paste0(g1, "_2[1, ] ~ normal(0, 0.4)"), code, fixed = TRUE))
+    expect_true(grepl(paste0(g1, "_2[2, 1] ~ normal(0.1, 0.2)"), code, fixed = TRUE))
+    expect_true(grepl(paste0(g1, "_2[1, 1] ~ normal(0, 0.4)"), code, fixed = TRUE))
     cfg <- get_numpyro_config(m)
     expect_identical(cfg$prior_log_gaps, "normal(0, 0.3)")
     expect_identical(cfg$prior_log_gaps2, "normal(0, 0.4)")
