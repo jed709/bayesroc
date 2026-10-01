@@ -33,9 +33,12 @@
 #' @param dpar Distributional parameter the prior applies to, e.g. `"dprime"`,
 #'   `"sigma"`, `"lambda"`. For criterion priors use `"thresh_mid"` / `"log_gaps"`
 #'   (`"thresh_mid2"` / `"log_gaps2"` for the second response axis in bivariate
-#'   and CDP families). Family-specific aliases (`mu`, `mu1`, `mu2`, `rec`, `fam`,
-#'   `sigma_R`, `sigma_F`) are also accepted. `NULL` applies the prior to every
-#'   parameter in `class`.
+#'   and CDP families). Family-specific aliases (`mu`, `mu1`, `mu2`, `cutpoints`,
+#'   `cutpoints1`, `cutpoints2`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
+#'   accepted. The correlation prior of a cross-parameter group `(... | id | g)` is
+#'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
+#'   `class`. [get_broc_prior()] lists every settable prior with its `dpar` and
+#'   `coef`.
 #' @param coef Optional specific coefficient name (e.g., `"conditionread"`)
 #' @param group Optional grouping factor for random effects (e.g., `"participant"`)
 #' @return A `broc_prior` object. Combine several with [c()] and pass to [broc()].
@@ -80,15 +83,17 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
-                     "mu", "mu1", "mu2")
-    if (!dpar %in% valid_dpars) {
+                     "mu", "mu1", "mu2", "cutpoints", "cutpoints1", "cutpoints2")
+    if (!dpar %in% valid_dpars && !grepl("^cross_[A-Za-z0-9_.]+$", dpar)) {
       stop("Invalid dpar '", dpar, "'. Valid dpars: ",
            paste(valid_dpars, collapse = ", "))
     }
 
     if (dpar == "mu" || dpar == "mu1") dpar <- "dprime"
     if (dpar == "mu2") dpar <- "discrim"
-    
+    if (dpar == "cutpoints" || dpar == "cutpoints1") dpar <- "criterion"
+    if (dpar == "cutpoints2") dpar <- "criterion2"
+
     if (dpar == "rec") dpar <- "dprime"
     if (dpar == "fam") dpar <- "dprime2"
     if (dpar == "sigma_R") dpar <- "sigma"
@@ -708,25 +713,24 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("dprime", dprime_dpar, model$model_data$dprime_fixed$coef_names)
   }
 
-  crit_dpar <- if (is_cumulative) "cutpoints" else "criterion"
-  thresh_mid_prior <- get_fixed_prior(pl, "thresh_mid")
-  log_gaps_prior <- get_fixed_prior(pl, "log_gaps")
-
-  crit_coefs <- model$model_data$criterion$coef_names
-  for (coef in crit_coefs) {
-    add_prior("b", "thresh_mid", coef, NA, thresh_mid_prior,
-              if (is_user_b("thresh_mid")) "user" else "default")
-  }
-
-  K <- model$model_data$K
-  if (K > 2) {
-    for (k in 1:(K-2)) {
-      for (coef in crit_coefs) {
-        add_prior("b", "log_gaps", paste0("gap", k, "_", coef), NA,
-                  log_gaps_prior, if (is_user_b("log_gaps")) "user" else "default")
+  crit_dpar <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+  crit2_dpar <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
+  add_thresh_priors <- function(mid_key, gap_key, coefs, n_gaps) {
+    tg <- .thresh_prior_grid(pl, mid_key, gap_key, coefs, n_gaps)
+    for (p in seq_along(tg$coefs)) {
+      add_prior("b", mid_key, tg$coefs[p], NA, tg$mid[p],
+                if (is_user_b(mid_key) || !is.null(pl$b_coef[[paste0(mid_key, "_", tg$coefs[p])]])) "user" else "default")
+    }
+    for (k in seq_len(max(0L, n_gaps))) {
+      for (p in seq_along(tg$coefs)) {
+        cf <- paste0("gap", k, "_", tg$coefs[p])
+        user <- is_user_b(gap_key) || !is.null(pl$b_coef[[paste0(gap_key, "_", cf)]]) ||
+          !is.null(pl$b_coef[[paste0(gap_key, "_[", k, "]")]])
+        add_prior("b", gap_key, cf, NA, tg$gaps[k, p], if (user) "user" else "default")
       }
     }
   }
+  add_thresh_priors("thresh_mid", "log_gaps", model$model_data$criterion$coef_names, model$model_data$K - 2L)
   
   if (model$model_data$has_sigma)
     add_fixed_priors("sigma", "sigma", model$model_data$sigma_fixed$coef_names)
@@ -771,724 +775,51 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("lambda2_B", "lambda2_B", model$model_data$lambda2_B_fixed$coef_names)
 
   if (isTRUE(model$model_data$has_criterion2)) {
-    thresh_mid2_prior <- get_fixed_prior(pl, "thresh_mid2")
-    log_gaps2_prior <- get_fixed_prior(pl, "log_gaps2")
+    add_thresh_priors("thresh_mid2", "log_gaps2", model$model_data$criterion2$coef_names,
+                      model$model_data$K2 - 2L)
+  }
+  
+  # --- Random effect SDs (class = "sd") and correlations (class = "cor") ---
 
-    crit2_coefs <- model$model_data$criterion2$coef_names
-    for (coef in crit2_coefs) {
-      add_prior("b", "thresh_mid2", coef, NA, thresh_mid2_prior,
-                if (is_user_b("thresh_mid2")) "user" else "default")
-    }
-
-    K2 <- model$model_data$K2
-    if (K2 > 2) {
-      for (k in 1:(K2-2)) {
-        for (coef in crit2_coefs) {
-          add_prior("b", "log_gaps2", paste0("gap", k, "_", coef), NA,
-                    log_gaps2_prior, if (is_user_b("log_gaps2")) "user" else "default")
-        }
+  name_map <- .param_name_map(model$family$family)
+  label <- function(p) name_map[[p]] %||% p
+  user_sd <- function(p, group, coef) {
+    !is.null(pl$sd_dpar_group_coef[[paste0(p, "_", group, "_", coef)]]) ||
+      !is.null(pl$sd_dpar_coef[[paste0(p, "_", coef)]]) || is_user_sd_prior(pl, p, group)
+  }
+  for (p in .re_param_names()) {
+    res <- .re_list_of(model$model_data, p)
+    for (group in names(res)) {
+      re <- res[[group]]
+      if (!is.null(re$cor_id)) next
+      for (coef in .re_sd_coef_names(p, re)) {
+        add_prior("sd", label(p), coef, group, get_sd_prior(pl, p, group, coef),
+                  if (user_sd(p, group, coef)) "user" else "default")
       }
     }
   }
-  
-  # --- Random effect SDs (class = "sd") ---
-  
-  is_user_sd_prior_coef <- function(pl, dpar, group, coef) {
-    key_full <- paste0(dpar, "_", group, "_", coef)
-    key_no_group <- paste0(dpar, "_", coef)
-    !is.null(pl$sd_dpar_group_coef[[key_full]]) || !is.null(pl$sd_dpar_coef[[key_no_group]])
-  }
-  
-  re_list <- model$model_data$dprime_random
-  if (!is.null(re_list)) {
-    for (group in names(re_list)) {
-      re <- re_list[[group]]
-      if (is.null(re$cor_id)) {
-        level_names <- re$level_names
-        if (is.null(level_names) || length(level_names) == 0) {
-          level_names <- "(Intercept)"
-        }
-        for (coef in level_names) {
-          sd_prior <- get_sd_prior(pl, "dprime", group, coef)
-          source <- if (is_user_sd_prior_coef(pl, "dprime", group, coef)) {
-            "user"
-          } else if (is_user_sd_prior(pl, "dprime", group)) {
-            "user"
-          } else {
-            "default"
-          }
-          add_prior("sd", dprime_dpar, coef, group, sd_prior, source)
-        }
-      }
+  for (p in .re_param_names()) {
+    res <- .re_list_of(model$model_data, p)
+    for (group in names(res)) {
+      re <- res[[group]]
+      if (!is.null(re$cor_id) || !isTRUE(re$correlated) || !isTRUE(re$dim > 1)) next
+      add_prior("cor", label(p), NA, group, get_cor_prior(pl, p, group),
+                if (is_user_cor_prior(pl, p, group)) "user" else "default")
     }
   }
-  
-  crit_re <- model$model_data$criterion$random
-  if (!is.null(crit_re)) {
-    for (group in names(crit_re)) {
-      re <- crit_re[[group]]
-      if (is.null(re$cor_id)) {
-        n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
-        
-        if (n_re_terms == 1) {
-          level_names <- "(Intercept)"
-        } else {
-          level_names <- re$level_names
-          if (is.null(level_names)) {
-            level_names <- paste0("term", 1:n_re_terms)
-          }
-        }
-        
-        for (coef in level_names) {
-          sd_prior <- get_sd_prior(pl, "criterion", group, coef)
-          source <- if (is_user_sd_prior_coef(pl, "criterion", group, coef)) {
-            "user"
-          } else if (is_user_sd_prior(pl, "criterion", group)) {
-            "user"
-          } else {
-            "default"
-          }
-          add_prior("sd", crit_dpar, coef, group, sd_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (model$model_data$has_sigma) {
-    sigma_re <- model$model_data$sigma_random
-    if (!is.null(sigma_re)) {
-      for (group in names(sigma_re)) {
-        re <- sigma_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "sigma", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "sigma", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "sigma", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "sigma", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (model$model_data$has_lambda) {
-    lambda_re <- model$model_data$lambda_random
-    if (!is.null(lambda_re)) {
-      for (group in names(lambda_re)) {
-        re <- lambda_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "lambda", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "lambda", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "lambda", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "lambda", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda2)) {
-    lambda2_re <- model$model_data$lambda2_random
-    if (!is.null(lambda2_re)) {
-      for (group in names(lambda2_re)) {
-        re <- lambda2_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "lambda2", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "lambda2", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "lambda2", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "lambda2", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-
-  if (isTRUE(model$model_data$has_lambda2_B)) {
-    lambda2_B_re <- model$model_data$lambda2_B_random
-    if (!is.null(lambda2_B_re)) {
-      for (group in names(lambda2_B_re)) {
-        re <- lambda2_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "lambda2_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "lambda2_B", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "lambda2_B", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "lambda2_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-
-  if (isTRUE(model$model_data$has_dprime_B)) {
-    dprime_B_re <- model$model_data$dprime_B_random
-    if (!is.null(dprime_B_re)) {
-      for (group in names(dprime_B_re)) {
-        re <- dprime_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "dprime_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "dprime_B", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "dprime_B", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "dprime_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda_B)) {
-    lambda_B_re <- model$model_data$lambda_B_random
-    if (!is.null(lambda_B_re)) {
-      for (group in names(lambda_B_re)) {
-        re <- lambda_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "lambda_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "lambda_B", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "lambda_B", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "lambda_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  
-  if (isTRUE(model$model_data$has_discrim)) {
-    discrim_re <- model$model_data$discrim_random
-    if (!is.null(discrim_re)) {
-      for (group in names(discrim_re)) {
-        re <- discrim_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "discrim", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "discrim", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "discrim", group)) "user" else "default"
-            add_prior("sd", "discrim", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_discrim_B)) {
-    discrim_B_re <- model$model_data$discrim_B_random
-    if (!is.null(discrim_B_re)) {
-      for (group in names(discrim_B_re)) {
-        re <- discrim_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "discrim_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "discrim_B", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "discrim_B", group)) "user" else "default"
-            add_prior("sd", "discrim_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_sigma_B)) {
-    sigma_B_re <- model$model_data$sigma_B_random
-    if (!is.null(sigma_B_re)) {
-      for (group in names(sigma_B_re)) {
-        re <- sigma_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "sigma_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "sigma_B", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "sigma_B", group)) "user" else "default"
-            add_prior("sd", "sigma_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_sigma2)) {
-    sigma2_re <- model$model_data$sigma2_random
-    if (!is.null(sigma2_re)) {
-      for (group in names(sigma2_re)) {
-        re <- sigma2_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "sigma2", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "sigma2", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "sigma2", group)) "user" else "default"
-            add_prior("sd", "sigma2", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_sigma2_B)) {
-    sigma2_B_re <- model$model_data$sigma2_B_random
-    if (!is.null(sigma2_B_re)) {
-      for (group in names(sigma2_B_re)) {
-        re <- sigma2_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "sigma2_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "sigma2_B", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "sigma2_B", group)) "user" else "default"
-            add_prior("sd", "sigma2_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_rho)) {
-    rho_re <- model$model_data$rho_random
-    if (!is.null(rho_re)) {
-      for (group in names(rho_re)) {
-        re <- rho_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "rho", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "rho", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "rho", group)) "user" else "default"
-            add_prior("sd", "rho", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_rho_B)) {
-    rho_B_re <- model$model_data$rho_B_random
-    if (!is.null(rho_B_re)) {
-      for (group in names(rho_B_re)) {
-        re <- rho_B_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "rho_B", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "rho_B", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "rho_B", group)) "user" else "default"
-            add_prior("sd", "rho_B", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_rho_N)) {
-    rho_N_re <- model$model_data$rho_N_random
-    if (!is.null(rho_N_re)) {
-      for (group in names(rho_N_re)) {
-        re <- rho_N_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "rho_N", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "rho_N", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "rho_N", group)) "user" else "default"
-            add_prior("sd", "rho_N", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_rec_crit)) {
-    rec_crit_re <- model$model_data$rec_crit_random
-    if (!is.null(rec_crit_re)) {
-      for (group in names(rec_crit_re)) {
-        re <- rec_crit_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "rec_crit", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "rec_crit", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "rec_crit", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "rec_crit", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_know_crit)) {
-    know_crit_re <- model$model_data$know_crit_random
-    if (!is.null(know_crit_re)) {
-      for (group in names(know_crit_re)) {
-        re <- know_crit_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) {
-            level_names <- "(Intercept)"
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "know_crit", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "know_crit", group, coef)) {
-              "user"
-            } else if (is_user_sd_prior(pl, "know_crit", group)) {
-              "user"
-            } else {
-              "default"
-            }
-            add_prior("sd", "know_crit", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-
-  if (isTRUE(model$model_data$has_dprime_L)) {
-    dprime_L_re <- model$model_data$dprime_L_random
-    if (!is.null(dprime_L_re)) {
-      for (group in names(dprime_L_re)) {
-        re <- dprime_L_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "dprime_L", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "dprime_L", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "dprime_L", group)) "user" else "default"
-            add_prior("sd", "dprime_L", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_sigma_L)) {
-    sigma_L_re <- model$model_data$sigma_L_random
-    if (!is.null(sigma_L_re)) {
-      for (group in names(sigma_L_re)) {
-        re <- sigma_L_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "sigma_L", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "sigma_L", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "sigma_L", group)) "user" else "default"
-            add_prior("sd", "sigma_L", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda_L)) {
-    lambda_L_re <- model$model_data$lambda_L_random
-    if (!is.null(lambda_L_re)) {
-      for (group in names(lambda_L_re)) {
-        re <- lambda_L_re[[group]]
-        if (is.null(re$cor_id)) {
-          level_names <- re$level_names
-          if (is.null(level_names) || length(level_names) == 0) level_names <- "(Intercept)"
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "lambda_L", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "lambda_L", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "lambda_L", group)) "user" else "default"
-            add_prior("sd", "lambda_L", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_criterion2)) {
-    crit2_re <- model$model_data$criterion2$random
-    if (!is.null(crit2_re)) {
-      for (group in names(crit2_re)) {
-        re <- crit2_re[[group]]
-        if (is.null(re$cor_id)) {
-          n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
-          if (n_re_terms == 1) {
-            level_names <- "(Intercept)"
-          } else {
-            level_names <- re$level_names
-            if (is.null(level_names)) level_names <- paste0("term", 1:n_re_terms)
-          }
-          for (coef in level_names) {
-            sd_prior <- get_sd_prior(pl, "criterion", group, coef)
-            source <- if (is_user_sd_prior_coef(pl, "criterion", group, coef)) "user" 
-            else if (is_user_sd_prior(pl, "criterion", group)) "user" else "default"
-            add_prior("sd", "criterion2", coef, group, sd_prior, source)
-          }
-        }
-      }
-    }
-  }
-  
-  # --- Correlations (class = "cor") ---
-  
-  if (!is.null(re_list)) {
-    for (group in names(re_list)) {
-      re <- re_list[[group]]
-      if (is.null(re$cor_id) && re$dim > 1) {
-        cor_prior <- get_cor_prior(pl, "dprime", group)
-        source <- if (is_user_cor_prior(pl, "dprime", group)) "user" else "default"
-        add_prior("cor", dprime_dpar, NA, group, cor_prior, source)
-      }
-    }
-  }
-  
-  if (!is.null(crit_re)) {
-    for (group in names(crit_re)) {
-      re <- crit_re[[group]]
-      if (is.null(re$cor_id) && re$dim > 1) {
-        cor_prior <- get_cor_prior(pl, "criterion", group)
-        source <- if (is_user_cor_prior(pl, "criterion", group)) "user" else "default"
-        add_prior("cor", crit_dpar, NA, group, cor_prior, source)
-      }
-    }
-  }
-  
-  if (model$model_data$has_sigma) {
-    sigma_re <- model$model_data$sigma_random
-    if (!is.null(sigma_re)) {
-      for (group in names(sigma_re)) {
-        re <- sigma_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "sigma", group)
-          source <- if (is_user_cor_prior(pl, "sigma", group)) "user" else "default"
-          add_prior("cor", "sigma", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (model$model_data$has_lambda) {
-    lambda_re <- model$model_data$lambda_random
-    if (!is.null(lambda_re)) {
-      for (group in names(lambda_re)) {
-        re <- lambda_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "lambda", group)
-          source <- if (is_user_cor_prior(pl, "lambda", group)) "user" else "default"
-          add_prior("cor", "lambda", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda2)) {
-    lambda2_re <- model$model_data$lambda2_random
-    if (!is.null(lambda2_re)) {
-      for (group in names(lambda2_re)) {
-        re <- lambda2_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "lambda2", group)
-          source <- if (is_user_cor_prior(pl, "lambda2", group)) "user" else "default"
-          add_prior("cor", "lambda2", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-
-  if (isTRUE(model$model_data$has_lambda2_B)) {
-    lambda2_B_re <- model$model_data$lambda2_B_random
-    if (!is.null(lambda2_B_re)) {
-      for (group in names(lambda2_B_re)) {
-        re <- lambda2_B_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "lambda2_B", group)
-          source <- if (is_user_cor_prior(pl, "lambda2_B", group)) "user" else "default"
-          add_prior("cor", "lambda2_B", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-
-  if (isTRUE(model$model_data$has_dprime_B)) {
-    dprime_B_re <- model$model_data$dprime_B_random
-    if (!is.null(dprime_B_re)) {
-      for (group in names(dprime_B_re)) {
-        re <- dprime_B_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "dprime_B", group)
-          source <- if (is_user_cor_prior(pl, "dprime_B", group)) "user" else "default"
-          add_prior("cor", "dprime_B", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda_B)) {
-    lambda_B_re <- model$model_data$lambda_B_random
-    if (!is.null(lambda_B_re)) {
-      for (group in names(lambda_B_re)) {
-        re <- lambda_B_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "lambda_B", group)
-          source <- if (is_user_cor_prior(pl, "lambda_B", group)) "user" else "default"
-          add_prior("cor", "lambda_B", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_dprime_L)) {
-    dprime_L_re <- model$model_data$dprime_L_random
-    if (!is.null(dprime_L_re)) {
-      for (group in names(dprime_L_re)) {
-        re <- dprime_L_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "dprime_L", group)
-          source <- if (is_user_cor_prior(pl, "dprime_L", group)) "user" else "default"
-          add_prior("cor", "dprime_L", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_sigma_L)) {
-    sigma_L_re <- model$model_data$sigma_L_random
-    if (!is.null(sigma_L_re)) {
-      for (group in names(sigma_L_re)) {
-        re <- sigma_L_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "sigma_L", group)
-          source <- if (is_user_cor_prior(pl, "sigma_L", group)) "user" else "default"
-          add_prior("cor", "sigma_L", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
-  if (isTRUE(model$model_data$has_lambda_L)) {
-    lambda_L_re <- model$model_data$lambda_L_random
-    if (!is.null(lambda_L_re)) {
-      for (group in names(lambda_L_re)) {
-        re <- lambda_L_re[[group]]
-        if (is.null(re$cor_id) && re$dim > 1) {
-          cor_prior <- get_cor_prior(pl, "lambda_L", group)
-          source <- if (is_user_cor_prior(pl, "lambda_L", group)) "user" else "default"
-          add_prior("cor", "lambda_L", NA, group, cor_prior, source)
-        }
-      }
-    }
-  }
-  
   for (cor_id in names(model$model_data$cross_cor)) {
     cc <- model$model_data$cross_cor[[cor_id]]
-    
     for (member in cc$members) {
-      param <- member$param
-      group <- member$group
-      dim <- member$dim
-      
-      if (param == "criterion") {
-        re <- model$model_data$criterion$random[[group]]
-      } else {
-        re_list <- model$model_data[[paste0(param, "_random")]]
-        re <- if (!is.null(re_list)) re_list[[group]] else NULL
-      }
-      
-      if (!is.null(re)) {
-        level_names <- re$level_names
-        if (is.null(level_names) || length(level_names) == 0) {
-          if (param == "criterion") {
-            n_thresh <- re$dim
-            level_names <- paste0("thresh", 1:n_thresh)
-          } else {
-            level_names <- "(Intercept)"
-          }
-        }
-        
-        for (coef in level_names) {
-          sd_prior <- get_sd_prior(pl, param, group, coef)
-          source <- if (is_user_sd_prior_coef(pl, param, group, coef)) {
-            "user"
-          } else if (is_user_sd_prior(pl, param, group)) {
-            "user"
-          } else {
-            "default"
-          }
-          add_prior("sd", param, coef, group, sd_prior, source)
-        }
+      re <- .re_list_of(model$model_data, member$param)[[cc$group]]
+      if (is.null(re)) next
+      for (coef in .re_sd_coef_names(member$param, re)) {
+        add_prior("sd", label(member$param), coef, cc$group, get_sd_prior(pl, member$param, cc$group, coef),
+                  if (user_sd(member$param, cc$group, coef)) "user" else "default")
       }
     }
-    
-    cor_prior <- get_cor_prior(pl, "cross", cc$group)
-    source <- "default"
-    add_prior("cor", paste0("cross_", cor_id), NA, cc$group, cor_prior, source)
+    ck <- paste0("cross_", cor_id)
+    add_prior("cor", ck, NA, cc$group, .cross_cor_prior(pl, cor_id, cc$group),
+              if (is_user_cor_prior(pl, ck, cc$group) || is_user_cor_prior(pl, "cross", cc$group)) "user" else "default")
   }
 
   # --- Smooth penalty SDs (class = "sds") ---
@@ -1592,4 +923,79 @@ print.broc_prior_table <- function(x, ...) {
   }
   
   invisible(x)
+}
+
+.crit_re_coef_names <- function(re) {
+  R <- as.integer(re$n_re_terms %||% 1L)
+  if (R == 1L && is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) return("(Intercept)")
+  re$level_names %||% paste0("term", seq_len(R))
+}
+
+.crit_re_sd_priors <- function(pl, dpar, group, re) {
+  per_term <- vapply(.crit_re_coef_names(re), function(coef) get_sd_prior(pl, dpar, group, coef),
+                     character(1), USE.NAMES = FALSE)
+  rep_len(per_term, re$dim)
+}
+
+.thresh_prior_grid <- function(pl, mid_key, gap_key, coefs, n_gaps) {
+  if (length(coefs) == 0) coefs <- "(Intercept)"
+  mid <- vapply(coefs, function(cf) get_fixed_prior(pl, mid_key, cf), character(1), USE.NAMES = FALSE)
+  base <- get_fixed_prior(pl, gap_key)
+  gaps <- matrix(base, max(0L, n_gaps), length(coefs))
+  for (k in seq_len(max(0L, n_gaps))) {
+    for (p in seq_along(coefs)) {
+      gaps[k, p] <- pl$b_coef[[paste0(gap_key, "_gap", k, "_", coefs[p])]] %||%
+        pl$b_coef[[paste0(gap_key, "_[", k, "]")]] %||% base
+    }
+  }
+  list(mid = mid, gaps = gaps, coefs = coefs)
+}
+
+.crit2_vary_prior_grid <- function(pl, model_data) {
+  g <- .thresh_prior_grid(pl, "thresh_mid2", "log_gaps2", model_data$criterion2$coef_names,
+                          model_data$K2 - 2L)
+  ic <- match("(Intercept)", g$coefs)
+  if (is.na(ic)) ic <- 1L
+  cov <- setdiff(seq_along(g$coefs), ic)
+  list(mid = g$mid[ic], gaps = g$gaps[, ic], cov_mid = g$mid[cov],
+       cov_gaps = g$gaps[, cov, drop = FALSE])
+}
+
+.stan_prior_vec <- function(name, priors) {
+  if (length(priors) == 0) return(character(0))
+  if (length(unique(priors)) == 1L) return(sprintf("  %s ~ %s;", name, priors[1]))
+  sprintf("  %s[%d] ~ %s;", name, seq_along(priors), priors)
+}
+
+.stan_prior_mat <- function(name, priors) {
+  if (length(priors) == 0) return(character(0))
+  if (length(unique(as.vector(priors))) == 1L) return(sprintf("  to_vector(%s) ~ %s;", name, priors[1]))
+  sprintf("  %s[%d, %d] ~ %s;", name, as.vector(row(priors)), as.vector(col(priors)), as.vector(priors))
+}
+
+.re_param_names <- function() {
+  c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
+    "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
+    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
+}
+
+.re_list_of <- function(model_data, p) {
+  if (p %in% c("criterion", "criterion2")) model_data[[p]]$random else model_data[[paste0(p, "_random")]]
+}
+
+.re_sd_coef_names <- function(p, re) {
+  if (p %in% c("criterion", "criterion2")) return(.crit_re_coef_names(re))
+  lv <- re$level_names
+  if (is.null(lv) || length(lv) == 0) "(Intercept)" else lv
+}
+
+.re_sd_priors <- function(pl, p, group, re) {
+  per <- vapply(.re_sd_coef_names(p, re), function(coef) get_sd_prior(pl, p, group, coef),
+                character(1), USE.NAMES = FALSE)
+  rep_len(per, re$dim)
+}
+
+.cross_cor_prior <- function(pl, cor_id, group) {
+  k <- paste0("cross_", cor_id)
+  pl$cor_dpar_group[[paste0(k, "_", group)]] %||% pl$cor_dpar[[k]] %||% get_cor_prior(pl, "cross", group)
 }

@@ -926,7 +926,7 @@ build_batch_signature <- function(model_data, family_name, params) {
       add_param("matrix", var_name)
 
       n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
-      if (n_re_terms > 1 && !isTRUE(re$use_z_matrix)) {
+      if ((n_re_terms > 1 || !is.null(re$term_idx)) && !isTRUE(re$use_z_matrix)) {
         add_data("const std::vector<int>&",
                  "array[] int",
                  sprintf("idx_criterion_%s", group))
@@ -964,6 +964,9 @@ build_batch_signature <- function(model_data, family_name, params) {
           var_name <- re_var_name("criterion2", group, re$cor_id)
           crit2_re_type <- if (re$dim == 1) "vector" else "matrix"
           add_param(crit2_re_type, var_name)
+          if (isTRUE(re$use_z_matrix)) {
+            add_data_tpl("matrix", sprintf("Z_criterion2_%s", group))
+          }
         }
       }
     } else {
@@ -988,7 +991,7 @@ build_batch_signature <- function(model_data, family_name, params) {
           add_param(crit2_re_type, var_name)
 
           n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
-          if (n_re_terms > 1 && !isTRUE(re$use_z_matrix)) {
+          if ((n_re_terms > 1 || !is.null(re$term_idx)) && !isTRUE(re$use_z_matrix)) {
             add_data("const std::vector<int>&",
                      "array[] int",
                      sprintf("idx_criterion2_%s", group))
@@ -1929,6 +1932,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
           re <- params$criterion2$random[[group]]
           L$add(sprintf("  const Eigen::MatrixXd u_crit2_%d_d = value_of(%s);",
                          crit2_re_idx, re_var_name("criterion2", group, re$cor_id)))
+          if (isTRUE(re$use_z_matrix)) {
+            L$add(sprintf("  const Eigen::MatrixXd Z_crit2_%d_d = value_of(Z_criterion2_%s);",
+                          crit2_re_idx, group))
+          }
         }
       }
     } else {
@@ -3087,7 +3094,7 @@ emit_crit_re_mid <- function(L, crit_re_idx, re, group, target) {
   if (isTRUE(re$use_z_matrix)) {
     L$add(sprintf("    for (int j = 0; j < %d; ++j) %s += Z_crit%d_d(n, j) * u_crit%d_d(%s, mid * %d + j);",
                    n_re_terms, target, crit_re_idx, crit_re_idx, g_var, n_re_terms))
-  } else if (n_re_terms == 1) {
+  } else if (n_re_terms == 1 && is.null(re$term_idx)) {
     L$add(sprintf("    %s += u_crit%d_d(%s, mid);", target, crit_re_idx, g_var))
   } else {
     idx_var <- sprintf("idx_criterion_%s", group)
@@ -3106,7 +3113,7 @@ emit_crit_re_gap <- function(L, crit_re_idx, re, group, target, thresh_k_1based)
   if (isTRUE(re$use_z_matrix)) {
     L$add(sprintf("      for (int j = 0; j < %d; ++j) %s += Z_crit%d_d(n, j) * u_crit%d_d(%s, k * %d + j);",
                    n_re_terms, target, crit_re_idx, crit_re_idx, g_var, n_re_terms))
-  } else if (n_re_terms == 1) {
+  } else if (n_re_terms == 1 && is.null(re$term_idx)) {
     L$add(sprintf("      %s += u_crit%d_d(%s, k);", target, crit_re_idx, g_var))
   } else {
     idx_var <- sprintf("idx_criterion_%s", group)
@@ -3683,7 +3690,7 @@ emit_crit2_re_mid <- function(L, crit2_re_idx, re, group, target) {
   if (isTRUE(re$use_z_matrix)) {
     L$add(sprintf("    for (int j = 0; j < %d; ++j) %s += Z_crit2_%d_d(n, j) * u_crit2_%d_d(%s, mid2 * %d + j);",
                    n_re_terms, target, crit2_re_idx, crit2_re_idx, g_var, n_re_terms))
-  } else if (n_re_terms == 1) {
+  } else if (n_re_terms == 1 && is.null(re$term_idx)) {
     L$add(sprintf("    %s += u_crit2_%d_d(%s, mid2);", target, crit2_re_idx, g_var))
   } else {
     idx_var <- sprintf("idx_criterion2_%s", group)
@@ -3701,7 +3708,7 @@ emit_crit2_re_gap <- function(L, crit2_re_idx, re, group, target, thresh_k_1base
   if (isTRUE(re$use_z_matrix)) {
     L$add(sprintf("      for (int j = 0; j < %d; ++j) %s += Z_crit2_%d_d(n, j) * u_crit2_%d_d(%s, k * %d + j);",
                    n_re_terms, target, crit2_re_idx, crit2_re_idx, g_var, n_re_terms))
-  } else if (n_re_terms == 1) {
+  } else if (n_re_terms == 1 && is.null(re$term_idx)) {
     L$add(sprintf("      %s += u_crit2_%d_d(%s, k);", target, crit2_re_idx, g_var))
   } else {
     idx_var <- sprintf("idx_criterion2_%s", group)
@@ -4052,7 +4059,7 @@ emit_crit2_re_grad_scatter <- function(L, model_data, params) {
     g_var <- sprintf("g_%s", group)
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
-    if (n_re_terms == 1 && !isTRUE(re$use_z_matrix)) {
+    if (n_re_terms == 1 && is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
       L$add(sprintf("    grad_u_crit2_%d(%s, mid2) += g_crit2_mid;", crit2_re_idx, g_var))
       L$add("    for (int g = 0; g < n_gaps2; ++g) {")
       L$add(sprintf("      grad_u_crit2_%d(%s, gap_to_col2(g)) += g_crit2_gaps(g);", crit2_re_idx, g_var))
@@ -4702,7 +4709,7 @@ emit_crit_re_grad_scatter <- function(L, model_data, params) {
     g_var <- sprintf("g_%s", group)
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
-    if (n_re_terms == 1 && !isTRUE(re$use_z_matrix)) {
+    if (n_re_terms == 1 && is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
       L$add(sprintf("    grad_u_crit%d(%s, mid) += g_crit_mid;", crit_re_idx, g_var))
       L$add("    for (int g = 0; g < n_gaps; ++g) {")
       L$add(sprintf("      grad_u_crit%d(%s, gap_to_col(g)) += g_crit_gaps(g);", crit_re_idx, g_var))
@@ -6129,7 +6136,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   mode <- model_data$varying_re %||% "shared"
   if (mode == "full") {
     list(mid = "bin * n_thresh2 + mid2", gap = "bin * n_thresh2 + %s")
-  } else if (mode == "per_bin" && isTRUE(re$dim > 1)) {
+  } else if (mode == "per_bin" && isTRUE(re$dim > (re$n_re_terms %||% 1L))) {
     list(mid = "bin", gap = NULL)
   } else {
     list(mid = "0", gap = NULL)
@@ -6145,9 +6152,17 @@ emit_thresh2_varying_obs <- function(L, model_data, params) {
     i <- 0
     for (group in names(res)) {
       i <- i + 1
-      cols <- .varying_re_cols(model_data, res[[group]])
+      re <- res[[group]]
+      cols <- .varying_re_cols(model_data, re)
       col <- if (which == "mid") cols$mid else if (!is.null(cols$gap)) sprintf(cols$gap, k_expr) else NULL
-      if (!is.null(col)) L$add(sprintf("      %s += u_crit2_%d_d(g_%s, %s);", target, i, group, col))
+      if (is.null(col)) next
+      if (isTRUE(re$use_z_matrix)) {
+        R <- re$n_re_terms
+        L$add(sprintf("      for (int j = 0; j < %d; ++j) %s += Z_crit2_%d_d(n, j) * u_crit2_%d_d(g_%s, (%s) * %d + j);",
+                      R, target, i, i, group, col, R))
+      } else {
+        L$add(sprintf("      %s += u_crit2_%d_d(g_%s, %s);", target, i, group, col))
+      }
     }
   }
   side <- function(upper) {
@@ -6227,12 +6242,22 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
   i <- 0
   for (group in names(res)) {
     i <- i + 1
-    cols <- .varying_re_cols(model_data, res[[group]])
-    L$add(sprintf("      grad_u_crit2_%d(g_%s, %s) += g_crit2_mid;", i, group, cols$mid))
+    re <- res[[group]]
+    cols <- .varying_re_cols(model_data, re)
+    acc <- function(col, g) {
+      if (isTRUE(re$use_z_matrix)) {
+        R <- re$n_re_terms
+        sprintf("for (int r = 0; r < %d; ++r) grad_u_crit2_%d(g_%s, (%s) * %d + r) += %s * Z_crit2_%d_d(n, r);",
+                R, i, group, col, R, g, i)
+      } else {
+        sprintf("grad_u_crit2_%d(g_%s, %s) += %s;", i, group, col, g)
+      }
+    }
+    L$add(paste0("      ", acc(cols$mid, "g_crit2_mid")))
     if (!is.null(cols$gap)) {
       L$add("      for (int j = 0; j < n_gaps2; ++j) {")
       L$add("        const int col = j < n_upper2 ? mid2 + 1 + j : mid2 - 1 - (j - n_upper2);")
-      L$add(sprintf("        grad_u_crit2_%d(g_%s, %s) += g_crit2_gaps(j);", i, group, sprintf(cols$gap, "col")))
+      L$add(paste0("        ", acc(sprintf(cols$gap, "col"), "g_crit2_gaps(j)")))
       L$add("      }")
     }
   }

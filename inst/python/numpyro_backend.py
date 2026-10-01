@@ -60,6 +60,60 @@ sys.path.insert(0, _script_dir)
 # Prior Parsing
 # =============================================================================
 
+def _grid_strings(strs, shape):
+    arr = np.empty(int(np.prod(shape)) if shape else 1, dtype=object)
+    flat = []
+
+    def walk(x):
+        if isinstance(x, (list, tuple)):
+            for v in x:
+                walk(v)
+        else:
+            flat.append(x)
+    walk(strs)
+    if len(flat) == 1 and arr.size > 1:
+        flat = flat * arr.size
+    arr[:] = flat
+    return arr
+
+
+def _grid_sample(name, strs, shape, transform=None):
+    """Sample one array site whose elements carry their own prior strings."""
+    tf = transform or (lambda d: d)
+    flat = _grid_strings(strs, shape)
+    if len(set(flat)) == 1:
+        d = tf(parse_prior(flat[0]))
+        return numpyro.sample(name, d.expand(list(shape)) if shape else d)
+    ds = [parse_prior(s) for s in flat]
+    cls = type(ds[0])
+    if all(type(d) is cls for d in ds):
+        params = {k: jnp.asarray([getattr(d, k) for d in ds], dtype=_FLOAT).reshape(shape)
+                  for k in cls.arg_constraints}
+        return numpyro.sample(name, tf(cls(**params)))
+    ds = [tf(d) for d in ds]
+    support = ds[0].support
+    x = numpyro.sample(name, dist.ImproperUniform(support, (), tuple(shape)))
+    xf = x.reshape(-1)
+    numpyro.factor(f"{name}_prior", sum(d.log_prob(xf[i]) for i, d in enumerate(ds)))
+    return x
+
+
+def _grid_get(config, key, i=None, j=None, default=None):
+    g = config.get(key)
+    if g is None:
+        return default
+    if isinstance(g, str):
+        return g
+    if i is None:
+        return g
+    row = g[i] if i < len(g) else None
+    if row is None:
+        return default
+    if j is None or isinstance(row, str):
+        return row
+    return row[j] if j < len(row) else default
+
+
 def parse_prior(prior_str, dim=None):
     """Parse a Stan prior string into a NumPyro distribution.
 
@@ -238,7 +292,7 @@ def _crit_re_shift(u, idx, conf, n_thresh, mid, n_gaps):
 
         def at(k):
             return jnp.sum(Z * u[k * R:(k + 1) * R, idx].T, axis=1)
-    elif n_dims > n_thresh and conf.get("term_idx") is not None:
+    elif conf.get("term_idx") is not None:
         R = n_dims // n_thresh
         tidx = jnp.array(conf["term_idx"], dtype=jnp.int32) - 1
         has = tidx >= 0
@@ -254,16 +308,26 @@ def _crit_re_shift(u, idx, conf, n_thresh, mid, n_gaps):
     return mid_shift, (jnp.stack(gaps) if gaps else None)
 
 
-def _crit2_varying_shift(u, idx, mode, y1_idx, n_thresh, mid, n_gaps):
+def _crit2_varying_shift(u, idx, mode, y1_idx, n_thresh, mid, n_gaps, conf=None):
     """Per-observation source-threshold shifts under varying source criteria."""
     n_upper = n_thresh - mid - 1
+    Z = None
+    if conf is not None and conf.get("type") == "matrix":
+        Z = _ensure_2d(jnp.asarray(conf["Z"], dtype=_FLOAT))
+    R = 1 if Z is None else Z.shape[1]
+
+    def at(c):
+        if Z is None:
+            return u[c, idx]
+        return sum(Z[:, r] * u[c * R + r, idx] for r in range(R))
+
     if mode == "full":
         base = y1_idx * n_thresh
-        gaps = [u[base + _gap_thresh_pos(g, mid, n_upper), idx] for g in range(n_gaps)]
-        return u[base + mid, idx], (jnp.stack(gaps) if gaps else None)
-    if mode == "per_bin" and u.shape[0] > 1:
-        return u[y1_idx, idx], None
-    return u[0, idx], None
+        gaps = [at(base + _gap_thresh_pos(g, mid, n_upper)) for g in range(n_gaps)]
+        return at(base + mid), (jnp.stack(gaps) if gaps else None)
+    if mode == "per_bin" and u.shape[0] > R:
+        return at(y1_idx), None
+    return at(0), None
 
 
 def build_thresholds_vectorized(thresh_mid_vec, log_gaps_mat, n_thresh, gap_link="log"):
@@ -3575,10 +3639,14 @@ def _positive_dist(d):
     if isinstance(d, (dist.HalfNormal, dist.HalfCauchy, dist.LogNormal,
                       dist.Exponential, dist.Gamma)):
         return d
+    loc = getattr(d, "loc", None)
+    zero_loc = loc is None or bool(np.all(np.asarray(loc) == 0.0))
     if isinstance(d, dist.Normal):
-        if float(d.loc) == 0.0:
+        if zero_loc:
             return dist.HalfNormal(d.scale)
         return dist.TruncatedNormal(d.loc, d.scale, low=0.0)
+    if not zero_loc and isinstance(d, (dist.Cauchy, dist.StudentT, dist.Laplace, dist.Logistic)):
+        return dist.TruncatedDistribution(d, low=0.0)
     return dist.FoldedDistribution(d)
 
 
@@ -3674,7 +3742,7 @@ def sdt_model(config):
     _batch_scalar_betas = {}
     _batch_skip = set()
     for param_name, pconf in params_config.items():
-        if param_name == "criterion":
+        if param_name in ("criterion", "criterion2"):
             continue
         if knob is not None and param_name == "know_crit":
             continue
@@ -3704,7 +3772,7 @@ def sdt_model(config):
             numpyro.deterministic(f"beta_{param_name}[1]", batch_sample[b])
 
     for param_name, pconf in params_config.items():
-        if param_name == "criterion":
+        if param_name in ("criterion", "criterion2"):
             continue
 
         if needs_ordered and param_name in ("dprime", "dprime2"):
@@ -3836,6 +3904,15 @@ def sdt_model(config):
         re_type = re_conf.get("type", "index")
         sd_prior = _positive_dist(parse_prior(re_conf.get("prior_sd", "normal(0, 0.5)")))
         has_term_idx = re_conf.get("term_idx") is not None
+        per_coef = re_conf.get("prior_sd_per_coef")
+        if isinstance(per_coef, str):
+            per_coef = [per_coef]
+        if per_coef is not None and len(per_coef) == n_terms:
+            sd_priors = [_positive_dist(parse_prior(p)) for p in per_coef]
+            per_coef_varies = len(set(per_coef)) > 1
+        else:
+            sd_priors = [sd_prior] * n_terms
+            per_coef_varies = False
 
         if n_terms == 1 or not correlated:
             if n_terms == 1:
@@ -3847,7 +3924,11 @@ def sdt_model(config):
 
                 if re_type == "index":
                     idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                    _apply_re_offset(param, u[idx], param_values)
+                    offset = u[idx]
+                    if has_term_idx:
+                        tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32)
+                        offset = jnp.where(tidx > 0, offset, 0.0)
+                    _apply_re_offset(param, offset, param_values)
                 else:
                     Z = _ensure_2d(jnp.array(re_conf["Z"], dtype=_FLOAT))
                     idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
@@ -3855,7 +3936,7 @@ def sdt_model(config):
             else:
                 u_all = jnp.zeros((n_terms, n_groups))
                 for t in range(n_terms):
-                    sd_t = numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_prior)
+                    sd_t = numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_priors[t])
                     z_t = numpyro.sample(f"z_{param}_{group}[{t+1}]",
                                          dist.Normal(0, 1).expand([n_groups]))
                     u_t = sd_t * z_t
@@ -3863,7 +3944,7 @@ def sdt_model(config):
 
                     if re_type == "index":
                         idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                        if has_term_idx and n_terms > 1:
+                        if has_term_idx:
                             tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
                             offset = jnp.where(tidx == t, u_t[idx], 0.0)
                         else:
@@ -3877,8 +3958,12 @@ def sdt_model(config):
 
                 numpyro.deterministic(f"u_{param}_{group}", u_all.T)
         else:
-            sds = numpyro.sample(f"sigma_{param}_{group}",
-                                  sd_prior.expand([n_terms]))
+            if per_coef_varies:
+                sds = jnp.stack([numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_priors[t])
+                                 for t in range(n_terms)])
+            else:
+                sds = numpyro.sample(f"sigma_{param}_{group}",
+                                      sd_prior.expand([n_terms]))
 
             L_corr = _re_corr_cholesky(f"{param}_{group}", re_conf, n_terms)
             numpyro.deterministic(f"corr_{param}_{group}", L_corr @ L_corr.T)
@@ -3892,7 +3977,7 @@ def sdt_model(config):
 
             if re_type == "index":
                 idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                if has_term_idx and n_terms > 1:
+                if has_term_idx:
                     tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
                     for t in range(n_terms):
                         offset = jnp.where(tidx == t, u[t][idx], 0.0)
@@ -3962,12 +4047,18 @@ def sdt_model(config):
             param = m["param"]
             nt = int(m["n_terms"])
             sd_prior = _positive_dist(parse_prior(m.get("prior_sd", "normal(0, 0.5)")))
+            per = m.get("prior_sd_per_coef")
+            if isinstance(per, str):
+                per = [per]
+            if per is None or len(per) != nt:
+                per = [m.get("prior_sd", "normal(0, 0.5)")] * nt
             if nt == 1:
-                sd_val = numpyro.sample(f"sigma_cross_{cor_id}_{group}[{dim_offset + 1}]", sd_prior)
+                sd_val = numpyro.sample(f"sigma_cross_{cor_id}_{group}[{dim_offset + 1}]",
+                                        _positive_dist(parse_prior(per[0])))
                 all_sds = all_sds.at[dim_offset].set(sd_val)
             else:
-                sd_vals = numpyro.sample(f"sigma_cross_{cor_id}_{group}_block_{param}",
-                                          sd_prior.expand([nt]))
+                sd_vals = _grid_sample(f"sigma_cross_{cor_id}_{group}_block_{param}", list(per), (nt,),
+                                       transform=_positive_dist)
                 all_sds = all_sds.at[dim_offset:dim_offset + nt].set(sd_vals)
             member_dims.append((param, nt, dim_offset, m))
             dim_offset += nt
@@ -4000,7 +4091,7 @@ def sdt_model(config):
                 u_t = u[d_off + t]
                 if re_type == "index":
                     idx = jnp.array(m_conf["index"], dtype=jnp.int32) - 1
-                    if has_term_idx and nt > 1:
+                    if has_term_idx:
                         tidx = jnp.array(m_conf["term_idx"], dtype=jnp.int32) - 1
                         offset = jnp.where(tidx == t, u_t[idx], 0.0)
                         _apply_re_offset(param, offset, param_values)
@@ -4067,7 +4158,7 @@ def sdt_model(config):
     # ---- Apply link functions to get parameter values ----
     trial_params = {}
     for param_name, pconf in params_config.items():
-        if param_name == "criterion":
+        if param_name in ("criterion", "criterion2"):
             continue
         link = pconf.get("link", "identity")
         eta = param_values.get(param_name, jnp.zeros(N))
@@ -4097,43 +4188,46 @@ def sdt_model(config):
     has_per_gap2 = per_gap2_priors is not None and len(set(per_gap2_priors)) > 1
     n_gaps = n_thresh - 1
 
+    def _mid_prior(j):
+        return _grid_get(config, "prior_thresh_mid_grid", j, None, prior_thresh_mid)
+
+    def _gap_prior(k, j):
+        fallback = per_gap_priors[k] if per_gap_priors is not None else prior_log_gaps
+        return _grid_get(config, "prior_log_gaps_grid", k, j, fallback)
+
+    per_gap_priors = config.get("prior_log_gaps_per_gap")
+    if isinstance(per_gap_priors, str):
+        per_gap_priors = [per_gap_priors]
     if P_crit == 1:
         beta_thresh_mid = numpyro.sample("beta_thresh_mid[1]",
-                                          parse_prior(prior_thresh_mid)).reshape(1)
+                                          parse_prior(_mid_prior(0))).reshape(1)
     else:
         beta_thresh_mid = jnp.zeros(P_crit)
         for j in range(P_crit):
             mid_j = numpyro.sample(f"beta_thresh_mid[{j+1}]",
-                                   parse_prior(prior_thresh_mid))
+                                   parse_prior(_mid_prior(j)))
             beta_thresh_mid = beta_thresh_mid.at[j].set(mid_j)
 
     thresh_mid_vec = X_crit @ beta_thresh_mid
 
     gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
-    per_gap_priors = config.get("prior_log_gaps_per_gap")
-    has_per_gap = (per_gap_priors is not None and n_gaps > 0
-                   and len(set(per_gap_priors)) > 1)
     beta_log_gaps = jnp.zeros((n_gaps, P_crit)) if n_gaps > 0 else None
     if n_gaps > 0:
-        if has_per_gap and P_crit == 1:
+        gap_pri = [[_gap_prior(k, j) for j in range(P_crit)] for k in range(n_gaps)]
+        uniform_gaps = len({p for row in gap_pri for p in row}) == 1
+        if P_crit == 1 and uniform_gaps:
+            beta_log_gaps = numpyro.sample(gap_param_prefix,
+                                            parse_prior(gap_pri[0][0]).expand([n_gaps])).reshape(n_gaps, 1)
+        elif P_crit == 1:
             for k in range(n_gaps):
                 row_k = numpyro.sample(f"{gap_param_prefix}[{k+1}]",
-                                        parse_prior(per_gap_priors[k]))
+                                        parse_prior(gap_pri[k][0]))
                 beta_log_gaps = beta_log_gaps.at[k, 0].set(row_k)
-        elif has_per_gap:
-            for k in range(n_gaps):
-                for j in range(P_crit):
-                    lg_kj = numpyro.sample(f"{gap_param_prefix}[{k+1},{j+1}]",
-                                           parse_prior(per_gap_priors[k]))
-                    beta_log_gaps = beta_log_gaps.at[k, j].set(lg_kj)
-        elif P_crit == 1:
-            beta_log_gaps = numpyro.sample(gap_param_prefix,
-                                            parse_prior(prior_log_gaps).expand([n_gaps])).reshape(n_gaps, 1)
         else:
             for k in range(n_gaps):
                 for j in range(P_crit):
                     lg_kj = numpyro.sample(f"{gap_param_prefix}[{k+1},{j+1}]",
-                                           parse_prior(prior_log_gaps))
+                                           parse_prior(gap_pri[k][j]))
                     beta_log_gaps = beta_log_gaps.at[k, j].set(lg_kj)
 
         log_gaps_obs = beta_log_gaps @ X_crit.T
@@ -4277,11 +4371,16 @@ def sdt_model(config):
             c2_n_dims = int(crit2_re["n_terms"])
             c2_correlated = crit2_re.get("correlated", True)
             c2_sd_prior = _positive_dist(parse_prior(crit2_re.get("prior_sd", "normal(0, 0.5)")))
+            c2_per_coef = crit2_re.get("prior_sd_per_coef")
+            if c2_per_coef is not None and len(c2_per_coef) == c2_n_dims:
+                c2_sd_priors = [_positive_dist(parse_prior(p)) for p in c2_per_coef]
+            else:
+                c2_sd_priors = [c2_sd_prior] * c2_n_dims
 
             if c2_correlated and c2_n_dims > 1:
                 c2_sds = jnp.zeros(c2_n_dims)
                 for t in range(c2_n_dims):
-                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_prior)
+                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
                     c2_sds = c2_sds.at[t].set(sd_t)
                 L_corr_c2 = _re_corr_cholesky(f"criterion2_{c2_group}", crit2_re, c2_n_dims)
                 numpyro.deterministic(f"corr_criterion2_{c2_group}", L_corr_c2 @ L_corr_c2.T)
@@ -4292,7 +4391,7 @@ def sdt_model(config):
             else:
                 u_c2 = jnp.zeros((c2_n_dims, c2_n_groups))
                 for t in range(c2_n_dims):
-                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_prior)
+                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
                     z_t = numpyro.sample(f"z_criterion2_{c2_group}[{t+1}]",
                                          dist.Normal(0, 1).expand([c2_n_groups]))
                     u_c2 = u_c2.at[t].set(sd_t * z_t)
@@ -4309,15 +4408,18 @@ def sdt_model(config):
         _t2_gaps_fused = None
 
         if varying_source:
+            pv2 = config.get("prior_vary2") or {}
+            v2_mid = pv2.get("mid", prior_thresh_mid2)
+            v2_gaps = pv2.get("gaps", [prior_log_gaps2] * n_gaps2)
+            if isinstance(v2_gaps, str):
+                v2_gaps = [v2_gaps]
             beta_thresh_mid_2 = numpyro.sample(
                 "beta_thresh_mid_2_varying",
-                parse_prior(prior_thresh_mid2).expand([K]))
+                parse_prior(v2_mid).expand([K]))
 
             if n_gaps2 > 0:
                 gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
-                beta_log_gaps_2 = numpyro.sample(
-                    gap2_name,
-                    parse_prior(prior_log_gaps2).expand([K, n_gaps2]))
+                beta_log_gaps_2 = _grid_sample(gap2_name, [list(v2_gaps) for _ in range(K)], (K, n_gaps2))
             else:
                 beta_log_gaps_2 = None
 
@@ -4333,13 +4435,14 @@ def sdt_model(config):
             if cov2 is not None:
                 Xc2 = _ensure_2d(jnp.array(cov2["X"], dtype=_FLOAT))
                 P_c2 = Xc2.shape[1]
-                b_mid_cov = numpyro.sample("beta_thresh_mid_2_cov",
-                                           parse_prior(prior_thresh_mid2).expand([P_c2]))
+                b_mid_cov = _grid_sample("beta_thresh_mid_2_cov",
+                                         pv2.get("cov_mid", [prior_thresh_mid2] * P_c2), (P_c2,))
                 thresh2_mid_per_obs = thresh2_mid_per_obs + Xc2 @ b_mid_cov
                 if n_gaps2 > 0:
                     gcov_name = "beta_raw_gaps_2_cov" if gap_link == "softplus" else "beta_log_gaps_2_cov"
-                    b_gaps_cov = numpyro.sample(gcov_name,
-                                                parse_prior(prior_log_gaps2).expand([n_gaps2, P_c2]))
+                    b_gaps_cov = _grid_sample(gcov_name,
+                                              pv2.get("cov_gaps", [[prior_log_gaps2] * P_c2] * n_gaps2),
+                                              (n_gaps2, P_c2))
                     log_gaps2_per_obs = log_gaps2_per_obs + b_gaps_cov @ Xc2.T
 
             for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
@@ -4347,9 +4450,9 @@ def sdt_model(config):
                 for g in range(n_gaps2):
                     log_gaps2_per_obs = log_gaps2_per_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
 
-            for u_c2, idx_c2, _ in c2_terms:
+            for u_c2, idx_c2, c2_conf in c2_terms:
                 d_mid, d_gaps = _crit2_varying_shift(u_c2, idx_c2, varying_re_mode, y1_idx,
-                                                     n_thresh2, mid2, n_gaps2)
+                                                     n_thresh2, mid2, n_gaps2, c2_conf)
                 thresh2_mid_per_obs = thresh2_mid_per_obs + d_mid
                 if d_gaps is not None:
                     log_gaps2_per_obs = log_gaps2_per_obs + d_gaps
@@ -4361,12 +4464,10 @@ def sdt_model(config):
             new_source_mode = config.get("new_source_criteria")
             if new_source_mode == "shared":
                 c2_new_mid = numpyro.sample("beta_thresh_mid_2_new",
-                                            parse_prior(prior_thresh_mid2))
+                                            parse_prior(v2_mid))
                 if n_gaps2 > 0:
                     gap2_new_name = "beta_raw_gaps_2_new" if gap_link == "softplus" else "beta_log_gaps_2_new"
-                    c2_new_gaps = numpyro.sample(
-                        gap2_new_name,
-                        parse_prior(prior_log_gaps2).expand([n_gaps2]))
+                    c2_new_gaps = _grid_sample(gap2_new_name, list(v2_gaps), (n_gaps2,))
                 else:
                     c2_new_gaps = jnp.zeros(0)
                 thresh2_new = build_thresholds(c2_new_mid, c2_new_gaps, n_thresh2, gap_link=gap_link)
@@ -4395,8 +4496,7 @@ def sdt_model(config):
 
             beta_thresh2_mid = jnp.zeros(c2_n_coef)
             for j in range(c2_n_coef):
-                cname = c2_col_names[j] if j < len(c2_col_names) else f"V{j+1}"
-                prior_str = c2_priors.get(cname, prior_thresh_mid2)
+                prior_str = _grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)
                 t2m_j = numpyro.sample(f"beta_thresh_mid_2[{j+1}]",
                                        parse_prior(prior_str))
                 beta_thresh2_mid = beta_thresh2_mid.at[j].set(t2m_j)
@@ -4405,20 +4505,23 @@ def sdt_model(config):
 
             if n_gaps2 > 0:
                 gap2_name_ij = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
-                if c2_n_coef == 1 and has_per_gap2:
+                g2_pri = [[_grid_get(config, "prior_log_gaps2_grid", k, j,
+                                     per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
+                           for j in range(c2_n_coef)] for k in range(n_gaps2)]
+                g2_uniform = len({p for row in g2_pri for p in row}) == 1
+                if c2_n_coef == 1 and not g2_uniform:
                     beta_log_gaps2 = jnp.stack([
-                        numpyro.sample(f"{gap2_name_ij}[{k+1}]", parse_prior(per_gap2_priors[k]))
+                        numpyro.sample(f"{gap2_name_ij}[{k+1}]", parse_prior(g2_pri[k][0]))
                         for k in range(n_gaps2)]).reshape(n_gaps2, 1)
                 elif c2_n_coef == 1:
                     beta_log_gaps2 = numpyro.sample(gap2_name_ij,
-                                                     parse_prior(prior_log_gaps2).expand([n_gaps2])).reshape(n_gaps2, 1)
+                                                     parse_prior(g2_pri[0][0]).expand([n_gaps2])).reshape(n_gaps2, 1)
                 else:
                     beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
                     for k in range(n_gaps2):
-                        pk = per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2
                         for j in range(c2_n_coef):
                             lg2_kj = numpyro.sample(f"{gap2_name_ij}[{k+1},{j+1}]",
-                                                    parse_prior(pk))
+                                                    parse_prior(g2_pri[k][j]))
                             beta_log_gaps2 = beta_log_gaps2.at[k, j].set(lg2_kj)
                 log_gaps2_obs = beta_log_gaps2 @ X_c2.T
             else:
@@ -4442,16 +4545,20 @@ def sdt_model(config):
 
         else:
             thresh2_mid = numpyro.sample("beta_thresh_mid_2[1]",
-                                         parse_prior(prior_thresh_mid2))
+                                         parse_prior(_grid_get(config, "prior_thresh_mid2_grid", 0, None,
+                                                               prior_thresh_mid2)))
             if n_gaps2 > 0:
                 gap2_name_int = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
-                if has_per_gap2:
+                g2i_pri = [_grid_get(config, "prior_log_gaps2_grid", k, 0,
+                                     per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
+                           for k in range(n_gaps2)]
+                if len(set(g2i_pri)) > 1:
                     log_gaps2 = jnp.stack([
-                        numpyro.sample(f"{gap2_name_int}[{k+1}]", parse_prior(per_gap2_priors[k]))
+                        numpyro.sample(f"{gap2_name_int}[{k+1}]", parse_prior(g2i_pri[k]))
                         for k in range(n_gaps2)])
                 else:
                     log_gaps2 = numpyro.sample(gap2_name_int,
-                                                parse_prior(prior_log_gaps2).expand([n_gaps2]))
+                                                parse_prior(g2i_pri[0]).expand([n_gaps2]))
             else:
                 log_gaps2 = jnp.zeros(n_gaps2)
 

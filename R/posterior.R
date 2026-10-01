@@ -21,8 +21,9 @@
 #'   `upper`, `trial`. If `FALSE` (default), returns the full S x N matrix.
 #' @param prob CI width when `summary = TRUE` (default 0.95).
 #' @param allow_new_levels If `TRUE`, sample random effects from their prior for
-#'   grouping levels in `newdata` not seen during training. Default `FALSE` errors
-#'   if `newdata` introduces new levels.
+#'   grouping levels in `newdata` not seen during training, once per new level and
+#'   draw (shared by all rows of that level; cross-parameter groups jointly).
+#'   Default `FALSE` errors if `newdata` introduces new levels.
 #' @param seed Optional integer for reproducibility (subsampling and
 #'   new-level RE draws). Restores caller's RNG state on exit.
 #' @param ... Ignored.
@@ -194,6 +195,7 @@ get_re_prior_variables <- function(model) {
   add_re <- function(vars, re_list, stan_pname) {
     for (group in names(re_list)) {
       re <- re_list[[group]]
+      if (!is.null(re$cor_id)) next
       vars <- c(vars, paste0("sigma_", stan_pname, "_", group))
       if (isTRUE(re$correlated) && (re$dim %||% 1L) > 1L) {
         vars <- c(vars, paste0("L_corr_", stan_pname, "_", group),
@@ -206,7 +208,7 @@ get_re_prior_variables <- function(model) {
   re_param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
-                       "lambda2", "rec_crit", "know_crit",
+                       "lambda2", "lambda2_B", "rec_crit", "know_crit",
                        "dprime_L", "sigma_L", "lambda_L")
   for (pname in re_param_names) {
     re_list <- md[[paste0(pname, "_random")]]
@@ -215,6 +217,11 @@ get_re_prior_variables <- function(model) {
       if (is_bivariate_cumulative && pname == "dprime") "mu1" else
       if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
     vars <- add_re(vars, re_list, stan_pname)
+  }
+
+  for (cor_id in names(md$cross_cor)) {
+    g <- md$cross_cor[[cor_id]]$group
+    vars <- c(vars, paste0("sigma_cross_", cor_id, "_", g), paste0("L_corr_cross_", cor_id, "_", g))
   }
 
   crit_name <- if (is_cumulative) "cutpoints" else

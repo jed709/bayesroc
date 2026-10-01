@@ -235,7 +235,7 @@ build_numpyro_config <- function(model) {
     if (!is.null(fe)) {
       param_link <- if (!is.null(family$params[[param]]$link)) family$params[[param]]$link else "identity"
 
-      col_names <- fe$col_names
+      col_names <- fe$coef_names %||% fe$col_names
       if (length(col_names) == 0 || all(!nzchar(col_names))) {
         col_names <- paste0("V", seq_len(fe$n_coef))
       }
@@ -276,6 +276,19 @@ build_numpyro_config <- function(model) {
     config$prior_log_gaps_per_gap <- vapply(seq_len(n_gaps_jax), function(k)
       get_fixed_prior(prior_lookup, gaps_key, coef = sprintf("[%d]", k)),
       character(1))
+  }
+  tg <- .thresh_prior_grid(prior_lookup, "thresh_mid", "log_gaps", md$criterion$coef_names, md$K - 2L)
+  config$prior_thresh_mid_grid <- as.list(tg$mid)
+  config$prior_log_gaps_grid <- lapply(seq_len(nrow(tg$gaps)), function(k) as.list(tg$gaps[k, ]))
+  if (isTRUE(md$has_criterion2)) {
+    tg2 <- .thresh_prior_grid(prior_lookup, "thresh_mid2", "log_gaps2", md$criterion2$coef_names, md$K2 - 2L)
+    config$prior_thresh_mid2_grid <- as.list(tg2$mid)
+    config$prior_log_gaps2_grid <- lapply(seq_len(nrow(tg2$gaps)), function(k) as.list(tg2$gaps[k, ]))
+    if (isTRUE(md$varying_source_criteria)) {
+      vg <- .crit2_vary_prior_grid(prior_lookup, md)
+      config$prior_vary2 <- list(mid = vg$mid, gaps = as.list(vg$gaps), cov_mid = as.list(vg$cov_mid),
+                                 cov_gaps = lapply(seq_len(nrow(vg$cov_gaps)), function(k) as.list(vg$cov_gaps[k, ])))
+    }
   }
   config$prior_thresh_mid2 <- get_fixed_prior(prior_lookup, "thresh_mid2")
   config$prior_log_gaps2 <- get_fixed_prior(prior_lookup, gaps2_key)
@@ -372,13 +385,25 @@ build_numpyro_config <- function(model) {
 
         re_conf$prior_sd <- get_sd_prior(prior_lookup, param, re$group)
         re_conf$prior_cor <- get_cor_prior(prior_lookup, param, re$group)
+        if (!is.null(re$cor_id)) {
+          re_conf$prior_cor <- .cross_cor_prior(prior_lookup, re$cor_id, re$group)
+          per <- .re_sd_priors(prior_lookup, param, re$group, re)
+          if (length(per) == re_conf$n_terms) {
+            re_conf$prior_sd_per_coef <- as.list(per)
+            if (length(unique(per)) == 1L) re_conf$prior_sd <- per[1]
+          }
+        } else if (!param %in% c("criterion", "criterion2")) {
+          per <- .re_sd_priors(prior_lookup, param, re$group, re)
+          if (length(per) == re_conf$n_terms) {
+            re_conf$prior_sd_per_coef <- per
+            if (length(unique(per)) == 1L) re_conf$prior_sd <- per[1]
+          }
+        }
 
-        if (param == "criterion" && !is.null(re$dim) && re$dim > 1L) {
-          level_names <- if (!is.null(re$level_names)) re$level_names
-                         else paste0("thresh", seq_len(re$dim))
-          re_conf$prior_sd_per_coef <- vapply(level_names,
-            function(coef) get_sd_prior(prior_lookup, "criterion", re$group, coef),
-            character(1), USE.NAMES = FALSE)
+        if (param %in% c("criterion", "criterion2") && is.null(re$cor_id)) {
+          per <- .crit_re_sd_priors(prior_lookup, param, re$group, re)
+          if (length(per) > 1L) re_conf$prior_sd_per_coef <- per
+          if (length(unique(per)) == 1L) re_conf$prior_sd <- per[1]
         }
 
         config$random_effects[[length(config$random_effects) + 1]] <- re_conf

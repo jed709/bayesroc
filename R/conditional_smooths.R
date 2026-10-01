@@ -13,7 +13,9 @@
 #' @param prob Credible interval width (default 0.95).
 #' @param ndraws Number of posterior draws to use (default: all).
 #' @return A data frame of class `conditional_smooths` with covariate value(s),
-#'   parameter, smooth label, estimate, lower, upper.
+#'   parameter, smooth label, estimate, lower, upper. Smooths on `criterion` /
+#'   `criterion2` have one set of rows per threshold component, identified by the
+#'   `component` column (`"location"`, `"gap1"`, ...).
 #' @export
 conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 100,
                                 prob = 0.95, ndraws = NULL) {
@@ -41,7 +43,7 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
   results <- list()
 
   for (pname in names(smooth_data)) {
-    if (!is.null(dpar) && !pname %in% dpar) next
+    if (!is.null(dpar) && !pname %in% dpar && !.smooth_display_pname(model, pname) %in% dpar) next
 
     for (sm in smooth_data[[pname]]) {
       if (!is.null(smooths) && !sm$term_str %in% smooths) next
@@ -54,44 +56,40 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
                                        by_var = sm$by, bylevel = comp$bylevel)
 
         pred <- build_smooth_prediction_basis(comp, grid_data)
+        stan_p <- .smooth_stan_pname(model, pname)
+        is_crit <- pname %in% c("criterion", "criterion2")
+        rows <- if (is_crit) seq_len(1L + .smooth_n_gaps(md, pname)) else 1L
 
-        smooth_contribution <- matrix(0, nrow = nrow(grid_data), ncol = S)
+        for (r in rows) {
+          smooth_contribution <- matrix(0, nrow = nrow(grid_data), ncol = S)
 
-        if (NCOL(pred$Xs) > 0) {
-          all_coef_names <- md[[paste0(pname, "_fixed")]]$coef_names
-          xs_colnames <- comp$Xs_colnames
-          xs_idx <- match(xs_colnames, all_coef_names)
-          xs_idx <- xs_idx[!is.na(xs_idx)]
-          if (length(xs_idx) > 0) {
-            beta_names <- paste0("beta_", pname, "[", xs_idx, "]")
-            beta_draws <- all_draws[, beta_names, drop = FALSE]
-            smooth_contribution <- smooth_contribution + pred$Xs %*% t(beta_draws)
+          if (NCOL(pred$Xs) > 0) {
+            beta_names <- .smooth_null_space_names(model, pname, comp$Xs_colnames, r)
+            if (length(beta_names) > 0) {
+              beta_draws <- all_draws[, beta_names, drop = FALSE]
+              smooth_contribution <- smooth_contribution + pred$Xs %*% t(beta_draws)
+            }
           }
+
+          for (k in seq_along(pred$Zs_list)) {
+            Zs <- pred$Zs_list[[k]]
+            nbasis <- ncol(Zs)
+            s_name <- paste0("s_", stan_p, "_", comp$san_label, "_", k)
+            s_vars <- if (is_crit) paste0(s_name, "[", r, ",", 1:nbasis, "]") else paste0(s_name, "[", 1:nbasis, "]")
+            s_draws <- all_draws[, s_vars, drop = FALSE]
+            smooth_contribution <- smooth_contribution + Zs %*% t(s_draws)
+          }
+
+          res <- grid_data
+          res$estimate <- rowMeans(smooth_contribution)
+          res$lower <- apply(smooth_contribution, 1, quantile, probs = probs[1])
+          res$upper <- apply(smooth_contribution, 1, quantile, probs = probs[2])
+          res$parameter <- .smooth_display_pname(model, pname)
+          res$smooth <- comp$sm_obj$label
+          if (is_crit) res$component <- if (r == 1L) "location" else paste0("gap", r - 1L)
+
+          results[[length(results) + 1]] <- res
         }
-
-        for (k in seq_along(pred$Zs_list)) {
-          Zs <- pred$Zs_list[[k]]
-          nbasis <- ncol(Zs)
-          s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
-          s_vars <- paste0(s_name, "[", 1:nbasis, "]")
-          s_draws <- all_draws[, s_vars, drop = FALSE]
-          smooth_contribution <- smooth_contribution + Zs %*% t(s_draws)
-        }
-
-        est <- rowMeans(smooth_contribution)
-        lower <- apply(smooth_contribution, 1, quantile, probs = probs[1])
-        upper <- apply(smooth_contribution, 1, quantile, probs = probs[2])
-
-        comp_label <- comp$sm_obj$label
-
-        res <- grid_data
-        res$estimate <- est
-        res$lower <- lower
-        res$upper <- upper
-        res$parameter <- pname
-        res$smooth <- comp_label
-
-        results[[length(results) + 1]] <- res
       }
     }
   }
@@ -155,11 +153,8 @@ plot.conditional_smooths <- function(x, ...) {
     stop("Package 'ggplot2' is required for smooth plots.")
   }
 
-  meta_cols <- c("estimate", "lower", "upper", "parameter", "smooth")
+  meta_cols <- c("estimate", "lower", "upper", "parameter", "smooth", "component")
   covar_cols <- setdiff(names(x), meta_cols)
-
-  smooths <- unique(x$smooth)
-  params <- unique(x$parameter)
 
   numeric_covars <- covar_cols[vapply(x[covar_cols], is.numeric, logical(1))]
   if (length(numeric_covars) == 0) {
@@ -170,8 +165,11 @@ plot.conditional_smooths <- function(x, ...) {
 
   plot_df <- x
   plot_df$.xvar <- plot_df[[xvar]]
+  comp <- if ("component" %in% names(plot_df)) ifelse(is.na(plot_df$component), "", paste0(" [", plot_df$component, "]")) else ""
+  plot_df$.panel <- paste0(plot_df$parameter, ": ", plot_df$smooth, comp)
+  panels <- unique(plot_df$.panel)
 
-  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = .xvar, y = estimate)) +
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = .xvar, y = estimate, group = .panel)) +
     ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper),
                          alpha = 0.2, fill = "steelblue") +
     ggplot2::geom_line(color = "steelblue", linewidth = 1) +
@@ -179,11 +177,47 @@ plot.conditional_smooths <- function(x, ...) {
     ggplot2::labs(x = xvar, y = "Smooth effect") +
     ggplot2::theme_minimal()
 
-  if (length(smooths) > 1 || length(params) > 1) {
-    p <- p + ggplot2::facet_wrap(~ smooth, scales = "free")
+  if (length(panels) > 1) {
+    p <- p + ggplot2::facet_wrap(~ .panel, scales = "free")
   } else {
-    p <- p + ggplot2::labs(title = smooths[1])
+    p <- p + ggplot2::labs(title = panels[1])
   }
 
   p
+}
+
+.smooth_display_pname <- function(model, pname) .param_name_map(model$family$family)[[pname]] %||% pname
+
+.smooth_stan_pname <- function(model, pname) {
+  if (model$family$family %in% c("cumulative", "bivariate_cumulative")) .smooth_display_pname(model, pname) else pname
+}
+
+.smooth_n_gaps <- function(md, pname) {
+  K <- if (pname == "criterion2") md$K2 else md$K
+  max(0L, K - 2L)
+}
+
+.smooth_null_space_names <- function(model, pname, xs_colnames, r) {
+  md <- model$model_data
+  gl <- model$gap_link %||% "log"
+  if (pname %in% c("criterion", "criterion2")) {
+    crit <- md[[pname]]
+    sfx <- if (pname == "criterion2") "_2" else ""
+    if (pname == "criterion2" && isTRUE(md$varying_source_criteria)) {
+      idx <- match(xs_colnames, crit$cov_names)
+      idx <- idx[!is.na(idx)]
+      if (!length(idx)) return(character(0))
+      return(if (r == 1L) paste0("beta_thresh_mid_2_cov[", idx, "]")
+             else paste0(.gap_param(gl, "_2_cov"), "[", r - 1L, ",", idx, "]"))
+    }
+    idx <- match(xs_colnames, crit$coef_names)
+    idx <- idx[!is.na(idx)]
+    if (!length(idx)) return(character(0))
+    return(if (r == 1L) paste0("beta_thresh_mid", sfx, "[", idx, "]")
+           else paste0(.gap_param(gl, sfx), "[", r - 1L, ",", idx, "]"))
+  }
+  idx <- match(xs_colnames, md[[paste0(pname, "_fixed")]]$coef_names)
+  idx <- idx[!is.na(idx)]
+  if (!length(idx)) return(character(0))
+  paste0("beta_", .smooth_stan_pname(model, pname), "[", idx, "]")
 }

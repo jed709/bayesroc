@@ -52,8 +52,9 @@ on exit. Default \code{NULL} leaves the RNG untouched.}
 
 \item{allow_new_levels}{If \code{TRUE}, allow \code{newdata} to contain random-effect
 levels not seen during fitting; their effects are drawn from the estimated
-population distribution. Default \code{FALSE} errors if \code{newdata} introduces new
-levels.}
+population distribution, once per new level and draw, so all rows of a new
+level share it, and effects of a cross-parameter group are drawn jointly.
+Default \code{FALSE} errors if \code{newdata} introduces new levels.}
 
 \item{...}{Ignored.}
 }

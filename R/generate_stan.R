@@ -673,44 +673,30 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$stan_data$kc_knob == 1)) lines <- c(lines, "  target += know_crit_slack;")
 
   generate_fixed_priors <- function(dpar, coef_names, beta_name) {
-    coef_priors <- pl$b_coef[grepl(paste0("^", dpar, "_"), names(pl$b_coef))]
-    
-    if (length(coef_priors) == 0) {
-      prior <- get_fixed_prior(pl, dpar)
-      return(sprintf("  %s ~ %s;", beta_name, prior))
-    }
-    
-    prior_lines <- character(0)
-    default_prior <- get_fixed_prior(pl, dpar)
-    
-    for (i in seq_along(coef_names)) {
-      coef <- coef_names[i]
-      key <- paste0(dpar, "_", coef)
-      
-      if (!is.null(pl$b_coef[[key]])) {
-        prior <- pl$b_coef[[key]]
-      } else {
-        prior <- default_prior
-      }
-      
-      prior_lines <- c(prior_lines, 
-                       sprintf("  %s[%d] ~ %s;  // %s", beta_name, i, prior, coef))
-    }
-    
-    prior_lines
+    if (length(coef_names) == 0) return(sprintf("  %s ~ %s;", beta_name, get_fixed_prior(pl, dpar)))
+    .stan_prior_vec(beta_name, vapply(coef_names, function(cf) get_fixed_prior(pl, dpar, cf),
+                                      character(1), USE.NAMES = FALSE))
   }
   
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
   
   if (model_data$needs_ordered_dprime) {
-    dprime_prior <- get_fixed_prior(pl, "dprime")
-    dprime2_prior <- get_fixed_prior(pl, "dprime2")
-    lines <- c(lines, 
-               "  // Priors on ordered dprime parameters",
-               "  for (p in 1:P_dprime) {",
-               sprintf("    beta_dprime_ordered[p][2] ~ %s;  // dprime (higher)", dprime_prior),
-               sprintf("    beta_dprime_ordered[p][1] ~ %s;  // dprime2 (lower)", dprime2_prior),
-               "  }")
+    dp_coefs <- model_data$dprime_fixed$coef_names
+    dp2_coefs <- model_data$dprime2_fixed$coef_names %||% dp_coefs
+    dprime_prior <- vapply(dp_coefs, function(cf) get_fixed_prior(pl, "dprime", cf), character(1), USE.NAMES = FALSE)
+    dprime2_prior <- vapply(dp2_coefs, function(cf) get_fixed_prior(pl, "dprime2", cf), character(1), USE.NAMES = FALSE)
+    if (length(unique(dprime_prior)) == 1L && length(unique(dprime2_prior)) == 1L) {
+      lines <- c(lines,
+                 "  // Priors on ordered dprime parameters",
+                 "  for (p in 1:P_dprime) {",
+                 sprintf("    beta_dprime_ordered[p][2] ~ %s;  // dprime (higher)", dprime_prior[1]),
+                 sprintf("    beta_dprime_ordered[p][1] ~ %s;  // dprime2 (lower)", dprime2_prior[1]),
+                 "  }")
+    } else {
+      lines <- c(lines, "  // Priors on ordered dprime parameters",
+                 sprintf("  beta_dprime_ordered[%d][2] ~ %s;  // dprime %s", seq_along(dp_coefs), dprime_prior, dp_coefs),
+                 sprintf("  beta_dprime_ordered[%d][1] ~ %s;  // dprime2 %s", seq_along(dp2_coefs), dprime2_prior, dp2_coefs))
+    }
   } else if (has_dprime_fixed) {
     dprime_coefs <- model_data$dprime_fixed$coef_names
     lines <- c(lines, generate_fixed_priors("dprime", dprime_coefs, "beta_dprime"))
@@ -721,23 +707,8 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
-  gaps_prior_key <- "log_gaps"
-  thresh_mid_prior <- get_fixed_prior(pl, "thresh_mid")
-  lines <- c(lines, sprintf("  beta_thresh_mid ~ %s;", thresh_mid_prior))
-  if (model_data$K > 2) {
-    n_gaps <- model_data$K - 2L
-    base_prior <- get_fixed_prior(pl, gaps_prior_key)
-    per_gap <- vapply(seq_len(n_gaps), function(k)
-      get_fixed_prior(pl, gaps_prior_key, coef = sprintf("[%d]", k)),
-      character(1))
-    if (length(unique(per_gap)) == 1L) {
-      lines <- c(lines, sprintf("  to_vector(beta_log_gaps) ~ %s;", base_prior))
-    } else {
-      for (k in seq_len(n_gaps)) {
-        lines <- c(lines, sprintf("  beta_log_gaps[%d, ] ~ %s;", k, per_gap[k]))
-      }
-    }
-  }
+  tg <- .thresh_prior_grid(pl, "thresh_mid", "log_gaps", model_data$criterion$coef_names, model_data$K - 2L)
+  lines <- c(lines, .stan_prior_vec("beta_thresh_mid", tg$mid), .stan_prior_mat("beta_log_gaps", tg$gaps))
   
   if (model_data$has_sigma) {
     sigma_coefs <- model_data$sigma_fixed$coef_names
@@ -818,36 +789,29 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     lines <- c(lines, generate_fixed_priors("lambda_L", lambda_L_coefs, "beta_lambda_L"))
   }
   if (isTRUE(model_data$has_criterion2)) {
-    thresh_mid_2_prior <- get_fixed_prior(pl, "thresh_mid2")
-    gaps2_key <- "log_gaps2"
-    log_gaps_2_prior <- get_fixed_prior(pl, gaps2_key)
     if (isTRUE(model_data$varying_source_criteria)) {
-      lines <- c(lines,
-                 sprintf("  beta_thresh_mid_2_varying ~ %s;", thresh_mid_2_prior),
-                 sprintf("  to_vector(beta_log_gaps_2_varying) ~ %s;", log_gaps_2_prior))
+      vg <- .crit2_vary_prior_grid(pl, model_data)
+      lines <- c(lines, sprintf("  beta_thresh_mid_2_varying ~ %s;", vg$mid))
+      if (length(vg$gaps)) {
+        lines <- c(lines, if (length(unique(vg$gaps)) == 1L) {
+          sprintf("  to_vector(beta_log_gaps_2_varying) ~ %s;", vg$gaps[1])
+        } else {
+          sprintf("  beta_log_gaps_2_varying[, %d] ~ %s;", seq_along(vg$gaps), vg$gaps)
+        })
+      }
       if (.has_crit2_cov(model_data)) {
-        lines <- c(lines,
-                   sprintf("  beta_thresh_mid_2_cov ~ %s;", thresh_mid_2_prior),
-                   sprintf("  to_vector(beta_log_gaps_2_cov) ~ %s;", log_gaps_2_prior))
+        lines <- c(lines, .stan_prior_vec("beta_thresh_mid_2_cov", vg$cov_mid),
+                   .stan_prior_mat("beta_log_gaps_2_cov", vg$cov_gaps))
       }
       if (identical(model_data$new_source_criteria, "shared")) {
-        lines <- c(lines,
-                   sprintf("  beta_thresh_mid_2_new ~ %s;", thresh_mid_2_prior),
-                   sprintf("  beta_log_gaps_2_new ~ %s;", log_gaps_2_prior))
+        lines <- c(lines, sprintf("  beta_thresh_mid_2_new ~ %s;", vg$mid),
+                   .stan_prior_vec("beta_log_gaps_2_new", vg$gaps))
       }
     } else {
-      lines <- c(lines, sprintf("  beta_thresh_mid_2 ~ %s;", thresh_mid_2_prior))
-      n_gaps2 <- model_data$K2 - 2L
-      per_gap2 <- vapply(seq_len(n_gaps2), function(k)
-        get_fixed_prior(pl, gaps2_key, coef = sprintf("[%d]", k)),
-        character(1))
-      if (length(unique(per_gap2)) == 1L) {
-        lines <- c(lines, sprintf("  to_vector(beta_log_gaps_2) ~ %s;", log_gaps_2_prior))
-      } else {
-        for (k in seq_len(n_gaps2)) {
-          lines <- c(lines, sprintf("  beta_log_gaps_2[%d, ] ~ %s;", k, per_gap2[k]))
-        }
-      }
+      tg2 <- .thresh_prior_grid(pl, "thresh_mid2", "log_gaps2", model_data$criterion2$coef_names,
+                                model_data$K2 - 2L)
+      lines <- c(lines, .stan_prior_vec("beta_thresh_mid_2", tg2$mid),
+                 .stan_prior_mat("beta_log_gaps_2", tg2$gaps))
     }
   }
   
@@ -893,15 +857,8 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
       cor_prior <- get_cor_prior(pl, "criterion", group)
-      
-      level_names <- re$level_names
-      if (is.null(level_names)) {
-        n_thresh <- re$dim
-        level_names <- paste0("thresh", 1:n_thresh)
-      }
-      
-      coef_priors <- sapply(level_names, function(coef) get_sd_prior(pl, "criterion", group, coef))
-      
+      coef_priors <- .crit_re_sd_priors(pl, "criterion", group, re)
+
       if (length(unique(coef_priors)) == 1) {
         lines <- c(lines, sprintf("  sigma_criterion_%s ~ %s;", group, coef_priors[1]))
       } else {
@@ -920,11 +877,14 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     for (group in names(model_data$criterion2$random)) {
       re <- model_data$criterion2$random[[group]]
       if (is.null(re$cor_id)) {
-        sd_prior <- get_sd_prior(pl, "criterion", group)
-        cor_prior <- get_cor_prior(pl, "criterion", group)
-        
-        lines <- c(lines,
-                   sprintf("  sigma_criterion2_%s ~ %s;", group, sd_prior))
+        coef_priors <- .crit_re_sd_priors(pl, "criterion2", group, re)
+        cor_prior <- get_cor_prior(pl, "criterion2", group)
+
+        if (length(unique(coef_priors)) == 1) {
+          lines <- c(lines, sprintf("  sigma_criterion2_%s ~ %s;", group, coef_priors[1]))
+        } else {
+          lines <- c(lines, sprintf("  sigma_criterion2_%s[%d] ~ %s;", group, seq_along(coef_priors), coef_priors))
+        }
         if (re$dim == 1) {
           lines <- c(lines, sprintf("  u_criterion2_%s_raw ~ std_normal();", group))
         } else {
@@ -937,27 +897,21 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   
   for (cor_id in names(model_data$cross_cor)) {
     cc <- model_data$cross_cor[[cor_id]]
-    cor_prior <- get_cor_prior(pl, "cross", cc$group)
-    
+    cor_prior <- .cross_cor_prior(pl, cor_id, cc$group)
+
     sd_lines <- character(0)
     idx <- 1
     for (member in cc$members) {
       param <- member$param
       dim <- member$dim
-      sd_prior <- get_sd_prior(pl, param, cc$group)
-      
-      if (dim == 1) {
-        sd_lines <- c(sd_lines, 
-                      sprintf("  sigma_cross_%s_%s[%d] ~ %s;  // %s", 
-                              cor_id, cc$group, idx, sd_prior, param))
+      re <- .re_list_of(model_data, param)[[cc$group]]
+      sd_priors <- if (is.null(re)) rep(get_sd_prior(pl, param, cc$group), dim)
+                   else rep_len(.re_sd_priors(pl, param, cc$group, re), dim)
+      for (j in seq_len(dim)) {
+        sd_lines <- c(sd_lines,
+                      sprintf("  sigma_cross_%s_%s[%d] ~ %s;  // %s[%d]",
+                              cor_id, cc$group, idx, sd_priors[j], param, j))
         idx <- idx + 1
-      } else {
-        for (j in 1:dim) {
-          sd_lines <- c(sd_lines, 
-                        sprintf("  sigma_cross_%s_%s[%d] ~ %s;  // %s[%d]", 
-                                cor_id, cc$group, idx, sd_prior, param, j))
-          idx <- idx + 1
-        }
       }
     }
     
@@ -1000,16 +954,25 @@ generate_thresh_code_cdp <- function(model_data) {
       for (group in names(crit$random)) {
         re <- crit$random[[group]]
         var_name <- if (!is.null(re$cor_id)) {
-          sprintf("u_cross_%s_%s", re$cor_id, group)
+          sprintf("u_criterion_%s_from_%s", group, re$cor_id)
         } else {
           sprintf("u_criterion_%s", group)
         }
+        R <- re$n_re_terms %||% 1L
 
-        if (re$dim > 1) {
-          re_lines <- c(re_lines, sprintf("    %s += %s[%s[n], %s];", target, var_name, group, k_expr))
+        re_lines <- c(re_lines, if (isTRUE(re$use_z_matrix)) {
+          sprintf("    %s += Z_criterion_%s[n, ] * %s[%s[n], ((%s-1)*%d+1):((%s)*%d)]';",
+                  target, group, var_name, group, k_expr, R, k_expr, R)
+        } else if (!is.null(re$term_idx)) {
+          sprintf("    if (idx_criterion_%s[n] > 0) %s += %s[%s[n], (%s-1)*%d + idx_criterion_%s[n]];",
+                  group, target, var_name, group, k_expr, R, group)
+        } else if (re$dim > 1) {
+          sprintf("    %s += %s[%s[n], %s];", target, var_name, group, k_expr)
+        } else if (!is.null(re$cor_id)) {
+          sprintf("    %s += %s[%s[n]];", target, var_name, group)
         } else {
-          re_lines <- c(re_lines, sprintf("    %s += %s[%s[n], 1];", target, var_name, group))
-        }
+          sprintf("    %s += %s[%s[n], 1];", target, var_name, group)
+        })
       }
     }
     re_lines
@@ -1045,19 +1008,7 @@ generate_thresh_code_cdp <- function(model_data) {
   } else {
     lines <- c(lines, "      real log_gap = X_criterion[n, ] * beta_log_gaps[j - mid_thresh_cdp, ]';")
   }
-  if (!is.null(crit$random)) {
-    for (group in names(crit$random)) {
-      re <- crit$random[[group]]
-      var_name <- if (!is.null(re$cor_id)) {
-        sprintf("u_cross_%s_%s", re$cor_id, group)
-      } else {
-        sprintf("u_criterion_%s", group)
-      }
-      if (re$dim > 1) {
-        lines <- c(lines, sprintf("      log_gap += %s[%s[n], j];", var_name, group))
-      }
-    }
-  }
+  lines <- c(lines, gen_re_cdp("log_gap", "j"))
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -1080,19 +1031,7 @@ generate_thresh_code_cdp <- function(model_data) {
   } else {
     lines <- c(lines, "      real log_gap = X_criterion[n, ] * beta_log_gaps[J - mid_thresh_cdp + j_down, ]';")
   }
-  if (!is.null(crit$random)) {
-    for (group in names(crit$random)) {
-      re <- crit$random[[group]]
-      var_name <- if (!is.null(re$cor_id)) {
-        sprintf("u_cross_%s_%s", re$cor_id, group)
-      } else {
-        sprintf("u_criterion_%s", group)
-      }
-      if (re$dim > 1) {
-        lines <- c(lines, sprintf("      log_gap += %s[%s[n], j];", var_name, group))
-      }
-    }
-  }
+  lines <- c(lines, gen_re_cdp("log_gap", "j"))
   if (!is.null(model_data$smooth_data[["criterion"]])) {
     for (sm in model_data$smooth_data[["criterion"]]) {
       for (comp in sm$components) {
@@ -1280,7 +1219,18 @@ get_all_term_indices <- function(model_data) {
       indices[[idx_name]] <- list(idx_name = idx_name, dim_name = dim_name, dim = re$n_cond_levels)
     }
   }
-  
+
+  if (isTRUE(model_data$has_criterion2)) {
+    for (group in names(model_data$criterion2$random)) {
+      re <- model_data$criterion2$random[[group]]
+      if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
+        idx_name <- paste0("idx_criterion2_", group)
+        dim_name <- paste0("D_idx_criterion2_", group)
+        indices[[idx_name]] <- list(idx_name = idx_name, dim_name = dim_name, dim = re$n_cond_levels)
+      }
+    }
+  }
+
   indices
 }
 
@@ -1311,7 +1261,17 @@ get_all_z_matrices <- function(model_data) {
       z_matrices[[z_name]] <- list(name = z_name, dim = re$n_re_terms, param = "criterion", group = group)
     }
   }
-  
+
+  if (isTRUE(model_data$has_criterion2)) {
+    for (group in names(model_data$criterion2$random)) {
+      re <- model_data$criterion2$random[[group]]
+      if (isTRUE(re$use_z_matrix)) {
+        z_name <- paste0("Z_criterion2_", group)
+        z_matrices[[z_name]] <- list(name = z_name, dim = re$n_re_terms, param = "criterion2", group = group)
+      }
+    }
+  }
+
   z_matrices
 }
 

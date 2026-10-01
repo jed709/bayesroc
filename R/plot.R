@@ -65,6 +65,7 @@ plot.broc_fit <- function(x, class = "b", dpar = "dprime", group = NULL,
     stop("Fit object must have 'broc_model' attribute. Use fit_broc() to fit the model.")
   }
   
+  dpar_given <- !missing(dpar)
   if (class == "b") {
     dpar <- expand_criterion_dpar(dpar)
   }
@@ -75,6 +76,13 @@ plot.broc_fit <- function(x, class = "b", dpar = "dprime", group = NULL,
                       "cor" = get_cor_draws(fit, model, dpar, group)
   )
   
+  if (nrow(plot_data) == 0 && !dpar_given && class == "b") {
+    md <- model$model_data
+    fixed <- sub("_fixed$", "", grep("_fixed$", names(md), value = TRUE))
+    fixed <- fixed[vapply(fixed, function(p) { fe <- md[[paste0(p, "_fixed")]]
+      is.list(fe) && isTRUE(fe$n_coef > 0) }, logical(1))]
+    plot_data <- get_fixed_effects_draws(fit, model, expand_criterion_dpar(c(fixed, "criterion", "criterion2")))
+  }
   if (nrow(plot_data) == 0) {
     stop("No parameters found matching the specified dpar and group")
   }
@@ -110,13 +118,7 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
   is_cdp <- model$family$family == "cdp"
   
   for (d in dpar) {
-    internal_dpar <- d
-    if (is_cdp) {
-      if (d == "rec") internal_dpar <- "dprime"
-      if (d == "fam") internal_dpar <- "dprime2"
-      if (d == "sigma_R") internal_dpar <- "sigma"
-      if (d == "sigma_F") internal_dpar <- "sigma2"
-    }
+    internal_dpar <- external_to_internal_param(d, model$family$family)
     
     if (d == "thresh_mid") {
       var_name <- "beta_thresh_mid"
@@ -208,7 +210,7 @@ get_fixed_effects_draws <- function(fit, model, dpar) {
       next
     }
     
-    var_name <- paste0("beta_", internal_dpar)
+    var_name <- paste0("beta_", .smooth_stan_pname(model, internal_dpar))
     if (!any(grepl(paste0("^", var_name, "\\["), var_names))) next
     
     fixed_info <- model$model_data[[paste0(internal_dpar, "_fixed")]]
@@ -262,15 +264,7 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
     d
   }
 
-  to_internal <- function(d) {
-    if (is_cdp) {
-      if (d == "rec") return("dprime")
-      if (d == "fam") return("dprime2")
-      if (d == "sigma_R") return("sigma")
-      if (d == "sigma_F") return("sigma2")
-    }
-    d
-  }
+  to_internal <- function(d) external_to_internal_param(d, model$family$family)
 
   for (d in dpar) {
     internal_dpar <- to_internal(d)
@@ -290,7 +284,7 @@ get_sd_draws <- function(fit, model, dpar, group_filter) {
 
       if (!is.null(re$cor_id)) next
 
-      var_name <- paste0("sigma_", internal_dpar, "_", grp)
+      var_name <- paste0("sigma_", .smooth_stan_pname(model, internal_dpar), "_", grp)
 
       level_names <- re$level_names
       if (is.null(level_names) || length(level_names) == 0) {
@@ -398,15 +392,7 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
   results <- list()
   is_cdp <- model$family$family == "cdp"
 
-  to_internal <- function(d) {
-    if (is_cdp) {
-      if (d == "rec") return("dprime")
-      if (d == "fam") return("dprime2")
-      if (d == "sigma_R") return("sigma")
-      if (d == "sigma_F") return("sigma2")
-    }
-    d
-  }
+  to_internal <- function(d) external_to_internal_param(d, model$family$family)
 
   display_name <- function(d, internal) {
     if (is_cdp) {
@@ -437,7 +423,7 @@ get_cor_draws <- function(fit, model, dpar, group_filter) {
       if (!is.null(re$cor_id)) next
       if (re$dim <= 1) next
 
-      var_name <- paste0("corr_", internal_dpar, "_", grp)
+      var_name <- paste0("corr_", .smooth_stan_pname(model, internal_dpar), "_", grp)
 
       level_names <- re$level_names
       if (is.null(level_names) || length(level_names) == 0) {

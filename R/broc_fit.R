@@ -566,7 +566,7 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
 
 .jax_samples_as_stan <- function(samples, model) {
   nm <- names(samples)
-  drop <- grepl("^sigma_batch_|^z_batch_", nm) |
+  drop <- grepl("^sigma_batch_|^z_batch_|^beta_batch_", nm) |
     (grepl("^sigma_cross_", nm) & (grepl("\\[[0-9]+\\]$", nm) | grepl("_block_", nm)))
   samples <- samples[!drop]
   nm <- names(samples)
@@ -607,6 +607,17 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
       dim(arr) <- c(dim(arr), 1L)
     }
     out[[k]] <- arr
+  }
+  lg <- grep("^beta_dprime_loggap\\[[0-9]+\\]$", names(out), value = TRUE)
+  if (length(lg)) {
+    lo <- out[[sprintf("beta_dprime2[%d]", 1L)]]
+    ord <- array(NA_real_, c(dim(as.array(lo))[1:2], length(lg), 2L))
+    for (p in seq_along(lg)) {
+      ord[, , p, 1] <- out[[sprintf("beta_dprime2[%d]", p)]]
+      ord[, , p, 2] <- out[[sprintf("beta_dprime[%d]", p)]]
+    }
+    out[lg] <- NULL
+    out$beta_dprime_ordered <- ord
   }
   if (inherits(model, "bivariate_cumulative_model")) {
     names(out) <- gsub("criterion", "cutpoints1", gsub("criterion2", "cutpoints2",

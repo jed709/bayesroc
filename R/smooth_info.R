@@ -48,16 +48,16 @@
   unlist(lapply(vars, function(v) if (!is.null(expand[[v]])) expand[[v]] else v), use.names = FALSE)
 }
 
-.obs_loglik_r <- function(model, data_src, draws) {
+.obs_loglik_r <- function(model, data_src, draws, re_formula = NA) {
   S <- nrow(draws); N <- data_src$N
   md <- model$model_data
   fam <- model$family
   K <- md$K
   n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else K
-  tp <- compute_trial_params(draws, model, data_src, NA, S, N)
-  th <- compute_thresholds(draws, model, data_src, NA, S, N, n_thresh_K)
+  tp <- compute_trial_params(draws, model, data_src, re_formula, S, N)
+  th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
   bivariate <- fam$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
-  th2 <- if (bivariate) compute_thresholds_2(draws, model, data_src, NA, S, N)
+  th2 <- if (bivariate) compute_thresholds_2(draws, model, data_src, re_formula, S, N)
   pr <- compute_category_probs(tp, th, data_src, model, fam$link$name, S, N, K, thresh2 = th2)
   y <- md$stan_data$y
   out <- matrix(0, S, N)

@@ -73,8 +73,9 @@ link_cdf_r <- function(x, link_name) {
 #'   on exit. Default `NULL` leaves the RNG untouched.
 #' @param allow_new_levels If `TRUE`, allow `newdata` to contain random-effect
 #'   levels not seen during fitting; their effects are drawn from the estimated
-#'   population distribution. Default `FALSE` errors if `newdata` introduces new
-#'   levels.
+#'   population distribution, once per new level and draw, so all rows of a new
+#'   level share it, and effects of a cross-parameter group are drawn jointly.
+#'   Default `FALSE` errors if `newdata` introduces new levels.
 #' @param ... Ignored.
 #' @return Depends on `type` and `summary`:
 #'   \describe{
@@ -141,6 +142,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
     data_src <- build_data_source_from_model(model)
   }
   data_src$.allow_new_levels <- isTRUE(allow_new_levels)
+  data_src$.new_u_cache <- new.env(parent = emptyenv())
 
   N <- data_src$N
 
@@ -718,7 +720,7 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
       beta <- draws[, paste0("beta_", stan_pname, "[", seq_len(P), "]"), drop = FALSE]
       param_raw <- X %*% t(beta)
     } else {
-      param_raw <- matrix(0, nrow = nrow(X), ncol = nrow(draws))
+      param_raw <- matrix(0, nrow = N, ncol = nrow(draws))
     }
 
     if (include_re) {
@@ -867,7 +869,13 @@ compute_re_contribution <- function(draws, re_list, data_src, pname, stan_pname,
 
     n_groups <- re$n_groups
     new_mask <- group_idx == 0L
-    n_new <- sum(new_mask)
+    new_pos <- .new_level_pos(re, N)
+    n_new <- max(c(0L, new_pos))
+    u_cols <- function(d) {
+      nm <- paste0(var_base, "[", 1:n_groups, ",", d, "]")
+      if (re$dim == 1L && !all(nm %in% colnames(draws))) nm <- paste0(var_base, "[", 1:n_groups, "]")
+      nm
+    }
 
     if (re$dim == 1 && is.null(re$term_idx)) {
       u_names <- paste0(var_base, "[", 1:n_groups, "]")
@@ -880,36 +888,32 @@ compute_re_contribution <- function(draws, re_list, data_src, pname, stan_pname,
         contrib[valid, ] <- contrib[valid, ] + t(u_draws[, group_idx[valid], drop = FALSE])
       }
       if (allow_new && n_new > 0) {
-        u_new <- sample_new_u_uncorrelated(draws, stan_pname, group, dim = 1L,
-                                           n_new = n_new, S = S)
-        contrib[new_mask, ] <- contrib[new_mask, ] + t(u_new)
+        u_new <- .draw_new_u(draws, re, pname, stan_pname, group, n_new, S, md, data_src)
+        contrib[new_mask, ] <- contrib[new_mask, ] + t(matrix(u_new[, new_pos[new_mask], 1], nrow = S))
       }
     } else if (!isTRUE(re$use_z_matrix) && !is.null(re$term_idx)) {
       u_draws_list <- vector("list", re$dim)
       for (d in seq_len(re$dim)) {
-        u_draws_list[[d]] <- draws[, paste0(var_base, "[", 1:n_groups, ",", d, "]"), drop = FALSE]
+        u_draws_list[[d]] <- draws[, u_cols(d), drop = FALSE]
       }
       term_idx <- re$term_idx
+      u_new_all <- if (allow_new && n_new > 0) .draw_new_u(draws, re, pname, stan_pname, group, n_new, S, md, data_src)
       for (d in seq_len(re$dim)) {
         mask <- group_idx > 0 & group_idx <= n_groups & term_idx == d
         if (any(mask)) {
           contrib[mask, ] <- contrib[mask, ] + t(u_draws_list[[d]][, group_idx[mask], drop = FALSE])
         }
-        if (allow_new) {
-          new_term_mask <- new_mask & term_idx == d
-          if (any(new_term_mask)) {
-            u_new <- sample_new_u_uncorrelated(draws, stan_pname, group,
-                                               dim = re$dim, term = d,
-                                               n_new = sum(new_term_mask), S = S)
-            contrib[new_term_mask, ] <- contrib[new_term_mask, ] + t(u_new)
-          }
+        new_term_mask <- new_mask & term_idx == d
+        if (!is.null(u_new_all) && any(new_term_mask)) {
+          contrib[new_term_mask, ] <- contrib[new_term_mask, ] +
+            t(matrix(u_new_all[, new_pos[new_term_mask], d], nrow = S))
         }
       }
     } else if (isTRUE(re$use_z_matrix)) {
       Z <- re$Z
       u_draws_all <- array(NA_real_, dim = c(S, n_groups, re$dim))
       for (d in seq_len(re$dim)) {
-        u_draws_all[, , d] <- draws[, paste0(var_base, "[", 1:n_groups, ",", d, "]"), drop = FALSE]
+        u_draws_all[, , d] <- draws[, u_cols(d), drop = FALSE]
       }
       valid <- group_idx > 0 & group_idx <= n_groups
       for (n in which(valid)) {
@@ -920,15 +924,11 @@ compute_re_contribution <- function(draws, re_list, data_src, pname, stan_pname,
         contrib[n, ] <- contrib[n, ] + u_g %*% z_n
       }
       if (allow_new && n_new > 0) {
-        u_new_all <- sample_new_u_correlated(draws, stan_pname, group,
-                                              dim = re$dim, n_new = n_new, S = S,
-                                              correlated = isTRUE(re$correlated))
-        for (i in seq_len(n_new)) {
-          n_idx <- which(new_mask)[i]
-          z_n <- Z[n_idx, ]
-          u_i <- u_new_all[, i, , drop = FALSE]
+        u_new_all <- .draw_new_u(draws, re, pname, stan_pname, group, n_new, S, md, data_src)
+        for (n_idx in which(new_mask)) {
+          u_i <- u_new_all[, new_pos[n_idx], , drop = FALSE]
           dim(u_i) <- c(S, re$dim)
-          contrib[n_idx, ] <- contrib[n_idx, ] + u_i %*% z_n
+          contrib[n_idx, ] <- contrib[n_idx, ] + u_i %*% Z[n_idx, ]
         }
       }
     }
@@ -1024,7 +1024,7 @@ compute_thresholds <- function(draws, model, data_src, re_formula, S, N, K) {
 
   crit_new_u <- if (include_re && !is.null(crit_random) &&
                     isTRUE(data_src$.allow_new_levels)) {
-    sample_criterion_new_u(draws, crit_random, criterion_name, S, md)
+    sample_criterion_new_u(draws, crit_random, criterion_name, S, md, data_src, "criterion")
   } else NULL
 
   thresh <- array(NA_real_, dim = c(S, N, n_thresh))
@@ -1106,8 +1106,7 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
     re <- crit_random[[group]]
     group_idx <- re$group_idx
     n_groups <- re$n_groups
-    new_pos <- integer(N)
-    new_pos[group_idx == 0L] <- seq_len(sum(group_idx == 0L))
+    new_pos <- .new_level_pos(re, N)
     u_new <- if (!is.null(new_u_cache)) new_u_cache[[group]] else NULL
 
     var_base <- if (!is.null(re$cor_id)) {
@@ -1144,7 +1143,7 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
           contrib[n, ] <- contrib[n, ] + u_g %*% z_n
         }
       }
-    } else if (n_re_terms == 1) {
+    } else if (n_re_terms == 1 && is.null(re$term_idx)) {
       u_draws <- matrix(NA_real_, nrow = S, ncol = n_groups)
       for (g in seq_len(n_groups)) {
         u_draws[, g] <- draws[, paste0(var_base, "[", g, ",", thresh_k, "]")]
@@ -1181,12 +1180,18 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
   contrib
 }
 
-sample_criterion_new_u <- function(draws, crit_random, criterion_name, S, md) {
+sample_criterion_new_u <- function(draws, crit_random, criterion_name, S, md, data_src = NULL,
+                                   pname = "criterion") {
   cache <- list()
   for (group in names(crit_random)) {
     re <- crit_random[[group]]
-    n_new <- sum(re$group_idx == 0L)
+    n_new <- max(c(0L, .new_level_pos(re, length(re$group_idx))))
     if (n_new == 0) next
+    if (!is.null(re$cor_id)) {
+      cache[[group]] <- .sample_new_u_cross(draws, md, re$cor_id, group, pname, n_new, S,
+                                            data_src$.new_u_cache %||% new.env(parent = emptyenv()))
+      next
+    }
     sig0 <- paste0("sigma_", criterion_name, "_", group)
     sig_names <- c(sig0, paste0(sig0, "[", seq_len(max(re$dim, 1L)), "]"))
     if (!any(sig_names %in% colnames(draws))) {
@@ -1232,7 +1237,7 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
   crit2_random <- data_src$criterion2_random
   crit2_new_u <- if (include_re && !is.null(crit2_random) &&
                      isTRUE(data_src$.allow_new_levels)) {
-    sample_criterion_new_u(draws, crit2_random, criterion2_stan_name, S, md)
+    sample_criterion_new_u(draws, crit2_random, criterion2_stan_name, S, md, data_src, "criterion2")
   } else NULL
 
   if (varying) {
@@ -1270,7 +1275,7 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
           re <- data_src$criterion2_random[[group]]
           group_idx <- re$group_idx
           n_groups <- re$n_groups
-          new_pos <- integer(N); new_pos[group_idx == 0L] <- seq_len(sum(group_idx == 0L))
+          new_pos <- .new_level_pos(re, N)
           u_new <- if (!is.null(crit2_new_u)) crit2_new_u[[group]] else NULL
           varying_re_mode <- if (!is.null(re$varying_re_mode)) re$varying_re_mode else "shared"
           var_base <- if (!is.null(re$cor_id)) {
@@ -1279,46 +1284,12 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
             paste0("u_criterion2_", group)
           }
 
-          if (varying_re_mode == "shared") {
-            if (re$dim == 1) {
-              u_draws <- draws[, paste0(var_base, "[", 1:n_groups, "]"), drop = FALSE]
-            } else {
-              u_draws <- draws[, paste0(var_base, "[", 1:n_groups, ",1]"), drop = FALSE]
-            }
-            for (n in seq_len(N)) {
-              g <- group_idx[n]
-              if (g > 0 && g <= n_groups) {
-                re_shift[, n] <- re_shift[, n] + u_draws[, g]
-              } else if (!is.null(u_new) && new_pos[n] > 0) {
-                re_shift[, n] <- re_shift[, n] + u_new[, new_pos[n], 1]
-              }
-            }
-          } else if (varying_re_mode == "per_bin") {
-            if (re$dim == 1) {
-              u_draws <- draws[, paste0(var_base, "[", 1:n_groups, "]"), drop = FALSE]
-            } else {
-              u_draws <- draws[, paste0(var_base, "[", 1:n_groups, ",", b, "]"), drop = FALSE]
-            }
-            for (n in seq_len(N)) {
-              g <- group_idx[n]
-              if (g > 0 && g <= n_groups) {
-                re_shift[, n] <- re_shift[, n] + u_draws[, g]
-              } else if (!is.null(u_new) && new_pos[n] > 0) {
-                re_shift[, n] <- re_shift[, n] + u_new[, new_pos[n], b]
-              }
-            }
-          } else if (varying_re_mode == "full") {
-            col_mid <- (b - 1) * n_thresh2 + mid2
-            u_draws <- draws[, paste0(var_base, "[", 1:n_groups, ",", col_mid, "]"), drop = FALSE]
-            for (n in seq_len(N)) {
-              g <- group_idx[n]
-              if (g > 0 && g <= n_groups) {
-                re_shift[, n] <- re_shift[, n] + u_draws[, g]
-              } else if (!is.null(u_new) && new_pos[n] > 0) {
-                re_shift[, n] <- re_shift[, n] + u_new[, new_pos[n], col_mid]
-              }
-            }
-          }
+          n_terms <- re$n_re_terms %||% 1L
+          base_col <- switch(varying_re_mode,
+                             shared = 1L,
+                             per_bin = if (re$dim > n_terms) b else 1L,
+                             full = (b - 1) * n_thresh2 + mid2)
+          re_shift <- re_shift + .crit2_varying_u(draws, re, var_base, base_col, S, N, u_new, new_pos)
         }
       }
 
@@ -1337,23 +1308,15 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
               if (varying_re_mode == "full") {
                 group_idx <- re$group_idx
                 n_groups <- re$n_groups
-                new_pos <- integer(N); new_pos[group_idx == 0L] <- seq_len(sum(group_idx == 0L))
+                new_pos <- .new_level_pos(re, N)
                 u_new <- if (!is.null(crit2_new_u)) crit2_new_u[[group]] else NULL
                 var_base <- if (!is.null(re$cor_id)) {
                   paste0("u_criterion2_", group, "_from_", re$cor_id)
                 } else {
                   paste0("u_criterion2_", group)
                 }
-                col_idx <- (b - 1) * n_thresh2 + k2
-                u_draws <- draws[, paste0(var_base, "[", 1:n_groups, ",", col_idx, "]"), drop = FALSE]
-                for (n in seq_len(N)) {
-                  g <- group_idx[n]
-                  if (g > 0 && g <= n_groups) {
-                    re_gap_shift[, n] <- re_gap_shift[, n] + u_draws[, g]
-                  } else if (!is.null(u_new) && new_pos[n] > 0) {
-                    re_gap_shift[, n] <- re_gap_shift[, n] + u_new[, new_pos[n], col_idx]
-                  }
-                }
+                re_gap_shift <- re_gap_shift + .crit2_varying_u(draws, re, var_base, (b - 1) * n_thresh2 + k2,
+                                                                S, N, u_new, new_pos)
               }
             }
           }
@@ -1378,23 +1341,15 @@ compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
               if (varying_re_mode == "full") {
                 group_idx <- re$group_idx
                 n_groups <- re$n_groups
-                new_pos <- integer(N); new_pos[group_idx == 0L] <- seq_len(sum(group_idx == 0L))
+                new_pos <- .new_level_pos(re, N)
                 u_new <- if (!is.null(crit2_new_u)) crit2_new_u[[group]] else NULL
                 var_base <- if (!is.null(re$cor_id)) {
                   paste0("u_criterion2_", group, "_from_", re$cor_id)
                 } else {
                   paste0("u_criterion2_", group)
                 }
-                col_idx <- (b - 1) * n_thresh2 + k2
-                u_draws <- draws[, paste0(var_base, "[", 1:n_groups, ",", col_idx, "]"), drop = FALSE]
-                for (n in seq_len(N)) {
-                  g <- group_idx[n]
-                  if (g > 0 && g <= n_groups) {
-                    re_gap_shift[, n] <- re_gap_shift[, n] + u_draws[, g]
-                  } else if (!is.null(u_new) && new_pos[n] > 0) {
-                    re_gap_shift[, n] <- re_gap_shift[, n] + u_new[, new_pos[n], col_idx]
-                  }
-                }
+                re_gap_shift <- re_gap_shift + .crit2_varying_u(draws, re, var_base, (b - 1) * n_thresh2 + k2,
+                                                                S, N, u_new, new_pos)
               }
             }
           }
@@ -2435,6 +2390,9 @@ rebuild_design_matrices <- function(model, newdata) {
     if (!is.null(rk_var)) required_cols <- c(required_cols, rk_var)
   }
 
+  if (family_name == "bivariate_cumulative" && is.null(newdata$.bivar_cum_item_type)) {
+    newdata$.bivar_cum_item_type <- factor(rep("A", nrow(newdata)), levels = c("new", "A"))
+  }
   missing_cols <- setdiff(required_cols, names(newdata))
   if (length(missing_cols) > 0) {
     stop("newdata is missing required columns: ", paste(missing_cols, collapse = ", "))
@@ -2556,30 +2514,10 @@ rebuild_design_matrices <- function(model, newdata) {
 
       remap <- remap_group_indices(newdata, group, model$data, re)
       new_re$group_idx <- remap$group_idx
+      new_re$new_level_idx <- as.integer(remap$new_level_idx)
       if (!is.null(remap$warning)) warning(remap$warning)
 
-      if (!is.null(re$conditional_info)) {
-        cond_result <- build_conditional_columns(
-          term = re$conditional_info$term,
-          where_str = re$conditional_info$where_str,
-          data = newdata,
-          interaction_partners = re$conditional_info$interaction_partners
-        )
-        Z_new <- align_matrix_columns(cond_result$X, re$conditional_info$col_names)
-        if (check_simple_categorical(Z_new)) {
-          new_re$term_idx <- build_term_index(Z_new)
-          new_re$Z <- NULL
-          new_re$use_z_matrix <- FALSE
-        } else {
-          new_re$term_idx <- NULL
-          new_re$Z <- Z_new
-          new_re$use_z_matrix <- TRUE
-        }
-      } else if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
-        new_re$term_idx <- rebuild_term_idx(re, newdata, encoding_vars, is_old_var)
-      } else if (isTRUE(re$use_z_matrix)) {
-        new_re$Z <- rebuild_z_matrix(re, newdata, encoding_vars, is_old_var)
-      }
+      new_re <- .rebuild_re_design(new_re, newdata, encoding_vars, is_old_var)
 
       new_re_list[[group]] <- new_re
     }
@@ -2594,30 +2532,10 @@ rebuild_design_matrices <- function(model, newdata) {
 
       remap <- remap_group_indices(newdata, group, model$data, re)
       new_re$group_idx <- remap$group_idx
+      new_re$new_level_idx <- as.integer(remap$new_level_idx)
       if (!is.null(remap$warning)) warning(remap$warning)
 
-      if (!is.null(re$conditional_info)) {
-        cond_result <- build_conditional_columns(
-          term = re$conditional_info$term,
-          where_str = re$conditional_info$where_str,
-          data = newdata,
-          interaction_partners = re$conditional_info$interaction_partners
-        )
-        Z_new <- align_matrix_columns(cond_result$X, re$conditional_info$col_names)
-        if (check_simple_categorical(Z_new)) {
-          new_re$term_idx <- build_term_index(Z_new)
-          new_re$Z <- NULL
-          new_re$use_z_matrix <- FALSE
-        } else {
-          new_re$term_idx <- NULL
-          new_re$Z <- Z_new
-          new_re$use_z_matrix <- TRUE
-        }
-      } else if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
-        new_re$term_idx <- rebuild_term_idx(re, newdata, NULL, NULL)
-      } else if (isTRUE(re$use_z_matrix)) {
-        new_re$Z <- rebuild_z_matrix(re, newdata, NULL, NULL)
-      }
+      new_re <- .rebuild_re_design(new_re, newdata, NULL, NULL)
 
       new_crit_re[[group]] <- new_re
     }
@@ -2655,31 +2573,11 @@ rebuild_design_matrices <- function(model, newdata) {
         new_re <- re
         remap <- remap_group_indices(newdata, group, model$data, re)
         new_re$group_idx <- remap$group_idx
+        new_re$new_level_idx <- as.integer(remap$new_level_idx)
         if (!is.null(remap$warning)) warning(remap$warning)
 
-        if (!is.null(re$conditional_info)) {
-          cond_result <- build_conditional_columns(
-            term = re$conditional_info$term,
-            where_str = re$conditional_info$where_str,
-            data = newdata,
-            interaction_partners = re$conditional_info$interaction_partners
-          )
-          Z_new <- align_matrix_columns(cond_result$X, re$conditional_info$col_names)
-          if (check_simple_categorical(Z_new)) {
-            new_re$term_idx <- build_term_index(Z_new)
-            new_re$Z <- NULL
-            new_re$use_z_matrix <- FALSE
-          } else {
-            new_re$term_idx <- NULL
-            new_re$Z <- Z_new
-            new_re$use_z_matrix <- TRUE
-          }
-        } else if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
-          new_re$term_idx <- rebuild_term_idx(re, newdata, NULL, NULL)
-        } else if (isTRUE(re$use_z_matrix)) {
-          new_re$Z <- rebuild_z_matrix(re, newdata, NULL, NULL)
-        }
-        new_crit2_re[[group]] <- new_re
+        new_re <- .rebuild_re_design(new_re, newdata, NULL, NULL)
+new_crit2_re[[group]] <- new_re
       }
       src$criterion2_random <- new_crit2_re
     }
@@ -2911,7 +2809,8 @@ remap_group_indices <- function(newdata, group, train_data, re) {
                         ". Random effects set to 0 for these levels.")
   }
 
-  list(group_idx = group_idx, warning = warn_msg)
+  list(group_idx = group_idx, warning = warn_msg,
+       new_level_idx = ifelse(new_in_train, 0L, match(new_vals, new_levels)))
 }
 
 #' Rebuild term index for newdata
@@ -2919,10 +2818,6 @@ remap_group_indices <- function(newdata, group, train_data, re) {
 rebuild_term_idx <- function(re, newdata, encoding_vars, is_old_var) {
   if (is.null(re$level_names) || length(re$level_names) == 0) {
     return(rep(0L, nrow(newdata)))
-  }
-
-  if (re$dim == 1) {
-    return(rep(1L, nrow(newdata)))
   }
 
   re_formula <- re$re_formula
@@ -2987,4 +2882,118 @@ rebuild_z_matrix <- function(re, newdata, encoding_vars, is_old_var) {
     }
     invisible(NULL)
   }
+}
+
+.crit2_varying_u <- function(draws, re, var_base, base_col, S, N, u_new, new_pos) {
+  R <- re$n_re_terms %||% 1L
+  W <- if (isTRUE(re$use_z_matrix) && !is.null(re$Z)) {
+    as.matrix(re$Z)
+  } else if (!is.null(re$term_idx)) {
+    outer(re$term_idx, seq_len(R), "==") * 1
+  } else {
+    matrix(1, N, 1L)
+  }
+  g_idx <- re$group_idx
+  ok <- which(g_idx > 0 & g_idx <= re$n_groups)
+  nw <- which(new_pos > 0)
+  out <- matrix(0, S, N)
+  for (r in seq_len(R)) {
+    col <- (base_col - 1L) * R + r
+    nm <- if (re$dim == 1L) paste0(var_base, "[", seq_len(re$n_groups), "]")
+          else paste0(var_base, "[", seq_len(re$n_groups), ",", col, "]")
+    u <- draws[, nm, drop = FALSE]
+    if (length(ok)) out[, ok] <- out[, ok] + sweep(u[, g_idx[ok], drop = FALSE], 2, W[ok, r], "*")
+    if (!is.null(u_new) && length(nw)) {
+      un <- matrix(u_new[, new_pos[nw], col], nrow = S)
+      out[, nw] <- out[, nw] + sweep(un, 2, W[nw, r], "*")
+    }
+  }
+  out
+}
+
+.rebuild_re_design <- function(re, newdata, encoding_vars, is_old_var) {
+  if (!is.null(re$part_structs)) {
+    parts <- lapply(re$part_structs, .rebuild_re_design, newdata = newdata,
+                    encoding_vars = encoding_vars, is_old_var = is_old_var)
+    Z <- do.call(cbind, lapply(parts, .re_part_Z, N = nrow(newdata)))
+    re$Z <- Z
+    re$use_z_matrix <- TRUE
+    re$term_idx <- NULL
+    return(re)
+  }
+  if (!is.null(re$conditional_info)) {
+    cond_result <- build_conditional_columns(
+      term = re$conditional_info$term,
+      where_str = re$conditional_info$where_str,
+      data = newdata,
+      interaction_partners = re$conditional_info$interaction_partners
+    )
+    Z_new <- align_matrix_columns(cond_result$X, re$conditional_info$col_names)
+    if (!isTRUE(re$use_z_matrix) && check_simple_categorical(Z_new)) {
+      re$term_idx <- build_term_index(Z_new)
+      re$Z <- NULL
+      re$use_z_matrix <- FALSE
+    } else {
+      re$term_idx <- NULL
+      re$Z <- Z_new
+      re$use_z_matrix <- TRUE
+    }
+  } else if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
+    re$term_idx <- rebuild_term_idx(re, newdata, encoding_vars, is_old_var)
+  } else if (isTRUE(re$use_z_matrix)) {
+    re$Z <- rebuild_z_matrix(re, newdata, encoding_vars, is_old_var)
+  }
+  re
+}
+
+.new_level_pos <- function(re, N) {
+  if (!is.null(re$new_level_idx)) return(as.integer(re$new_level_idx))
+  pos <- integer(N)
+  w <- which(re$group_idx == 0L)
+  pos[w] <- seq_along(w)
+  pos
+}
+
+.draw_new_u <- function(draws, re, pname, stan_pname, group, n_new, S, md, data_src) {
+  if (!is.null(re$cor_id)) {
+    return(.sample_new_u_cross(draws, md, re$cor_id, group, pname, n_new, S,
+                               data_src$.new_u_cache %||% new.env(parent = emptyenv())))
+  }
+  sample_new_u_correlated(draws, stan_pname, group, dim = re$dim, n_new = n_new, S = S,
+                          correlated = isTRUE(re$correlated) && re$dim > 1)
+}
+
+.sample_new_u_cross <- function(draws, md, cor_id, group, member_param, n_new, S, cache) {
+  cc <- md$cross_cor[[cor_id]]
+  dims <- vapply(cc$members, function(m) as.integer(m$dim), integer(1))
+  D <- sum(dims)
+  key <- paste(cor_id, group, n_new, sep = "|")
+  joint <- cache[[key]]
+  if (is.null(joint)) {
+    base <- paste0("cross_", cor_id, "_", group)
+    sig_names <- paste0("sigma_", base, "[", seq_len(D), "]")
+    L_names <- paste0("L_corr_", base, "[", rep(seq_len(D), each = D), ",", rep(seq_len(D), times = D), "]")
+    miss <- setdiff(c(sig_names, L_names), colnames(draws))
+    if (length(miss)) {
+      stop("allow_new_levels: cross-parameter group '", cor_id, "' is missing ", miss[1],
+           " in the fit draws.", call. = FALSE)
+    }
+    sig <- as.matrix(draws[, sig_names, drop = FALSE])
+    L_arr <- array(as.numeric(draws[, L_names, drop = FALSE]), dim = c(S, D, D))
+    joint <- array(NA_real_, dim = c(S, n_new, D))
+    for (s in seq_len(S)) {
+      chol_s <- diag(as.numeric(sig[s, ]), nrow = D) %*% t(matrix(L_arr[s, , ], D, D))
+      joint[s, , ] <- matrix(rnorm(n_new * D), n_new, D) %*% t(chol_s)
+    }
+    assign(key, joint, envir = cache)
+  }
+  off <- 0L
+  for (i in seq_along(cc$members)) {
+    if (identical(cc$members[[i]]$param, member_param)) {
+      return(joint[, , off + seq_len(dims[i]), drop = FALSE])
+    }
+    off <- off + dims[i]
+  }
+  stop("allow_new_levels: parameter '", member_param, "' is not a member of cross-parameter group '",
+       cor_id, "'.", call. = FALSE)
 }

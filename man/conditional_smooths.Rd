@@ -29,7 +29,9 @@ If NULL (default), all smooth terms are evaluated.}
 }
 \value{
 A data frame of class \code{conditional_smooths} with covariate value(s),
-parameter, smooth label, estimate, lower, upper.
+parameter, smooth label, estimate, lower, upper. Smooths on \code{criterion} /
+\code{criterion2} have one set of rows per threshold component, identified by the
+\code{component} column (\code{"location"}, \code{"gap1"}, ...).
 }
 \description{
 Evaluate smooth terms at a grid of covariate values using posterior draws.

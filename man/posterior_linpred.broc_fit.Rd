@@ -41,8 +41,9 @@ uses all draws.}
 \item{prob}{CI width when \code{summary = TRUE} (default 0.95).}
 
 \item{allow_new_levels}{If \code{TRUE}, sample random effects from their prior for
-grouping levels in \code{newdata} not seen during training. Default \code{FALSE} errors
-if \code{newdata} introduces new levels.}
+grouping levels in \code{newdata} not seen during training, once per new level and
+draw (shared by all rows of that level; cross-parameter groups jointly).
+Default \code{FALSE} errors if \code{newdata} introduces new levels.}
 
 \item{seed}{Optional integer for reproducibility (subsampling and
 new-level RE draws). Restores caller's RNG state on exit.}

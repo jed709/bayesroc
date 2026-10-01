@@ -477,7 +477,8 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
           Z = NULL,
           use_z_matrix = FALSE,
           correlated = re$correlated,
-          cor_id = re$cor_id
+          cor_id = re$cor_id,
+          re_formula = re_formula
         )
       } else {
         re_list[[group]] <- list(
@@ -493,7 +494,8 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
           Z = Z,
           use_z_matrix = TRUE,
           correlated = re$correlated,
-          cor_id = re$cor_id
+          cor_id = re$cor_id,
+          re_formula = re_formula
         )
       }
       }
@@ -578,7 +580,8 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
   st <- list(group = first$group, group_idx = first$group_idx, n_groups = first$n_groups,
              level_names = colnames(Z), term = NULL, term_idx = NULL, Z = Z, use_z_matrix = TRUE,
              correlated = TRUE, cor_id = NULL, col_set = col_set, set_cor_thresholds = set_ct,
-             is_encoding = any(vapply(structs, function(x) isTRUE(x$is_encoding), logical(1))))
+             is_encoding = any(vapply(structs, function(x) isTRUE(x$is_encoding), logical(1))),
+             part_structs = lapply(structs, function(x) { x$group_idx <- NULL; x }))
   if (is.null(n_thresh)) {
     st$dim <- R
     st$type <- "interaction"

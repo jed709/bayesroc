@@ -316,7 +316,8 @@ get_summary_variables <- function(model) {
     for (group in names(model$model_data$criterion2$random)) {
       re <- model$model_data$criterion2$random[[group]]
       if (is.null(re$cor_id)) {
-        vars <- c(vars, paste0("sigma_", crit2_stan_name, "_", group, "[", 1:re$dim, "]"))
+        vars <- c(vars, if (re$dim == 1) paste0("sigma_", crit2_stan_name, "_", group)
+                        else paste0("sigma_", crit2_stan_name, "_", group, "[", 1:re$dim, "]"))
       }
     }
   }
@@ -336,7 +337,7 @@ get_summary_variables <- function(model) {
     
     for (group in names(re_list)) {
       re <- re_list[[group]]
-      if (is.null(re$cor_id) && re$dim > 1) {
+      if (is.null(re$cor_id) && isTRUE(re$correlated) && re$dim > 1) {
         for (i in 1:(re$dim-1)) {
           for (j in (i+1):re$dim) {
             vars <- c(vars, paste0("corr_", stan_pname, "_", group, "[", i, ",", j, "]"))
@@ -349,7 +350,7 @@ get_summary_variables <- function(model) {
   crit_corr_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
   for (group in names(model$model_data$criterion$random)) {
     re <- model$model_data$criterion$random[[group]]
-    if (is.null(re$cor_id) && re$dim > 1) {
+    if (is.null(re$cor_id) && isTRUE(re$correlated) && re$dim > 1) {
       for (i in 1:(re$dim-1)) {
         for (j in (i+1):re$dim) {
           vars <- c(vars, paste0("corr_", crit_corr_name, "_", group, "[", i, ",", j, "]"))
@@ -361,7 +362,7 @@ get_summary_variables <- function(model) {
   if (isTRUE(model$model_data$has_criterion2) && !is.null(model$model_data$criterion2$random)) {
     for (group in names(model$model_data$criterion2$random)) {
       re <- model$model_data$criterion2$random[[group]]
-      if (is.null(re$cor_id) && re$dim > 1) {
+      if (is.null(re$cor_id) && isTRUE(re$correlated) && re$dim > 1) {
         for (i in 1:(re$dim-1)) {
           for (j in (i+1):re$dim) {
             vars <- c(vars, paste0("corr_", crit2_stan_name, "_", group, "[", i, ",", j, "]"))

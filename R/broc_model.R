@@ -1341,23 +1341,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       n_bins <- K
       
       for (group in names(criterion2$random)) {
-        re <- criterion2$random[[group]]
-        
-        if (varying_re_mode == "shared") {
-          criterion2$random[[group]]$dim <- 1
-          criterion2$random[[group]]$varying_re_mode <- "shared"
-        } else if (varying_re_mode == "per_bin") {
-          criterion2$random[[group]]$dim <- n_bins
-          criterion2$random[[group]]$varying_re_mode <- "per_bin"
-        } else if (varying_re_mode == "full") {
-          criterion2$random[[group]]$dim <- n_bins * (K2 - 1)
-          criterion2$random[[group]]$varying_re_mode <- "full"
-        }
-        criterion2$random[[group]]$n_bins <- n_bins
-        ct <- unname(re$set_cor_thresholds %||% TRUE)[1]
-        criterion2$random[[group]]$cor_blocks <- .re_cor_blocks(1L, criterion2$random[[group]]$dim, 1L,
-                                                                c("1" = isTRUE(ct)))
-        criterion2$random[[group]]$correlated <- length(criterion2$random[[group]]$cor_blocks) > 0
+        criterion2$random[[group]] <- .varying_crit2_re(criterion2$random[[group]], varying_re_mode,
+                                                        n_bins, K2)
       }
     }
   }
@@ -2940,4 +2925,26 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   stop(sprintf(paste0("%d of %d Stan chains failed and their output is incomplete; ",
                       "refusing to return a fit built from a subset of chains. ",
                       "Inspect the chains' output or refit."), chains - kept, chains), call. = FALSE)
+}
+
+.varying_crit2_re <- function(re, mode, n_bins, K2) {
+  n_terms <- as.integer(re$n_re_terms %||% 1L)
+  if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
+    Z <- matrix(0, length(re$term_idx), n_terms, dimnames = list(NULL, re$level_names))
+    on <- which(re$term_idx > 0L)
+    Z[cbind(on, re$term_idx[on])] <- 1
+    re$Z <- Z
+    re$use_z_matrix <- TRUE
+    re$term_idx <- NULL
+  }
+  n_base <- switch(mode, shared = 1L, per_bin = as.integer(n_bins), full = as.integer(n_bins * (K2 - 1L)))
+  re$n_re_terms <- n_terms
+  re$dim <- n_base * n_terms
+  re$varying_re_mode <- mode
+  re$n_bins <- n_bins
+  col_set <- re$col_set %||% rep(1L, n_terms)
+  set_ct <- re$set_cor_thresholds %||% stats::setNames(rep(TRUE, length(unique(col_set))), unique(col_set))
+  re$cor_blocks <- .re_cor_blocks(n_terms, n_base, col_set, set_ct)
+  re$correlated <- length(re$cor_blocks) > 0
+  re
 }

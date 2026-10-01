@@ -2202,13 +2202,23 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
     } else {
       sprintf("u_criterion2_%s", group)
     }
+    R <- re$n_re_terms %||% 1L
+    at <- function(base0) {
+      if (isTRUE(re$use_z_matrix)) {
+        sprintf("Z_criterion2_%s[n, ] * %s[%s[n], ((%s)*%d+1):((%s)*%d+%d)]'", group, v, group, base0, R, base0, R, R)
+      } else if (re$dim == 1) {
+        sprintf("%s[%s[n]]", v, group)
+      } else {
+        sprintf("%s[%s[n], (%s)+1]", v, group, base0)
+      }
+    }
     if (varying_re_mode == "full") {
-      mid_terms <- c(mid_terms, sprintf("%s[%s[n], (k1-1)*(K2-1)+mid_thresh2]", v, group))
-      gap_terms <- c(gap_terms, sprintf("%s[%s[n], (k1-1)*(K2-1)+k2]", v, group))
-    } else if (varying_re_mode == "per_bin" && re$dim > 1) {
-      mid_terms <- c(mid_terms, sprintf("%s[%s[n], k1]", v, group))
+      mid_terms <- c(mid_terms, at("(k1-1)*(K2-1)+mid_thresh2-1"))
+      gap_terms <- c(gap_terms, at("(k1-1)*(K2-1)+k2-1"))
+    } else if (varying_re_mode == "per_bin" && re$dim > R) {
+      mid_terms <- c(mid_terms, at("k1-1"))
     } else {
-      mid_terms <- c(mid_terms, sprintf("%s[%s[n]]", v, group))
+      mid_terms <- c(mid_terms, at("0"))
     }
   }
   has_cov <- .has_crit2_cov(model_data)
@@ -2301,6 +2311,10 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
                                           k_expr, n_re_terms, k_expr, n_re_terms))
         } else if (re$dim == 1) {
           re_lines <- c(re_lines, sprintf("    %s += %s[%s[n]];", target, var_name, group))
+        } else if (!is.null(re$term_idx)) {
+          idx_var <- paste0("idx_", crit_name, "_", group)
+          re_lines <- c(re_lines, sprintf("    if (%s[n] > 0) %s += %s[%s[n], (%s-1) * %d + %s[n]];",
+                                          idx_var, target, var_name, group, k_expr, n_re_terms, idx_var))
         } else {
           re_lines <- c(re_lines, sprintf("    %s += %s[%s[n], %s];", target, var_name, group, k_expr))
         }
@@ -2653,7 +2667,7 @@ generate_thresh_code <- function(model_data) {
         re_lines <- c(re_lines, sprintf("    %s += %s[n, ] * %s[%s[n], ((%s-1)*%d + 1):(%s*%d)]';",
                                         target, z_name, var_name, group,
                                         thresh_k_expr, n_re_terms, thresh_k_expr, n_re_terms))
-      } else if (n_re_terms == 1) {
+      } else if (n_re_terms == 1 && is.null(re$term_idx)) {
         re_lines <- c(re_lines, sprintf("    %s += %s[%s[n], %s];", target, var_name, group, thresh_k_expr))
       } else {
         idx_var <- paste0("idx_criterion_", group)
