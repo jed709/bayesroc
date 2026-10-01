@@ -154,6 +154,9 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 - `?fit_broc` — fitting (Stan or JAX)
 - `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`,
   `posterior_epred(fit)`, `posterior_linpred(fit)` — S3 methods on the fitted model
+- `?estimates`, `?compare_estimates` — parameters on their natural scale per design
+  cell (the numbers behind `plot(fit)` and the first section of `summary(fit)`), and
+  posterior differences between cells
 - Plots (all return ggplot objects and share `by`, `ndraws`, `prob`, `re_formula`,
   `seed`): `?plot_estimates` (also `plot(fit)`), `?plot_roc` (ROC and zROC),
   `?plot_distributions` (latent distributions with criteria), `?pp_check.broc_fit`,

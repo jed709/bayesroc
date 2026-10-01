@@ -467,19 +467,26 @@ load_broc_fit <- function(file) {
 
 #' @export
 print.broc_fit <- function(x, ...) {
-  backend <- x$.backend
-  cat("bayesroc model fit\n")
-  cat("  Backend:", backend, "\n")
-  cat("  Chains:", x$.num_chains, "\n")
-  cat("  Iterations:", x$.iter_sampling, "(post-warmup per chain)\n")
-  if (!is.null(x$.elapsed)) {
-    cat("  Elapsed:", round(x$.elapsed, 1), "seconds\n")
-  }
   model <- attr(x, "broc_model")
+  cat("bayesroc model fit\n")
   if (!is.null(model)) {
-    cat("  Family:", family_display_name(model$family$family), "\n")
-    cat("  N:", model$model_data$N, "\n")
+    cat("  Family:  ", family_display_name(model$family$family), " (", model$family$link$name, " link)\n", sep = "")
+    fl <- .formula_lines(model)
+    if (length(fl)) {
+      cat("  Formula: ", fl[1], "\n", sep = "")
+      for (f in fl[-1]) cat("           ", f, "\n", sep = "")
+    }
+    cat("  Data:    ", model$model_data$N, if (!is.null(model$stan_data$counts)) " rows of counts" else " observations",
+        "\n", sep = "")
   }
+  cat("  Draws:   ", x$.num_chains, " chains x ", x$.iter_sampling, " post-warmup (", x$.backend,
+      if (!is.null(x$.elapsed)) paste0(", ", round(x$.elapsed, 1), " s"), ")\n", sep = "")
+  d <- tryCatch(x$diagnostic_summary(), error = function(e) NULL)
+  if (!is.null(d)) {
+    cat("  ")
+    .print_sampler_banner(d, x$.sampler %||% "nuts")
+  }
+  cat("Use summary(), plot(), plot_roc() or pp_check() to inspect the results.\n")
   invisible(x)
 }
 

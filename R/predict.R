@@ -79,11 +79,15 @@ link_cdf_r <- function(x, link_name) {
 #' @param ... Ignored.
 #' @return Depends on `type` and `summary`:
 #'   \describe{
-#'     \item{`type = "response"`, `summary = TRUE`}{A data frame with columns
-#'       for each category's posterior mean probability plus lower/upper CI bounds.}
+#'     \item{`type = "response"`, `summary = TRUE`}{A data frame with one row per
+#'       observation and response category: `trial` (row of the data), the data
+#'       columns of that row (from `newdata`, or the data used for fitting),
+#'       `category`, and the posterior `mean` probability with `lower` and `upper`
+#'       interval bounds.}
 #'     \item{`type = "response"`, `summary = FALSE`}{An S x N x K array where
 #'       S = draws, N = observations, K = response categories.}
-#'     \item{`type = "prediction"`, `summary = TRUE`}{A vector of modal predicted categories.}
+#'     \item{`type = "prediction"`, `summary = TRUE`}{A data frame with `trial`,
+#'       the data columns, and the modal and mean predicted category.}
 #'     \item{`type = "prediction"`, `summary = FALSE`}{An S x N matrix of
 #'       simulated categorical responses.}
 #'   }
@@ -104,6 +108,27 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
                              re_formula = NULL, ndraws = NULL, summary = TRUE,
                              prob = 0.95, cores = 1, response = 1, seed = NULL,
                              allow_new_levels = FALSE, ...) {
+  out <- .predict_broc(object, newdata = newdata, type = type, re_formula = re_formula, ndraws = ndraws,
+                       summary = summary, prob = prob, cores = cores, response = response, seed = seed,
+                       allow_new_levels = allow_new_levels, ...)
+  if (isTRUE(summary) && is.data.frame(out) && "trial" %in% names(out)) {
+    src <- if (!is.null(newdata)) newdata else attr(object, "broc_model")$data
+    if (!is.null(src)) {
+      keep <- setdiff(names(src)[!startsWith(names(src), ".")], names(out))
+      if (length(keep)) {
+        cols <- src[out$trial, keep, drop = FALSE]
+        rownames(cols) <- NULL
+        out <- cbind(out["trial"], cols, out[setdiff(names(out), "trial")])
+      }
+    }
+  }
+  out
+}
+
+.predict_broc <- function(object, newdata = NULL, type = c("response", "prediction"),
+                          re_formula = NULL, ndraws = NULL, summary = TRUE,
+                          prob = 0.95, cores = 1, response = 1, seed = NULL,
+                          allow_new_levels = FALSE, ...) {
   fit <- object
   type <- match.arg(type)
 

@@ -4,30 +4,41 @@
 \alias{summary.broc_fit}
 \title{Summarize a Fitted SDT Model}
 \usage{
-\method{summary}{broc_fit}(object, prob = 0.95, digits = 3, threshold_natural = FALSE, ...)
+\method{summary}{broc_fit}(
+  object,
+  prob = 0.95,
+  digits = 3,
+  by = NULL,
+  threshold_natural = FALSE,
+  ...
+)
 }
 \arguments{
 \item{object}{A \code{broc_fit} object from \code{\link[=fit_broc]{fit_broc()}}.}
 
-\item{prob}{Probability mass for credible intervals (default 0.95)}
+\item{prob}{Interval width (default 0.95).}
 
-\item{digits}{Number of digits for rounding (default 3)}
+\item{digits}{Number of decimals printed (default 3).}
 
-\item{threshold_natural}{If \code{TRUE}, additionally report criterion random-effect
-SDs and correlations on the natural threshold scale rather than the internal
-log-gap scale.}
+\item{by}{Optional character vector of data columns defining the cells of the
+natural-scale estimates; see \code{\link[=estimates]{estimates()}}.}
 
-\item{...}{Unused; present for S3 generic compatibility.}
+\item{threshold_natural}{If \code{TRUE}, additionally report the criterion
+random-effect standard deviations and correlations on the natural threshold
+scale rather than the internal location and gap scale.}
+
+\item{...}{Unused.}
 }
 \value{
-A structured summary object of class \code{broc_summary}. Its \code{print}
-method also shows a sampler-diagnostics banner (number of divergent
-transitions, max-treedepth hits, and minimum E-BFMI across chains).
+An object of class \code{broc_summary}: a list with \code{estimates},
+\code{coefficients}, \code{random_sd}, \code{correlations} (long table) and
+\code{correlation_matrices}, \code{smooth_sds}, \code{model_info} and \code{diagnostics}.
 }
 \description{
-Produce a labeled table of posterior estimates for a fitted model. The printed
-summary groups parameters into sections: fixed effects (per distributional
-parameter, e.g. d', criterion, sigma), random-effect standard deviations,
-random-effect correlations, and population-level thresholds. The print method
-also reports sampler diagnostics.
+Produces a labelled summary of a fitted model. The printed summary shows the
+model and sampler status, then the parameter estimates on their natural scale
+for each design cell (as returned by \code{\link[=estimates]{estimates()}}), the regression
+coefficients on the model scale, random-effect standard deviations,
+random-effect correlations (as matrices of posterior means) and smooth-term
+penalty standard deviations.
 }

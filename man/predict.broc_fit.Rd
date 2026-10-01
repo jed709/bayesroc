@@ -61,11 +61,15 @@ Default \code{FALSE} errors if \code{newdata} introduces new levels.}
 \value{
 Depends on \code{type} and \code{summary}:
 \describe{
-\item{\code{type = "response"}, \code{summary = TRUE}}{A data frame with columns
-for each category's posterior mean probability plus lower/upper CI bounds.}
+\item{\code{type = "response"}, \code{summary = TRUE}}{A data frame with one row per
+observation and response category: \code{trial} (row of the data), the data
+columns of that row (from \code{newdata}, or the data used for fitting),
+\code{category}, and the posterior \code{mean} probability with \code{lower} and \code{upper}
+interval bounds.}
 \item{\code{type = "response"}, \code{summary = FALSE}}{An S x N x K array where
 S = draws, N = observations, K = response categories.}
-\item{\code{type = "prediction"}, \code{summary = TRUE}}{A vector of modal predicted categories.}
+\item{\code{type = "prediction"}, \code{summary = TRUE}}{A data frame with \code{trial},
+the data columns, and the modal and mean predicted category.}
 \item{\code{type = "prediction"}, \code{summary = FALSE}}{An S x N matrix of
 simulated categorical responses.}
 }
