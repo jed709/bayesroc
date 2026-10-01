@@ -68,7 +68,14 @@ def run_one(config_path, out_dir, held=None, token=None):
     with open(config_path) as fh:
         args = json.load(fh)
     config = args["config"]
-    _convert_matrices(config)
+    if config is None:
+        if held is None or ("config", token) not in held:
+            raise RuntimeError("continuation request without a held model for this token")
+        config = held[("config", token)]
+    else:
+        _convert_matrices(config)
+        if held is not None and token is not None:
+            held[("config", token)] = config
     kw = args["fit_kwargs"]
     result = fit_model(config=config, held=held, token=token, **kw)
 

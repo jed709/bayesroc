@@ -21,7 +21,7 @@
 \item{type}{CV partition for aggregated fits: \code{"trial"} (default) or
 \code{"cell"}. Ignored for trial-level fits.}
 
-\item{chunk_mb}{Per-worker column-chunk size in MB. \code{NULL} auto-sizes.}
+\item{chunk_mb}{Per-worker column-chunk size in MiB. \code{NULL} auto-sizes.}
 
 \item{mem_budget_gb}{Total RAM budget for the pool; \code{NULL} uses ~60\% of free.}
 

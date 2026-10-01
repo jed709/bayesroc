@@ -22,12 +22,12 @@ fit_broc(
   seed = NULL,
   file = NULL,
   file_refit = FALSE,
-  save_loglik = TRUE,
+  save_loglik = NULL,
   loo = FALSE,
   loo_cores = 4,
   loglik_precision = c("f32", "f64"),
   keep_re = FALSE,
-  re_store = c("f32", "f64", "int16", "int8"),
+  re_store = c("f64", "f32", "int16", "int8"),
   warm_state = NULL,
   save_state = FALSE,
   num_warmup = NULL,
@@ -105,27 +105,31 @@ saved fit is loaded and returned instead of refitting -- unless
 sampling is skipped; if \code{TRUE}, the model is refit and the file overwritten.
 Ignored when \code{file} is \code{NULL}.}
 
-\item{save_loglik}{If \code{TRUE} (default), the per-observation log-likelihood is
-kept so the saved fit supports \code{\link[=loo]{loo()}}. If \code{FALSE}, \code{log_lik} is dropped when
-the fit is saved.}
+\item{save_loglik}{Keep the per-observation log-likelihood so \code{\link[=loo]{loo()}} works on
+the fit and on a fit saved with \code{\link[=save_broc_fit]{save_broc_fit()}} or \verb{file =}. \code{NULL}
+(default) keeps it unless \code{loo = TRUE}, whose result is stored on the fit
+instead; \code{TRUE} always keeps it; \code{FALSE} drops it.}
 
-\item{loo}{If \code{TRUE}, PSIS-LOO is computed at fit time and the on-disk
-log-likelihood file is deleted afterwards. Default \code{FALSE}.}
+\item{loo}{If \code{TRUE}, PSIS-LOO is computed at fit time and stored on the fit
+(\code{fit$.loo}, also saved with the fit). Default \code{FALSE}.}
 
 \item{loo_cores}{Number of worker processes used when \code{loo = TRUE} (default 4).}
 
 \item{loglik_precision}{Storage precision for the log-likelihood sidecar,
-\code{"f32"} (default) or \code{"f64"}.}
+\code{"f32"} (default) or \code{"f64"}. With the Stan backend the values are read from
+CmdStan's CSV output, so their precision is also limited by \code{sig_figs}.}
 
 \item{keep_re}{If \code{TRUE}, per-level random-effect draws are retained (JAX
 backend). Default \code{FALSE}, which stores only population-level parameters.}
 
-\item{re_store}{Codec for random-effect draws when the fit is saved: \code{"f32"}
-(default), \code{"f64"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
+\item{re_store}{Codec for random-effect draws when the fit is saved: \code{"f64"}
+(default, lossless), \code{"f32"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
 given its own \code{re_store}.}
 
 \item{warm_state}{Optional path to a state file written by \code{save_state}, used
-to resume sampling without repeating warmup (JAX backend).}
+to resume sampling without repeating warmup (JAX backend). The file is a
+Python pickle, and loading a pickle can run arbitrary code: only pass state
+files that bayesroc wrote on your own machine.}
 
 \item{save_state}{If \code{TRUE}, the post-warmup sampler state is saved so a later
 fit can resume from it via \code{warm_state}. Default \code{FALSE}.}

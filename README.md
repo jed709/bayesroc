@@ -159,7 +159,7 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
   divergences, `broc(..., smooth_info = TRUE)` samples the population-level smooth
   coefficients on a data-informed scale; the posterior is unchanged
 - `?broc_prior` — prior specification
-- `?autostop_broc` — sample in rounds until ESS targets are met (JAX backend)
+- `?autostop_broc` — sample until ESS and R-hat targets are met (JAX backend)
 - `?drop_loglik` — reclaim a fit's log-likelihood sidecar
 
 ## Log-likelihood and LOO
@@ -186,24 +186,27 @@ produces. The two are not comparable via `loo_compare()`.
 fit as `<file>_loglik.npy` whenever the fit kept its log-likelihood, so `loo()`
 works after `load_broc_fit()`; pass `include_loglik = FALSE` to skip it.
 
-## Sampling to an ESS target
+## Sampling until convergence and precision targets are met
 
-`autostop_broc()` adds rounds of draws until rank-normalised bulk and tail ESS
-clear per-class floors. With `restart = "warm"` the chains continue from saved
-sampler state, so later rounds skip warmup entirely and the pooled draws are
-identical to one long run. All rounds run in one persistent Python process, so the
-model is built and the sampler compiled once.
+`autostop_broc()` runs one set of chains and extends them in chunks until every
+monitored parameter has rank-normalised bulk and tail ESS of at least
+`ess_target` and R-hat of at most `rhat_target` (defaults 400 and 1.01, following
+Vehtari et al., 2021), or a cap on draws or time is reached. Chains continue
+exactly where the previous chunk stopped, so the result is identical to one run of
+the final length. Targets can differ by parameter class:
 
 ```r
 fit <- autostop_broc(model,
-                     pop_target = 5000, sd_target = 400, cor_target = 400,
-                     restart = "warm", backend = "jax")
-attr(fit, "ess_trace")
+                     ess_target = c(pop = 2000, sd = 400, cor = 200),
+                     max_draws = 50000, max_time = 3600)
+attr(fit, "stop_reason")   # "targets", "max_draws" or "max_time"
+attr(fit, "ess_trace")     # one row per check
+fit <- autostop_broc(model, resume = fit, max_draws = 100000)  # continue a capped run
 ```
 
-Warm continuation needs sampler state that cmdstanr cannot return, so
-`autostop_broc()` is JAX-only. Divergences are reported per round and
-accumulated in the trace; they do not stop the loop.
+`autostop_broc()` is JAX-only (exact continuation needs sampler state that
+cmdstanr cannot return). A time cap makes the stopping point machine-dependent;
+the draws themselves are not affected.
 
 ## License
 

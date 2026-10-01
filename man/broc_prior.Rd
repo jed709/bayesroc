@@ -51,7 +51,9 @@ Confidence thresholds are not set directly. They are reparameterized as a
 central anchor (\code{thresh_mid}) plus strictly-positive, log-scale spacings
 (\code{log_gaps}) between successive thresholds, which enforces ordering. Set
 criterion priors via \code{dpar = "thresh_mid"} (overall criterion location) and
-\code{dpar = "log_gaps"} (threshold spread).
+\code{dpar = "log_gaps"} (threshold spread). With \code{gap_link = "softplus"} the
+\code{log_gaps} prior applies to the unconstrained gap parameters that the
+softplus maps to spacings.
 }
 \examples{
 # Prior on all d' fixed effects

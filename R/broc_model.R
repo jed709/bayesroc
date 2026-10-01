@@ -2182,7 +2182,7 @@ fit_broc <- function(model,
          paste(.unknown, collapse = ", "), ". Valid keys: ",
          paste(.valid, collapse = ", "), call. = FALSE)
   }
-  if (sampler == "drghmc" && is.null(warm_state)) {
+  if (sampler == "drghmc" && is.null(warm_state) && !isTRUE(list(...)$.worker_continue)) {
     .windows <- .ctrl$adapt_windows %||% 10L
     if (iter_warmup < .windows) {
       stop("sampler = 'drghmc' needs iter_warmup >= control$adapt_windows (", .windows,
@@ -2247,8 +2247,10 @@ fit_broc <- function(model,
     .dots <- list(...)
     .worker <- .dots$.worker
     .worker_token <- .dots$.worker_token
+    .worker_continue <- isTRUE(.dots$.worker_continue)
     .dots$.worker <- NULL
     .dots$.worker_token <- NULL
+    .dots$.worker_continue <- NULL
     if (length(.dots) > 0) {
       warning("Arguments in `...` are forwarded to cmdstanr (Stan backend) only ",
               "and are ignored by the JAX backend.", call. = FALSE)
@@ -2278,6 +2280,7 @@ fit_broc <- function(model,
       init_values = init_values_jax,
       worker = .worker,
       worker_token = .worker_token,
+      continue_held = .worker_continue,
       save_state = save_state
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)

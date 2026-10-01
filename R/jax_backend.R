@@ -460,7 +460,8 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                     chain_method = "parallel", python = NULL,
                     progress_bar = TRUE, loglik_precision = "f32",
                     keep_re = FALSE, warm_state = NULL, save_state = FALSE,
-                    init_values = NULL, worker = NULL, worker_token = NULL) {
+                    init_values = NULL, worker = NULL, worker_token = NULL,
+                    continue_held = FALSE) {
 
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("Package 'jsonlite' is required for the JAX backend.")
@@ -474,7 +475,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     python <- find_python_with_jax()
   }
   py_script <- find_backend_script()
-  config <- build_numpyro_config(model)
+  config <- if (isTRUE(continue_held)) NULL else build_numpyro_config(model)
 
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1)
 
@@ -504,7 +505,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
       control = if (length(control)) control else NULL,
       save_loglik = isTRUE(save_loglik),
       keep_re = isTRUE(keep_re),
-      warm_state = if (is.null(warm_state)) NULL else
+      warm_state = if (isTRUE(continue_held)) "held" else if (is.null(warm_state)) NULL else
         normalizePath(warm_state, winslash = "/", mustWork = TRUE),
       save_state = isTRUE(save_state),
       init_values = init_values
@@ -523,12 +524,14 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                        digits = 17, null = "null")
 
   chain_note <- if (identical(chain_method, "sequential")) ", sequential" else ""
-  if (identical(sampler, "drghmc")) {
-    message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
-            warmup, " adapt, ", samples, " samples)...")
-  } else {
-    message("Fitting with NumPyro NUTS via JAX (", chains, " chains", chain_note, ", ",
-            warmup, " warmup, ", samples, " samples)...")
+  if (!isTRUE(continue_held)) {
+    if (identical(sampler, "drghmc")) {
+      message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
+              warmup, " adapt, ", samples, " samples)...")
+    } else {
+      message("Fitting with NumPyro NUTS via JAX (", chains, " chains", chain_note, ", ",
+              warmup, " warmup, ", samples, " samples)...")
+    }
   }
 
   if (!is.null(worker)) {

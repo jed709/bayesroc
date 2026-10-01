@@ -16,7 +16,9 @@ new_broc_fit(
   sampler = "nuts",
   save_loglik = TRUE,
   diagnostics = NULL,
-  loglik_path = NULL
+  loglik_path = NULL,
+  loglik_owned = !is.null(loglik_path),
+  loo = NULL
 )
 }
 \arguments{

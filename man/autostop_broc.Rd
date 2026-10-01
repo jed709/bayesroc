@@ -2,60 +2,99 @@
 % Please edit documentation in R/autostop.R
 \name{autostop_broc}
 \alias{autostop_broc}
-\title{Sample until ESS targets are met}
+\title{Sample until convergence and precision targets are met}
 \usage{
 autostop_broc(
   model,
-  pop_target = 5000,
-  sd_target = 400,
-  cor_target = 400,
+  ess_target = 400,
+  rhat_target = 1.01,
+  max_draws = 50000,
+  max_time = NULL,
+  check_every = 100,
   chains = 4,
-  iter_warmup = 1000,
-  samples_per_round = 1000,
-  max_rounds = 10,
-  restart = c("warm", "cold"),
+  iter_warmup = NULL,
   seed = 1L,
   sampler = c("nuts", "drghmc"),
+  resume = NULL,
   loo = FALSE,
   loo_cores = 4,
   progress = TRUE,
+  save_loglik = NULL,
+  file = NULL,
+  file_refit = FALSE,
   ...
 )
 }
 \arguments{
-\item{model}{An \code{broc_model} from \code{\link[=broc]{broc()}}.}
+\item{model}{A \code{broc_model} from \code{\link[=broc]{broc()}}.}
 
-\item{pop_target}{Minimum bulk and tail ESS for population parameters.}
+\item{ess_target}{Minimum bulk and tail ESS. One number applies to every class;
+a named vector such as \code{c(pop = 2000, sd = 400, cor = 200)} sets classes
+separately (unnamed classes keep 400).}
 
-\item{sd_target}{Minimum bulk and tail ESS for random-effect SDs.}
+\item{rhat_target}{Maximum R-hat over all monitored parameters.}
 
-\item{cor_target}{Minimum bulk and tail ESS for random-effect correlations.}
+\item{max_draws}{Cap on post-warmup draws per chain.}
 
-\item{chains}{Chains per round.}
+\item{max_time}{Optional cap on sampling time in seconds. With both caps, the
+run stops at whichever is reached first. A time cap makes the stopping point
+machine-dependent; the draws themselves are unaffected.}
 
-\item{iter_warmup}{Warmup for the first round (and every round when cold).}
+\item{check_every}{Minimum draws per chain between checks. Checks cost time that
+grows with the number of draws, so later chunks are lengthened (to
+\code{check_every} times a power of two) to balance checking time against draws
+taken past the stopping point; this never changes the draws themselves.}
 
-\item{samples_per_round}{Post-warmup draws per chain per round.}
+\item{chains}{Number of chains.}
 
-\item{max_rounds}{Cap on rounds.}
+\item{iter_warmup}{Warmup iterations; \code{NULL} uses the sampler's default.}
 
-\item{restart}{\code{"warm"} continues the chains, \code{"cold"} re-warms each round.}
-
-\item{seed}{Base seed; each round offsets it.}
+\item{seed}{Seed.}
 
 \item{sampler}{\code{"nuts"} or \code{"drghmc"}.}
 
-\item{loo}{Compute PSIS-LOO on the pooled fit.}
+\item{resume}{A fit returned by \code{autostop_broc()} to continue, for example after
+it stopped at a cap. Its chains are extended exactly and its draws kept.}
+
+\item{loo}{Compute PSIS-LOO on the result (stored as \code{fit$.loo}).}
 
 \item{loo_cores}{Workers for \code{\link[=loo]{loo()}}.}
 
-\item{progress}{Print a per-round ESS line.}
+\item{progress}{Print one line per check.}
 
-\item{...}{Passed to \code{\link[=fit_broc]{fit_broc()}}.}
+\item{save_loglik}{Keep the log-likelihood so \code{\link[=loo]{loo()}} works on the returned fit.
+\code{NULL} (default) keeps it unless \code{loo = TRUE}.}
+
+\item{file}{Optional path: the fit is saved there with \code{\link[=save_broc_fit]{save_broc_fit()}}; if it
+already exists and \code{file_refit = FALSE}, it is loaded instead of refitting.}
+
+\item{file_refit}{Refit even if \code{file} exists.}
+
+\item{...}{Passed to \code{\link[=fit_broc]{fit_broc()}}. Arguments autostop controls (chains,
+iterations, seed, sampler, warm state, log-likelihood handling) are rejected.}
 }
 \value{
-The pooled \code{broc_fit}, with attribute \code{"ess_trace"}.
+A \code{broc_fit} with attributes \code{"stop_reason"} (\code{"targets"},
+\code{"max_draws"} or \code{"max_time"}), \code{"ess_trace"} (one row per check),
+\code{"targets"} and \code{"divergences"}. A warning is issued when a cap is reached
+before the targets are met.
 }
 \description{
-Sample until ESS targets are met
+Runs one set of JAX chains and extends them in chunks until every monitored
+parameter has rank-normalised bulk and tail effective sample size of at least
+\code{ess_target} and split R-hat at most \code{rhat_target} (Vehtari et al., 2021), or a
+cap is reached. Chains continue exactly where the previous chunk stopped, so
+the draws are identical to one run of the final length. The stopping rule uses
+the same \code{posterior} estimators that \code{\link[cmdstanr:fit-method-summary]{cmdstanr::summary()}} reports.
+}
+\details{
+Monitored parameters are classed as population-level (\code{pop}: fixed effects,
+thresholds and other family parameters), random-effect and smooth SDs (\code{sd}),
+and random-effect correlations (\code{cor}). Per-level random effects and smooth
+coefficients are not monitored.
+}
+\references{
+Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
+(2021). Rank-normalization, folding, and localization: An improved R-hat for
+assessing convergence of MCMC. \emph{Bayesian Analysis}, 16(2), 667-718.
 }

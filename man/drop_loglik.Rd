@@ -13,5 +13,8 @@ drop_loglik(fit)
 The slimmed fit, invisibly.
 }
 \description{
-Delete a fit's temporary log_lik sidecar to reclaim disk
+Only a log-likelihood file that bayesroc itself wrote to this session's
+temporary directory is deleted; a file saved with \code{\link[=save_broc_fit]{save_broc_fit()}} is left
+in place. After dropping, \code{\link[=loo]{loo()}} is unavailable for the fit on either
+backend (a stored \code{fit$.loo} is kept).
 }

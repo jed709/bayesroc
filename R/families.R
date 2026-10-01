@@ -1019,8 +1019,7 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #'
 #' `criterion` supplies J thresholds \eqn{\tau_1 < \dots < \tau_J} on M, where
 #' J = `length(old_levels)`. A response falls in old bin j when
-#' \eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}, evaluated as 20 on the
-#' latent scale, where the normal tail is below double precision); every rating outside
+#' \eqn{\tau_j < M < \tau_{j+1}} (\eqn{\tau_{J+1} = \infty}); every rating outside
 #' `old_levels` is a single collapsed "new" response,
 #' \deqn{P(\mathrm{new}) = \Phi\left(\frac{\tau_1 - \mu_M}{\sigma_M}\right),}
 #' so graded new-side ratings are pooled rather than modelled separately.

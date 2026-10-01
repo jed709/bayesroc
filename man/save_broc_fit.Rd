@@ -10,7 +10,7 @@ save_broc_fit(
   compress = FALSE,
   verbose = TRUE,
   include_loglik = NULL,
-  re_store = c("f32", "f64", "int16", "int8")
+  re_store = c("f64", "f32", "int16", "int8")
 )
 }
 \arguments{
@@ -23,9 +23,10 @@ draws barely compress). Set \code{"gzip"}/\code{"xz"} for a smaller, slower file
 
 \item{verbose}{If \code{TRUE} (default), print a brief progress message.}
 
-\item{include_loglik}{Whether to write \code{log_lik} (needed for \code{\link[=loo]{loo()}}). \code{NULL}
+\item{include_loglik}{Whether to keep \code{log_lik} (needed for \code{\link[=loo]{loo()}}). \code{NULL}
 (default) follows the fit's \code{fit_broc(save_loglik = )} setting; \code{TRUE}/\code{FALSE}
-overrides it for this save.}
+overrides it for this save. When kept, the on-disk log-likelihood is written
+next to \code{file} as \verb{<file>_loglik.npy}.}
 }
 \value{
 Invisibly returns \code{file}.

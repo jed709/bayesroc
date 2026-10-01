@@ -4713,6 +4713,11 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
             res["state"] = None
         return res
 
+    keep = held is not None and token is not None
+    if keep and warm_state is not None and ("nuts", token) in held:
+        return _nuts_continue(held, token, config, samples, thinning, chain_method,
+                              save_loglik, keep_re, save_state)
+
     numpyro.set_host_device_count(chains if chain_method == "parallel" else 1)
     rng_key = random.PRNGKey(seed)
 
@@ -4742,14 +4747,8 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     keep = held is not None and token is not None
     f32 = not jax.config.jax_enable_x64
     offset = None
-    prior = held.get(("nuts", token)) if keep else None
     t0 = time.time()
-    if warm_state is not None and prior is not None and prior.num_samples == samples:
-        mcmc = prior
-        mcmc.post_warmup_state = mcmc.last_state
-        rng_key = mcmc.post_warmup_state.rng_key
-        offset = held.get(("nuts_offset", token))
-    elif warm_state is not None:
+    if warm_state is not None:
         with open(warm_state, "rb") as fh:
             loaded = pickle.load(fh)
         if isinstance(loaded, dict) and "hmc" in loaded:
@@ -4797,6 +4796,51 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     if save_state:
         out["state"] = (mcmc.last_state if offset is None
                         else {"hmc": mcmc.last_state, "offset": np.asarray(offset)})
+    return out
+
+
+def _nuts_continue(held, token, config, samples, thinning, chain_method,
+                   save_loglik, keep_re, save_state):
+    """Continue held NUTS chains by `samples` draws through a loop compiled once per
+    chunk length. MCMC.run recompiles its sampling loop on every call; this advances the
+    same kernel from the held state, so draws are identical to one long run."""
+    mcmc = held[("nuts", token)]
+    offset = held.get(("nuts_offset", token))
+    if offset is not None:
+        config = {**config, "_ll_offset": jnp.asarray(offset)}
+    kern = mcmc.sampler
+    parallel = chain_method == "parallel"
+    key = ("nuts_drv", token, samples)
+    if key not in held:
+        def body(s, _):
+            s = kern.sample(s, (config,), {})
+            return s, (s.z, s.num_steps, s.energy, s.accept_prob, s.diverging)
+
+        run = lambda s: jax.lax.scan(body, s, None, length=samples)
+        pp = jax.vmap(kern.postprocess_fn((config,), {}))
+        held[key] = (jax.pmap(run) if parallel else jax.jit(lambda st: jax.lax.map(run, st)),
+                     jax.pmap(pp) if parallel else jax.jit(lambda z: jax.lax.map(pp, z)))
+    run_fn, pp_fn = held[key]
+    t0 = time.time()
+    state = held.get(("nuts_state", token), mcmc.last_state)
+    state, (z, ns, en, ap, dv) = run_fn(state)
+    held[("nuts_state", token)] = state
+    keep_idx = np.arange(thinning - 1, samples, thinning) if thinning > 1 else slice(None)
+    named = pp_fn(z)
+    jax.block_until_ready(named)
+    elapsed = time.time() - t0
+    samples_np = {}
+    for k, v in named.items():
+        if k.startswith("z_") and not keep_re:
+            continue
+        if k == "log_lik" and not save_loglik:
+            continue
+        samples_np[k] = np.asarray(v)[:, keep_idx]
+    extra_fields = {k: np.asarray(v)[:, keep_idx] for k, v in
+                    (("num_steps", ns), ("energy", en), ("accept_prob", ap), ("diverging", dv))}
+    out = {"samples": samples_np, "extra_fields": extra_fields, "elapsed": float(elapsed)}
+    if save_state:
+        out["state"] = state if offset is None else {"hmc": state, "offset": np.asarray(offset)}
     return out
 
 

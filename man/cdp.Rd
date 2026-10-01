@@ -50,7 +50,10 @@ with \eqn{G(c) = P(R \le c_R, F \le c_K, M < c)}, and Know is the remainder of
 the band.
 
 Lure means and SDs are fixed at 0 and 1 on both axes, and the R-F correlation
-is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010).
+is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010). Moran and
+Goshen-Gottstein (2015) report a positive R-F correlation and greater
+familiarity variance for targets than lures; the second is available through
+\code{sigma_F}, the first is not modelled.
 }
 
 \subsection{Parameters}{
