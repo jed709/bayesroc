@@ -615,12 +615,12 @@ print.prior_lookup <- function(x, ...) {
 #' @param family Optional family (e.g. [evsd()], [uvsd()]) for the formula/`brf`
 #'   path; defaults to the family set in the `brf`, or [evsd()]. Ignored when
 #'   `object` is already a model.
-#' @param user_priors Optional priors from [broc_prior()] to override defaults.
+#' @param priors Optional priors from [broc_prior()] to override defaults (as in [broc()]).
 #' @param ... Further arguments forwarded to [broc()] on the formula/`brf` path
 #'   (e.g. `encoding_vars`, `counts`, `gap_link`).
 #' @return A data frame with columns `class`, `dpar`, `coef`, `group`, `prior`,
 #'   and `source`, where `source` flags whether each row is a package default
-#'   (`"default"`) or was overridden by `user_priors` (`"user"`).
+#'   (`"default"`) or was overridden by `priors` (`"user"`).
 #' @seealso [broc_prior()]
 #' @export
 #'
@@ -641,10 +641,10 @@ print.prior_lookup <- function(x, ...) {
 #'   broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime"),
 #'   broc_prior("normal(0, 1)", class = "sd")
 #' )
-#' get_broc_prior(model, user_priors = my_priors)
+#' get_broc_prior(model, priors = my_priors)
 #' }
 get_broc_prior <- function(object, data = NULL, family = NULL,
-                           user_priors = NULL, ...) {
+                           priors = NULL, ...) {
 
   if (inherits(object, "broc_model")) {
     model <- object
@@ -653,13 +653,13 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
       stop("`data` is required when `object` is a formula or brf() object: ",
            "coefficient names and the number of thresholds are read from it.")
     }
-    model <- broc(object, data = data, family = family, ...)
+    model <- broc(object, data = data, family = family, priors = priors, ...)
   } else {
     stop("`object` must be a broc_model (from broc()), a brf() object, or a formula.")
   }
 
-  pl <- if (!is.null(user_priors)) {
-    build_prior_lookup(user_priors)
+  pl <- if (!is.null(priors)) {
+    build_prior_lookup(priors)
   } else if (!is.null(model$prior_lookup)) {
     model$prior_lookup
   } else {

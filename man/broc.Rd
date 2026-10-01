@@ -11,9 +11,8 @@ broc(
   priors = NULL,
   encoding_vars = NULL,
   counts = NULL,
-  threads = NULL,
   gap_link = NULL,
-  smooth_info = FALSE
+  smooth_info = NULL
 )
 }
 \arguments{
@@ -39,10 +38,6 @@ also be set in \code{\link[=brf]{brf()}}; a value in broc() takes precedence.}
 
 \item{counts}{Name of a column giving per-row trial counts, for aggregated
 (count) data rather than one row per trial. May also be set in \code{\link[=brf]{brf()}}.}
-
-\item{threads}{If \code{TRUE}, enable within-chain \code{reduce_sum} threading for the
-Stan backend (set the thread count per chain via \code{fit_broc(threads_per_chain=)}).
-Default \code{FALSE}.}
 
 \item{gap_link}{Link for threshold gaps: \code{"log"} (default) or \code{"softplus"}.
 \code{NULL} uses the family default.}

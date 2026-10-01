@@ -27,8 +27,8 @@ test_that("JAX: thin keeps every k-th draw", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fj <- fit_broc(m, backend = "jax", chains = 2L, num_warmup = 200L,
-                 num_samples = 400L, thin = 2L, seed = 1, progress_bar = FALSE)
+  fj <- fit_broc(m, backend = "jax", chains = 2L, iter_warmup = 200L,
+                 iter_sampling = 400L, thin = 2L, seed = 1, progress_bar = FALSE)
   expect_equal(fj$.iter_sampling, 200L)
 })
 
@@ -37,9 +37,9 @@ test_that("JAX: parallel_chains = 1 runs sequentially, same draws shape", {
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fs <- fit_broc(m, backend = "jax", chains = 2L, parallel_chains = 1L,
-                 num_warmup = 100L, num_samples = 100L, seed = 1, progress_bar = FALSE)
+                 iter_warmup = 100L, iter_sampling = 100L, seed = 1, progress_bar = FALSE)
   fp <- fit_broc(m, backend = "jax", chains = 2L, parallel_chains = 2L,
-                 num_warmup = 100L, num_samples = 100L, seed = 1, progress_bar = FALSE)
+                 iter_warmup = 100L, iter_sampling = 100L, seed = 1, progress_bar = FALSE)
   expect_identical(dim(fs$draws()), dim(fp$draws()))
 })
 
@@ -48,8 +48,8 @@ test_that("JAX warns that `...` is cmdstanr-only", {
   d <- .fixture_univariate(sigma = 1.2)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   expect_warning(
-    fit_broc(m, backend = "jax", chains = 2L, num_warmup = 100L,
-             num_samples = 100L, seed = 1, progress_bar = FALSE, sig_figs = 5),
+    fit_broc(m, backend = "jax", chains = 2L, iter_warmup = 100L,
+             iter_sampling = 100L, seed = 1, progress_bar = FALSE, sig_figs = 5),
     "forwarded to cmdstanr"
   )
 })

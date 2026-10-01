@@ -106,19 +106,8 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   fit <- object
   type <- match.arg(type)
 
-  if (!is.null(seed)) {
-    old_seed <- if (exists(".Random.seed", envir = .GlobalEnv))
-      get(".Random.seed", envir = .GlobalEnv) else NULL
-    on.exit({
-      if (is.null(old_seed)) {
-        if (exists(".Random.seed", envir = .GlobalEnv))
-          rm(".Random.seed", envir = .GlobalEnv)
-      } else {
-        assign(".Random.seed", old_seed, envir = .GlobalEnv)
-      }
-    }, add = TRUE)
-    set.seed(seed)
-  }
+  restore_seed <- .seed_scope(seed)
+  on.exit(restore_seed(), add = TRUE)
 
   model <- attr(fit, "broc_model")
   if (is.null(model)) {
@@ -2984,4 +2973,18 @@ rebuild_z_matrix <- function(re, newdata, encoding_vars, is_old_var) {
   }
 
   Z
+}
+
+.seed_scope <- function(seed) {
+  if (is.null(seed)) return(function() invisible(NULL))
+  old <- if (exists(".Random.seed", envir = .GlobalEnv)) get(".Random.seed", envir = .GlobalEnv) else NULL
+  set.seed(seed)
+  function() {
+    if (is.null(old)) {
+      if (exists(".Random.seed", envir = .GlobalEnv)) rm(".Random.seed", envir = .GlobalEnv)
+    } else {
+      assign(".Random.seed", old, envir = .GlobalEnv)
+    }
+    invisible(NULL)
+  }
 }

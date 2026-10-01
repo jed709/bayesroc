@@ -4,7 +4,7 @@
 \alias{get_broc_prior}
 \title{Preview the Priors for an SDT Model}
 \usage{
-get_broc_prior(object, data = NULL, family = NULL, user_priors = NULL, ...)
+get_broc_prior(object, data = NULL, family = NULL, priors = NULL, ...)
 }
 \arguments{
 \item{object}{A \code{\link[=broc]{broc()}} model, or a \code{\link[=brf]{brf()}} specification / bare formula.
@@ -19,7 +19,7 @@ when \code{object} is already a model.}
 path; defaults to the family set in the \code{brf}, or \code{\link[=evsd]{evsd()}}. Ignored when
 \code{object} is already a model.}
 
-\item{user_priors}{Optional priors from \code{\link[=broc_prior]{broc_prior()}} to override defaults.}
+\item{priors}{Optional priors from \code{\link[=broc_prior]{broc_prior()}} to override defaults (as in \code{\link[=broc]{broc()}}).}
 
 \item{...}{Further arguments forwarded to \code{\link[=broc]{broc()}} on the formula/\code{brf} path
 (e.g. \code{encoding_vars}, \code{counts}, \code{gap_link}).}
@@ -27,7 +27,7 @@ path; defaults to the family set in the \code{brf}, or \code{\link[=evsd]{evsd()
 \value{
 A data frame with columns \code{class}, \code{dpar}, \code{coef}, \code{group}, \code{prior},
 and \code{source}, where \code{source} flags whether each row is a package default
-(\code{"default"}) or was overridden by \code{user_priors} (\code{"user"}).
+(\code{"default"}) or was overridden by \code{priors} (\code{"user"}).
 }
 \description{
 Show every prior a model will use as a data frame. Accepts either a built
@@ -51,7 +51,7 @@ my_priors <- c(
   broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime"),
   broc_prior("normal(0, 1)", class = "sd")
 )
-get_broc_prior(model, user_priors = my_priors)
+get_broc_prior(model, priors = my_priors)
 }
 }
 \seealso{

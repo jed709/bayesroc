@@ -18,7 +18,7 @@ autostop_broc(
   resume = NULL,
   loo = FALSE,
   loo_cores = 4,
-  progress = TRUE,
+  progress_bar = TRUE,
   save_loglik = NULL,
   file = NULL,
   file_refit = FALSE,
@@ -63,7 +63,7 @@ reloaded with \code{\link[=load_broc_fit]{load_broc_fit()}} can be resumed in a 
 
 \item{loo_cores}{Workers for \code{\link[=loo]{loo()}}.}
 
-\item{progress}{Print one line per check.}
+\item{progress_bar}{Show the sampler's progress bar and print one line per check.}
 
 \item{save_loglik}{Keep the log-likelihood so \code{\link[=loo]{loo()}} works on the returned fit.
 \code{NULL} (default) keeps it unless \code{loo = TRUE}.}

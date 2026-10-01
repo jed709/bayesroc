@@ -99,8 +99,8 @@ See the [vignette](https://jed709.github.io/bayesroc/articles/univariate-recogni
 The Stan backend uses a fused C++ likelihood with analytic gradients, which is
 much faster than Stan-language autodiff and needs no extra toolchain beyond
 `cmdstanr`. The Stan backend is single-threaded
-by default but supports multithreading via `reduce_sum` by passing `threads = TRUE` 
-to `broc()` and specifying `threads_per_chain = N_threads` when calling `fit_broc()`.
+by default; `fit_broc(threads_per_chain = N)` with N > 1 compiles a `reduce_sum`
+version of the model and runs each chain on N threads.
 
 The NumPyro backend (`fit_broc(m, backend = "jax")`) is generally faster than Stan and 
 uses analytic custom JVPs. This backend only supports multithreading and the number

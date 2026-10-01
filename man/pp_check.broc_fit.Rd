@@ -14,6 +14,7 @@
   re_formula = NULL,
   response = 1,
   cores = 1,
+  seed = NULL,
   ...
 )
 }
@@ -44,6 +45,9 @@ population-level predictions.}
 to check (1 = item/detection, 2 = source/discrimination). Default 1.}
 
 \item{cores}{Number of cores used for posterior prediction (default 1).}
+
+\item{seed}{Optional seed for the draw subset and replicated data, so the plot
+can be reproduced; the global random-number state is restored afterwards.}
 
 \item{...}{Additional arguments (unused).}
 }

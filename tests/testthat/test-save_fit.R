@@ -64,13 +64,13 @@ test_that("fit_broc(file=) works on the JAX backend", {
   path <- tempfile()
 
   fit <- fit_broc(m, backend = "jax", chains = 2L,
-                  num_warmup = 200L, num_samples = 200L,
+                  iter_warmup = 200L, iter_sampling = 200L,
                   seed = 1, progress_bar = FALSE, file = path)
   expect_true(file.exists(paste0(path, ".rds")))
   ref <- .draws_mean(fit)
 
   fit_loaded <- fit_broc(m, backend = "jax", chains = 2L,
-                         num_warmup = 200L, num_samples = 200L,
+                         iter_warmup = 200L, iter_sampling = 200L,
                          seed = 2, progress_bar = FALSE, file = path)
   expect_equal(.draws_mean(fit_loaded), ref, tolerance = 1e-8)
 })

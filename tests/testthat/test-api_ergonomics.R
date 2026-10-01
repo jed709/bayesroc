@@ -22,7 +22,7 @@ test_that("get_broc_prior accepts a brf/formula without building the model first
   expect_equal(nrow(p_formula), nrow(p_brf))
 
   up <- broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime")
-  expect_true(any(get_broc_prior(spec, data = d, user_priors = up)$source == "user"))
+  expect_true(any(get_broc_prior(spec, data = d, priors = up)$source == "user"))
 
   expect_error(get_broc_prior(item_resp | is_old ~ 1, family = uvsd()), "data")
   expect_error(get_broc_prior(42), "broc_model")

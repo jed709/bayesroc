@@ -16,6 +16,8 @@
 #' @param scale `"probability"` (default) for standard ROC, `"z"` for zROC with
 #'   qnorm-transformed axes (linear zROC = Gaussian SDT; slope = 1/sigma for UVSDT).
 #' @param ndraws Number of posterior draws to use (default 200).
+#' @param seed Optional seed for the draw subset, so the plot can be reproduced;
+#'   the global random-number state is restored afterwards.
 #' @param prob Width of credible interval for the ribbon (default 0.95).
 #' @param re_formula `NULL` (default) includes all random effects;
 #'   `NA` for population-level ROC only.
@@ -39,7 +41,9 @@
 #' }
 plot_roc_curve <- function(fit, response = 1, group = NULL, empirical = TRUE,
                            scale = c("probability", "z"), ndraws = 200,
-                           prob = 0.95, re_formula = NULL, cores = 1) {
+                           prob = 0.95, re_formula = NULL, cores = 1, seed = NULL) {
+  restore_seed <- .seed_scope(seed)
+  on.exit(restore_seed(), add = TRUE)
 
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
     stop("Package 'ggplot2' is required for plot_roc_curve().")

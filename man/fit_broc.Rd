@@ -30,9 +30,6 @@ fit_broc(
   re_store = c("f64", "f32", "int16", "int8"),
   warm_state = NULL,
   save_state = FALSE,
-  num_warmup = NULL,
-  num_samples = NULL,
-  num_chains = NULL,
   ...
 )
 }
@@ -78,7 +75,8 @@ U(-x, x) initialization radius; or a function or list of per-chain init lists.}
 (default 100). Stan only; the JAX progress bar has no refresh-rate control.}
 
 \item{threads_per_chain}{Number of threads per chain for within-chain parallelism
-via \code{reduce_sum}. Only used when the model was built with \code{threads = TRUE}.}
+via \code{reduce_sum} (Stan backend). When greater than 1 the model is compiled with
+a \code{reduce_sum} likelihood; \code{NULL} (default) or 1 runs each chain on one thread.}
 
 \item{backend}{Inference backend: \code{"stan"} (default, via cmdstanr) or \code{"jax"}
 (via NumPyro). The JAX backend requires a configured Python environment
@@ -119,8 +117,11 @@ instead; \code{TRUE} always keeps it; \code{FALSE} drops it.}
 \code{"f32"} (default) or \code{"f64"}. With the Stan backend the values are read from
 CmdStan's CSV output, so their precision is also limited by \code{sig_figs}.}
 
-\item{keep_re}{If \code{TRUE}, per-level random-effect draws are retained (JAX
-backend). Default \code{FALSE}, which stores only population-level parameters.}
+\item{keep_re}{If \code{TRUE}, the raw standardized random-effect draws
+(\verb{u_*_raw}, the sampler's own coordinates) are kept in the fit and in saved
+fits. Default \code{FALSE}. The per-level random effects themselves (\verb{u_*}) are
+always kept. Applies to both backends (Stan writes the raw draws to its output
+files regardless; they are left out of \verb{$draws()}, summaries and saved fits).}
 
 \item{re_store}{Codec for random-effect draws when the fit is saved: \code{"f64"}
 (default, lossless), \code{"f32"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
@@ -133,10 +134,6 @@ files that bayesroc wrote on your own machine.}
 
 \item{save_state}{If \code{TRUE}, the post-warmup sampler state is saved so a later
 fit can resume from it via \code{warm_state}. Default \code{FALSE}.}
-
-\item{num_warmup, num_samples, num_chains}{NumPyro-style aliases for
-\code{iter_warmup}, \code{iter_sampling}, and \code{chains}. When supplied, each overrides
-its canonical counterpart.}
 
 \item{...}{Additional arguments forwarded to cmdstanr's \verb{$sample()} (Stan
 backend only; a warning is issued if any are passed with \code{backend = "jax"}).}

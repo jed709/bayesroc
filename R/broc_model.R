@@ -150,9 +150,6 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   also be set in [brf()]; a value in broc() takes precedence.
 #' @param counts Name of a column giving per-row trial counts, for aggregated
 #'   (count) data rather than one row per trial. May also be set in [brf()].
-#' @param threads If `TRUE`, enable within-chain `reduce_sum` threading for the
-#'   Stan backend (set the thread count per chain via `fit_broc(threads_per_chain=)`).
-#'   Default `FALSE`.
 #' @param gap_link Link for threshold gaps: `"log"` (default) or `"softplus"`.
 #'   `NULL` uses the family default.
 #' @param smooth_info If `TRUE`, sample the coefficients of population-level
@@ -179,8 +176,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #' @export
 broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                 encoding_vars = NULL, counts = NULL,
-                threads = NULL, gap_link = NULL,
-                smooth_info = FALSE) {
+                gap_link = NULL, smooth_info = NULL) {
 
   # --- 1. Normalize input: bare formula -> brf, brf -> use directly ---
   nc <- function(a, b) if (!is.null(a)) a else b
@@ -205,7 +201,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   family <- nc(family, nc(brf_obj$family, evsd()))
   encoding_vars <- nc(encoding_vars, brf_obj$encoding_vars)
   counts <- nc(counts, brf_obj$counts)
-  threads <- nc(threads, nc(brf_obj$threads, FALSE))
+  smooth_info <- nc(smooth_info, nc(brf_obj$smooth_info, FALSE))
+  priors <- nc(priors, brf_obj$priors)
   gap_link <- match.arg(nc(gap_link, nc(brf_obj$gap_link, "log")),
                          c("log", "softplus"))
   if (!inherits(family, "broc_family")) {
@@ -304,7 +301,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (family$family == "cumulative") {
     return(fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
-                          threads = threads,
                           gap_link = gap_link, smooth_info = smooth_info))
   }
 
@@ -315,7 +311,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       cutpoints1 = criterion, cutpoints2 = criterion2,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
-      threads = threads,
       gap_link = gap_link, smooth_info = smooth_info))
   }
 
@@ -580,7 +575,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = encoding_vars)
   model_data$prior_lookup <- prior_lookup
-  model_data$threads <- isTRUE(threads)
   model_data$gap_link <- gap_link
 
   is_old_var <- parsed$response$is_old
@@ -598,37 +592,23 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     family$n_rkg <- as.integer(model_data$stan_data$n_rkg)
   }
 
-  if (isTRUE(threads)) {
-    N <- model_data$stan_data$N
-    model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
-  }
-
   si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
   model_data <- si$model_data
 
-  use_batch <- is.null(.plain_stan_env())
-
-  batch_cpp <- NULL
-  if (use_batch) {
-    batch_cpp <- generate_batch_cpp(model_data, family)
-    if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
-  }
-
-  stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
+  code <- .generate_model_code(model_data, family, "standard")
 
   result <- list(
     parsed = parsed,
     model_data = model_data,
-    stan_code = stan_code,
-    stan_data = model_data$stan_data,
+    stan_code = code$stan_code,
+    stan_data = code$stan_data,
     family = family,
     prior_lookup = prior_lookup,
     data = data,
-    threads = isTRUE(threads),
     gap_link = gap_link,
     formula = brf_obj,
-    batch_likelihood = use_batch,
-    batch_cpp = batch_cpp,
+    batch_likelihood = code$batch_likelihood,
+    batch_cpp = code$batch_cpp,
     smooth_info = si$pilot
   )
 
@@ -1990,9 +1970,6 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   Default 2000 for `sampler = "nuts"`, 10000 for `"drghmc"`.
 #' @param thin Period for saving samples (default 1). `thin = k` keeps every
 #'   `k`-th post-warmup draw.
-#' @param num_warmup,num_samples,num_chains NumPyro-style aliases for
-#'   `iter_warmup`, `iter_sampling`, and `chains`. When supplied, each overrides
-#'   its canonical counterpart.
 #' @param sampler Sampling algorithm: `"nuts"` (default) or `"drghmc"`, a
 #'   delayed-rejection generalized HMC sampler (JAX backend only).
 #' @param control Named list of sampler tuning parameters (defaults in
@@ -2010,7 +1987,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param refresh How often the Stan backend prints progress, in iterations
 #'   (default 100). Stan only; the JAX progress bar has no refresh-rate control.
 #' @param threads_per_chain Number of threads per chain for within-chain parallelism
-#'   via `reduce_sum`. Only used when the model was built with `threads = TRUE`.
+#'   via `reduce_sum` (Stan backend). When greater than 1 the model is compiled with
+#'   a `reduce_sum` likelihood; `NULL` (default) or 1 runs each chain on one thread.
 #' @param backend Inference backend: `"stan"` (default, via cmdstanr) or `"jax"`
 #'   (via NumPyro). The JAX backend requires a configured Python environment
 #'   (see [install_jax_backend()]). It caches compiled XLA programs under
@@ -2040,8 +2018,11 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param loglik_precision Storage precision for the log-likelihood sidecar,
 #'   `"f32"` (default) or `"f64"`. With the Stan backend the values are read from
 #'   CmdStan's CSV output, so their precision is also limited by `sig_figs`.
-#' @param keep_re If `TRUE`, per-level random-effect draws are retained (JAX
-#'   backend). Default `FALSE`, which stores only population-level parameters.
+#' @param keep_re If `TRUE`, the raw standardized random-effect draws
+#'   (`u_*_raw`, the sampler's own coordinates) are kept in the fit and in saved
+#'   fits. Default `FALSE`. The per-level random effects themselves (`u_*`) are
+#'   always kept. Applies to both backends (Stan writes the raw draws to its output
+#'   files regardless; they are left out of `$draws()`, summaries and saved fits).
 #' @param re_store Codec for random-effect draws when the fit is saved: `"f64"`
 #'   (default, lossless), `"f32"`, `"int16"` or `"int8"`. [save_broc_fit()] uses it unless
 #'   given its own `re_store`.
@@ -2098,9 +2079,6 @@ fit_broc <- function(model,
                     re_store = c("f64", "f32", "int16", "int8"),
                     warm_state = NULL,
                     save_state = FALSE,
-                    num_warmup = NULL,
-                    num_samples = NULL,
-                    num_chains = NULL,
                     ...) {
   loglik_precision <- match.arg(loglik_precision)
   re_store <- match.arg(re_store)
@@ -2132,9 +2110,6 @@ fit_broc <- function(model,
     fit
   }
 
-  if (!is.null(num_warmup))  iter_warmup   <- num_warmup
-  if (!is.null(num_samples)) iter_sampling <- num_samples
-  if (!is.null(num_chains))  chains        <- num_chains
 
   if (is.null(iter_warmup))   iter_warmup   <- if (sampler == "drghmc") 2500L else 2000L
   if (is.null(iter_sampling)) iter_sampling <- if (sampler == "drghmc") 10000L else 2000L
@@ -2273,7 +2248,8 @@ fit_broc <- function(model,
       max_treedepth = max_treedepth,
       sampler = sampler,
       save_loglik = save_loglik,
-      loglik_path = jax_result$loglik_path
+      loglik_path = jax_result$loglik_path,
+      keep_re = keep_re
     ), loo = loo, loo_cores = loo_cores, save_loglik = save_loglik,
        state_path = jax_result$state_path)))
   }
@@ -2287,9 +2263,10 @@ fit_broc <- function(model,
 
   stan_refresh <- if (isTRUE(progress_bar)) refresh else 0
 
-  if (isTRUE(model$threads)) {
+  if (!is.null(threads_per_chain) && threads_per_chain > 1) {
+    model <- .with_threads(model)
     mod <- .compile_broc_stan(model, threads = TRUE)
-    tpc <- if (!is.null(threads_per_chain)) threads_per_chain else 2L
+    tpc <- as.integer(threads_per_chain)
     N <- model$stan_data$N
     model$stan_data$grainsize <- max(1L, as.integer(N / (2L * tpc)))
     stan_fit <- mod$sample(
@@ -2309,9 +2286,6 @@ fit_broc <- function(model,
       ...
     )
   } else {
-    if (!is.null(threads_per_chain)) {
-      warning("threads_per_chain ignored: model was not built with threads = TRUE")
-    }
     mod <- .compile_broc_stan(model)
     stan_fit <- mod$sample(
       data = model$stan_data,
@@ -2355,7 +2329,8 @@ fit_broc <- function(model,
     elapsed = elapsed,
     sampler = sampler,
     save_loglik = save_loglik,
-    loglik_path = stan_side
+    loglik_path = stan_side,
+    keep_re = keep_re
   ), loo = loo, loo_cores = loo_cores, save_loglik = save_loglik))
 }
 
@@ -2437,7 +2412,6 @@ apply_encoding_vars <- function(formula, encoding_vars) {
 #' slopes retained.
 #' @noRd
 fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
-                           threads = FALSE,
                            gap_link = "log", smooth_info = FALSE) {
   
   if (is.null(mu)) {
@@ -2467,83 +2441,8 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
             "Consider using ~ factor for treatment coding (reference level = 0).")
   }
   
-  re_pattern <- "\\([^)]+\\|[^)]+\\)"
-  re_matches <- gregexpr(re_pattern, mu_rhs)
-  re_terms <- regmatches(mu_rhs, re_matches)[[1]]
-  
-  
-  
-  suppressed_re <- character(0)
-  retained_re <- character(0)
-  
-  for (re in re_terms) {
-    re_inner <- gsub("^\\(|\\)$", "", re)
-    re_parts <- strsplit(re_inner, "\\|")[[1]]
-    is_uncorrelated <- length(re_parts) == 3 && trimws(re_parts[2]) == ""
-    if (is_uncorrelated) {
-      re_parts <- c(re_parts[1], re_parts[3])
-    }
-    re_lhs <- trimws(re_parts[1])
-    
-    has_explicit_no_intercept <- grepl("^0\\s*\\+", re_lhs) || grepl("-\\s*1", re_lhs)
-    has_random_intercept <- !has_explicit_no_intercept
-    
-    if (has_random_intercept) {
-      stripped <- gsub("^1\\s*\\+\\s*", "", re_lhs)
-      stripped <- gsub("\\s*\\+\\s*1\\s*$", "", stripped)
-      stripped <- gsub("\\s*\\+\\s*1\\s*\\+\\s*", " + ", stripped)
-      has_slopes <- stripped != "1" && stripped != "" && stripped != re_lhs ||
-        (stripped == re_lhs && re_lhs != "1" && re_lhs != "")
-      
-      if (has_slopes) {
-        new_lhs <- stripped
-        if (new_lhs == "" || new_lhs == "1") {
-          suppressed_re <- c(suppressed_re, re)
-        } else {
-          bar <- if (is_uncorrelated) "||" else "|"
-          new_re <- paste0("(0 + ", new_lhs, " ", bar, re_parts[2], ")")
-          retained_re <- c(retained_re, new_re)
-          suppressed_re <- c(suppressed_re, re)
-        }
-      } else {
-        suppressed_re <- c(suppressed_re, re)
-      }
-    } else {
-      retained_re <- c(retained_re, re)
-    }
-  }
-  
-  if (length(suppressed_re) > 0) {
-    message("Note: Random intercepts on mu suppressed for identifiability. ",
-            "In cumulative models, only (cutpoint - mu) is identified, so random ",
-            "intercepts on mu are confounded with random intercepts on cutpoints. ",
-            "Location variation is captured by cutpoints random effects.")
-  }
-  
-  fixed_rhs <- mu_rhs
-  for (re in re_terms) {
-    fixed_rhs <- gsub(re, "", fixed_rhs, fixed = TRUE)
-  }
-  fixed_rhs <- gsub("\\+\\s*\\+", "+", fixed_rhs)
-  fixed_rhs <- gsub("^\\s*\\+|\\+\\s*$", "", fixed_rhs)
-  fixed_rhs <- trimws(fixed_rhs)
-  
-  if (fixed_rhs == "" || fixed_rhs == "1") {
-    has_mu_fixed <- FALSE
-    if (length(retained_re) > 0) {
-      mu_rhs_final <- paste(c("0", retained_re), collapse = " + ")
-    } else {
-      mu_rhs_final <- "0"
-    }
-  } else {
-    has_mu_fixed <- TRUE
-    if (length(retained_re) > 0) {
-      mu_rhs_final <- paste(c(fixed_rhs, retained_re), collapse = " + ")
-    } else {
-      mu_rhs_final <- fixed_rhs
-    }
-  }
-  
+  mu_rhs_final <- .suppress_random_intercepts(mu_rhs, "mu", "cumulative")
+
   data$.cumulative_is_old <- 1L
   
   dprime_formula <- as.formula(
@@ -2577,61 +2476,23 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
                                  encoding_vars = NULL)
   model_data$prior_lookup <- prior_lookup
   model_data$is_cumulative <- TRUE
-  model_data$threads <- isTRUE(threads)
   model_data$gap_link <- gap_link
-
-  if (isTRUE(threads)) {
-    N <- model_data$stan_data$N
-    model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
-  }
 
   si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
   model_data <- si$model_data
 
-  use_batch <- is.null(.plain_stan_env())
-
-  batch_cpp <- NULL
-  if (use_batch) {
-    batch_cpp <- generate_batch_cpp(model_data, family)
-    if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
-  }
-
-  stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
-
-  stan_code <- rename_cumulative_params(stan_code)
-
-  if (use_batch && !is.null(batch_cpp)) {
-    batch_cpp$stan_decl <- rename_cumulative_params(batch_cpp$stan_decl)
-    batch_cpp$stan_call <- rename_cumulative_params(batch_cpp$stan_call)
-    if (!is.null(batch_cpp$stan_partial))
-      batch_cpp$stan_partial <- rename_cumulative_params(batch_cpp$stan_partial)
-    if (!is.null(batch_cpp$stan_call_threaded))
-      batch_cpp$stan_call_threaded <- rename_cumulative_params(batch_cpp$stan_call_threaded)
-    batch_cpp$cpp_code <- gsub("X_dprime", "X_mu", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("beta_dprime", "beta_mu", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("Z_dprime_", "Z_mu_", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("u_dprime_", "u_mu_", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("idx_dprime_", "idx_mu_", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("X_criterion", "X_cutpoints", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("idx_criterion_", "idx_cutpoints_", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("Z_criterion_", "Z_cutpoints_", batch_cpp$cpp_code)
-    batch_cpp$cpp_code <- gsub("u_criterion_", "u_cutpoints_", batch_cpp$cpp_code)
-  }
-
-  stan_data <- model_data$stan_data
-  stan_data <- rename_stan_data_cumulative(stan_data)
+  code <- .generate_model_code(model_data, family, "cumulative")
 
   result <- list(
     parsed = parsed,
     model_data = model_data,
-    stan_code = stan_code,
-    stan_data = stan_data,
+    stan_code = code$stan_code,
+    stan_data = code$stan_data,
     family = family,
     prior_lookup = prior_lookup,
     data = data,
-    threads = isTRUE(threads),
-    batch_likelihood = use_batch,
-    batch_cpp = batch_cpp,
+    batch_likelihood = code$batch_likelihood,
+    batch_cpp = code$batch_cpp,
     smooth_info = si$pilot
   )
 
@@ -2754,7 +2615,6 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 #' @noRd
 fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
-                                     threads = FALSE,
                                      gap_link = "log", smooth_info = FALSE) {
 
   if (is.null(mu1)) {
@@ -2858,45 +2718,26 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     prior_lookup$b[["discrim"]] <- "normal(0, 1)"
   }
 
-  model_data <- build_model_data(parsed, data, family, counts = counts,
-)
+  model_data <- build_model_data(parsed, data, family, counts = counts)
   model_data$prior_lookup <- prior_lookup
   model_data$is_bivariate_cumulative <- TRUE
-  model_data$threads <- isTRUE(threads)
   model_data$gap_link <- gap_link
-
-  if (isTRUE(threads)) {
-    N <- model_data$stan_data$N
-    model_data$stan_data$grainsize <- max(1L, as.integer(N / 4))
-  }
 
   si <- .apply_smooth_info(smooth_info, model_data, family, gap_link, data)
   model_data <- si$model_data
 
-  use_batch <- is.null(.plain_stan_env())
-  batch_info <- NULL
-  if (use_batch) {
-    batch_info <- generate_batch_cpp(model_data, family)
-  }
-
-  stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_info)
-
-  stan_code <- rename_bivariate_cumulative_params(stan_code)
-
-  stan_data <- model_data$stan_data
-  stan_data <- rename_stan_data_bivariate_cumulative(stan_data)
+  code <- .generate_model_code(model_data, family, "bivariate_cumulative")
 
   result <- list(
     parsed = parsed,
     model_data = model_data,
-    stan_code = stan_code,
-    stan_data = stan_data,
+    stan_code = code$stan_code,
+    stan_data = code$stan_data,
     family = family,
     prior_lookup = prior_lookup,
     data = data,
-    threads = isTRUE(threads),
-    batch_likelihood = use_batch,
-    batch_cpp = batch_info,
+    batch_likelihood = code$batch_likelihood,
+    batch_cpp = code$batch_cpp,
     smooth_info = si$pilot
   )
 
@@ -2906,18 +2747,18 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
 #' Suppress random intercepts for identifiability in cumulative-type models
 #' @noRd
-.suppress_random_intercepts <- function(rhs, param_name) {
-  re_pattern <- "\\([^)]+\\|[^)]+\\)"
-  re_matches <- gregexpr(re_pattern, rhs)
-  re_terms <- regmatches(rhs, re_matches)[[1]]
+.suppress_random_intercepts <- function(rhs, param_name, model_label = "bivariate cumulative") {
+  re_inner_all <- extract_random_effects(rhs)
+  re_terms <- if (length(re_inner_all)) paste0("(", re_inner_all, ")") else character(0)
 
   suppressed_re <- character(0)
   retained_re <- character(0)
 
-  for (re in re_terms) {
-    re_inner <- gsub("^\\(|\\)$", "", re)
-    re_parts <- strsplit(re_inner, "\\|")[[1]]
-    re_lhs <- trimws(re_parts[1])
+  for (i in seq_along(re_terms)) {
+    re <- re_terms[i]
+    bar <- regexpr("|", re_inner_all[i], fixed = TRUE)
+    re_lhs <- trimws(substr(re_inner_all[i], 1L, bar - 1L))
+    re_rest <- substring(re_inner_all[i], bar + 1L)
 
     has_explicit_no_intercept <- grepl("^0\\s*\\+", re_lhs) || grepl("-\\s*1", re_lhs)
     has_random_intercept <- !has_explicit_no_intercept
@@ -2934,7 +2775,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
         if (new_lhs == "" || new_lhs == "1") {
           suppressed_re <- c(suppressed_re, re)
         } else {
-          new_re <- paste0("(0 + ", new_lhs, " |", re_parts[2], ")")
+          new_re <- paste0("(0 + ", new_lhs, " |", re_rest, ")")
           retained_re <- c(retained_re, new_re)
           suppressed_re <- c(suppressed_re, re)
         }
@@ -2948,7 +2789,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
   if (length(suppressed_re) > 0) {
     message("Note: Random intercepts on ", param_name, " suppressed for identifiability. ",
-            "In bivariate cumulative models, only (cutpoint - mu) is identified, so random ",
+            "In ", model_label, " models, only (cutpoint - mu) is identified, so random ",
             "intercepts on ", param_name, " are confounded with random intercepts on cutpoints.")
   }
 
@@ -3000,6 +2841,56 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   new_names <- gsub("criterion", "cutpoints1", new_names)
   names(stan_data) <- new_names
   stan_data
+}
+
+.model_kind <- function(model) {
+  if (inherits(model, "bivariate_cumulative_model")) "bivariate_cumulative"
+  else if (inherits(model, "cumulative_model")) "cumulative"
+  else "standard"
+}
+
+.generate_model_code <- function(model_data, family, kind) {
+  use_batch <- is.null(.plain_stan_env())
+  batch_cpp <- NULL
+  if (use_batch) {
+    batch_cpp <- generate_batch_cpp(model_data, family)
+    if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
+  }
+  stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
+  stan_data <- model_data$stan_data
+  if (kind == "cumulative") {
+    stan_code <- rename_cumulative_params(stan_code)
+    stan_data <- rename_stan_data_cumulative(stan_data)
+    if (!is.null(batch_cpp)) {
+      for (k in c("stan_decl", "stan_decl_vec", "stan_call", "stan_call_vec", "stan_partial",
+                  "stan_call_threaded")) {
+        if (!is.null(batch_cpp[[k]])) batch_cpp[[k]] <- rename_cumulative_params(batch_cpp[[k]])
+      }
+      for (pr in list(c("X_dprime", "X_mu"), c("beta_dprime", "beta_mu"), c("Z_dprime_", "Z_mu_"),
+                      c("u_dprime_", "u_mu_"), c("idx_dprime_", "idx_mu_"),
+                      c("X_criterion", "X_cutpoints"), c("idx_criterion_", "idx_cutpoints_"),
+                      c("Z_criterion_", "Z_cutpoints_"), c("u_criterion_", "u_cutpoints_"))) {
+        batch_cpp$cpp_code <- gsub(pr[1], pr[2], batch_cpp$cpp_code, fixed = TRUE)
+      }
+    }
+  } else if (kind == "bivariate_cumulative") {
+    stan_code <- rename_bivariate_cumulative_params(stan_code)
+    stan_data <- rename_stan_data_bivariate_cumulative(stan_data)
+  }
+  list(stan_code = stan_code, stan_data = stan_data, batch_cpp = batch_cpp,
+       batch_likelihood = use_batch)
+}
+
+.with_threads <- function(model) {
+  md <- model$model_data
+  md$threads <- TRUE
+  md$stan_data$grainsize <- max(1L, as.integer(md$stan_data$N / 4))
+  code <- .generate_model_code(md, model$family, .model_kind(model))
+  model$model_data <- md
+  model$stan_code <- code$stan_code
+  model$stan_data <- code$stan_data
+  model$batch_cpp <- code$batch_cpp
+  model
 }
 
 .compile_broc_stan <- function(model, threads = FALSE) {

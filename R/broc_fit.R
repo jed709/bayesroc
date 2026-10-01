@@ -20,15 +20,15 @@
 #' @param max_treedepth Maximum NUTS tree depth used in the fit (default 10).
 #' @param loglik_path Path to the `.npy` log_lik sidecar, or `NULL`
 #' @return An broc_fit object (environment with S3 class)
-#' @keywords internal
-#' @export
+#' @noRd
 new_broc_fit <- function(backend_fit, model, backend = "stan",
                         num_chains = 4L, iter_sampling = 1000L,
                         elapsed = NULL, draws_array = NULL,
                         max_treedepth = 10L, sampler = "nuts",
                         save_loglik = TRUE,
                         diagnostics = NULL, loglik_path = NULL,
-                        loglik_owned = !is.null(loglik_path), loo = NULL) {
+                        loglik_owned = !is.null(loglik_path), loo = NULL,
+                        keep_re = TRUE) {
 
   self <- new.env(parent = emptyenv())
 
@@ -45,11 +45,16 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$.loglik_path <- loglik_path
   self$.loglik_owned <- isTRUE(loglik_owned) && !is.null(loglik_path)
   self$.loo <- loo
+  self$.keep_re <- isTRUE(keep_re)
   reg.finalizer(self, function(e) {
     if (.owned_sidecar(e)) unlink(e$.loglik_path)
   })
 
   use_cmdstan <- backend == "stan" && !is.null(backend_fit)
+  stan_vars <- function() {
+    v <- backend_fit$metadata()$stan_variables
+    if (isTRUE(self$.keep_re)) v else v[!grepl("^u_.*_raw$", v)]
+  }
 
   # ---- draws() ----
   self$draws <- function(variables = NULL, format = "array") {
@@ -71,7 +76,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
     }
     if (use_cmdstan) {
       if (is.null(variables)) {
-        backend_fit$draws(format = format)
+        backend_fit$draws(variables = stan_vars(), format = format)
       } else {
         backend_fit$draws(variables = variables, format = format)
       }
@@ -111,7 +116,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$summary <- function(variables = NULL, ...) {
     if (use_cmdstan) {
       if (is.null(variables)) {
-        backend_fit$summary(...)
+        backend_fit$summary(variables = setdiff(stan_vars(), "log_lik"), ...)
       } else {
         backend_fit$summary(variables = variables, ...)
       }
@@ -319,6 +324,25 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       diagnostics      = fit$diagnostic_summary(),
       loo              = fit$.loo
     )
+  } else if (backend == "stan" && !isTRUE(fit$.keep_re)) {
+    vars <- setdiff(fit$.backend_fit$metadata()$stan_variables, "log_lik")
+    vars <- vars[!grepl("^u_.*_raw$", vars)]
+    bundle <- list(
+      .bayesroc_save_format = 1L,
+      backend          = backend,
+      backend_fit      = NULL,
+      model            = attr(fit, "broc_model"),
+      num_chains       = fit$.num_chains,
+      iter_sampling    = fit$.iter_sampling,
+      elapsed          = fit$.elapsed,
+      max_treedepth    = fit$.max_treedepth %||% 10L,
+      sampler          = fit$.sampler %||% "nuts",
+      draws_array      = posterior::as_draws_array(fit$.backend_fit$draws(variables = vars)),
+      save_loglik      = TRUE,
+      loglik_sidecar   = if (is.null(side)) NULL else basename(side),
+      diagnostics      = fit$diagnostic_summary(),
+      loo              = fit$.loo
+    )
   } else {
     bundle_backend_fit <- if (backend == "stan") {
       tmp <- tempfile(fileext = ".rds")
@@ -352,6 +376,7 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
     bundle$draws_array <- sp$draws
     bundle$re_packed <- sp$packed
   }
+  bundle$keep_re <- isTRUE(fit$.keep_re %||% TRUE)
   bundle$state_sidecar <- if (is.null(state_side)) NULL else basename(state_side)
   bundle$fit_attributes <- fit_attrs
   class(bundle) <- "broc_fit_saved"
@@ -416,7 +441,8 @@ load_broc_fit <- function(file) {
     diagnostics  = obj$diagnostics,
     loglik_path  = side,
     loglik_owned = FALSE,
-    loo          = obj$loo
+    loo          = obj$loo,
+    keep_re      = obj$keep_re %||% TRUE
   )
   if (is.null(side) && (!is.null(obj$loglik_sidecar) || !isTRUE(obj$save_loglik))) {
     fit$.loglik_dropped <- TRUE

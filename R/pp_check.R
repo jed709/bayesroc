@@ -17,6 +17,8 @@
 #' @param group Column name (from the original data) to facet by; `NULL` for no
 #'   grouping. `type = "bars_grouped"` groups by this column.
 #' @param ndraws Number of replicated datasets (default 200)
+#' @param seed Optional seed for the draw subset and replicated data, so the plot
+#'   can be reproduced; the global random-number state is restored afterwards.
 #' @param prob CI width for intervals on predicted counts (default 0.95)
 #' @param stat_fun Summary statistic function for `type = "stat"` (default: mean)
 #' @param re_formula Which random effects to include in prediction. `NULL`
@@ -40,8 +42,10 @@
 pp_check.broc_fit <- function(object, type = c("bars", "bars_grouped", "dens_overlay", "stat", "rootogram"),
                               group = NULL, ndraws = 200, prob = 0.95,
                               stat_fun = mean, re_formula = NULL, response = 1,
-                              cores = 1, ...) {
+                              cores = 1, seed = NULL, ...) {
   fit <- object
+  restore_seed <- .seed_scope(seed)
+  on.exit(restore_seed(), add = TRUE)
 
   if (!requireNamespace("ggplot2", quietly = TRUE)) {
     stop("Package 'ggplot2' is required for pp_check().")

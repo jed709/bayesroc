@@ -13,7 +13,8 @@ plot_roc_curve(
   ndraws = 200,
   prob = 0.95,
   re_formula = NULL,
-  cores = 1
+  cores = 1,
+  seed = NULL
 )
 }
 \arguments{
@@ -41,6 +42,9 @@ qnorm-transformed axes (linear zROC = Gaussian SDT; slope = 1/sigma for UVSDT).}
 \code{NA} for population-level ROC only.}
 
 \item{cores}{Number of cores for parallel computation.}
+
+\item{seed}{Optional seed for the draw subset, so the plot can be reproduced;
+the global random-number state is restored afterwards.}
 }
 \value{
 A ggplot2 object.

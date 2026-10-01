@@ -151,7 +151,7 @@
 #'   (code and data) must be identical to the one the fit was run on.
 #' @param loo Compute PSIS-LOO on the result (stored as `fit$.loo`).
 #' @param loo_cores Workers for [loo()].
-#' @param progress Print one line per check.
+#' @param progress_bar Show the sampler's progress bar and print one line per check.
 #' @param save_loglik Keep the log-likelihood so [loo()] works on the returned fit.
 #'   `NULL` (default) keeps it unless `loo = TRUE`.
 #' @param file Optional path: the fit is saved there with [save_broc_fit()]; if it
@@ -170,7 +170,7 @@
 autostop_broc <- function(model, ess_target = 400, rhat_target = 1.01, max_draws = 50000,
                           max_time = NULL, check_every = 100, chains = 4, iter_warmup = NULL,
                           seed = 1L, sampler = c("nuts", "drghmc"), resume = NULL,
-                          loo = FALSE, loo_cores = 4, progress = TRUE, save_loglik = NULL,
+                          loo = FALSE, loo_cores = 4, progress_bar = TRUE, save_loglik = NULL,
                           file = NULL, file_refit = FALSE, ...) {
   sampler <- match.arg(sampler)
   targets <- .ess_targets(ess_target)
@@ -262,6 +262,7 @@ autostop_broc <- function(model, ess_target = 400, rhat_target = 1.01, max_draws
                    iter_sampling = n, seed = seed, sampler = sampler,
                    save_loglik = isTRUE(loo) || save_loglik, save_state = TRUE,
                    warm_state = if (first && !is.null(resume)) resume$.state_path else NULL,
+                   progress_bar = isTRUE(progress_bar),
                    .worker = worker, .worker_token = token,
                    .worker_continue = !first), dots)
     fr <- suppressMessages(do.call(fit_broc, args))
@@ -287,7 +288,7 @@ autostop_broc <- function(model, ess_target = 400, rhat_target = 1.01, max_draws
       draws = drawn, divergences = total_div, min_pop_ess = dg$ess[["pop"]],
       min_sd_ess = dg$ess[["sd"]], min_cor_ess = dg$ess[["cor"]], max_rhat = dg$rhat,
       projected_draws = ceiling(need), seconds = elapsed)
-    if (isTRUE(progress)) {
+    if (isTRUE(progress_bar)) {
       fmt <- function(k) if (is.finite(dg$ess[[k]])) sprintf("%.0f/%g", dg$ess[[k]], targets[[k]]) else "-"
       message(sprintf("[autostop] %d draws/chain | ESS pop %s sd %s cor %s | R-hat %.3f/%g | div %d | %s | %.0fs",
                       drawn, fmt("pop"), fmt("sd"), fmt("cor"), dg$rhat, rhat_target, total_div,

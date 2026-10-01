@@ -89,7 +89,7 @@ test_that("autostop chunks reproduce one run of the final length exactly (NUTS)"
   m <- .autostop_model()
   run <- .warnings_of(autostop_broc(m, ess_target = 1e9, max_draws = 300, check_every = 100,
                                     chains = 2, iter_warmup = 200, seed = 9,
-                                    progress = FALSE, progress_bar = FALSE))
+                                    progress_bar = FALSE))
   f <- run$value
   expect_identical(attr(f, "stop_reason"), "max_draws")
   expect_true(any(grepl("stopped at 300 draws per chain", run$warnings)))
@@ -109,7 +109,7 @@ test_that("autostop chunks reproduce one run of the final length exactly (DR-G-H
   m <- .autostop_model()
   f <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 300, check_every = 100,
                                       chains = 2, iter_warmup = 300, seed = 4, sampler = "drghmc",
-                                      progress = FALSE, progress_bar = FALSE))
+                                      progress_bar = FALSE))
   fref <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
                    iter_warmup = 300, iter_sampling = 300, seed = 4, progress_bar = FALSE)
   .same_draws(f, fref)
@@ -119,12 +119,12 @@ test_that("autostop stops once the targets are met and on the time cap", {
   skip_if_no_jax()
   m <- .autostop_model()
   f <- autostop_broc(m, ess_target = 1, rhat_target = 10, check_every = 100, chains = 2,
-                     iter_warmup = 200, seed = 3, progress = FALSE, progress_bar = FALSE)
+                     iter_warmup = 200, seed = 3, progress_bar = FALSE)
   expect_identical(attr(f, "stop_reason"), "targets")
   expect_equal(f$.iter_sampling, 100L)
   run <- .warnings_of(autostop_broc(m, ess_target = 1e9, max_time = 1e-6, check_every = 100,
                                     chains = 2, iter_warmup = 200, seed = 3,
-                                    progress = FALSE, progress_bar = FALSE))
+                                    progress_bar = FALSE))
   expect_identical(attr(run$value, "stop_reason"), "max_time")
   expect_equal(run$value$.iter_sampling, 100L)
 })
@@ -134,10 +134,9 @@ test_that("resume continues a capped run exactly", {
   m <- .autostop_model()
   f1 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 200, check_every = 100,
                                        chains = 2, iter_warmup = 200, seed = 6,
-                                       progress = FALSE, progress_bar = FALSE))
-  f2 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 400, check_every = 100,
-                                       chains = 2, resume = f1, progress = FALSE,
                                        progress_bar = FALSE))
+  f2 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 400, check_every = 100,
+                                       chains = 2, resume = f1, progress_bar = FALSE))
   expect_equal(f2$.iter_sampling, 400L)
   expect_equal(tail(attr(f2, "ess_trace")$draws, 1), 400)
   expect_equal(attr(f2, "ess_trace")$draws[seq_along(attr(f1, "ess_trace")$draws)],
@@ -153,14 +152,13 @@ test_that("autostop keeps the pooled log-likelihood and saves to file", {
   file <- tempfile(fileext = ".rds")
   f <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 200, check_every = 100,
                                       chains = 2, iter_warmup = 200, seed = 2, loo = TRUE,
-                                      save_loglik = TRUE, file = file, progress = FALSE,
-                                      progress_bar = FALSE))
+                                      save_loglik = TRUE, file = file, progress_bar = FALSE))
   expect_s3_class(f$.loo, "loo")
   expect_true(file.exists(f$.loglik_path))
   expect_equal(dim(read_npy(f$.loglik_path))[1:2], c(2L, 200L))
   expect_equal(loo(f, cores = 1)$estimates, f$.loo$estimates)
   expect_true(file.exists(file))
-  g <- autostop_broc(m, file = file, progress = FALSE)
+  g <- autostop_broc(m, file = file, progress_bar = FALSE)
   expect_equal(unclass(g$.draws_array), unclass(f$.draws_array), ignore_attr = TRUE)
   expect_equal(g$.loo$estimates, f$.loo$estimates)
 })
@@ -177,7 +175,7 @@ test_that("a saved and reloaded fit resumes exactly and keeps its autostop attri
   file <- tempfile(fileext = ".rds")
   f1 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 200, check_every = 100,
                                        chains = 2, iter_warmup = 200, seed = 8, file = file,
-                                       progress = FALSE, progress_bar = FALSE))
+                                       progress_bar = FALSE))
   unlink(f1$.state_path)
   expect_true(file.exists(sub("[.]rds$", "_state.pkl", file)))
   g <- load_broc_fit(file)
@@ -186,7 +184,7 @@ test_that("a saved and reloaded fit resumes exactly and keeps its autostop attri
   expect_equal(attr(g, "ess_trace"), attr(f1, "ess_trace"))
   expect_identical(attr(g, "model_fingerprint"), attr(f1, "model_fingerprint"))
   f2 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 400, check_every = 100,
-                                       chains = 2, resume = g, progress = FALSE, progress_bar = FALSE))
+                                       chains = 2, resume = g, progress_bar = FALSE))
   fref <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2, iter_warmup = 200,
                    iter_sampling = 400, seed = 8, progress_bar = FALSE)
   .same_draws(f2, fref)
@@ -197,10 +195,10 @@ test_that("resume refuses a fit made on a different model or data", {
   m <- .autostop_model()
   f1 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 100, check_every = 100,
                                        chains = 2, iter_warmup = 100, seed = 1,
-                                       progress = FALSE, progress_bar = FALSE))
+                                       progress_bar = FALSE))
   d2 <- .fixture_crossed(n_sub = 6, n_item = 10)
   d2$item_resp <- rev(d2$item_resp)
   m2 <- broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), d2)
-  expect_error(autostop_broc(m2, chains = 2, resume = f1, progress = FALSE), "different model or data")
+  expect_error(autostop_broc(m2, chains = 2, resume = f1, progress_bar = FALSE), "different model or data")
   expect_identical(.model_fingerprint(m), attr(f1, "model_fingerprint"))
 })

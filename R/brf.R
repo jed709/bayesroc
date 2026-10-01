@@ -72,9 +72,8 @@ resp <- function(response1, response2) {
 #' # Cumulative
 #' brf(rating ~ cond, cutpoints ~ 1 + (1|subj))
 #' @export
-brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
-                 counts = NULL, threads = NULL,
-                 gap_link = NULL) {
+brf <- function(formula, ..., family = NULL, priors = NULL, encoding_vars = NULL,
+                counts = NULL, gap_link = NULL, smooth_info = NULL) {
 
   if (!inherits(formula, "formula")) {
     stop("First argument to brf() must be a formula.")
@@ -124,10 +123,11 @@ brf <- function(formula, ..., family = NULL, encoding_vars = NULL,
     primary = formula,
     params = params,
     family = family,
+    priors = priors,
     encoding_vars = encoding_vars,
     counts = counts,
-    threads = threads,
-    gap_link = gap_link
+    gap_link = gap_link,
+    smooth_info = smooth_info
   )
 
   class(result) <- "brf"

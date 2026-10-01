@@ -8,10 +8,11 @@ brf(
   formula,
   ...,
   family = NULL,
+  priors = NULL,
   encoding_vars = NULL,
   counts = NULL,
-  threads = NULL,
-  gap_link = NULL
+  gap_link = NULL,
+  smooth_info = NULL
 )
 }
 \arguments{
@@ -30,6 +31,10 @@ parameter name on the left. E.g. \code{criterion ~ 1 + (1 | subj)},
 \code{\link[=vrdp2d]{vrdp2d()}}, \code{\link[=cdp]{cdp()}}, \code{\link[=cumulative]{cumulative()}}, or \code{\link[=bivariate_cumulative]{bivariate_cumulative()}}. May also be
 set in \code{\link[=brf]{brf()}}; a value in broc() takes precedence.}
 
+\item{priors}{A prior specification from \code{\link[=broc_prior]{broc_prior()}}. If \code{NULL}, the
+family's weakly-informative default priors are used (inspect them with
+\code{\link[=get_broc_prior]{get_broc_prior()}}).}
+
 \item{encoding_vars}{Character vector of column names to treat as
 encoding-phase (study) manipulations for which lure items do not have a
 meaningful value. Listing a column here auto-wraps it in \code{encoding()}. A
@@ -38,12 +43,16 @@ value passed to \code{\link[=broc]{broc()}} takes precedence over one set here.}
 \item{counts}{Name of a column giving per-row trial counts, for aggregated
 (count) data rather than one row per trial. May also be set in \code{\link[=brf]{brf()}}.}
 
-\item{threads}{If \code{TRUE}, enable within-chain \code{reduce_sum} threading for the
-Stan backend (set the thread count per chain via \code{fit_broc(threads_per_chain=)}).
-Default \code{FALSE}.}
-
 \item{gap_link}{Link for threshold gaps: \code{"log"} (default) or \code{"softplus"}.
 \code{NULL} uses the family default.}
+
+\item{smooth_info}{If \code{TRUE}, sample the coefficients of population-level
+smooth terms on a scale matched to how strongly the data inform them. This
+is an exact change of variables (the posterior is unchanged) that removes
+the divergences smooth terms otherwise produce when their wiggliness SDs are
+weakly identified. Model construction runs a short maximum-likelihood pilot
+to measure that information. Random smooths (\code{bs = "fs"}, \code{"re"}) keep the
+default parameterization. Default \code{FALSE}.}
 }
 \value{
 A \code{brf} object: the model specification to pass to \code{\link[=broc]{broc()}}.
