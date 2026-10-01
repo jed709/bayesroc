@@ -470,7 +470,7 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
     """Constrain flat draws -> named sites (+ deterministics). Chains constrain
     in parallel across devices (pmap) when the device count allows; draw-chunks
     stream into preallocated outputs to bound peak memory. Drops raw
-    z_*/L_corr_* to match NUTS get_samples; drops log_lik (the largest array by
+    z_* unless keep_re, to match NUTS get_samples; drops log_lik (the largest array by
     far) when it is not needed."""
     chains, kept, _ = ths.shape
     named1 = jax.vmap(lambda z: postprocess_fn(unflatten(z)))
@@ -481,8 +481,6 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
                 "DR-G-HMC constrain") if progress_bar else None
 
     def _keep(k):
-        if k.startswith("L_corr_"):
-            return False
         if k.startswith("z_") and not keep_re:
             return False
         return not (k == "log_lik" and not save_loglik)

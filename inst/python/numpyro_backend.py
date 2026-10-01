@@ -3923,6 +3923,7 @@ def sdt_model(config):
             param = rc["param"]
             u = u_all[b]
             numpyro.deterministic(f"sigma_{param}_{group}[1]", sds[b])
+            numpyro.deterministic(f"z_{param}_{group}[1]", z_all[b])
             numpyro.deterministic(f"u_{param}_{group}", u)
             idx = jnp.array(rc["index"], dtype=jnp.int32) - 1
             _apply_re_offset(param, u[idx], param_values)
@@ -3961,10 +3962,12 @@ def sdt_model(config):
         L_corr = numpyro.sample(f"L_corr_cross_{cor_id}_{group}", cor_prior)
         numpyro.deterministic(f"corr_cross_{cor_id}_{group}", L_corr @ L_corr.T)
         L = jnp.diag(all_sds) @ L_corr
+        numpyro.deterministic(f"sigma_cross_{cor_id}_{group}", all_sds)
 
         z = numpyro.sample(f"z_cross_{cor_id}_{group}",
                            dist.Normal(0, 1).expand([total_dim, n_groups]))
         u = L @ z
+        numpyro.deterministic(f"u_cross_{cor_id}_{group}", u.T)
 
         for param, nt, d_off, m_conf in member_dims:
             u_portion = u[d_off:d_off + nt]
@@ -4780,8 +4783,6 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
 
     samples_np = {}
     for k, v in samples_dict.items():
-        if k.startswith("L_corr_"):
-            continue
         if k.startswith("z_") and not keep_re:
             continue
         if k == "log_lik" and not save_loglik:

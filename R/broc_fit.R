@@ -509,3 +509,56 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
   class(draws_3d) <- c("draws_array", "draws", "array")
   draws_3d
 }
+
+.jax_samples_as_stan <- function(samples, model) {
+  nm <- names(samples)
+  drop <- grepl("^sigma_batch_|^z_batch_", nm) |
+    (grepl("^sigma_cross_", nm) & (grepl("\\[[0-9]+\\]$", nm) | grepl("_block_", nm)))
+  samples <- samples[!drop]
+  nm <- names(samples)
+  out <- list()
+  done <- character(0)
+  for (k in nm) {
+    if (k %in% done) next
+    arr <- samples[[k]]
+    m <- regmatches(k, regexec("^(sigma|z)_(.+)\\[([0-9]+)\\]$", k))[[1]]
+    if (length(m)) {
+      kind <- m[2]; base <- m[3]
+      prefix <- paste0(kind, "_", base, "[")
+      sibs <- nm[startsWith(nm, prefix) & grepl("^[0-9]+\\]$", substring(nm, nchar(prefix) + 1L))]
+      sibs <- sibs[order(as.integer(sub("\\]$", "", substring(sibs, nchar(prefix) + 1L))))]
+      done <- c(done, sibs)
+      vector_stan <- length(sibs) > 1 || startsWith(base, "criterion_")
+      if (kind == "sigma") {
+        if (vector_stan) {
+          for (s in sibs) out[[s]] <- samples[[s]]
+        } else {
+          out[[paste0("sigma_", base)]] <- arr
+        }
+      } else {
+        if (vector_stan) {
+          st <- simplify2array(lapply(sibs, function(s) samples[[s]]))
+          out[[paste0("u_", base, "_raw")]] <- st
+        } else {
+          out[[paste0("u_", base, "_raw")]] <- arr
+        }
+      }
+      next
+    }
+    if (startsWith(k, "z_") && length(dim(arr)) == 4L) {
+      out[[paste0("u_", substring(k, 3), "_raw")]] <- aperm(arr, c(1, 2, 4, 3))
+      next
+    }
+    if (grepl("^beta_(log|raw)_gaps(_2)?$", k) && length(dim(arr)) == 3L) {
+      dim(arr) <- c(dim(arr), 1L)
+    }
+    out[[k]] <- arr
+  }
+  if (inherits(model, "bivariate_cumulative_model")) {
+    names(out) <- gsub("criterion", "cutpoints1", gsub("criterion2", "cutpoints2",
+                  gsub("discrim", "mu2", gsub("dprime", "mu1", names(out)))))
+  } else if (inherits(model, "cumulative_model")) {
+    names(out) <- gsub("criterion", "cutpoints", gsub("dprime", "mu", names(out)))
+  }
+  out
+}

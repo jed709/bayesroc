@@ -2282,6 +2282,7 @@ fit_broc <- function(model,
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)
 
+    jax_result$samples <- .jax_samples_as_stan(jax_result$samples, model)
     kept <- dim(jax_result$samples[[1]])[2]
     draws_arr <- numpyro_samples_to_draws_array(
       jax_result$samples,

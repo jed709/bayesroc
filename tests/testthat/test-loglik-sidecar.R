@@ -182,12 +182,12 @@ test_that("keep_re controls whether JAX returns per-level RE draws", {
   f0 <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                  iter_warmup = 200, iter_sampling = 200, seed = 4,
                  progress_bar = FALSE)
-  expect_false(any(grepl("^z_", posterior::variables(f0$.draws_array))))
+  expect_false(any(grepl("^u_dprime_sub_raw", posterior::variables(f0$.draws_array))))
 
   f1 <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                  iter_warmup = 200, iter_sampling = 200, seed = 4,
                  keep_re = TRUE, progress_bar = FALSE)
-  expect_true(any(grepl("^z_", posterior::variables(f1$.draws_array))))
+  expect_true(any(grepl("^u_dprime_sub_raw", posterior::variables(f1$.draws_array))))
 })
 
 test_that("JAX honours loo = TRUE and reclaims the sidecar", {
