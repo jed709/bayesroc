@@ -54,7 +54,10 @@ taken past the stopping point; this never changes the draws themselves.}
 \item{sampler}{\code{"nuts"} or \code{"drghmc"}.}
 
 \item{resume}{A fit returned by \code{autostop_broc()} to continue, for example after
-it stopped at a cap. Its chains are extended exactly and its draws kept.}
+it stopped at a cap. Its chains are extended exactly and its draws kept;
+\code{max_draws} counts them. A fit saved with \code{\link[=save_broc_fit]{save_broc_fit()}} (or \verb{file =}) and
+reloaded with \code{\link[=load_broc_fit]{load_broc_fit()}} can be resumed in a later session. The model
+(code and data) must be identical to the one the fit was run on.}
 
 \item{loo}{Compute PSIS-LOO on the result (stored as \code{fit$.loo}).}
 

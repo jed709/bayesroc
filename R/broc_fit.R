@@ -240,7 +240,9 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' @param include_loglik Whether to keep `log_lik` (needed for [loo()]). `NULL`
 #'   (default) follows the fit's `fit_broc(save_loglik = )` setting; `TRUE`/`FALSE`
 #'   overrides it for this save. When kept, the on-disk log-likelihood is written
-#'   next to `file` as `<file>_loglik.npy`.
+#'   next to `file` as `<file>_loglik.npy`. A fit that can be continued (from
+#'   [autostop_broc()]) also has its sampler state written as `<file>_state.pkl`,
+#'   so [load_broc_fit()] in a later session returns a fit that `resume =` accepts.
 #' @return Invisibly returns `file`.
 #' @seealso [load_broc_fit()].
 #' @examples
@@ -281,6 +283,19 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       }
     }
   }
+
+  state_side <- NULL
+  if (!is.null(fit$.state_path) && file.exists(fit$.state_path)) {
+    state_side <- paste0(tools::file_path_sans_ext(file), "_state.pkl")
+    if (!identical(normalizePath(fit$.state_path, winslash = "/", mustWork = FALSE),
+                   normalizePath(state_side, winslash = "/", mustWork = FALSE))) {
+      if (!isTRUE(file.copy(fit$.state_path, state_side, overwrite = TRUE))) {
+        stop("Could not write the sampler-state file '", state_side, "'.", call. = FALSE)
+      }
+    }
+  }
+  fit_attrs <- attributes(fit)
+  fit_attrs <- fit_attrs[setdiff(names(fit_attrs), c("class", "names", "broc_model"))]
 
   if (!keep_ll) {
     da <- if (backend == "stan")
@@ -337,6 +352,8 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
     bundle$draws_array <- sp$draws
     bundle$re_packed <- sp$packed
   }
+  bundle$state_sidecar <- if (is.null(state_side)) NULL else basename(state_side)
+  bundle$fit_attributes <- fit_attrs
   class(bundle) <- "broc_fit_saved"
 
   saveRDS(bundle, file = file, compress = compress)
@@ -404,6 +421,17 @@ load_broc_fit <- function(file) {
   if (is.null(side) && (!is.null(obj$loglik_sidecar) || !isTRUE(obj$save_loglik))) {
     fit$.loglik_dropped <- TRUE
   }
+  if (!is.null(obj$state_sidecar)) {
+    cand <- file.path(dirname(file), obj$state_sidecar)
+    if (file.exists(cand)) {
+      fit$.state_path <- normalizePath(cand, winslash = "/")
+    } else {
+      warning("The sampler-state file '", obj$state_sidecar, "' saved with this fit was not ",
+              "found next to '", basename(file), "'; the fit cannot be resumed unless it is ",
+              "restored there.", call. = FALSE)
+    }
+  }
+  for (a in names(obj$fit_attributes)) attr(fit, a) <- obj$fit_attributes[[a]]
   fit
 }
 

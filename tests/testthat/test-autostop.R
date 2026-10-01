@@ -170,3 +170,37 @@ test_that("chunk length grows in powers of two to balance checking against overs
   expect_equal(.next_chunk(100, 4000, 4000, t_check = 0.8, t_draw = 0.02), 400L)
   expect_equal(.next_chunk(100, 4000, 8000, t_check = 0.8, t_draw = 0.02), 800L)
 })
+
+test_that("a saved and reloaded fit resumes exactly and keeps its autostop attributes", {
+  skip_if_no_jax()
+  m <- .autostop_model()
+  file <- tempfile(fileext = ".rds")
+  f1 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 200, check_every = 100,
+                                       chains = 2, iter_warmup = 200, seed = 8, file = file,
+                                       progress = FALSE, progress_bar = FALSE))
+  unlink(f1$.state_path)
+  expect_true(file.exists(sub("[.]rds$", "_state.pkl", file)))
+  g <- load_broc_fit(file)
+  expect_true(file.exists(g$.state_path))
+  expect_identical(attr(g, "stop_reason"), "max_draws")
+  expect_equal(attr(g, "ess_trace"), attr(f1, "ess_trace"))
+  expect_identical(attr(g, "model_fingerprint"), attr(f1, "model_fingerprint"))
+  f2 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 400, check_every = 100,
+                                       chains = 2, resume = g, progress = FALSE, progress_bar = FALSE))
+  fref <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2, iter_warmup = 200,
+                   iter_sampling = 400, seed = 8, progress_bar = FALSE)
+  .same_draws(f2, fref)
+})
+
+test_that("resume refuses a fit made on a different model or data", {
+  skip_if_no_jax()
+  m <- .autostop_model()
+  f1 <- suppressWarnings(autostop_broc(m, ess_target = 1e9, max_draws = 100, check_every = 100,
+                                       chains = 2, iter_warmup = 100, seed = 1,
+                                       progress = FALSE, progress_bar = FALSE))
+  d2 <- .fixture_crossed(n_sub = 6, n_item = 10)
+  d2$item_resp <- rev(d2$item_resp)
+  m2 <- broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), d2)
+  expect_error(autostop_broc(m2, chains = 2, resume = f1, progress = FALSE), "different model or data")
+  expect_identical(.model_fingerprint(m), attr(f1, "model_fingerprint"))
+})

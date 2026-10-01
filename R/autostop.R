@@ -88,6 +88,22 @@
        worst = sm$variable[which.min(replace(ess, !is.finite(ess), Inf))])
 }
 
+.model_fingerprint <- function(model) {
+  sd <- model$stan_data
+  tf <- tempfile()
+  on.exit(unlink(tf))
+  con <- file(tf, "wb")
+  writeLines(c(model$family$family, model$stan_code, model$batch_cpp$cpp_code %||% ""), con)
+  for (k in sort(names(sd))) {
+    writeLines(k, con)
+    v <- sd[[k]]
+    writeBin(as.character(c(dim(v) %||% length(v))), con)
+    if (is.numeric(v) || is.logical(v)) writeBin(as.double(v), con) else writeBin(as.character(v), con)
+  }
+  close(con)
+  unname(tools::md5sum(tf))
+}
+
 .next_chunk <- function(check_every, drawn, need, t_check, t_draw) {
   opt <- sqrt(2 * max(drawn, need) * t_check / t_draw)
   as.integer(check_every * 2^max(0, floor(log2(max(opt, 1) / check_every))))
@@ -129,7 +145,10 @@
 #' @param seed Seed.
 #' @param sampler `"nuts"` or `"drghmc"`.
 #' @param resume A fit returned by `autostop_broc()` to continue, for example after
-#'   it stopped at a cap. Its chains are extended exactly and its draws kept.
+#'   it stopped at a cap. Its chains are extended exactly and its draws kept;
+#'   `max_draws` counts them. A fit saved with [save_broc_fit()] (or `file =`) and
+#'   reloaded with [load_broc_fit()] can be resumed in a later session. The model
+#'   (code and data) must be identical to the one the fit was run on.
 #' @param loo Compute PSIS-LOO on the result (stored as `fit$.loo`).
 #' @param loo_cores Workers for [loo()].
 #' @param progress Print one line per check.
@@ -198,6 +217,11 @@ autostop_broc <- function(model, ess_target = 400, rhat_target = 1.01, max_draws
         !file.exists(resume$.state_path)) {
       stop("`resume` must be an autostop_broc() fit that still has its sampler state.",
            call. = FALSE)
+    }
+    fp <- attr(resume, "model_fingerprint")
+    if (is.null(fp) || !identical(fp, .model_fingerprint(model))) {
+      stop("`resume` was fitted to a different model or data than `model`; it can only be ",
+           "continued with the identical model.", call. = FALSE)
     }
     if (!identical(resume$.sampler %||% "nuts", sampler) || resume$.num_chains != chains) {
       stop("`resume` was run with sampler '", resume$.sampler, "' and ", resume$.num_chains,
@@ -335,6 +359,7 @@ autostop_broc <- function(model, ess_target = 400, rhat_target = 1.01, max_draws
   attr(pooled, "ess_trace") <- do.call(rbind, trace)
   attr(pooled, "targets") <- c(targets, rhat = rhat_target)
   attr(pooled, "divergences") <- total_div
+  attr(pooled, "model_fingerprint") <- .model_fingerprint(model)
   if (!is.null(file)) {
     suppressMessages(save_broc_fit(pooled, file, verbose = FALSE))
   }
