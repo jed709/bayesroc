@@ -273,21 +273,21 @@ summary(fit.1,
 #>  thresh3 ~ thresh5    0.865 0.068 0.700 0.962
 #>  thresh4 ~ thresh5    0.963 0.027 0.889 0.994
 ```
-We can also pass the fitted model to other useful functions, such as 
-`plot_roc_curve()` or `pp_check.broc_fit()`:
+We can also pass the fitted model to the plotting functions, such as 
+`plot_roc()` or `pp_check.broc_fit()`. Because `condition` is an encoding variable,
+each condition's targets are compared with the common lures:
 
 
 ```r
-plot_roc_curve(fit.1,
-               group = 'condition')
+plot_roc(fit.1,
+         by = 'condition')
 ```
 
 ![](figures/roc-ppcheck-1.png)
 
 ```r
 pp_check(fit.1,
-         type = 'bars_grouped',
-         group = 'condition')
+         by = 'condition')
 ```
 
 ![](figures/roc-ppcheck-2.png)
@@ -408,11 +408,12 @@ summary(fit.2)$fixed
 #> 8  log_gap[4,scale_wf]    0.076 0.032  0.025  0.129 1.000    13429     6445
 ```
 
-We can create a quick plot of fixed effects on `dprime` using the `plot.broc_fit` method:
+We can plot the parameter estimates with `plot()`, which shows each parameter on its
+natural scale for every condition (`scale = 'coef'` shows the regression coefficients):
 
 
 ```r
-plot(fit.2, type = 'dots')
+plot(fit.2, type = 'halfeye')
 ```
 
 ![](figures/dprime-dots-1.png)
@@ -470,7 +471,7 @@ smooth term improved out-of-sample prediction:
 
 
 ```r
-plot(conditional_smooths(fit.3))
+plot_smooths(fit.3)
 ```
 
 ![](figures/smooths-1.png)

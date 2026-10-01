@@ -81,7 +81,7 @@ test_that("bivariate_cumulative: Stan and JAX posterior means agree", {
                       c("beta_rho[1]", "beta_thresh_mid[1]", "beta_thresh_mid_2[1]"))
 })
 
-test_that("crossed REs: predict + plot_roc_curve work on both backends", {
+test_that("crossed REs: predict + plot_roc work on both backends", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_crossed()
   m <- broc(brf(item_resp | is_old ~ 1 + (1 | s | sub) + (1 | i | item),
@@ -103,8 +103,9 @@ test_that("crossed REs: predict + plot_roc_curve work on both backends", {
     expect_gt(nrow(pred), 0)
     expect_equal(nrow(pred) %% nrow(d), 0, label = paste(backend, "predict rows / N"))
 
-    p <- plot_roc_curve(fit)
+    p <- plot_roc(fit)
     expect_s3_class(p, "ggplot")
+    for (ty in c("sd", "cor")) expect_no_error(ggplot2::ggplot_build(plot_random_effects(fit, type = ty)))
 
     v <- posterior::variables(fit$draws())
     expect_true("u_dprime_sub_from_s[1]" %in% v,

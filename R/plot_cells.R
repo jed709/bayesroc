@@ -1,0 +1,171 @@
+# =============================================================================
+# Shared plotting machinery: posterior setup, design cells, labels
+# =============================================================================
+
+.plot_model <- function(fit) {
+  model <- attr(fit, "broc_model")
+  if (is.null(model)) {
+    stop("The fit has no 'broc_model' attribute; fit models with fit_broc().", call. = FALSE)
+  }
+  model
+}
+
+.is_bivariate_family <- function(family_name) {
+  family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
+}
+
+.plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE) {
+  data_src <- build_data_source_from_model(model)
+  vars <- get_predict_variables(model, include_re = !identical(re_formula, NA))
+  draws <- fit$draws(variables = vars, format = "matrix")
+  if (!is.null(ndraws) && ndraws < nrow(draws)) draws <- draws[sample.int(nrow(draws), ndraws), , drop = FALSE]
+  S <- nrow(draws)
+  N <- data_src$N
+  fam <- model$family
+  tp <- compute_trial_params(draws, model, data_src, re_formula, S, N)
+  th <- th2 <- NULL
+  if (thresholds) {
+    n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else model$model_data$K
+    th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
+    if (.is_bivariate_family(fam$family)) th2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
+  }
+  list(draws = draws, data_src = data_src, tp = tp, th = th, th2 = th2, S = S, N = N)
+}
+
+.row_weights <- function(model) {
+  cnt <- model$stan_data$counts
+  if (is.null(cnt)) rep(1, model$model_data$N %||% length(model$stan_data$y)) else as.numeric(cnt)
+}
+
+.check_by <- function(model, by) {
+  if (is.null(by)) return(NULL)
+  if (is.null(model$data)) stop("The fit does not store its data, so 'by' cannot be used.", call. = FALSE)
+  miss <- setdiff(by, names(model$data))
+  if (length(miss)) {
+    stop("'by' variable(s) not found in the data: ", paste(miss, collapse = ", "),
+         ". Available: ", paste(setdiff(names(model$data), ".bivar_cum_item_type"), collapse = ", "), call. = FALSE)
+  }
+  by
+}
+
+.cell_of_rows <- function(model, by) {
+  n <- length(model$stan_data$y)
+  if (is.null(by)) return(factor(rep("All", n)))
+  if (length(by) == 1L) {
+    v <- model$data[[by]]
+    return(if (is.factor(v)) droplevels(v) else factor(v))
+  }
+  interaction(model$data[by], sep = " / ", drop = TRUE, lex.order = TRUE)
+}
+
+.cell_frame <- function(model, by, cells) {
+  levs <- levels(cells)
+  if (is.null(by)) return(data.frame(.cell = factor(levs, levels = levs)))
+  first <- match(levs, as.character(cells))
+  out <- model$data[first, by, drop = FALSE]
+  for (v in by) out[[v]] <- if (is.factor(model$data[[v]])) factor(out[[v]], levels = levels(droplevels(model$data[[v]]))) else out[[v]]
+  out$.cell <- factor(levs, levels = levs)
+  rownames(out) <- NULL
+  out
+}
+
+.pair_cells <- function(model, by, cells, signal, noise) {
+  levs <- levels(cells)
+  enc <- model$model_data$encoding_vars %||% character(0)
+  out <- list()
+  for (lev in levs) {
+    sig <- intersect(signal, which(cells == lev))
+    if (!length(sig)) next
+    noi <- intersect(noise, which(cells == lev))
+    if (!length(noi) && length(by)) {
+      keep <- rep(TRUE, length(noise))
+      for (v in setdiff(by, enc)) {
+        sv <- unique(as.character(model$data[[v]][sig]))
+        nv <- as.character(model$data[[v]][noise])
+        if (any(nv %in% unique(as.character(model$data[[v]][signal])))) keep <- keep & nv %in% sv
+      }
+      noi <- noise[keep]
+    }
+    if (length(noi)) out[[lev]] <- list(signal = sig, noise = noi)
+  }
+  out
+}
+
+.roc_roles <- function(model, response) {
+  fam <- model$family$family
+  sd <- model$stan_data
+  if (fam %in% c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp")) {
+    return(list(signal = which(sd$is_old == 1), noise = which(sd$is_old == 0), what = "detection"))
+  }
+  if (fam == "source_mixture") {
+    return(list(signal = which(sd$source == max(sd$source)), noise = which(sd$source == min(sd$source)),
+                what = "source"))
+  }
+  if (fam %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d")) {
+    if (identical(response, 1) || identical(response, 1L)) {
+      return(list(signal = which(sd$item_type >= 2L), noise = which(sd$item_type == 1L), what = "detection"))
+    }
+    return(list(signal = which(sd$item_type == 3L), noise = which(sd$item_type == 2L), what = "source"))
+  }
+  stop("ROC curves are not defined for the ", family_display_name(fam), " family: it has no ",
+       "signal and noise items.", call. = FALSE)
+}
+
+# ---- Labels -------------------------------------------------------------------
+
+.param_label <- function(model, p) {
+  fam <- model$family$family
+  lab <- switch(fam,
+    cdp = c(dprime = "Recollection mean", dprime2 = "Familiarity mean", sigma = "Recollection SD",
+            sigma2 = "Familiarity SD", rec_crit = "Remember criterion", know_crit = "Know criterion"),
+    cumulative = c(dprime = "Location", criterion = "Cutpoints"),
+    bivariate_cumulative = c(dprime = "Location (dim 1)", discrim = "Location (dim 2)",
+                             criterion = "Cutpoints (dim 1)", criterion2 = "Cutpoints (dim 2)"),
+    mixture = c(dprime = "d' (strong)", dprime2 = "d' (weak)", lambda = "Strong proportion"),
+    dpsdt = c(lambda = "Recollection"),
+    source_mixture = c(lambda = "Source memory"),
+    character(0))
+  generic <- c(dprime = "d'", sigma = "Signal SD", lambda = "Lambda", dprime2 = "d' (2)", sigma2 = "SD (2)",
+               discrim = "Source d'", rho = "Correlation", criterion = "Criteria", criterion2 = "Source criteria",
+               dprime_B = "d' (B)", lambda_B = "Lambda (B)", discrim_B = "Source d' (B)", sigma_B = "Signal SD (B)",
+               sigma2_B = "SD (2, B)", rho_B = "Correlation (B)", rho_N = "Correlation (new)",
+               lambda2 = "Lambda (2)", lambda2_B = "Lambda (2, B)", dprime_L = "d' (lure)",
+               sigma_L = "SD (lure)", lambda_L = "Lambda (lure)", rec_crit = "Remember criterion",
+               know_crit = "Know criterion")
+  unname(if (!is.na(lab[p])) lab[p] else if (!is.na(generic[p])) generic[p] else p)
+}
+
+.pretty_coef <- function(coef, data) {
+  vapply(coef, function(cf) {
+    if (identical(cf, "(Intercept)")) return("Intercept")
+    if (grepl("^sXs", cf)) return(paste0(sub("^sXs(.*?)(_[0-9]+)?$", "\\1", cf, perl = TRUE), ", linear"))
+    parts <- strsplit(cf, ":", fixed = TRUE)[[1]]
+    parts <- vapply(parts, function(pt) {
+      for (v in names(data)) {
+        x <- data[[v]]
+        if ((is.factor(x) || is.character(x)) && startsWith(pt, v)) {
+          lev <- substring(pt, nchar(v) + 1L)
+          if (nzchar(lev) && lev %in% as.character(unique(x))) return(paste0(v, ": ", lev))
+        }
+      }
+      pt
+    }, character(1))
+    paste(parts, collapse = " x ")
+  }, character(1), USE.NAMES = FALSE)
+}
+
+.interval_summary <- function(mat, prob) {
+  lo <- (1 - prob) / 2
+  data.frame(mean = colMeans(mat), lower = apply(mat, 2, stats::quantile, lo, names = FALSE),
+             upper = apply(mat, 2, stats::quantile, 1 - lo, names = FALSE),
+             lower50 = apply(mat, 2, stats::quantile, 0.25, names = FALSE),
+             upper50 = apply(mat, 2, stats::quantile, 0.75, names = FALSE))
+}
+
+.colour_scales <- function(n_cells, name) {
+  if (n_cells <= 1L) {
+    return(list(ggplot2::scale_colour_manual(values = .broc_accent, guide = "none"),
+                ggplot2::scale_fill_manual(values = .broc_accent, guide = "none")))
+  }
+  list(scale_colour_broc(name = name), scale_fill_broc(name = name))
+}

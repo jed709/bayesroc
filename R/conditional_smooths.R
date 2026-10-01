@@ -107,6 +107,8 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
   out <- do.call(rbind, results)
   rownames(out) <- NULL
   class(out) <- c("conditional_smooths", "data.frame")
+  attr(out, "param_labels") <- vapply(stats::setNames(names(smooth_data), vapply(names(smooth_data), function(p)
+    .smooth_display_pname(model, p), character(1))), function(p) .param_label(model, p), character(1))
   out
 }
 
@@ -143,47 +145,79 @@ build_smooth_grid <- function(covars, data, resolution, by_var = NA, bylevel = N
 
 #' Plot Conditional Smooths
 #'
-#' @param x A `conditional_smooths` object
-#' @param ... Additional arguments passed to ggplot
-#' @return A ggplot object
-#' @keywords internal
+#' Plots smooth terms evaluated by [conditional_smooths()]: the posterior mean
+#' with a credible band, one panel per smooth (and per threshold component for
+#' criterion smooths). A two-dimensional smooth is drawn against its first
+#' covariate at five values of the second.
+#'
+#' @param x A `conditional_smooths` object.
+#' @param ... Unused.
+#' @return A ggplot object.
 #' @export
 plot.conditional_smooths <- function(x, ...) {
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("Package 'ggplot2' is required for smooth plots.")
-  }
-
+  .need_ggplot2()
   meta_cols <- c("estimate", "lower", "upper", "parameter", "smooth", "component")
   covar_cols <- setdiff(names(x), meta_cols)
-
   numeric_covars <- covar_cols[vapply(x[covar_cols], is.numeric, logical(1))]
-  if (length(numeric_covars) == 0) {
-    stop("No numeric covariates found for smooth plotting.")
+  if (length(numeric_covars) == 0) stop("No numeric covariates found for smooth plotting.", call. = FALSE)
+  labs_map <- attr(x, "param_labels")
+  df <- as.data.frame(x)
+  plab <- if (!is.null(labs_map)) unname(ifelse(is.na(labs_map[df$parameter]), df$parameter, labs_map[df$parameter])) else df$parameter
+  comp <- if ("component" %in% names(df)) ifelse(is.na(df$component), "", paste0(", ", df$component)) else ""
+  df$.panel <- paste0(plab, ": ", df$smooth, comp)
+  parts <- list()
+  for (pn in unique(df$.panel)) {
+    d <- df[df$.panel == pn, , drop = FALSE]
+    used <- numeric_covars[vapply(numeric_covars, function(v) any(!is.na(d[[v]])) && length(unique(d[[v]])) > 1L, logical(1))]
+    d$.x <- d[[used[1]]]
+    d$.z <- NA_real_
+    if (length(used) > 1L) {
+      zv <- sort(unique(d[[used[2]]]))
+      pick <- zv[unique(round(seq(1, length(zv), length.out = 5)))]
+      d <- d[d[[used[2]]] %in% pick, , drop = FALSE]
+      d$.z <- d[[used[2]]]
+      d$.zname <- used[2]
+    }
+    d$.xname <- used[1]
+    parts[[pn]] <- d
   }
-
-  xvar <- numeric_covars[1]
-
-  plot_df <- x
-  plot_df$.xvar <- plot_df[[xvar]]
-  comp <- if ("component" %in% names(plot_df)) ifelse(is.na(plot_df$component), "", paste0(" [", plot_df$component, "]")) else ""
-  plot_df$.panel <- paste0(plot_df$parameter, ": ", plot_df$smooth, comp)
-  panels <- unique(plot_df$.panel)
-
-  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = .xvar, y = estimate, group = .panel)) +
-    ggplot2::geom_ribbon(ggplot2::aes(ymin = lower, ymax = upper),
-                         alpha = 0.2, fill = "steelblue") +
-    ggplot2::geom_line(color = "steelblue", linewidth = 1) +
-    ggplot2::geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-    ggplot2::labs(x = xvar, y = "Smooth effect") +
-    ggplot2::theme_minimal()
-
-  if (length(panels) > 1) {
-    p <- p + ggplot2::facet_wrap(~ .panel, scales = "free")
+  df <- do.call(rbind, lapply(parts, function(d) { if (is.null(d$.zname)) d$.zname <- NA_character_; d }))
+  df$.panel <- factor(df$.panel, levels = names(parts))
+  df$.grp <- interaction(df$.panel, df$.z, drop = TRUE)
+  xname <- unique(df$.xname)
+  two_d <- any(!is.na(df$.z))
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = .data$.x, y = .data$estimate, group = .data$.grp)) +
+    ggplot2::geom_hline(yintercept = 0, colour = "grey60", linetype = "22", linewidth = 0.4)
+  if (two_d) {
+    p <- p + ggplot2::geom_ribbon(ggplot2::aes(ymin = .data$lower, ymax = .data$upper, fill = .data$.z), alpha = 0.12) +
+      ggplot2::geom_line(ggplot2::aes(colour = .data$.z), linewidth = 0.9) +
+      ggplot2::scale_colour_gradient(low = "#56B4E9", high = "#0B3C5D", name = paste(unique(stats::na.omit(df$.zname)), collapse = " / ")) +
+      ggplot2::scale_fill_gradient(low = "#56B4E9", high = "#0B3C5D", guide = "none")
   } else {
-    p <- p + ggplot2::labs(title = panels[1])
+    p <- p + ggplot2::geom_ribbon(ggplot2::aes(ymin = .data$lower, ymax = .data$upper), fill = .broc_accent, alpha = 0.15) +
+      ggplot2::geom_line(colour = .broc_accent, linewidth = 0.9)
   }
+  if (length(parts) > 1L) p <- p + ggplot2::facet_wrap(~ .panel, scales = "free")
+  p + ggplot2::labs(x = if (length(xname) == 1L) xname else NULL, y = "Smooth effect",
+                    title = if (length(parts) == 1L) names(parts) else "Smooth terms",
+                    subtitle = "Posterior mean with credible band") +
+    theme_broc()
+}
 
-  p
+#' Plot Smooth Terms
+#'
+#' Convenience wrapper: `plot(conditional_smooths(fit, ...))`.
+#'
+#' @inheritParams conditional_smooths
+#' @return A ggplot object.
+#' @export
+#' @examples
+#' \dontrun{
+#' plot_smooths(fit)
+#' }
+plot_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 100, prob = 0.95, ndraws = NULL) {
+  plot(conditional_smooths(fit, smooths = smooths, dpar = dpar, resolution = resolution, prob = prob,
+                           ndraws = ndraws))
 }
 
 .smooth_display_pname <- function(model, pname) .param_name_map(model$family$family)[[pname]] %||% pname

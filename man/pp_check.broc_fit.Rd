@@ -6,8 +6,8 @@
 \usage{
 \method{pp_check}{broc_fit}(
   object,
-  type = c("bars", "bars_grouped", "dens_overlay", "stat", "rootogram"),
-  group = NULL,
+  type = c("bars", "rootogram", "stat", "lines"),
+  by = NULL,
   ndraws = 200,
   prob = 0.95,
   stat_fun = mean,
@@ -21,48 +21,50 @@
 \arguments{
 \item{object}{A \code{broc_fit} object from \code{\link[=fit_broc]{fit_broc()}}.}
 
-\item{type}{Plot type. \code{"bars"}: observed vs predicted counts per response
-category, with predictive intervals. \code{"bars_grouped"}: the same, split by
-\code{group}. \code{"rootogram"}: a hanging rootogram, emphasizing fit in low-count
-categories. \code{"stat"}: posterior distribution of a summary statistic
-(\code{stat_fun}) against its observed value. \code{"dens_overlay"}: observed density
-with overlaid predictive densities.}
+\item{type}{\code{"bars"} (default): observed response proportions with the
+predictive mean and interval. \code{"rootogram"}: a hanging rootogram, where
+observed bars hang from the expected counts and misfit shows as bar bottoms
+away from zero. \code{"stat"}: predictive distribution of a summary statistic
+(\code{stat_fun}) with its observed value. \code{"lines"}: replicated response
+proportions as thin lines with the observed proportions.}
 
-\item{group}{Column name (from the original data) to facet by; \code{NULL} for no
-grouping. \code{type = "bars_grouped"} groups by this column.}
+\item{by}{Optional character vector of data columns defining the cells.
+\code{NULL} (default) splits by item type (lures and targets, sources, or new,
+source A and source B items). Cells that mix item types are also split by
+item type.}
 
-\item{ndraws}{Number of replicated datasets (default 200)}
+\item{ndraws}{Number of replicated data sets (default 200).}
 
-\item{prob}{CI width for intervals on predicted counts (default 0.95)}
+\item{prob}{Width of the predictive intervals (default 0.95).}
 
-\item{stat_fun}{Summary statistic function for \code{type = "stat"} (default: mean)}
+\item{stat_fun}{Statistic for \code{type = "stat"}, applied to the vector of
+responses (default: mean).}
 
-\item{re_formula}{Which random effects to include in prediction. \code{NULL}
-(default) includes all random effects; \code{NA} excludes them, giving
-population-level predictions.}
+\item{re_formula}{\code{NULL} (default) includes all random effects; \code{NA} excludes
+them.}
 
-\item{response}{For bivariate families (bivariate_gaussian, vrdp2d): which dimension
-to check (1 = item/detection, 2 = source/discrimination). Default 1.}
+\item{response}{For bivariate families, \code{1} (default) checks the first
+response and \code{2} the second. For the continuous dual-process model, \code{2}
+checks the remember/know/guess responses.}
 
 \item{cores}{Number of cores used for posterior prediction (default 1).}
 
-\item{seed}{Optional seed for the draw subset and replicated data, so the plot
-can be reproduced; the global random-number state is restored afterwards.}
+\item{seed}{Optional seed for the draw subset and replicated data; the global
+random-number state is restored afterwards.}
 
-\item{...}{Additional arguments (unused).}
+\item{...}{Unused.}
 }
 \value{
 A ggplot object.
 }
 \description{
-Compare observed response distributions against draws from the posterior
-predictive distribution.
+Compares the observed response distributions with data sets replicated from
+the posterior predictive distribution, separately for each design cell.
 }
 \examples{
 \dontrun{
-fit <- fit_broc(model)
-pp_check(fit, type = "bars")
-pp_check(fit, type = "bars_grouped", group = "condition")
+pp_check(fit)
+pp_check(fit, by = "condition")
 pp_check(fit, type = "rootogram")
 }
 }

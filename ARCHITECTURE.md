@@ -177,7 +177,8 @@ run the full suite.
 | `R/jax_backend.R`, `R/install_jax.R` | JAX subprocess + Python discovery/venv mgmt |
 | `R/broc_model.R` | `broc()` + `fit_broc()` orchestration |
 | `R/broc_fit.R` | `broc_fit` S3 object + save/load |
-| `R/summary.R`, `R/predict.R`, `R/pp_check.R`, `R/posterior.R`, `R/plot.R` | post-processing |
+| `R/summary.R`, `R/predict.R`, `R/posterior.R` | post-processing |
+| `R/plot_*.R`, `R/pp_check.R`, `R/conditional_smooths.R` | plots: shared theme (`plot_theme.R`), design cells and posterior setup (`plot_cells.R`); ROC curves and latent densities come from one engine (`.roc_survival`) that evaluates each family's own category probabilities at moving criteria, averaged over the observed rows |
 | `R/priors.R`, `R/prior_init.R` | prior specification + defaults |
 
 ## Things deliberately NOT done (and why)

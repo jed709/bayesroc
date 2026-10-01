@@ -2,22 +2,26 @@
 .fast_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 300 else 1000
 .fast_chains <- 4
 
+.renders <- function(g) {
+  expect_s3_class(g, "ggplot")
+  expect_no_error(ggplot2::ggplot_build(g))
+}
+
 .assert_post_fit_works <- function(fit, has_roc = TRUE,
-                                    pp_check_types = c("bars", "bars_grouped")) {
+                                    pp_check_types = c("bars", "rootogram", "stat", "lines")) {
   s <- summary(fit)
   expect_s3_class(s, "broc_summary")
 
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
   expect_true(is.array(p))
 
-  for (t in pp_check_types) {
-    g <- pp_check(fit, type = t, ndraws = 50)
-    expect_s3_class(g, "ggplot")
-  }
-
+  for (t in pp_check_types) .renders(pp_check(fit, type = t, ndraws = 50))
+  .renders(plot(fit))
+  .renders(plot_estimates(fit, scale = "coef"))
+  .renders(plot_distributions(fit, ndraws = 30))
   if (has_roc) {
-    g <- plot_roc_curve(fit, ndraws = 50)
-    expect_s3_class(g, "ggplot")
+    .renders(plot_roc(fit, ndraws = 50))
+    .renders(plot_roc(fit, ndraws = 50, scale = "z"))
   }
 }
 
@@ -124,9 +128,10 @@ test_that("cumulative: smoke", {
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
   expect_true(is.array(p))
-  g <- pp_check(fit, type = "bars", ndraws = 50)
-  expect_s3_class(g, "ggplot")
-  expect_error(plot_roc_curve(fit, ndraws = 50), "not supported for 'cumulative'")
+  .renders(pp_check(fit, type = "bars", ndraws = 50))
+  .renders(plot(fit))
+  .renders(plot_distributions(fit, ndraws = 30))
+  expect_error(plot_roc(fit, ndraws = 50), "not defined for the cumulative")
 })
 
 test_that("bivariate_cumulative: smoke", {
@@ -142,9 +147,10 @@ test_that("bivariate_cumulative: smoke", {
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
   expect_true(is.array(p))
   for (resp in 1:2) {
-    g <- pp_check(fit, type = "bars", ndraws = 50, response = resp)
-    expect_s3_class(g, "ggplot")
+    .renders(pp_check(fit, type = "bars", ndraws = 50, response = resp))
+    .renders(plot_distributions(fit, response = resp, ndraws = 30))
   }
+  .renders(plot(fit))
 })
 
 test_that("cdp: smoke (rotello_2005)", {
@@ -161,11 +167,9 @@ test_that("cdp: smoke (rotello_2005)", {
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
   expect_true(is.array(p))
-  for (t in c("bars", "bars_grouped")) {
-    g <- pp_check(fit, type = t, group = "condition", ndraws = 50)
-    expect_s3_class(g, "ggplot")
-  }
-  g <- pp_check(fit, type = "bars_grouped", group = "condition",
-                response = 2, ndraws = 50)
-  expect_s3_class(g, "ggplot")
+  for (t in c("bars", "rootogram")) .renders(pp_check(fit, type = t, by = "condition", ndraws = 50))
+  .renders(pp_check(fit, by = "condition", response = 2, ndraws = 50))
+  .renders(plot_roc(fit, by = "condition", ndraws = 50))
+  .renders(plot_distributions(fit, by = "condition", ndraws = 30))
+  .renders(plot(fit))
 })

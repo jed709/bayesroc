@@ -55,7 +55,7 @@ test_that("keep_re drops raw random-effect draws on the Stan backend, including 
   }
 })
 
-test_that("seed makes pp_check and plot_roc_curve draw subsets reproducible", {
+test_that("seed makes pp_check and plot_roc draw subsets reproducible", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
   m <- suppressMessages(broc(brf(item_resp | is_old ~ 1, family = evsd()), d))
@@ -64,8 +64,8 @@ test_that("seed makes pp_check and plot_roc_curve draw subsets reproducible", {
   a <- ggplot2::ggplot_build(pp_check(f, ndraws = 20, seed = 4))$data
   b <- ggplot2::ggplot_build(pp_check(f, ndraws = 20, seed = 4))$data
   expect_equal(a, b)
-  r1 <- ggplot2::ggplot_build(plot_roc_curve(f, ndraws = 20, seed = 4))$data
-  r2 <- ggplot2::ggplot_build(plot_roc_curve(f, ndraws = 20, seed = 4))$data
+  r1 <- ggplot2::ggplot_build(plot_roc(f, ndraws = 20, seed = 4))$data
+  r2 <- ggplot2::ggplot_build(plot_roc(f, ndraws = 20, seed = 4))$data
   expect_equal(r1, r2)
   set.seed(99); x1 <- runif(1)
   set.seed(99); invisible(pp_check(f, ndraws = 20, seed = 4)); x2 <- runif(1)

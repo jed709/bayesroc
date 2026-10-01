@@ -73,7 +73,8 @@ m <- broc(brf(resp | cond ~ 1 + (1|s|sub) + (1|i|item),
 fit <- fit_broc(m, backend = "stan")
 
 summary(fit)
-plot_roc_curve(fit)
+plot(fit)          # parameter estimates on their natural scale
+plot_roc(fit)      # model-implied ROC with observed operating points
 ```
 
 If we are not interested in modeling trial-level data (e.g., random effects on items), 
@@ -153,8 +154,11 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 - `?fit_broc` — fitting (Stan or JAX)
 - `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`,
   `posterior_epred(fit)`, `posterior_linpred(fit)` — S3 methods on the fitted model
-- `?plot_roc_curve` — ROC curve plot
-- `?conditional_smooths` — smooth-term evaluation/plotting (mgcv `s()` / `t2()`
+- Plots (all return ggplot objects and share `by`, `ndraws`, `prob`, `re_formula`,
+  `seed`): `?plot_estimates` (also `plot(fit)`), `?plot_roc` (ROC and zROC),
+  `?plot_distributions` (latent distributions with criteria), `?pp_check.broc_fit`,
+  `?plot_random_effects`, `?plot_smooths`; `?theme_broc` for the shared theme and palette
+- `?conditional_smooths` — smooth-term evaluation (mgcv `s()` / `t2()`
   are supported in any parameter formula). If a model with smooth terms reports
   divergences, `broc(..., smooth_info = TRUE)` samples the population-level smooth
   coefficients on a data-informed scale; the posterior is unchanged

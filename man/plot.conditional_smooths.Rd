@@ -7,14 +7,16 @@
 \method{plot}{conditional_smooths}(x, ...)
 }
 \arguments{
-\item{x}{A \code{conditional_smooths} object}
+\item{x}{A \code{conditional_smooths} object.}
 
-\item{...}{Additional arguments passed to ggplot}
+\item{...}{Unused.}
 }
 \value{
-A ggplot object
+A ggplot object.
 }
 \description{
-Plot Conditional Smooths
+Plots smooth terms evaluated by \code{\link[=conditional_smooths]{conditional_smooths()}}: the posterior mean
+with a credible band, one panel per smooth (and per threshold component for
+criterion smooths). A two-dimensional smooth is drawn against its first
+covariate at five values of the second.
 }
-\keyword{internal}

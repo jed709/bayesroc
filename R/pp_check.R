@@ -1,233 +1,123 @@
-# =============================================================================
-# Main Function
-# =============================================================================
-
 #' Posterior Predictive Check for SDT Models
 #'
-#' Compare observed response distributions against draws from the posterior
-#' predictive distribution.
+#' Compares the observed response distributions with data sets replicated from
+#' the posterior predictive distribution, separately for each design cell.
 #'
 #' @param object A `broc_fit` object from [fit_broc()].
-#' @param type Plot type. `"bars"`: observed vs predicted counts per response
-#'   category, with predictive intervals. `"bars_grouped"`: the same, split by
-#'   `group`. `"rootogram"`: a hanging rootogram, emphasizing fit in low-count
-#'   categories. `"stat"`: posterior distribution of a summary statistic
-#'   (`stat_fun`) against its observed value. `"dens_overlay"`: observed density
-#'   with overlaid predictive densities.
-#' @param group Column name (from the original data) to facet by; `NULL` for no
-#'   grouping. `type = "bars_grouped"` groups by this column.
-#' @param ndraws Number of replicated datasets (default 200)
-#' @param seed Optional seed for the draw subset and replicated data, so the plot
-#'   can be reproduced; the global random-number state is restored afterwards.
-#' @param prob CI width for intervals on predicted counts (default 0.95)
-#' @param stat_fun Summary statistic function for `type = "stat"` (default: mean)
-#' @param re_formula Which random effects to include in prediction. `NULL`
-#'   (default) includes all random effects; `NA` excludes them, giving
-#'   population-level predictions.
-#' @param response For bivariate families (bivariate_gaussian, vrdp2d): which dimension
-#'   to check (1 = item/detection, 2 = source/discrimination). Default 1.
+#' @param type `"bars"` (default): observed response proportions with the
+#'   predictive mean and interval. `"rootogram"`: a hanging rootogram, where
+#'   observed bars hang from the expected counts and misfit shows as bar bottoms
+#'   away from zero. `"stat"`: predictive distribution of a summary statistic
+#'   (`stat_fun`) with its observed value. `"lines"`: replicated response
+#'   proportions as thin lines with the observed proportions.
+#' @param by Optional character vector of data columns defining the cells.
+#'   `NULL` (default) splits by item type (lures and targets, sources, or new,
+#'   source A and source B items). Cells that mix item types are also split by
+#'   item type.
+#' @param ndraws Number of replicated data sets (default 200).
+#' @param prob Width of the predictive intervals (default 0.95).
+#' @param stat_fun Statistic for `type = "stat"`, applied to the vector of
+#'   responses (default: mean).
+#' @param re_formula `NULL` (default) includes all random effects; `NA` excludes
+#'   them.
+#' @param response For bivariate families, `1` (default) checks the first
+#'   response and `2` the second. For the continuous dual-process model, `2`
+#'   checks the remember/know/guess responses.
 #' @param cores Number of cores used for posterior prediction (default 1).
-#' @param ... Additional arguments (unused).
+#' @param seed Optional seed for the draw subset and replicated data; the global
+#'   random-number state is restored afterwards.
+#' @param ... Unused.
 #' @return A ggplot object.
 #' @examples
 #' \dontrun{
-#' fit <- fit_broc(model)
-#' pp_check(fit, type = "bars")
-#' pp_check(fit, type = "bars_grouped", group = "condition")
+#' pp_check(fit)
+#' pp_check(fit, by = "condition")
 #' pp_check(fit, type = "rootogram")
 #' }
 #' @importFrom bayesplot pp_check
 #' @method pp_check broc_fit
 #' @export
-pp_check.broc_fit <- function(object, type = c("bars", "bars_grouped", "dens_overlay", "stat", "rootogram"),
-                              group = NULL, ndraws = 200, prob = 0.95,
-                              stat_fun = mean, re_formula = NULL, response = 1,
-                              cores = 1, seed = NULL, ...) {
-  fit <- object
+pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lines"), by = NULL,
+                              ndraws = 200, prob = 0.95, stat_fun = mean, re_formula = NULL,
+                              response = 1, cores = 1, seed = NULL, ...) {
+  .need_ggplot2()
   restore_seed <- .seed_scope(seed)
   on.exit(restore_seed(), add = TRUE)
-
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("Package 'ggplot2' is required for pp_check().")
-  }
-
   type <- match.arg(type)
+  fit <- object
+  model <- .plot_model(fit)
+  by <- .check_by(model, by)
+  fam <- model$family$family
+  bivariate <- .is_bivariate_family(fam)
 
-  model <- attr(fit, "broc_model")
-  if (is.null(model)) {
-    stop("Fit object must have 'broc_model' attribute. Use fit_broc() to fit the model.")
-  }
-
-  family_name <- model$family$family
-  is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
-  is_cdp <- family_name == "cdp"
-
-  old_mask <- NULL
-
-  if (is_cdp && response == 2) {
-    probs_all <- predict(fit, type = "response", ndraws = ndraws,
-                              summary = FALSE, re_formula = re_formula, cores = cores,
-                              response = 2)
-    n_rkg <- if (!is.null(model$family$n_rkg)) model$family$n_rkg else 2L
-    K <- n_rkg
-    rk_obs <- model$stan_data$rk
-    old_levels <- model$family$old_levels
-    y_conf <- model$stan_data$y
-    old_mask <- y_conf %in% old_levels & !is.na(rk_obs)
-    probs <- probs_all[, old_mask, , drop = FALSE]
-    y_obs <- rk_obs[old_mask]
+  rows <- seq_along(model$stan_data$y)
+  if (fam == "cdp" && response == 2) {
+    probs <- predict(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
+                     cores = cores, response = 2)
+    rk <- model$stan_data$rk
+    rows <- which(model$stan_data$y %in% model$family$old_levels & !is.na(rk))
+    probs <- probs[, rows, , drop = FALSE]
+    y_obs <- rk[rows]
+    K <- if (!is.null(model$family$n_rkg)) model$family$n_rkg else 2L
+    cat_labels <- c("Remember", "Know", "Guess")[seq_len(K)]
   } else {
-    probs_raw <- predict(fit, type = "response", ndraws = ndraws,
-                              summary = FALSE, re_formula = re_formula, cores = cores)
-
-    if (is_bivariate) {
-      if (response == 1) {
-        K <- model$model_data$K
-        y_obs <- model$stan_data$y
-        probs <- apply(probs_raw, c(1, 2, 3), sum)
-      } else {
-        K <- model$model_data$K2
-        y_obs <- model$stan_data$y2
-        probs <- apply(probs_raw, c(1, 2, 4), sum)
-      }
-    } else {
-      K <- model$model_data$K
-      y_obs <- model$stan_data$y
-      probs <- probs_raw
-    }
+    probs <- predict(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
+                     cores = cores)
+    if (bivariate) probs <- apply(probs, if (response == 1) c(1, 2, 3) else c(1, 2, 4), sum)
+    y_obs <- if (bivariate && response == 2) model$stan_data$y2 else model$stan_data$y
+    K <- dim(probs)[3]
+    cat_labels <- as.character(seq_len(K))
   }
-
+  counts <- .row_weights(model)[rows]
+  cells <- .ppc_cells(model, by)[rows]
+  cells <- droplevels(cells)
+  levs <- levels(cells)
   S <- dim(probs)[1]
-  N <- dim(probs)[2]
-
-  use_counts <- isTRUE(model$model_data$has_counts)
-  counts_all <- if (use_counts) model$stan_data$counts else rep(1L, length(model$stan_data$y))
-  if (!is.null(old_mask)) {
-    counts <- counts_all[old_mask]
-  } else {
-    counts <- counts_all
-  }
-
-  obs_counts <- integer(K)
-  for (k in seq_len(K)) obs_counts[k] <- sum(counts[y_obs == k])
-
-  if (type == "bars_grouped" && is.null(group)) {
-    if (is_bivariate && !is.null(model$parsed$response$item_type)) {
-      group <- model$parsed$response$item_type
-    } else if (is_cdp && !is.null(model$parsed$response$is_old)) {
-      group <- model$parsed$response$is_old
-    } else {
-      is_sdt <- !family_name %in% c("cumulative")
-      if (is_sdt && !is.null(model$parsed$response$is_old)) {
-        group <- model$parsed$response$is_old
-      } else if (family_name == "source_mixture" && !is.null(model$parsed$response$source)) {
-        group <- model$parsed$response$source
-      }
-    }
-  }
-
-  group_vec <- NULL
-  if (!is.null(group)) {
-    if (is.null(model$data)) {
-      stop("Original data not stored on model. Cannot use 'group' argument.")
-    }
-    missing_vars <- group[!group %in% names(model$data)]
-    if (length(missing_vars) > 0) {
-      stop("Group variable(s) '", paste(missing_vars, collapse = "', '"),
-           "' not found in original data. ",
-           "Available columns: ", paste(names(model$data), collapse = ", "))
-    }
-    if (length(group) == 1) {
-      group_vec <- model$data[[group]]
-    } else {
-      group_vec <- interaction(model$data[group], sep = " : ")
-    }
-    if (!is.null(old_mask)) {
-      group_vec <- group_vec[old_mask]
-    }
-  }
-
-  # --- Grouped bar chart: compute per-group pred counts via multinomial sampling ---
-  if (type == "bars_grouped") {
-    if (is.null(group_vec)) {
-      pred_counts <- .pp_sample_pred_counts(probs, counts, S, N, K)
-      return(pp_bars(obs_counts, pred_counts, K, prob))
-    }
-
-    group_levels <- if (is.factor(group_vec)) levels(group_vec) else sort(unique(group_vec))
-    n_groups <- length(group_levels)
-    group_assign <- match(as.character(group_vec), as.character(group_levels))
-
-    group_obs <- matrix(0L, nrow = n_groups, ncol = K)
-    for (g in seq_len(n_groups)) {
-      idx <- which(group_assign == g)
-      for (k in seq_len(K)) group_obs[g, k] <- sum(counts[idx][y_obs[idx] == k])
-    }
-
-    row_of_trial   <- rep.int(seq_len(N), counts)
-    group_of_trial <- group_assign[row_of_trial]
-    Tt <- length(row_of_trial)
-    group_pred <- array(0L, dim = c(S, n_groups, K))
-    for (s in seq_len(S)) {
-      P <- matrix(probs[s, row_of_trial, ], nrow = Tt, ncol = K)
-      cat <- .pp_draw_categories(P, K)
-      tab <- tabulate((group_of_trial - 1L) * K + cat, nbins = n_groups * K)
-      group_pred[s, , ] <- matrix(tab, nrow = n_groups, ncol = K, byrow = TRUE)
-    }
-
-    return(pp_bars_grouped(group_obs, group_pred, K, group_levels, group, prob))
-  }
-
-  # --- For all other types: compute total pred counts (S x K) ---
-  pred_counts <- .pp_sample_pred_counts(probs, counts, S, N, K)
+  obs <- t(vapply(levs, function(l) {
+    i <- which(cells == l)
+    vapply(seq_len(K), function(k) sum(counts[i][y_obs[i] == k]), numeric(1))
+  }, numeric(K)))
+  obs <- matrix(obs, nrow = length(levs), dimnames = list(levs, NULL))
+  pred <- .ppc_replicate(probs, counts, as.integer(cells), length(levs), K)
 
   switch(type,
-    bars         = pp_bars(obs_counts, pred_counts, K, prob),
-    dens_overlay = pp_dens_overlay(obs_counts, pred_counts, K),
-    stat         = pp_stat(obs_counts, pred_counts, K, stat_fun),
-    rootogram    = pp_rootogram(obs_counts, pred_counts, K, prob)
-  )
+    bars = .ppc_bars(obs, pred, levs, cat_labels, prob),
+    rootogram = .ppc_rootogram(obs, pred, levs, cat_labels),
+    stat = .ppc_stat(obs, pred, levs, stat_fun, K),
+    lines = .ppc_lines(obs, pred, levs, cat_labels))
 }
 
-# =============================================================================
-# Multinomial Sampling Helper
-# =============================================================================
+.ppc_cells <- function(model, by) {
+  sd <- model$stan_data
+  fam <- model$family$family
+  role <- if (.is_bivariate_family(fam) && !is.null(sd$item_type)) {
+    factor(c("New", "Source A", "Source B")[sd$item_type], levels = c("New", "Source A", "Source B"))
+  } else if (fam == "source_mixture") {
+    factor(ifelse(sd$source == max(sd$source), "Source B", "Source A"), levels = c("Source A", "Source B"))
+  } else if (!is.null(sd$is_old) && fam != "cumulative") {
+    factor(ifelse(sd$is_old == 1, "Targets", "Lures"), levels = c("Lures", "Targets"))
+  } else NULL
+  if (is.null(by)) return(if (is.null(role)) factor(rep("All", length(sd$y))) else droplevels(role))
+  cells <- .cell_of_rows(model, by)
+  if (is.null(role)) return(cells)
+  mixed <- any(tapply(as.integer(role), cells, function(v) length(unique(v)) > 1L))
+  if (!mixed) return(cells)
+  interaction(cells, role, sep = " / ", drop = TRUE, lex.order = TRUE)
+}
 
-#' Sample total predicted counts per category via multinomial sampling
-#'
-#' For each posterior draw s and data row n, draws `counts[n]` responses from
-#' the categorical distribution `probs[s, n, ]`, then sums across rows to get
-#' total predicted counts per category.
-#'
-#' @param probs S x N x K array of category probabilities
-#' @param counts Integer vector of length N (trial counts per row)
-#' @param S Number of posterior draws
-#' @param N Number of data rows
-#' @param K Number of response categories
-#' @return S x K matrix of total predicted counts per category per draw
-#' @noRd
-.pp_sample_pred_counts <- function(probs, counts, S, N, K) {
-  row_of_trial <- rep.int(seq_len(N), counts)
-  Tt <- length(row_of_trial)
-  pred_counts <- matrix(0L, nrow = S, ncol = K)
+.ppc_replicate <- function(probs, counts, cell, n_cells, K) {
+  S <- dim(probs)[1]
+  trial_row <- rep.int(seq_along(counts), counts)
+  trial_cell <- cell[trial_row]
+  out <- array(0L, c(S, n_cells, K))
   for (s in seq_len(S)) {
-    P <- matrix(probs[s, row_of_trial, ], nrow = Tt, ncol = K)
-    pred_counts[s, ] <- tabulate(.pp_draw_categories(P, K), nbins = K)
+    P <- matrix(probs[s, trial_row, ], nrow = length(trial_row), ncol = K)
+    k <- .pp_draw_categories(P, K)
+    out[s, , ] <- matrix(tabulate((trial_cell - 1L) * K + k, nbins = n_cells * K), n_cells, K, byrow = TRUE)
   }
-  pred_counts
+  out
 }
 
-#' Vectorized categorical draw from a matrix of per-row probabilities
-#'
-#' A size-c multinomial is the sum of c categoricals, so total predicted counts
-#' come from drawing one category per trial. `P` holds one (possibly unnormalized
-#' or degenerate) probability row per trial; this draws a category for every row
-#' at once via inverse-CDF sampling, replacing a per-row rmultinom loop.
-#'
-#' @param P T x K matrix of per-row category probabilities
-#' @param K Number of response categories
-#' @return Integer vector of length T of sampled categories (1..K)
-#' @noRd
 .pp_draw_categories <- function(P, K) {
   rs <- rowSums(P)
   bad <- !is.finite(rs) | rs <= 0
@@ -235,276 +125,97 @@ pp_check.broc_fit <- function(object, type = c("bars", "bars_grouped", "dens_ove
   if (any(bad)) P[bad, ] <- 1 / K
   cumP <- P
   for (k in 2:K) cumP[, k] <- cumP[, k - 1] + P[, k]
-  u <- runif(nrow(P))
+  u <- stats::runif(nrow(P))
   cat <- rowSums(cumP < u) + 1L
   cat[cat > K] <- K
   cat
 }
 
-# =============================================================================
-# Plot Type: bars
-# =============================================================================
-
-#' Bar chart of observed vs predicted response distribution
-#' @param obs_counts K-length vector of observed counts per category
-#' @param pred_counts S x K matrix of predicted counts per category per draw
-#' @param K Number of response categories
-#' @param prob CI width
-#' @noRd
-pp_bars <- function(obs_counts, pred_counts, K, prob) {
-  probs_lower <- (1 - prob) / 2
-  probs_upper <- 1 - probs_lower
-
-  df_obs <- data.frame(
-    category = factor(seq_len(K)),
-    count = obs_counts,
-    type = "Observed"
-  )
-
-  df_pred <- data.frame(
-    category = factor(seq_len(K)),
-    median = apply(pred_counts, 2, median),
-    lower = apply(pred_counts, 2, quantile, probs = probs_lower),
-    upper = apply(pred_counts, 2, quantile, probs = probs_upper)
-  )
-
-  ggplot2::ggplot() +
-    ggplot2::geom_col(
-      data = df_obs,
-      ggplot2::aes(x = .data$category, y = .data$count),
-      fill = "gray70", color = "gray40", width = 0.7
-    ) +
-    ggplot2::geom_pointrange(
-      data = df_pred,
-      ggplot2::aes(x = .data$category, y = .data$median,
-                   ymin = .data$lower, ymax = .data$upper),
-      color = "#3366CC", size = 0.8, linewidth = 0.8
-    ) +
-    ggplot2::labs(
-      x = "Response Category", y = "Count",
-      title = "Posterior Predictive Check",
-      subtitle = "Bars = observed, points = predicted (median + CI)"
-    ) +
-    broc_pp_theme()
+.ppc_long <- function(obs, pred, levs, cat_labels, prob) {
+  lo <- (1 - prob) / 2
+  do.call(rbind, lapply(seq_along(levs), function(g) {
+    n <- sum(obs[g, ])
+    pp <- matrix(pred[, g, ], nrow = dim(pred)[1]) / n
+    data.frame(cell = levs[g], k = factor(cat_labels, levels = cat_labels), obs = obs[g, ] / n,
+               mean = colMeans(pp), lower = apply(pp, 2, stats::quantile, lo, names = FALSE),
+               upper = apply(pp, 2, stats::quantile, 1 - lo, names = FALSE))
+  }))
 }
 
-# =============================================================================
-# Plot Type: bars_grouped
-# =============================================================================
-
-#' Faceted bar chart by group
-#' @param group_obs n_groups x K matrix of observed counts per group and category
-#' @param group_pred S x n_groups x K array of predicted counts
-#' @param K Number of response categories
-#' @param group_levels Character vector of group level names
-#' @param group_name Name of the grouping variable
-#' @param prob CI width
-#' @noRd
-pp_bars_grouped <- function(group_obs, group_pred, K, group_levels, group_name, prob) {
-  n_groups <- length(group_levels)
-  S <- dim(group_pred)[1]
-
-  probs_lower <- (1 - prob) / 2
-  probs_upper <- 1 - probs_lower
-
-  obs_list <- list()
-  pred_list <- list()
-
-  for (g in seq_len(n_groups)) {
-    gl <- group_levels[g]
-
-    obs_list[[g]] <- data.frame(
-      category = factor(seq_len(K)),
-      count = group_obs[g, ],
-      group = gl
-    )
-
-    pred_cts <- group_pred[, g, ]
-    if (S == 1L) pred_cts <- matrix(pred_cts, nrow = 1)
-
-    pred_list[[g]] <- data.frame(
-      category = factor(seq_len(K)),
-      median = apply(pred_cts, 2, median),
-      lower = apply(pred_cts, 2, quantile, probs = probs_lower),
-      upper = apply(pred_cts, 2, quantile, probs = probs_upper),
-      group = gl
-    )
-  }
-
-  df_obs <- do.call(rbind, obs_list)
-  df_pred <- do.call(rbind, pred_list)
-  rownames(df_obs) <- rownames(df_pred) <- NULL
-
-  df_obs$group <- factor(df_obs$group, levels = group_levels)
-  df_pred$group <- factor(df_pred$group, levels = group_levels)
-
-  ggplot2::ggplot() +
-    ggplot2::geom_col(
-      data = df_obs,
-      ggplot2::aes(x = .data$category, y = .data$count),
-      fill = "gray70", color = "gray40", width = 0.7
-    ) +
-    ggplot2::geom_pointrange(
-      data = df_pred,
-      ggplot2::aes(x = .data$category, y = .data$median,
-                   ymin = .data$lower, ymax = .data$upper),
-      color = "#3366CC", size = 0.6, linewidth = 0.7
-    ) +
-    ggplot2::facet_wrap(~ group, scales = "free_y") +
-    ggplot2::labs(
-      x = "Response Category", y = "Count",
-      title = "Posterior Predictive Check (grouped)",
-      subtitle = paste0("Grouped by: ", if (!is.null(group_name)) group_name else "group")
-    ) +
-    broc_pp_theme()
+.ppc_facets <- function(levs) {
+  if (length(levs) > 1L) ggplot2::facet_wrap(~ cell, nrow = if (length(levs) <= 4L) 1L else NULL)
 }
 
-# =============================================================================
-# Plot Type: dens_overlay
-# =============================================================================
-
-#' Overlay density of replicated datasets on observed
-#' @param obs_counts K-length vector of observed counts per category
-#' @param pred_counts S x K matrix of predicted counts per category per draw
-#' @param K Number of response categories
-#' @noRd
-pp_dens_overlay <- function(obs_counts, pred_counts, K) {
-  S <- nrow(pred_counts)
-  total_obs <- sum(obs_counts)
-
-  obs_props <- obs_counts / total_obs
-
-  n_show <- min(S, 50L)
-  show_idx <- if (n_show < S) sample.int(S, n_show) else seq_len(S)
-
-  rep_list <- vector("list", n_show)
-  for (i in seq_along(show_idx)) {
-    s <- show_idx[i]
-    total_pred <- sum(pred_counts[s, ])
-    props <- if (total_pred > 0) pred_counts[s, ] / total_pred else rep(1 / K, K)
-    rep_list[[i]] <- data.frame(
-      category = seq_len(K),
-      proportion = props,
-      draw = i
-    )
-  }
-
-  df_rep <- do.call(rbind, rep_list)
-  df_obs <- data.frame(category = seq_len(K), proportion = obs_props)
-
-  ggplot2::ggplot() +
-    ggplot2::geom_line(
-      data = df_rep,
-      ggplot2::aes(x = .data$category, y = .data$proportion, group = .data$draw),
-      color = "#3366CC", alpha = 0.15, linewidth = 0.4
-    ) +
-    ggplot2::geom_line(
-      data = df_obs,
-      ggplot2::aes(x = .data$category, y = .data$proportion),
-      color = "black", linewidth = 1.2
-    ) +
-    ggplot2::geom_point(
-      data = df_obs,
-      ggplot2::aes(x = .data$category, y = .data$proportion),
-      color = "black", size = 2.5
-    ) +
-    ggplot2::scale_x_continuous(breaks = seq_len(K)) +
-    ggplot2::labs(
-      x = "Response Category", y = "Proportion",
-      title = "Posterior Predictive Check (density overlay)",
-      subtitle = "Thin lines = replicated datasets, thick line = observed"
-    ) +
-    broc_pp_theme()
+.ppc_bars <- function(obs, pred, levs, cat_labels, prob) {
+  df <- .ppc_long(obs, pred, levs, cat_labels, prob)
+  df$cell <- factor(df$cell, levels = levs)
+  ggplot2::ggplot(df, ggplot2::aes(x = .data$k)) +
+    ggplot2::geom_col(ggplot2::aes(y = .data$obs), fill = "grey85", width = 0.75) +
+    ggplot2::geom_linerange(ggplot2::aes(ymin = .data$lower, ymax = .data$upper), colour = .broc_accent, linewidth = 0.9) +
+    ggplot2::geom_point(ggplot2::aes(y = .data$mean), colour = .broc_accent, size = 1.9) +
+    .ppc_facets(levs) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(c(0, 0.05))) +
+    ggplot2::labs(x = "Response", y = "Proportion of responses", title = "Posterior predictive check",
+                  subtitle = paste0("Bars: observed. Points and lines: predicted mean and ", round(100 * prob),
+                                    "% interval")) +
+    theme_broc() + ggplot2::theme(panel.grid.major.x = ggplot2::element_blank())
 }
 
-# =============================================================================
-# Plot Type: stat
-# =============================================================================
-
-#' Compare summary statistic across replicated vs observed
-#' @param obs_counts K-length vector of observed counts per category
-#' @param pred_counts S x K matrix of predicted counts per category per draw
-#' @param K Number of response categories
-#' @param stat_fun Summary statistic function (applied to expanded response vector)
-#' @noRd
-pp_stat <- function(obs_counts, pred_counts, K, stat_fun) {
-  S <- nrow(pred_counts)
-
-  obs_stat <- stat_fun(rep(seq_len(K), obs_counts))
-
-  rep_stats <- numeric(S)
-  for (s in seq_len(S)) {
-    rep_stats[s] <- stat_fun(rep(seq_len(K), pred_counts[s, ]))
-  }
-
-  df_rep <- data.frame(stat = rep_stats)
-
-  ggplot2::ggplot(df_rep, ggplot2::aes(x = .data$stat)) +
-    ggplot2::geom_histogram(
-      fill = "#3366CC", color = "white", alpha = 0.7, bins = 30
-    ) +
-    ggplot2::geom_vline(
-      xintercept = obs_stat, color = "black", linewidth = 1.2, linetype = "dashed"
-    ) +
-    ggplot2::labs(
-      x = "Test Statistic", y = "Count",
-      title = "Posterior Predictive Check (statistic)",
-      subtitle = "Histogram = replicated, dashed line = observed"
-    ) +
-    broc_pp_theme()
+.ppc_rootogram <- function(obs, pred, levs, cat_labels) {
+  df <- do.call(rbind, lapply(seq_along(levs), function(g) {
+    e <- colMeans(matrix(pred[, g, ], nrow = dim(pred)[1]))
+    data.frame(cell = levs[g], k = seq_along(cat_labels), expected = sqrt(e), top = sqrt(e),
+               bottom = sqrt(e) - sqrt(obs[g, ]))
+  }))
+  df$cell <- factor(df$cell, levels = levs)
+  ggplot2::ggplot(df, ggplot2::aes(x = .data$k)) +
+    ggplot2::geom_rect(ggplot2::aes(xmin = .data$k - 0.375, xmax = .data$k + 0.375, ymin = .data$bottom,
+                                    ymax = .data$top), fill = "grey80") +
+    ggplot2::geom_hline(yintercept = 0, colour = "grey25", linewidth = 0.4) +
+    ggplot2::geom_line(ggplot2::aes(y = .data$expected), colour = .broc_accent, linewidth = 0.9) +
+    ggplot2::geom_point(ggplot2::aes(y = .data$expected), colour = .broc_accent, size = 1.9) +
+    .ppc_facets(levs) +
+    ggplot2::scale_x_continuous(breaks = seq_along(cat_labels), labels = cat_labels) +
+    ggplot2::labs(x = "Response", y = "Square root of count", title = "Hanging rootogram",
+                  subtitle = "Observed bars hang from the expected counts (line); bottoms away from zero show misfit") +
+    theme_broc() + ggplot2::theme(panel.grid.major.x = ggplot2::element_blank())
 }
 
-# =============================================================================
-# Plot Type: rootogram
-# =============================================================================
-
-#' Hanging rootogram
-#' @param obs_counts K-length vector of observed counts per category
-#' @param pred_counts S x K matrix of predicted counts per category per draw
-#' @param K Number of response categories
-#' @param prob CI width (unused, kept for interface consistency)
-#' @noRd
-pp_rootogram <- function(obs_counts, pred_counts, K, prob) {
-  exp_counts <- colMeans(pred_counts)
-
-  sqrt_obs <- sqrt(obs_counts)
-  sqrt_exp <- sqrt(exp_counts)
-
-  df <- data.frame(
-    x = seq_len(K),
-    ymin = sqrt_exp - sqrt_obs,
-    ymax = sqrt_exp
-  )
-
-  ggplot2::ggplot(df) +
-    ggplot2::geom_rect(
-      ggplot2::aes(
-        xmin = .data$x - 0.35, xmax = .data$x + 0.35,
-        ymin = .data$ymin, ymax = .data$ymax
-      ),
-      fill = "#3366CC", alpha = 0.7
-    ) +
-    ggplot2::geom_hline(yintercept = 0, linewidth = 0.5, linetype = "dashed") +
-    ggplot2::scale_x_continuous(breaks = seq_len(K), labels = seq_len(K)) +
-    ggplot2::labs(
-      x = "Response Category", y = expression(sqrt("Count")),
-      title = "Hanging Rootogram",
-      subtitle = "Bar tops = sqrt(expected); bar bottoms deviating from zero indicate misfit"
-    ) +
-    broc_pp_theme()
+.ppc_stat <- function(obs, pred, levs, stat_fun, K) {
+  df <- do.call(rbind, lapply(seq_along(levs), function(g) {
+    rep_stat <- apply(matrix(pred[, g, ], nrow = dim(pred)[1]), 1, function(cn) stat_fun(rep(seq_len(K), cn)))
+    data.frame(cell = levs[g], value = rep_stat)
+  }))
+  ob <- data.frame(cell = levs, value = vapply(seq_along(levs), function(g) stat_fun(rep(seq_len(K), obs[g, ])), numeric(1)))
+  df$cell <- factor(df$cell, levels = levs); ob$cell <- factor(ob$cell, levels = levs)
+  ggplot2::ggplot(df, ggplot2::aes(x = .data$value)) +
+    ggplot2::geom_histogram(bins = 30, fill = "grey80", colour = "white", linewidth = 0.2) +
+    ggplot2::geom_vline(data = ob, ggplot2::aes(xintercept = .data$value), colour = .broc_accent, linewidth = 1) +
+    (if (length(levs) > 1L) ggplot2::facet_wrap(~ cell, scales = "free_x")) +
+    ggplot2::scale_y_continuous(expand = ggplot2::expansion(c(0, 0.05))) +
+    ggplot2::labs(x = "Statistic", y = NULL, title = "Posterior predictive check: statistic",
+                  subtitle = "Histogram: replicated data sets. Line: observed") +
+    theme_broc() + ggplot2::theme(axis.text.y = ggplot2::element_blank(), panel.grid.major.y = ggplot2::element_blank())
 }
 
-# =============================================================================
-# Theme
-# =============================================================================
-
-#' Standard theme for pp_check plots (matches plot.R conventions)
-#' @noRd
-broc_pp_theme <- function() {
-  ggplot2::theme_minimal(base_size = 11) +
-    ggplot2::theme(
-      panel.grid.minor = ggplot2::element_blank(),
-      panel.grid.major.x = ggplot2::element_blank(),
-      strip.text = ggplot2::element_text(face = "bold")
-    )
+.ppc_lines <- function(obs, pred, levs, cat_labels) {
+  S <- dim(pred)[1]
+  keep <- seq_len(min(S, 60L))
+  reps <- do.call(rbind, lapply(seq_along(levs), function(g) {
+    n <- sum(obs[g, ])
+    do.call(rbind, lapply(keep, function(s) data.frame(cell = levs[g], draw = s, k = seq_along(cat_labels),
+                                                        p = pred[s, g, ] / n)))
+  }))
+  ob <- do.call(rbind, lapply(seq_along(levs), function(g)
+    data.frame(cell = levs[g], k = seq_along(cat_labels), p = obs[g, ] / sum(obs[g, ]))))
+  reps$cell <- factor(reps$cell, levels = levs); ob$cell <- factor(ob$cell, levels = levs)
+  ggplot2::ggplot(reps, ggplot2::aes(x = .data$k, y = .data$p)) +
+    ggplot2::geom_line(ggplot2::aes(group = .data$draw), colour = .broc_accent, alpha = 0.12, linewidth = 0.4) +
+    ggplot2::geom_line(data = ob, colour = "grey10", linewidth = 0.9) +
+    ggplot2::geom_point(data = ob, colour = "grey10", size = 1.8) +
+    .ppc_facets(levs) +
+    ggplot2::scale_x_continuous(breaks = seq_along(cat_labels), labels = cat_labels) +
+    ggplot2::labs(x = "Response", y = "Proportion of responses", title = "Posterior predictive check",
+                  subtitle = "Thin lines: replicated data sets. Black: observed") +
+    theme_broc() + ggplot2::theme(panel.grid.major.x = ggplot2::element_blank())
 }
