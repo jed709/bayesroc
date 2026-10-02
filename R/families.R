@@ -619,9 +619,9 @@ source_mixture <- function(link = link_probit()) {
 #'   `"full"` (default): every detection response level has its own source
 #'   criteria (K1 x (K2-1) in total). `"shared"`: responses that judge an item
 #'   "new" share a single set of source criteria; requires `old_levels`.
-#' @param old_levels Integer vector of detection response levels (on the
-#'   1..K1 scale, e.g. `old_levels = 4:6`) that count as "old" judgements; the
-#'   rest are "new". Required when `new_source_criteria = "shared"`; ignored
+#' @param old_levels Integer vector of detection response values that count as
+#'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
+#'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new". Required when `new_source_criteria = "shared"`; ignored
 #'   otherwise.
 #' @param varying_re Random-effect structure for varying source criteria
 #'   (distinct from `new_source_criteria`, which governs the fixed criteria).
@@ -1002,7 +1002,8 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #' signal (Wixted & Mickes, 2010).
 #'
 #' @param old_levels Integer vector specifying which confidence levels
-#'   correspond to "old" responses (where R/K judgments apply). If `NULL`
+#'   correspond to "old" responses (where R/K judgments apply), in the data's
+#'   own coding of the confidence response. If `NULL`
 #'   (default), inferred at fit time from the data as the bins where `rk`
 #'   is non-NA. Pass explicitly only to override that inference (e.g. when
 #'   some "old" bin happens to have no observed responses).

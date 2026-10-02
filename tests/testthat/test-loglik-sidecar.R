@@ -79,7 +79,7 @@ test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
   f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
-                loo = TRUE)
+                loo = TRUE, save_loglik = FALSE)
 
   expect_s3_class(f$.loo, "loo")
   expect_equal(dim(f$.loo)[2], nrow(fx$trial))
@@ -118,7 +118,7 @@ test_that("loo() errors actionably once log_lik is gone", {
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
   f <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                 iter_warmup = 200, iter_sampling = 200, seed = 6,
-                loo = TRUE, progress_bar = FALSE)
+                loo = TRUE, save_loglik = FALSE, progress_bar = FALSE)
   expect_error(loo(f, type = "cell"), "No log_lik is available")
 })
 
@@ -159,7 +159,7 @@ test_that("a fit-time loo result survives save and load", {
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
   f <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
                 parallel_chains = 4, iter_warmup = 300, iter_sampling = 300,
-                loo = TRUE)
+                loo = TRUE, save_loglik = FALSE)
   file <- tempfile(fileext = ".rds")
   suppressMessages(save_broc_fit(f, file, verbose = FALSE))
   f2 <- load_broc_fit(file)
@@ -196,7 +196,7 @@ test_that("JAX honours loo = TRUE and reclaims the sidecar", {
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), fx$agg, counts = "n")
   f <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
                 iter_warmup = 300, iter_sampling = 300, seed = 4,
-                loo = TRUE, progress_bar = FALSE)
+                loo = TRUE, save_loglik = FALSE, progress_bar = FALSE)
   expect_s3_class(f$.loo, "loo")
   expect_equal(dim(f$.loo)[2], nrow(fx$trial))
   expect_null(f$.loglik_path)

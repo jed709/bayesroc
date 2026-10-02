@@ -105,14 +105,13 @@ def _fast_constrain_fn(model, config, full_pp, unflatten, ths):
     None -> caller falls back to full_pp unless the trimmed and full postprocess
     agree on the first, middle and last draw of every chain."""
     try:
-        st = initialize_model(jax.random.PRNGKey(0), model,
-                              init_strategy=init_to_uniform(radius=0.0),
-                              model_args=(_trim_config(config),))
+        _, _, trim_pp = _model_info(model, _trim_config(config))
+        full_j, trim_j = jax.jit(full_pp), jax.jit(trim_pp)
         chains, kept = ths.shape[:2]
         for c in range(chains):
             for i in sorted({0, kept // 2, kept - 1}):
                 z = unflatten(jnp.asarray(ths[c, i]))
-                a, b = full_pp(z), st.postprocess_fn(z)
+                a, b = full_j(z), trim_j(z)
                 ka = {k for k in a if k != "log_lik"}
                 if ka != set(b) - {"log_lik"}:
                     return None
@@ -122,34 +121,55 @@ def _fast_constrain_fn(model, config, full_pp, unflatten, ths):
                     if not np.allclose(np.asarray(a[k]), np.asarray(b[k]),
                                        rtol=1e-10, atol=1e-12):
                         return None
-        return st.postprocess_fn
+        return trim_pp
     except Exception:
         return None
 
 
-def _build(model, config):
-    """initialize_model -> (vg, unflatten, keys, offsets, D, postprocess_fn).
+def _model_info(model, config):
+    """Unconstrained site shapes, potential and postprocess (constrained sites plus
+    deterministics) from one abstract trace. numpyro's initialize_model gives the same
+    three but runs the model eagerly, compiling every primitive separately."""
+    from numpyro import handlers
+    from numpyro.distributions.transforms import biject_to
+    from numpyro.infer.util import potential_energy, constrain_fn
 
-    Init is pinned to zeros: the returned init values are never used, and
-    numpyro's default random init search can abort on non-finite potentials
-    under float32."""
-    st = initialize_model(jax.random.PRNGKey(0), model,
-                          init_strategy=init_to_uniform(radius=0.0),
-                          model_args=(config,))
-    z = st.param_info.z
-    keys = sorted(z.keys())
+    supports = {}
+
+    def run():
+        init = handlers.substitute(handlers.seed(model, rng_seed=0),
+                                   substitute_fn=init_to_uniform(radius=0.0))
+        tr = handlers.trace(init).get_trace(config)
+        out = {}
+        for name, site in tr.items():
+            if site["type"] == "sample" and not site["is_observed"]:
+                supports[name] = site["fn"].support
+                out[name] = site["value"]
+        return out
+
+    vals = jax.eval_shape(run)
+    shapes = {k: tuple(biject_to(supports[k]).inv.forward_shape(vals[k].shape)) for k in vals}
+    pot = lambda z: potential_energy(model, (config,), {}, z)
+    post = lambda z: constrain_fn(model, (config,), {}, z, return_deterministic=True)
+    return shapes, pot, post
+
+
+def _build(model, config):
+    """(vg, unflatten, keys, offsets, D, postprocess_fn) for flat unconstrained vectors."""
+    shapes, potential_fn, postprocess_fn = _model_info(model, config)
+    keys = sorted(shapes)
     off, o = {}, 0
     for k in keys:
-        sz = int(np.prod(z[k].shape))
-        off[k] = (slice(o, o + sz), z[k].shape)
+        sz = int(np.prod(shapes[k]))
+        off[k] = (slice(o, o + sz), shapes[k])
         o += sz
     D = o
 
     def unflatten(v):
         return {k: v[off[k][0]].reshape(off[k][1]) for k in keys}
 
-    pot = lambda v: st.potential_fn(unflatten(v))
-    return jax.value_and_grad(pot), unflatten, keys, off, D, st.postprocess_fn
+    pot = lambda v: potential_fn(unflatten(v))
+    return jax.value_and_grad(pot), unflatten, keys, off, D, postprocess_fn
 
 
 def _build_offset(model, config, unflatten):
@@ -167,7 +187,7 @@ def ll_offset(postprocess_fn, unflatten, config, th):
     """Per-observation weighted log-likelihood at the unconstrained point `th`. Summing
     log_lik - offset keeps the potential near zero around `th`, so its float32 value
     resolves energy differences (a sum of ~|U| rounds to |U| * 6e-8, 0.03 at |U| = 5e5)."""
-    ll = jnp.asarray(postprocess_fn(unflatten(jnp.asarray(th)))["log_lik"])
+    ll = jnp.asarray(jax.jit(lambda v: postprocess_fn(unflatten(v))["log_lik"])(jnp.asarray(th)))
     counts = config.get("counts")
     return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
 
@@ -428,7 +448,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
 
     if donor_loader is not None:
         dummy = jnp.zeros((chains, D))
-        c0 = setup_p(dummy, dummy, zero_off)
+        c0 = jax.tree.map(np.asarray, setup_p(dummy, dummy, zero_off))
         cw = chunk_c(c0, jnp.arange(step), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3),
                      zero_off)
         jax.block_until_ready(cw)
@@ -444,7 +464,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     if rho0 is None:
         rho0 = MSQ * jax.random.normal(_tagged(seed, 2), (chains, D))
     t0 = int(state.get("t0", 0))
-    carry = setup_p(th0, jnp.asarray(rho0), OFF)
+    carry = jax.tree.map(np.asarray, setup_p(th0, jnp.asarray(rho0), OFF))
 
     bar = _pbar(samples, "DR-G-HMC sample") if progress_bar else None
     tp, sp, ep = [], [], []
@@ -452,7 +472,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
         ts = jnp.arange(i, min(i + step, t0 + samples))
         fn = chunk_c if ts.shape[0] == step else chunk_raw
         carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0, OFF)
-        carry = jax.block_until_ready(carry)
+        carry = jax.tree.map(np.asarray, carry)
         tp.append(np.asarray(t)); sp.append(np.asarray(s)); ep.append(np.asarray(e))
         if bar is not None:
             bar.update(int(ts.shape[0]))
@@ -593,18 +613,11 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
 def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
                thinning=1, chain_method="parallel", progress_bar=True,
                init_strategy="numeric", init_radius=0.0, control=None,
-               save_loglik=True, keep_re=False, resume_state=None,
-               save_state=False, init_z=None, cache=None):
-    """With `resume_state` (from a prior round's `state`) adaptation is skipped
-    and the same chains continue: positions, momenta, step offset and random
-    stream carry over, so rounds reproduce a single long run. With `save_state`
-    the return carries `state` for the next round. `cache` (a dict kept by a
-    persistent worker) reuses the model build and the compiled sampler."""
+               save_loglik=True, keep_re=False, save_state=False, init_z=None):
+    """With `save_state` the return carries the end-of-run `state` (positions, momenta,
+    step offset, adaptation), from which autorun continues the same chains exactly."""
     ctrl = _merge_control(control)
-    warm = resume_state is not None
     parallel = chain_method == "parallel"
-    if warm:
-        seed = int(resume_state["seed"])
     _convert_matrices(config)
     t0 = time.time()
 
@@ -621,19 +634,10 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
     if progress_bar:
         print("[DR-G-HMC] building model + compiling adaptation...", flush=True)
     try:
-        if cache is not None and "build" in cache:
-            vg, unflatten, keys, off, D, postprocess_fn = cache["build"]
-        else:
-            vg, unflatten, keys, off, D, postprocess_fn = _build(model, config)
-            if cache is not None:
-                cache["build"] = (vg, unflatten, keys, off, D, postprocess_fn)
+        vg, unflatten, keys, off, D, postprocess_fn = _build(model, config)
 
         smp_thread = None
-        sampler_key = (chains, _chunk_len(samples), parallel, tuple(sorted(ctrl.items())))
-        if ctrl["precision"] != "f32" and cache is not None and cache.get("sampler_key") == sampler_key:
-            _res = cache["sampler"]
-            setup_p, chunk_raw = cache["fns"]
-        elif ctrl["precision"] != "f32":
+        if ctrl["precision"] != "f32":
             import threading
             setup_p, chunk_raw = _sampler_fns(_build_offset(model, config, unflatten), D, ctrl, parallel)
             step = _chunk_len(samples)
@@ -659,19 +663,12 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             smp_thread = threading.Thread(target=_worker, daemon=True)
             smp_thread.start()
 
-        if warm:
-            imm = jnp.asarray(resume_state["imm"])
-            eps = float(resume_state["eps"])
-            state = dict(th=np.asarray(resume_state["th"]), rho=np.asarray(resume_state["rho"]),
-                         t0=int(resume_state["t0"]), offset=resume_state.get("offset"))
-            wall_warm = 0.0
-        else:
-            th_init = _initial_positions(model, config, keys, off, D, chains, seed,
-                                         init_strategy, init_radius, init_z)
-            imm, eps, th_adapted, wall_warm = _self_adapt(
-                vg, D, chains, warmup, seed, ctrl, parallel, progress_bar,
-                th0=th_init)
-            state = dict(th=th_adapted, rho=None, t0=0)
+        th_init = _initial_positions(model, config, keys, off, D, chains, seed,
+                                     init_strategy, init_radius, init_z)
+        imm, eps, th_adapted, wall_warm = _self_adapt(
+            vg, D, chains, warmup, seed, ctrl, parallel, progress_bar,
+            th0=th_init)
+        state = dict(th=th_adapted, rho=None, t0=0)
     except Exception:
         if f32_proc is not None:
             f32_proc.kill()
@@ -687,8 +684,6 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             smp_thread.join()
         if "err" in _res:
             raise _res["err"]
-        if cache is not None:
-            cache["sampler"], cache["fns"], cache["sampler_key"] = _res, (setup_p, chunk_raw), sampler_key
         ths, stages, energy, end = _sample_phase(
             None, D, chains, samples, thinning, seed, ctrl, imm, eps, state,
             parallel, progress_bar,

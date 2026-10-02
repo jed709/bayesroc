@@ -22,14 +22,13 @@ fit_broc(
   seed = NULL,
   file = NULL,
   file_refit = FALSE,
-  save_loglik = NULL,
+  save_loglik = TRUE,
   loo = FALSE,
   loo_cores = 4,
   loglik_precision = c("f32", "f64"),
   keep_re = FALSE,
   re_store = c("f64", "f32", "int16", "int8"),
-  warm_state = NULL,
-  save_state = FALSE,
+  resume = NULL,
   ...
 )
 }
@@ -46,8 +45,10 @@ when \code{parallel_chains < chains}.}
 \item{iter_warmup}{Number of warmup/adaptation iterations per chain. Default
 2000 for \code{sampler = "nuts"}, 2500 for \code{"drghmc"}.}
 
-\item{iter_sampling}{Number of post-warmup sampling iterations per chain.
-Default 2000 for \code{sampler = "nuts"}, 10000 for \code{"drghmc"}.}
+\item{iter_sampling}{Number of post-warmup draws per chain (default 2000 for
+\code{sampler = "nuts"}, 10000 for \code{"drghmc"}), or \code{"auto"} to sample until every
+monitored parameter reaches the ESS and R-hat targets in \code{control} (JAX backend;
+see \emph{Adaptive-length sampling} below).}
 
 \item{thin}{Period for saving samples (default 1). \code{thin = k} keeps every
 \code{k}-th post-warmup draw.}
@@ -63,6 +64,13 @@ parentheses; unknown keys are ignored with a warning):
 \item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{precision} ("f64" or "f32").
+\item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
+named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
+\code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
+DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check_every}
+(draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
+\code{max_kept} (draws per chain kept in the fit; 1000, or more for ESS targets above
+\code{500 * chains}).
 }}
 
 \item{init}{Initial-value strategy. Default \code{0}: all parameters start at 0 on
@@ -103,10 +111,10 @@ saved fit is loaded and returned instead of refitting -- unless
 sampling is skipped; if \code{TRUE}, the model is refit and the file overwritten.
 Ignored when \code{file} is \code{NULL}.}
 
-\item{save_loglik}{Keep the per-observation log-likelihood so \code{\link[=loo]{loo()}} works on
-the fit and on a fit saved with \code{\link[=save_broc_fit]{save_broc_fit()}} or \verb{file =}. \code{NULL}
-(default) keeps it unless \code{loo = TRUE}, whose result is stored on the fit
-instead; \code{TRUE} always keeps it; \code{FALSE} drops it.}
+\item{save_loglik}{Keep the per-observation log-likelihood (default \code{TRUE}) so
+\code{\link[=loo]{loo()}} works on the fit and on a fit saved with \code{\link[=save_broc_fit]{save_broc_fit()}} or \verb{file =}.
+With \code{FALSE} it is dropped; \code{loo = TRUE} still computes PSIS-LOO first and
+stores the result on the fit.}
 
 \item{loo}{If \code{TRUE}, PSIS-LOO is computed at fit time and stored on the fit
 (\code{fit$.loo}, also saved with the fit). Default \code{FALSE}.}
@@ -127,13 +135,14 @@ files regardless; they are left out of \verb{$draws()}, summaries and saved fits
 (default, lossless), \code{"f32"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
 given its own \code{re_store}.}
 
-\item{warm_state}{Optional path to a state file written by \code{save_state}, used
-to resume sampling without repeating warmup (JAX backend). The file is a
-Python pickle, and loading a pickle can run arbitrary code: only pass state
-files that bayesroc wrote on your own machine.}
-
-\item{save_state}{If \code{TRUE}, the post-warmup sampler state is saved so a later
-fit can resume from it via \code{warm_state}. Default \code{FALSE}.}
+\item{resume}{A JAX fit of the same model to continue: its chains are extended
+exactly (no new warmup) and its draws kept. With \code{iter_sampling = "auto"}
+sampling continues until the targets in \code{control} are met (for example after a
+\code{max_time} or \code{max_draws} cap); with a number, that many more draws per chain are
+taken. The sampler and number of chains are those of \code{resume}. A fit saved with
+\code{\link[=save_broc_fit]{save_broc_fit()}} keeps its sampler state as \verb{<file>_state.pkl} (a Python pickle,
+which can run code when loaded: only resume fits that bayesroc wrote on your
+own machine).}
 
 \item{...}{Additional arguments forwarded to cmdstanr's \verb{$sample()} (Stan
 backend only; a warning is issued if any are passed with \code{backend = "jax"}).}
@@ -152,6 +161,27 @@ Stan (cmdstanr) or JAX (NumPyro). Returns a \code{broc_fit} object that wraps
 the backend-specific result and provides a uniform interface for downstream
 analysis (\code{summary(fit)}, \code{predict(fit)}, \code{pp_check(fit)}, etc.).
 }
+\section{Adaptive-length sampling}{
+
+With \code{iter_sampling = "auto"} one set of chains is warmed up once and then
+extended in rounds of \code{check_every} draws per chain. After each round the
+rank-normalised bulk and tail ESS and R-hat (Vehtari et al., 2021, the estimators
+\code{\link[cmdstanr:fit-method-summary]{cmdstanr::summary()}} reports) are computed for every monitored parameter: population-level
+(\code{pop}: fixed effects, thresholds and other family parameters), random-effect and
+smooth SDs (\code{sd}) and random-effect correlations (\code{cor}). Sampling stops once
+every class meets its ESS target and every R-hat is at most \code{rhat_target}, or at
+\code{max_draws} or \code{max_time}. One line per round reports progress and what is still
+unmet. The next round samples while the check runs.
+
+The fit keeps at most \code{max_kept} draws per chain: longer runs are thinned evenly
+(every 2nd, 4th, ... draw), and the stopping rule is evaluated on exactly the
+draws the fit keeps, so \code{summary()} shows the ESS the rule saw. Divergence and
+other sampler diagnostics count every transition. The result carries attributes
+\code{"stop_reason"}, \code{"ess_trace"} (one row per round), \code{"targets"},
+\code{"draws_per_chain"} and \code{"thin_stride"}; a warning is issued when a cap stops the
+run first.
+}
+
 \examples{
 \dontrun{
 model <- broc(brf(conf | old ~ cond + (1|subj),
@@ -164,6 +194,11 @@ fit <- fit_broc(model, file = "my_fit")          # writes my_fit.rds
 fit <- fit_broc(model, file = "my_fit")          # loads my_fit.rds
 fit <- fit_broc(model, file = "my_fit", file_refit = TRUE)      # refits
 }
+}
+\references{
+Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
+(2021). Rank-normalization, folding, and localization: An improved R-hat for
+assessing convergence of MCMC. \emph{Bayesian Analysis}, 16(2), 667-718.
 }
 \seealso{
 \code{\link[=broc]{broc()}} for model specification, \code{summary(fit)} for results.

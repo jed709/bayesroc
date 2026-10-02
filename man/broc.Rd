@@ -58,6 +58,31 @@ Builds a model specification from a formula, family, and (optional) priors,
 and generates the backend code needed to fit it. \code{fit_broc()} is used to fit
 the object created by \code{broc()}.
 }
+\section{Data coding}{
+
+\describe{
+\item{Responses}{Whole numbers or an ordered factor. Every value from the
+lowest to the highest observed is a response category, so an unused middle
+category is kept; responses coded from 0 or from a value above 1 are
+re-based to start at 1 (with a message). Text labels need an ordered factor
+whose level order is the response scale.}
+\item{Old/new indicator}{0/1 (new/old), logical, or -0.5/0.5 (centered; not
+for \code{\link[=cdp]{cdp()}}). Text labels such as "old"/"new" are rejected.}
+\item{Source (source_mixture)}{A two-level factor (first level = source A),
+0/1, 1/2 or logical.}
+\item{Item type (bivariate families)}{Codes 1/2/3 or 0/1/2 (new, source A,
+source B), or a factor whose levels are in that order.}
+\item{Remember/know (cdp)}{"remember"/"know"/"guess", "R"/"K"/"G" or 1/2/3;
+missing for responses that are not "old".}
+\item{Counts}{Non-negative whole numbers; rows with a count of zero are
+dropped.}
+\item{Missing values}{Rows with a missing value in any variable the model
+uses are dropped with a message; their row numbers are stored in
+\code{model$dropped_rows}. Missing source ratings in bivariate models are an
+error.}
+}
+}
+
 \examples{
 \dontrun{
 # Unequal-variance model (construction only; pass to fit_broc() to fit)

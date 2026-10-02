@@ -245,9 +245,9 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' @param include_loglik Whether to keep `log_lik` (needed for [loo()]). `NULL`
 #'   (default) follows the fit's `fit_broc(save_loglik = )` setting; `TRUE`/`FALSE`
 #'   overrides it for this save. When kept, the on-disk log-likelihood is written
-#'   next to `file` as `<file>_loglik.npy`. A fit that can be continued (from
-#'   [autostop_broc()]) also has its sampler state written as `<file>_state.pkl`,
-#'   so [load_broc_fit()] in a later session returns a fit that `resume =` accepts.
+#'   next to `file` as `<file>_loglik.npy`. A JAX fit also has its sampler state
+#'   written as `<file>_state.pkl`, so [load_broc_fit()] in a later session returns a
+#'   fit that `fit_broc(resume = )` accepts.
 #' @return Invisibly returns `file`.
 #' @seealso [load_broc_fit()].
 #' @examples
@@ -479,8 +479,16 @@ print.broc_fit <- function(x, ...) {
     cat("  Data:    ", model$model_data$N, if (!is.null(model$stan_data$counts)) " rows of counts" else " observations",
         "\n", sep = "")
   }
-  cat("  Draws:   ", x$.num_chains, " chains x ", x$.iter_sampling, " post-warmup (", x$.backend,
-      if (!is.null(x$.elapsed)) paste0(", ", round(x$.elapsed, 1), " s"), ")\n", sep = "")
+  stride <- attr(x, "thin_stride") %||% 1L
+  cat("  Draws:   ", x$.num_chains, " chains x ", x$.iter_sampling, " post-warmup",
+      if (stride > 1L) paste0(", every ", .ordinal(stride), " of ", attr(x, "draws_per_chain")),
+      " (", x$.backend, if (!is.null(x$.elapsed)) paste0(", ", round(x$.elapsed, 1), " s"), ")\n", sep = "")
+  if (!is.null(attr(x, "stop_reason"))) {
+    cat("  Stopped: ", switch(attr(x, "stop_reason"), targets = "ESS and R-hat targets met",
+                              max_draws = "max_draws reached before the targets",
+                              max_time = "max_time reached before the targets", draws = "requested draws taken"),
+        "\n", sep = "")
+  }
   d <- tryCatch(x$diagnostic_summary(), error = function(e) NULL)
   if (!is.null(d)) {
     cat("  ")

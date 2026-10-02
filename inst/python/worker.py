@@ -1,9 +1,8 @@
-"""Fit driver shared by one-off fits and the persistent autostop worker.
+"""Fit driver shared by one-off fits and the persistent worker behind iter_sampling = "auto".
 
 run_one() executes a fit described by the JSON written by R's fit_jax() and writes
 the results next to it. serve() keeps one process alive across fits so imports,
-the model build and the compiled sampler are reused; `held` carries the per-token
-sampler objects between requests."""
+the auto-sampling session (autorun.AutoSession) lives in `held` between requests."""
 import glob
 import json
 import os
@@ -62,22 +61,15 @@ def _warnings(ef, sampler, max_treedepth):
     return out
 
 
-def run_one(config_path, out_dir, held=None, token=None):
+def run_one(config_path, out_dir):
     from numpyro_backend import fit_model
 
     with open(config_path) as fh:
         args = json.load(fh)
     config = args["config"]
-    if config is None:
-        if held is None or ("config", token) not in held:
-            raise RuntimeError("continuation request without a held model for this token")
-        config = held[("config", token)]
-    else:
-        _convert_matrices(config)
-        if held is not None and token is not None:
-            held[("config", token)] = config
+    _convert_matrices(config)
     kw = args["fit_kwargs"]
-    result = fit_model(config=config, held=held, token=token, **kw)
+    result = fit_model(config=config, **kw)
 
     os.makedirs(out_dir, exist_ok=True)
     output = {"elapsed": result["elapsed"], "samples": {}, "extra_fields": {}}
@@ -95,6 +87,38 @@ def run_one(config_path, out_dir, held=None, token=None):
     for w in _warnings(result["extra_fields"], kw.get("sampler", "nuts"),
                        kw.get("max_tree_depth", 10)):
         print(w, flush=True)
+
+
+def run_auto(op, args_path, out_dir, held, token):
+    """fit_broc(iter_sampling = "auto"): start a session (warmup + compiled block), take one
+    round, or finish (constrain the kept draws once and write the usual results)."""
+    import autorun
+    with open(args_path) as fh:
+        args = json.load(fh)
+    os.makedirs(out_dir, exist_ok=True)
+    if op == "auto_start":
+        from numpyro_backend import sdt_model
+        config = args["config"]
+        _convert_matrices(config)
+        old = held.pop(("auto", token), None)
+        if old is not None:
+            old.close()
+        sess = autorun.AutoSession(sdt_model, config, args["kwargs"])
+        held[("auto", token)] = sess
+        with open(os.path.join(out_dir, "start.json"), "w") as fh:
+            json.dump(sess.start_info(), fh)
+    elif op == "auto_map":
+        held[("auto", token)].set_map(args)
+    elif op == "auto_step":
+        held[("auto", token)].step(out_dir)
+    elif op == "auto_finish":
+        sess = held.pop(("auto", token))
+        try:
+            sess.finish(out_dir, args)
+        finally:
+            sess.close()
+    else:
+        raise ValueError(f"unknown worker op {op!r}")
 
 
 def serve(control_dir):
@@ -116,7 +140,11 @@ def serve(control_dir):
             continue
         out_dir = job["out"]
         try:
-            run_one(job["config"], out_dir, held=held, token=job.get("token"))
+            op = job.get("op") or "fit"
+            if op == "fit":
+                run_one(job["config"], out_dir)
+            else:
+                run_auto(op, job["config"], out_dir, held, job.get("token"))
             open(os.path.join(out_dir, "DONE"), "w").close()
         except BaseException:
             os.makedirs(out_dir, exist_ok=True)

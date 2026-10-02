@@ -66,7 +66,8 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     if (bivariate) probs <- apply(probs, if (response == 1) c(1, 2, 3) else c(1, 2, 4), sum)
     y_obs <- if (bivariate && response == 2) model$stan_data$y2 else model$stan_data$y
     K <- dim(probs)[3]
-    cat_labels <- as.character(seq_len(K))
+    labs <- if (bivariate && response == 2) model$model_data$response2_labels else model$model_data$response_labels
+    cat_labels <- if (length(labs) == K) as.character(labs) else as.character(seq_len(K))
   }
   counts <- .row_weights(model)[rows]
   cells <- .ppc_cells(model, by)[rows]

@@ -39,6 +39,8 @@ Produces a labelled summary of a fitted model. The printed summary shows the
 model and sampler status, then the parameter estimates on their natural scale
 for each design cell (as returned by \code{\link[=estimates]{estimates()}}), the regression
 coefficients on the model scale, random-effect standard deviations,
-random-effect correlations (as matrices of posterior means) and smooth-term
-penalty standard deviations.
+random-effect correlations and smooth-term penalty standard deviations, each
+with posterior mean, sd, interval, R-hat and bulk/tail ESS. Correlation blocks
+with more than 15 pairs print the pairs whose interval excludes 0 and then the
+largest; every pair is in \code{summary(fit)$correlations}.
 }

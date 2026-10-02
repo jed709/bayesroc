@@ -255,7 +255,7 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
   if (!is.null(pts)) {
     p <- p +
       ggplot2::geom_linerange(data = pts, ggplot2::aes(ymin = .data$ylo, ymax = .data$yhi), linewidth = 0.35) +
-      ggplot2::geom_errorbarh(data = pts, ggplot2::aes(xmin = .data$xlo, xmax = .data$xhi), height = 0, linewidth = 0.35) +
+      ggplot2::geom_linerange(data = pts, ggplot2::aes(xmin = .data$xlo, xmax = .data$xhi), orientation = "y", linewidth = 0.35) +
       ggplot2::geom_point(data = pts, shape = 21, fill = "white", size = 2.1, stroke = 0.9)
   }
   if (length(by) > 1L) p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", paste(by[-1], collapse = " + "))))

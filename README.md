@@ -166,7 +166,6 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
   divergences, `broc(..., smooth_info = TRUE)` samples the population-level smooth
   coefficients on a data-informed scale; the posterior is unchanged
 - `?broc_prior` — prior specification
-- `?autostop_broc` — sample until ESS and R-hat targets are met (JAX backend)
 - `?drop_loglik` — reclaim a fit's log-likelihood sidecar
 
 ## Log-likelihood and LOO
@@ -177,7 +176,7 @@ write the same sidecar format and `loo()` treats them the same way. Stan's value
 come from its CSV output, so they carry CmdStan's output precision (`sig_figs`).
 
 ```r
-fit <- fit_broc(model, loo = TRUE)   # LOO at fit time, sidecar reclaimed
+fit <- fit_broc(model, loo = TRUE, save_loglik = FALSE)  # LOO at fit time, sidecar reclaimed
 fit$.loo
 
 fit <- fit_broc(model)               # sidecar kept for the session
@@ -195,25 +194,30 @@ works after `load_broc_fit()`; pass `include_loglik = FALSE` to skip it.
 
 ## Sampling until convergence and precision targets are met
 
-`autostop_broc()` runs one set of chains and extends them in chunks until every
-monitored parameter has rank-normalised bulk and tail ESS of at least
-`ess_target` and R-hat of at most `rhat_target` (defaults 400 and 1.01, following
-Vehtari et al., 2021), or a cap on draws or time is reached. Chains continue
-exactly where the previous chunk stopped, so the result is identical to one run of
-the final length. Targets can differ by parameter class:
+With `iter_sampling = "auto"`, `fit_broc()` warms up once and extends the same
+chains in rounds until every monitored parameter has rank-normalised bulk and tail
+ESS of at least `ess_target` and R-hat of at most `rhat_target` (defaults 400 and
+1.01, following Vehtari et al., 2021), or a cap on draws or time is reached. The
+targets and caps go in `control`, and ESS targets can differ by parameter class:
 
 ```r
-fit <- autostop_broc(model,
-                     ess_target = c(pop = 2000, sd = 400, cor = 200),
-                     max_draws = 50000, max_time = 3600)
+fit <- fit_broc(model, backend = "jax", iter_sampling = "auto",
+                control = list(ess_target = c(pop = 2000, sd = 400, cor = 200),
+                               max_time = 3600))
 attr(fit, "stop_reason")   # "targets", "max_draws" or "max_time"
-attr(fit, "ess_trace")     # one row per check
-fit <- autostop_broc(model, resume = fit, max_draws = 100000)  # continue a capped run
+attr(fit, "ess_trace")     # one row per round
+fit <- fit_broc(model, iter_sampling = "auto", resume = fit,
+                control = list(max_time = 7200))   # continue a capped run
 ```
 
-`autostop_broc()` is JAX-only (exact continuation needs sampler state that
-cmdstanr cannot return). A time cap makes the stopping point machine-dependent;
-the draws themselves are not affected.
+The sampler is compiled once and the draws stay in the JAX process; each round
+returns only the monitored parameters, and the next round samples while the check
+runs. The fit keeps at most `control$max_kept` draws per chain (1000 by default),
+thinning longer runs evenly, and the stopping rule is computed on exactly the draws
+the fit keeps. `resume = fit` also extends any JAX fit by a fixed number of draws
+(`iter_sampling = 1000`), exactly as if the run had been that long. Adaptive-length
+sampling and `resume` are JAX-only (exact continuation needs sampler state that
+cmdstanr cannot return).
 
 ## License
 

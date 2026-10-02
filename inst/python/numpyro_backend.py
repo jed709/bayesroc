@@ -4768,14 +4768,55 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
     return {k: jnp.stack([jnp.asarray(z[k]) for z in zs]) for k in zs[0]}
 
 
+class FastNUTS(NUTS):
+    """NUTS whose model setup comes from one abstract trace (drghmc._model_info) instead
+    of numpyro's initialize_model, which runs the model eagerly and compiles every
+    primitive separately (tens of seconds for large models). The potential is still
+    generated from the model arguments at each call, so a float32 offset swap works as
+    with NUTS. Starting points are always passed as init_params."""
+
+    def _init_state(self, rng_key, model_args, model_kwargs, init_params):
+        if self._model is None:
+            return super()._init_state(rng_key, model_args, model_kwargs, init_params)
+        from numpyro.infer.util import potential_energy, constrain_fn
+        from numpyro.infer.hmc import hmc
+        model = self._model
+        pot_gen = lambda *a, **k: (lambda z: potential_energy(model, a, k, z))
+        post_gen = lambda *a, **k: (lambda z: constrain_fn(model, a, k, z, return_deterministic=True))
+        if self._init_fn is None:
+            self._init_fn, self._sample_fn = hmc(potential_fn_gen=pot_gen, kinetic_fn=self._kinetic_fn,
+                                                 algo=self._algo)
+        self._potential_fn_gen = pot_gen
+        self._postprocess_fn = post_gen
+        if init_params is None:
+            raise ValueError("FastNUTS needs init_params.")
+        return init_params
+
+
+def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
+    """Per-chain unconstrained starting points as a site dict (leading chain axis when
+    chains > 1), from the same rule DR-G-HMC uses."""
+    import drghmc as dr
+    shapes, _, _ = dr._model_info(sdt_model, config)
+    keys = sorted(shapes)
+    off, o = {}, 0
+    for k in keys:
+        sz = int(np.prod(shapes[k]))
+        off[k] = (slice(o, o + sz), tuple(shapes[k]))
+        o += sz
+    th = dr._initial_positions(sdt_model, config, keys, off, o, chains, seed, init_strategy,
+                               init_radius, init_z)
+    z = {k: jnp.asarray(th[:, off[k][0]].reshape((chains,) + off[k][1])) for k in keys}
+    return z if chains > 1 else {k: v[0] for k, v in z.items()}
+
+
 def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
               target_accept_prob=0.8, max_tree_depth=10, step_size=1.0,
               thinning=1, chain_method="parallel",
               progress_bar=True,
-              init_strategy="prior", init_radius=2.0,
+              init_strategy="numeric", init_radius=0.0,
               sampler="nuts", control=None, save_loglik=True,
-              keep_re=False, warm_state=None, save_state=False,
-              init_values=None, held=None, token=None):
+              keep_re=False, save_state=False, init_values=None):
     """Fit an SDT model using NumPyro NUTS or the DR-G-HMC sampler.
 
     Args:
@@ -4789,12 +4830,12 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         step_size: initial NUTS step size (default 1.0)
         progress_bar: whether to show NumPyro's tqdm progress bar (default True)
         init_strategy: "prior" (NumPyro init_to_sample), "random" or "numeric"
-            (init_to_uniform with `init_radius`). Default "prior".
+            (init_to_uniform with `init_radius`). Default "numeric" with radius 0,
+            i.e. every parameter starts at 0 on the unconstrained scale, as in R.
         init_radius: radius for init_to_uniform when init_strategy != "prior".
         init_values: optional per-chain list of {Stan name: value} dicts; used
             instead of init_strategy (see init_values_to_z).
-        held, token: a persistent worker's dict and the run's token; the compiled
-            sampler and warm state are kept there between rounds.
+        save_state: also return the end-of-run sampler state (fit_broc's `resume`).
         sampler: "nuts" (default) or "drghmc".
         control: dict of drghmc tuning knobs (ignored for nuts).
 
@@ -4802,51 +4843,26 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         dict with samples (by chain), extra_fields, elapsed
     """
     init_z = None
-    if init_values is not None and warm_state is None:
+    if init_values is not None:
         if len(init_values) != chains:
             raise ValueError(f"init has {len(init_values)} chain entries; expected {chains}.")
         init_z = init_values_to_z(config, init_values, seed, init_radius)
 
     if sampler == "drghmc":
         from drghmc import run_drghmc
-        keep = held is not None and token is not None
-        resume = None
-        if warm_state is not None:
-            if keep and ("dr_state", token) in held:
-                resume = held[("dr_state", token)]
-            else:
-                with open(warm_state, "rb") as fh:
-                    resume = pickle.load(fh)
-        res = run_drghmc(sdt_model, config, chains=chains, warmup=warmup, samples=samples,
+        return run_drghmc(sdt_model, config, chains=chains, warmup=warmup, samples=samples,
                           seed=seed, thinning=thinning, chain_method=chain_method,
                           progress_bar=progress_bar, init_strategy=init_strategy,
                           init_radius=init_radius, control=control,
                           save_loglik=save_loglik, keep_re=keep_re,
-                          resume_state=resume, save_state=save_state or keep,
-                          init_z=init_z,
-                          cache=held.setdefault(("dr", token), {}) if keep else None)
-        if keep and res.get("state") is not None:
-            held[("dr_state", token)] = res["state"]
-        if not save_state:
-            res["state"] = None
-        return res
-
-    keep = held is not None and token is not None
-    if keep and warm_state is not None and ("nuts", token) in held:
-        return _nuts_continue(held, token, config, samples, thinning, chain_method,
-                              save_loglik, keep_re, save_state)
+                          save_state=save_state, init_z=init_z)
 
     numpyro.set_host_device_count(chains if chain_method == "parallel" else 1)
     rng_key = random.PRNGKey(seed)
 
-    if init_strategy == "prior":
-        kernel_init = init_to_sample
-    else:
-        kernel_init = init_to_uniform(radius=float(init_radius))
-
-    kernel = NUTS(
+    init_params = nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z)
+    kernel = FastNUTS(
         sdt_model,
-        init_strategy=kernel_init,
         target_accept_prob=target_accept_prob,
         max_tree_depth=max_tree_depth,
         step_size=float(step_size),
@@ -4854,7 +4870,7 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
 
     mcmc = MCMC(
         kernel,
-        num_warmup=0 if warm_state is not None else warmup,
+        num_warmup=warmup,
         num_samples=samples,
         num_chains=chains,
         thinning=int(thinning),
@@ -4862,33 +4878,20 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         progress_bar=bool(progress_bar),
     )
 
-    keep = held is not None and token is not None
     f32 = not jax.config.jax_enable_x64
     offset = None
     t0 = time.time()
-    if warm_state is not None:
-        with open(warm_state, "rb") as fh:
-            loaded = pickle.load(fh)
-        if isinstance(loaded, dict) and "hmc" in loaded:
-            mcmc.post_warmup_state, offset = loaded["hmc"], loaded.get("offset")
-        else:
-            mcmc.post_warmup_state = loaded
-        rng_key = mcmc.post_warmup_state.rng_key
-    elif f32:
-        mcmc.warmup(rng_key, config, init_params=init_z, collect_warmup=False)
+    if f32:
+        mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
         rng_key = mcmc.post_warmup_state.rng_key
     if f32:
-        if offset is None:
-            offset = _nuts_ll_offset(config, mcmc.post_warmup_state)
+        offset = _nuts_ll_offset(config, mcmc.post_warmup_state)
         config = {**config, "_ll_offset": jnp.asarray(offset)}
         mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state)
 
-    mcmc.run(rng_key, config, init_params=None if f32 else init_z,
+    mcmc.run(rng_key, config, init_params=None if f32 else init_params,
              extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
     elapsed = time.time() - t0
-    if keep:
-        held[("nuts", token)] = mcmc
-        held[("nuts_offset", token)] = offset
 
     samples_dict = mcmc.get_samples(group_by_chain=True)
 
@@ -4914,51 +4917,6 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     if save_state:
         out["state"] = (mcmc.last_state if offset is None
                         else {"hmc": mcmc.last_state, "offset": np.asarray(offset)})
-    return out
-
-
-def _nuts_continue(held, token, config, samples, thinning, chain_method,
-                   save_loglik, keep_re, save_state):
-    """Continue held NUTS chains by `samples` draws through a loop compiled once per
-    chunk length. MCMC.run recompiles its sampling loop on every call; this advances the
-    same kernel from the held state, so draws are identical to one long run."""
-    mcmc = held[("nuts", token)]
-    offset = held.get(("nuts_offset", token))
-    if offset is not None:
-        config = {**config, "_ll_offset": jnp.asarray(offset)}
-    kern = mcmc.sampler
-    parallel = chain_method == "parallel"
-    key = ("nuts_drv", token, samples)
-    if key not in held:
-        def body(s, _):
-            s = kern.sample(s, (config,), {})
-            return s, (s.z, s.num_steps, s.energy, s.accept_prob, s.diverging)
-
-        run = lambda s: jax.lax.scan(body, s, None, length=samples)
-        pp = jax.vmap(kern.postprocess_fn((config,), {}))
-        held[key] = (jax.pmap(run) if parallel else jax.jit(lambda st: jax.lax.map(run, st)),
-                     jax.pmap(pp) if parallel else jax.jit(lambda z: jax.lax.map(pp, z)))
-    run_fn, pp_fn = held[key]
-    t0 = time.time()
-    state = held.get(("nuts_state", token), mcmc.last_state)
-    state, (z, ns, en, ap, dv) = run_fn(state)
-    held[("nuts_state", token)] = state
-    keep_idx = np.arange(thinning - 1, samples, thinning) if thinning > 1 else slice(None)
-    named = pp_fn(z)
-    jax.block_until_ready(named)
-    elapsed = time.time() - t0
-    samples_np = {}
-    for k, v in named.items():
-        if k.startswith("z_") and not keep_re:
-            continue
-        if k == "log_lik" and not save_loglik:
-            continue
-        samples_np[k] = np.asarray(v)[:, keep_idx]
-    extra_fields = {k: np.asarray(v)[:, keep_idx] for k, v in
-                    (("num_steps", ns), ("energy", en), ("accept_prob", ap), ("diverging", dv))}
-    out = {"samples": samples_np, "extra_fields": extra_fields, "elapsed": float(elapsed)}
-    if save_state:
-        out["state"] = state if offset is None else {"hmc": state, "offset": np.asarray(offset)}
     return out
 
 

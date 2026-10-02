@@ -110,7 +110,7 @@ test_that("broc() rejects factor/character is_old with non-numeric labels", {
   d$is_old <- factor(ifelse(d$is_old == 1, "old", "new"), levels = c("new", "old"))
   expect_error(
     broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), d),
-    "coerced to 0/1|coded 0/1"
+    "text labels|coded 0/1"
   )
   d2 <- .fixture_univariate()
   d2$is_old <- factor(d2$is_old, levels = c(0, 1))
@@ -159,4 +159,17 @@ test_that("cumulative default slope prior is centred at 0", {
   d2 <- .fixture_univariate()
   m2 <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d2)
   expect_identical(m2$model_data$prior_lookup$b[["dprime"]], "normal(1, 1)")
+})
+
+test_that("an encoding variable in the criterion formula warns", {
+  d <- .fixture_encoding(n_per = 60)
+  d$item <- factor(rep(seq_len(12), length.out = nrow(d)))
+  expect_warning(suppressMessages(broc(brf(item_resp | is_old ~ condition - 1, criterion ~ (condition - 1 | item),
+                                           family = evsd(), encoding_vars = "condition"), d)),
+                 "Encoding variable in criterion formula: condition")
+  expect_warning(suppressMessages(broc(brf(item_resp | is_old ~ condition - 1, criterion ~ condition,
+                                           family = evsd(), encoding_vars = "condition"), d)),
+                 "Encoding variable in criterion formula")
+  expect_no_warning(suppressMessages(broc(brf(item_resp | is_old ~ condition - 1, criterion ~ (1 | item),
+                                              family = evsd(), encoding_vars = "condition"), d)))
 })

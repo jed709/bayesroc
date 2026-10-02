@@ -150,12 +150,26 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
 .estimate_draws <- function(fit, model, pars, by, re_formula, ndraws) {
   by <- .check_by(model, by %||% .default_by(model))
   if (!length(by)) by <- NULL
-  setup <- .plot_setup(fit, model, ndraws, re_formula)
   w <- .row_weights(model)
   cells <- .cell_of_rows(model, by)
   cf <- .cell_frame(model, by, cells)
   fam <- model$family$family
   roles <- tryCatch(.roc_roles(model, 1), error = function(e) NULL)
+  n_all <- length(w)
+  if (identical(re_formula, NA)) {
+    role_key <- if (is.null(roles)) NULL
+                else list(seq_len(n_all) %in% roles$signal, seq_len(n_all) %in% roles$noise)
+    du <- .design_units(fit, model, re_formula, c(list(as.integer(cells)), role_key))
+    setup <- .plot_setup(fit, model, ndraws, re_formula, rows = du$rows)
+    w <- as.numeric(tapply(w, du$unit, sum))
+    cells <- cells[du$rows]
+    if (!is.null(roles)) {
+      roles$signal <- which(du$rows %in% roles$signal)
+      roles$noise <- which(du$rows %in% roles$noise)
+    }
+  } else {
+    setup <- .plot_setup(fit, model, ndraws, re_formula)
+  }
   internal <- .pars_internal(pars, fam)
   ext <- function(p) if (p %in% c("criterion", "criterion2")) sub("criterion", "criteria", p)
                      else .smooth_display_pname(model, p)

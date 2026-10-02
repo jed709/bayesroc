@@ -85,8 +85,8 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
            "' is not a column in `data`.", call. = FALSE)
     }
     cv <- data[[counts]]
-    if (!is.numeric(cv) || any(is.na(cv)) || any(cv < 0)) {
-      stop("`counts` column '", counts, "' must be non-negative integers (no NAs).",
+    if (!is.numeric(cv) || any(is.na(cv)) || any(cv < 0) || any(abs(cv - round(cv)) > 1e-8)) {
+      stop("`counts` column '", counts, "' must be non-negative whole numbers (no NAs).",
            call. = FALSE)
     }
   }
@@ -159,6 +159,29 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   weakly identified. Model construction runs a short maximum-likelihood pilot
 #'   to measure that information. Random smooths (`bs = "fs"`, `"re"`) keep the
 #'   default parameterization. Default `FALSE`.
+#' @section Data coding:
+#' \describe{
+#'   \item{Responses}{Whole numbers or an ordered factor. Every value from the
+#'     lowest to the highest observed is a response category, so an unused middle
+#'     category is kept; responses coded from 0 or from a value above 1 are
+#'     re-based to start at 1 (with a message). Text labels need an ordered factor
+#'     whose level order is the response scale.}
+#'   \item{Old/new indicator}{0/1 (new/old), logical, or -0.5/0.5 (centered; not
+#'     for [cdp()]). Text labels such as "old"/"new" are rejected.}
+#'   \item{Source (source_mixture)}{A two-level factor (first level = source A),
+#'     0/1, 1/2 or logical.}
+#'   \item{Item type (bivariate families)}{Codes 1/2/3 or 0/1/2 (new, source A,
+#'     source B), or a factor whose levels are in that order.}
+#'   \item{Remember/know (cdp)}{"remember"/"know"/"guess", "R"/"K"/"G" or 1/2/3;
+#'     missing for responses that are not "old".}
+#'   \item{Counts}{Non-negative whole numbers; rows with a count of zero are
+#'     dropped.}
+#'   \item{Missing values}{Rows with a missing value in any variable the model
+#'     uses are dropped with a message; their row numbers are stored in
+#'     `model$dropped_rows`. Missing source ratings in bivariate models are an
+#'     error.}
+#' }
+#'
 #' @return A `broc_model` object, ready to pass to [fit_broc()].
 #'
 #' @examples
@@ -212,6 +235,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 
   # --- 2b. Up-front data validation ----------------------------------------
   validate_broc_data(data, brf_obj, family, encoding_vars, counts)
+  nd <- .drop_incomplete_rows(data, brf_obj, family, encoding_vars, counts)
+  data <- nd$data
+  dropped_rows <- nd$dropped
 
   # --- 2c. Drop zero-count rows ---------------------------------------------
   if (!is.null(counts)) {
@@ -296,22 +322,31 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       stop("encoding_vars is not supported for ", family_display_name(family$family), " family.")
     }
   }
+  enc_in_crit <- intersect(encoding_vars, unlist(lapply(list(criterion, criterion2), function(f)
+    if (inherits(f, "formula")) all.vars(f))))
+  if (length(enc_in_crit)) {
+    warning("Encoding variable in criterion formula: ", paste(enc_in_crit, collapse = ", "), call. = FALSE)
+  }
 
   # --- 4. Handle cumulative family early-return ---
   if (family$family == "cumulative") {
-    return(fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
+    res <- fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
-                          gap_link = gap_link, smooth_info = smooth_info))
+                          gap_link = gap_link, smooth_info = smooth_info)
+    res$dropped_rows <- dropped_rows
+    return(res)
   }
 
   # --- Handle bivariate_cumulative family early-return ---
   if (family$family == "bivariate_cumulative") {
-    return(fit_bivariate_cumulative(
+    res <- fit_bivariate_cumulative(
       mu1 = dprime, mu2 = discrim,
       cutpoints1 = criterion, cutpoints2 = criterion2,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
-      gap_link = gap_link, smooth_info = smooth_info))
+      gap_link = gap_link, smooth_info = smooth_info)
+    res$dropped_rows <- dropped_rows
+    return(res)
   }
 
   if (is.null(criterion)) {
@@ -609,7 +644,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     formula = brf_obj,
     batch_likelihood = code$batch_likelihood,
     batch_cpp = code$batch_cpp,
-    smooth_info = si$pilot
+    smooth_info = si$pilot,
+    dropped_rows = dropped_rows
   )
 
   class(result) <- c("broc_model", "list")
@@ -668,7 +704,13 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                              encoding_vars = NULL) {
   
   N <- nrow(data)
-  K <- length(unique(data[[parsed$response$response]]))
+  resp_col <- parsed$response$response
+  rc <- .code_response(data[[resp_col]], resp_col)
+  data[[resp_col]] <- rc$y
+  K <- rc$K
+  response_labels <- rc$labels
+  resp_offset <- as.integer(rc$offset)
+  if (resp_offset != 0L && !is.null(family$old_levels)) family$old_levels <- family$old_levels - resp_offset
   is_old_var <- parsed$response$is_old
   source_var <- parsed$response$source
   item_type_var <- parsed$response$item_type
@@ -681,6 +723,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   is_vrdp2d <- family$family == "vrdp2d"
   is_cdp <- family$family == "cdp"
   is_bivariate_dp <- family$family == "bivariate_dp"
+  if ((is_bivariate || is_vrdp2d) && !is.null(item_type_var) && !startsWith(item_type_var, ".")) {
+    data[[item_type_var]] <- .code_item_type(data[[item_type_var]], item_type_var)
+  }
+  if (is_source_mixture && !is.null(source_var)) {
+    data[[source_var]] <- .code_source(data[[source_var]], source_var)
+  }
   if ((is_bivariate || is_vrdp2d) && !is.null(item_type_var)) {
     item_type_vals <- data[[item_type_var]]
     if (is.factor(item_type_vals)) {
@@ -693,13 +741,17 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   }
   
   K2 <- NULL
+  response2_labels <- NULL
   if ((is_bivariate || is_vrdp2d) && !is.null(parsed$response2)) {
     resp2_col <- parsed$response2
     if (!resp2_col %in% names(data)) {
       stop("Second response variable '", resp2_col, "' not found in data. ",
            "Check your resp() specification: resp(response1, response2)")
     }
-    K2 <- length(unique(data[[resp2_col]]))
+    rc2 <- .code_response(data[[resp2_col]], resp2_col)
+    data[[resp2_col]] <- rc2$y
+    K2 <- rc2$K
+    response2_labels <- rc2$labels
     if (K2 < 2) {
       stop("Second response variable '", resp2_col, "' must have at least 2 unique values, got ", K2)
     }
@@ -744,28 +796,13 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   stan_data <- list(N = N, K = K)
   stan_data$y <- as.integer(data[[parsed$response$response]])
 
-  y_vals <- sort(unique(stan_data$y))
-  if (length(y_vals) >= 2L && y_vals[1] == 0L &&
-      identical(y_vals, seq.int(0L, length(y_vals) - 1L))) {
-    K_shifted <- length(y_vals)
-    message("0-indexed responses detected (range 0..", K_shifted - 1L,
-            ") -- converting to 1..", K_shifted, " for Stan.")
-    stan_data$y <- stan_data$y + 1L
-    K <- K_shifted
-    stan_data$K <- K
-  }
-
   if (K == 2 && family$family != "evsdt") {
     stop("Binary responses (K=2) are only supported for the evsd() family. ",
          "Models with sigma, lambda, or other parameters require K >= 3 for identifiability.")
   }
 
   if (is_cdp) {
-    cdp_is_old <- .as_is_old(data[[is_old_var]])
-    if (!all(sort(unique(cdp_is_old)) %in% c(0, 1))) {
-      stop("Centered coding for is_old (e.g., 0.5/-0.5) is not supported with the CDP family. ",
-           "Please recode is_old as 0/1.")
-    }
+    cdp_is_old <- .code_is_old(data[[is_old_var]], is_old_var, allow_centered = FALSE)
     stan_data$is_old <- cdp_is_old
     
     rk_values <- data[[rk_var]]
@@ -792,6 +829,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
               paste(inferred, collapse = ", "), ") from rk data.")
     }
 
+    if (any(family$old_levels < 1L | family$old_levels > K)) {
+      stop("cdp(old_levels = ...) must be response values within the data's range (",
+           paste(range(rc$labels), collapse = " to "), ", in the data's own coding).", call. = FALSE)
+    }
     old_resp_mask <- stan_data$y %in% family$old_levels
 
     invalid_old <- old_resp_mask & is.na(rk_numeric)
@@ -864,40 +905,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     }
     stan_data$is_old <- NULL
   } else if (is_source_mixture) {
-    source_vals <- data[[source_var]]
-    if (is.factor(source_vals)) {
-      if (nlevels(droplevels(source_vals)) != 2L) {
-        stop("source must have exactly two levels for source_mixture(). Got ",
-             nlevels(droplevels(source_vals)), " level(s).", call. = FALSE)
-      }
-      stan_data$source <- as.integer(droplevels(source_vals)) - 1L
-    } else {
-      sv <- as.integer(source_vals)
-      if (!all(sv %in% c(0L, 1L))) {
-        stop("source must be coded 0 (Source A) / 1 (Source B) for source_mixture(). ",
-             "Got: ", paste(sort(unique(sv)), collapse = ", "), ".", call. = FALSE)
-      }
-      stan_data$source <- sv
-    }
+    stan_data$source <- as.integer(data[[source_var]])
     stan_data$is_old <- NULL
   } else {
-    is_old_raw <- data[[is_old_var]]
-    is_old_vals <- .as_is_old(is_old_raw)
-    if (anyNA(is_old_vals) && !anyNA(is_old_raw)) {
-      stop("is_old (column '", is_old_var, "') could not be coerced to 0/1: a ",
-           "factor/character indicator must use numeric labels ('0'/'1' or ",
-           "'-0.5'/'0.5'), not e.g. 'old'/'new'. Got: ",
-           paste(utils::head(unique(as.character(is_old_raw)), 6), collapse = ", "),
-           ".", call. = FALSE)
-    }
+    is_old_vals <- .code_is_old(data[[is_old_var]], is_old_var, allow_centered = TRUE)
     unique_vals <- sort(unique(is_old_vals))
-
-    if (length(unique_vals) == 0 ||
-        (!all(unique_vals %in% c(0, 1)) && !all(unique_vals %in% c(-0.5, 0.5)))) {
-      stop("is_old must be coded 0/1 (new/old) or -0.5/0.5 (centered). Got: ",
-           paste(unique_vals, collapse = ", "), ".", call. = FALSE)
-    }
-    centered_coding <- all(unique_vals %in% c(-0.5, 0.5))
+    centered_coding<- all(unique_vals %in% c(-0.5, 0.5))
 
     if (centered_coding) {
       if (is_cdp) {
@@ -1522,6 +1535,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     N = N,
     K = K,
     K2 = K2,
+    response_labels = response_labels,
+    response2_labels = response2_labels,
     family = family$family,
     family_obj = family,
     has_sigma = has_sigma,
@@ -1951,8 +1966,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   when `parallel_chains < chains`.
 #' @param iter_warmup Number of warmup/adaptation iterations per chain. Default
 #'   2000 for `sampler = "nuts"`, 2500 for `"drghmc"`.
-#' @param iter_sampling Number of post-warmup sampling iterations per chain.
-#'   Default 2000 for `sampler = "nuts"`, 10000 for `"drghmc"`.
+#' @param iter_sampling Number of post-warmup draws per chain (default 2000 for
+#'   `sampler = "nuts"`, 10000 for `"drghmc"`), or `"auto"` to sample until every
+#'   monitored parameter reaches the ESS and R-hat targets in `control` (JAX backend;
+#'   see *Adaptive-length sampling* below).
 #' @param thin Period for saving samples (default 1). `thin = k` keeps every
 #'   `k`-th post-warmup draw.
 #' @param sampler Sampling algorithm: `"nuts"` (default) or `"drghmc"`, a
@@ -1964,6 +1981,13 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `precision` ("f64" or "f32").
+#'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
+#'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
+#'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
+#'     DR-G-HMC), `max_time` (seconds of sampling after warmup; none), `check_every`
+#'     (draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
+#'     `max_kept` (draws per chain kept in the fit; 1000, or more for ESS targets above
+#'     `500 * chains`).
 #' @param init Initial-value strategy. Default `0`: all parameters start at 0 on
 #'   the unconstrained scale. Other options: `"prior"` samples each parameter
 #'   from its prior; `"random"` uses Stan's U(-2, 2) on the unconstrained scale
@@ -1993,10 +2017,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param file_refit If `FALSE` (default), an existing `file` is loaded and
 #'   sampling is skipped; if `TRUE`, the model is refit and the file overwritten.
 #'   Ignored when `file` is `NULL`.
-#' @param save_loglik Keep the per-observation log-likelihood so [loo()] works on
-#'   the fit and on a fit saved with [save_broc_fit()] or `file =`. `NULL`
-#'   (default) keeps it unless `loo = TRUE`, whose result is stored on the fit
-#'   instead; `TRUE` always keeps it; `FALSE` drops it.
+#' @param save_loglik Keep the per-observation log-likelihood (default `TRUE`) so
+#'   [loo()] works on the fit and on a fit saved with [save_broc_fit()] or `file =`.
+#'   With `FALSE` it is dropped; `loo = TRUE` still computes PSIS-LOO first and
+#'   stores the result on the fit.
 #' @param loo If `TRUE`, PSIS-LOO is computed at fit time and stored on the fit
 #'   (`fit$.loo`, also saved with the fit). Default `FALSE`.
 #' @param loo_cores Number of worker processes used when `loo = TRUE` (default 4).
@@ -2011,12 +2035,14 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param re_store Codec for random-effect draws when the fit is saved: `"f64"`
 #'   (default, lossless), `"f32"`, `"int16"` or `"int8"`. [save_broc_fit()] uses it unless
 #'   given its own `re_store`.
-#' @param warm_state Optional path to a state file written by `save_state`, used
-#'   to resume sampling without repeating warmup (JAX backend). The file is a
-#'   Python pickle, and loading a pickle can run arbitrary code: only pass state
-#'   files that bayesroc wrote on your own machine.
-#' @param save_state If `TRUE`, the post-warmup sampler state is saved so a later
-#'   fit can resume from it via `warm_state`. Default `FALSE`.
+#' @param resume A JAX fit of the same model to continue: its chains are extended
+#'   exactly (no new warmup) and its draws kept. With `iter_sampling = "auto"`
+#'   sampling continues until the targets in `control` are met (for example after a
+#'   `max_time` or `max_draws` cap); with a number, that many more draws per chain are
+#'   taken. The sampler and number of chains are those of `resume`. A fit saved with
+#'   [save_broc_fit()] keeps its sampler state as `<file>_state.pkl` (a Python pickle,
+#'   which can run code when loaded: only resume fits that bayesroc wrote on your
+#'   own machine).
 #' @param ... Additional arguments forwarded to cmdstanr's `$sample()` (Stan
 #'   backend only; a warning is issued if any are passed with `backend = "jax"`).
 #' @return A `broc_fit` object. It carries low-level accessors `$draws()`,
@@ -2037,6 +2063,27 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' fit <- fit_broc(model, file = "my_fit")          # loads my_fit.rds
 #' fit <- fit_broc(model, file = "my_fit", file_refit = TRUE)      # refits
 #' }
+#' @section Adaptive-length sampling:
+#' With `iter_sampling = "auto"` one set of chains is warmed up once and then
+#' extended in rounds of `check_every` draws per chain. After each round the
+#' rank-normalised bulk and tail ESS and R-hat (Vehtari et al., 2021, the estimators
+#' [summary()] reports) are computed for every monitored parameter: population-level
+#' (`pop`: fixed effects, thresholds and other family parameters), random-effect and
+#' smooth SDs (`sd`) and random-effect correlations (`cor`). Sampling stops once
+#' every class meets its ESS target and every R-hat is at most `rhat_target`, or at
+#' `max_draws` or `max_time`. One line per round reports progress and what is still
+#' unmet. The next round samples while the check runs.
+#'
+#' The fit keeps at most `max_kept` draws per chain: longer runs are thinned evenly
+#' (every 2nd, 4th, ... draw), and the stopping rule is evaluated on exactly the
+#' draws the fit keeps, so `summary()` shows the ESS the rule saw. Divergence and
+#' other sampler diagnostics count every transition. The result carries attributes
+#' `"stop_reason"`, `"ess_trace"` (one row per round), `"targets"`,
+#' `"draws_per_chain"` and `"thin_stride"`; a warning is issued when a cap stops the
+#' run first.
+#' @references Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
+#'   (2021). Rank-normalization, folding, and localization: An improved R-hat for
+#'   assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667-718.
 #' @seealso [broc()] for model specification, `summary(fit)` for results.
 #' @export
 fit_broc <- function(model,
@@ -2056,21 +2103,48 @@ fit_broc <- function(model,
                     seed = NULL,
                     file = NULL,
                     file_refit = FALSE,
-                    save_loglik = NULL,
+                    save_loglik = TRUE,
                     loo = FALSE,
                     loo_cores = 4,
                     loglik_precision = c("f32", "f64"),
                     keep_re = FALSE,
                     re_store = c("f64", "f32", "int16", "int8"),
-                    warm_state = NULL,
-                    save_state = FALSE,
+                    resume = NULL,
                     ...) {
   loglik_precision <- match.arg(loglik_precision)
   re_store <- match.arg(re_store)
-  save_loglik <- if (is.null(save_loglik)) !isTRUE(loo) else isTRUE(save_loglik)
+  if (!is.logical(save_loglik) || length(save_loglik) != 1L || is.na(save_loglik)) {
+    stop("`save_loglik` must be TRUE or FALSE.", call. = FALSE)
+  }
 
+  if (!is.null(resume)) {
+    if (!inherits(resume, "broc_fit")) stop("`resume` must be a broc_fit.", call. = FALSE)
+    if (missing(backend)) backend <- "jax"
+    if (missing(sampler)) sampler <- resume$.sampler %||% "nuts"
+    if (missing(chains)) chains <- resume$.num_chains
+    if (missing(parallel_chains)) parallel_chains <- chains
+    prev <- attr(resume, "sampler_control")
+    if (!is.null(prev)) {
+      control <- c(control, prev$control[setdiff(names(prev$control), names(control))])
+      for (k in c("adapt_delta", "max_treedepth", "step_size")) {
+        if (is.null(control[[k]]) && !is.null(prev[[k]]) && sampler == "nuts") control[[k]] <- prev[[k]]
+      }
+    }
+  }
   backend <- match.arg(backend)
   sampler <- match.arg(sampler)
+  auto <- identical(iter_sampling, "auto")
+  if (!auto && !is.null(iter_sampling) &&
+      (!is.numeric(iter_sampling) || length(iter_sampling) != 1L || !is.finite(iter_sampling) ||
+       iter_sampling < 1 || iter_sampling != round(iter_sampling))) {
+    stop("`iter_sampling` must be a positive whole number of draws per chain, or \"auto\".",
+         call. = FALSE)
+  }
+  if ((auto || !is.null(resume)) && backend != "jax") {
+    stop(if (auto) "iter_sampling = \"auto\"" else "`resume`",
+         " needs backend = \"jax\": continuing chains exactly needs sampler state that ",
+         "cmdstanr cannot return.", call. = FALSE)
+  }
   if (sampler == "drghmc" && backend != "jax") {
     stop("sampler = 'drghmc' requires backend = 'jax'.", call. = FALSE)
   }
@@ -2100,6 +2174,13 @@ fit_broc <- function(model,
   if (is.null(iter_sampling)) iter_sampling <- if (sampler == "drghmc") 10000L else 2000L
 
   .ctrl <- if (is.list(control)) control else list()
+  .auto_given <- intersect(names(.ctrl), .auto_keys)
+  if (length(.auto_given) && !auto) {
+    stop("control$", paste(.auto_given, collapse = ", control$"), " only applies with ",
+         "iter_sampling = \"auto\".", call. = FALSE)
+  }
+  .auto <- if (auto) .auto_settings(.ctrl, sampler, chains) else NULL
+  .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
@@ -2111,7 +2192,7 @@ fit_broc <- function(model,
          paste(.unknown, collapse = ", "), ". Valid keys: ",
          paste(.valid, collapse = ", "), call. = FALSE)
   }
-  if (sampler == "drghmc" && is.null(warm_state) && !isTRUE(list(...)$.worker_continue)) {
+  if (sampler == "drghmc" && is.null(resume)) {
     .windows <- .ctrl$adapt_windows %||% 10L
     if (iter_warmup < .windows) {
       stop("sampler = 'drghmc' needs iter_warmup >= control$adapt_windows (", .windows,
@@ -2173,18 +2254,26 @@ fit_broc <- function(model,
 
   if (backend == "jax") {
     # ---- JAX/NumPyro backend ----
-    .dots <- list(...)
-    .worker <- .dots$.worker
-    .worker_token <- .dots$.worker_token
-    .worker_continue <- isTRUE(.dots$.worker_continue)
-    .dots$.worker <- NULL
-    .dots$.worker_token <- NULL
-    .dots$.worker_continue <- NULL
-    if (length(.dots) > 0) {
+    if (length(list(...)) > 0) {
       warning("Arguments in `...` are forwarded to cmdstanr (Stan backend) only ",
               "and are ignored by the JAX backend.", call. = FALSE)
     }
     chain_method <- if (parallel_chains >= chains) "parallel" else "sequential"
+    if (auto || !is.null(resume)) {
+      fit <- .fit_auto(model, chains = chains, chain_method = chain_method,
+                       iter_warmup = iter_warmup, sampler = sampler, ctrl = .ctrl,
+                       auto = .auto %||% list(), fixed_draws = if (auto) NULL else iter_sampling,
+                       thin = thin, init = init, init_strategy = init_strategy_jax,
+                       init_values = init_values_jax, python = python,
+                       progress_bar = progress_bar, seed = seed,
+                       save_loglik = save_loglik || isTRUE(loo),
+                       loglik_precision = loglik_precision, keep_re = keep_re,
+                       adapt_delta = adapt_delta, max_treedepth = max_treedepth,
+                       step_size = step_size, resume = resume)
+      return(.save_if_requested(.finalise_loglik(fit, loo = loo, loo_cores = loo_cores,
+                                                 save_loglik = save_loglik,
+                                                 state_path = fit$.state_path)))
+    }
     t0 <- proc.time()["elapsed"]
     jax_result <- fit_jax(model,
       chains = chains,
@@ -2205,12 +2294,8 @@ fit_broc <- function(model,
       progress_bar = progress_bar,
       loglik_precision = loglik_precision,
       keep_re = keep_re,
-      warm_state = warm_state,
       init_values = init_values_jax,
-      worker = .worker,
-      worker_token = .worker_token,
-      continue_held = .worker_continue,
-      save_state = save_state
+      save_state = TRUE
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)
 
@@ -2222,7 +2307,7 @@ fit_broc <- function(model,
       n_draws = kept
     )
 
-    return(.save_if_requested(.finalise_loglik(new_broc_fit(
+    fit <- new_broc_fit(
       backend_fit = jax_result,
       model = model,
       backend = "jax",
@@ -2235,8 +2320,16 @@ fit_broc <- function(model,
       save_loglik = save_loglik,
       loglik_path = jax_result$loglik_path,
       keep_re = keep_re
-    ), loo = loo, loo_cores = loo_cores, save_loglik = save_loglik,
-       state_path = jax_result$state_path)))
+    )
+    fit$.thin <- as.integer(thin)
+    attr(fit, "draws_per_chain") <- as.integer(iter_sampling)
+    attr(fit, "thin_stride") <- as.integer(thin)
+    attr(fit, "sampler_control") <- list(adapt_delta = adapt_delta, max_treedepth = max_treedepth,
+                                         step_size = step_size, control = .ctrl)
+    attr(fit, "model_fingerprint") <- .model_fingerprint(model)
+    return(.save_if_requested(.finalise_loglik(fit, loo = loo, loo_cores = loo_cores,
+                                               save_loglik = save_loglik,
+                                               state_path = jax_result$state_path)))
   }
 
   # ---- Stan backend (default) ----

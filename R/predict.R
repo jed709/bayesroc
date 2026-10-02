@@ -2427,27 +2427,20 @@ rebuild_design_matrices <- function(model, newdata) {
   src <- list(N = N)
 
   if (!is_cumulative && !is_bivariate && !is_vrdp2d && !is.null(parsed$response$is_old)) {
-    src$is_old <- .as_is_old(newdata[[parsed$response$is_old]])
+    src$is_old <- .code_is_old(newdata[[parsed$response$is_old]], parsed$response$is_old, allow_centered = TRUE)
   } else if (is_cumulative) {
     src$is_old <- rep(1L, N)
   }
 
   if (is_source_mixture && !is.null(parsed$response$source)) {
-    src_vals <- newdata[[parsed$response$source]]
-    if (is.factor(src_vals)) {
-      src$source <- as.integer(src_vals) - 1L
-    } else {
-      src$source <- as.integer(src_vals)
-    }
+    src$source <- .code_like_training(newdata[[parsed$response$source]], train_data[[parsed$response$source]],
+                                      parsed$response$source, .code_source)
   }
 
   if ((is_bivariate || is_vrdp2d) && !is.null(parsed$response$item_type)) {
-    item_type_vals <- newdata[[parsed$response$item_type]]
-    if (is.factor(item_type_vals)) {
-      src$item_type <- as.integer(item_type_vals)
-    } else {
-      src$item_type <- as.integer(item_type_vals)
-    }
+    it <- parsed$response$item_type
+    src$item_type <- if (startsWith(it, ".")) as.integer(newdata[[it]])
+                     else .code_like_training(newdata[[it]], train_data[[it]], it, .code_item_type)
     if (!is.null(parsed$response2)) {
       src$y2 <- as.integer(newdata[[parsed$response2]])
     }

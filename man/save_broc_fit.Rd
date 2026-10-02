@@ -26,9 +26,9 @@ draws barely compress). Set \code{"gzip"}/\code{"xz"} for a smaller, slower file
 \item{include_loglik}{Whether to keep \code{log_lik} (needed for \code{\link[=loo]{loo()}}). \code{NULL}
 (default) follows the fit's \code{fit_broc(save_loglik = )} setting; \code{TRUE}/\code{FALSE}
 overrides it for this save. When kept, the on-disk log-likelihood is written
-next to \code{file} as \verb{<file>_loglik.npy}. A fit that can be continued (from
-\code{\link[=autostop_broc]{autostop_broc()}}) also has its sampler state written as \verb{<file>_state.pkl},
-so \code{\link[=load_broc_fit]{load_broc_fit()}} in a later session returns a fit that \verb{resume =} accepts.}
+next to \code{file} as \verb{<file>_loglik.npy}. A JAX fit also has its sampler state
+written as \verb{<file>_state.pkl}, so \code{\link[=load_broc_fit]{load_broc_fit()}} in a later session returns a
+fit that \code{fit_broc(resume = )} accepts.}
 }
 \value{
 Invisibly returns \code{file}.

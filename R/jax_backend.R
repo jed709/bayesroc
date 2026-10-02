@@ -477,8 +477,7 @@ build_numpyro_config <- function(model) {
 #' @param seed Random seed (NULL for random)
 #' @param loglik_precision "f32" or "f64" for the log_lik sidecar
 #' @param keep_re Retain per-level random-effect draws
-#' @param warm_state Path to a saved sampler state to continue from
-#' @param save_state Return a sampler state for a later warm continuation
+#' @param save_state Return the end-of-run sampler state (for `resume =`)
 #' @return A list with samples, extra_fields, elapsed, loglik_path, state_path
 #' @noRd
 fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
@@ -487,9 +486,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                     sampler = "nuts", control = list(), save_loglik = TRUE,
                     chain_method = "parallel", python = NULL,
                     progress_bar = TRUE, loglik_precision = "f32",
-                    keep_re = FALSE, warm_state = NULL, save_state = FALSE,
-                    init_values = NULL, worker = NULL, worker_token = NULL,
-                    continue_held = FALSE) {
+                    keep_re = FALSE, save_state = TRUE, init_values = NULL) {
 
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("Package 'jsonlite' is required for the JAX backend.")
@@ -503,7 +500,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     python <- find_python_with_jax()
   }
   py_script <- find_backend_script()
-  config <- if (isTRUE(continue_held)) NULL else build_numpyro_config(model)
+  config <- build_numpyro_config(model)
 
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1)
 
@@ -513,7 +510,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
   config_file <- file.path(tmp_dir, "config.json")
   result_file <- file.path(tmp_dir, "results.json")
 
-  if (is.null(init_strategy)) init_strategy <- "prior"
+  if (is.null(init_strategy)) init_strategy <- "numeric"
   fit_args <- list(
     config = config,
     fit_kwargs = list(
@@ -533,8 +530,6 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
       control = if (length(control)) control else NULL,
       save_loglik = isTRUE(save_loglik),
       keep_re = isTRUE(keep_re),
-      warm_state = if (isTRUE(continue_held)) "held" else if (is.null(warm_state)) NULL else
-        normalizePath(warm_state, winslash = "/", mustWork = TRUE),
       save_state = isTRUE(save_state),
       init_values = init_values
     )
@@ -552,54 +547,52 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                        digits = 17, null = "null")
 
   chain_note <- if (identical(chain_method, "sequential")) ", sequential" else ""
-  if (!isTRUE(continue_held)) {
-    if (identical(sampler, "drghmc")) {
-      message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
-              warmup, " adapt, ", samples, " samples)...")
-    } else {
-      message("Fitting with NumPyro NUTS via JAX (", chains, " chains", chain_note, ", ",
-              warmup, " warmup, ", samples, " samples)...")
-    }
+  if (identical(sampler, "drghmc")) {
+    message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
+            warmup, " adapt, ", samples, " samples)...")
+  } else {
+    message("Fitting with NumPyro NUTS via JAX (", chains, " chains", chain_note, ", ",
+            warmup, " warmup, ", samples, " samples)...")
   }
 
-  if (!is.null(worker)) {
-    .jax_worker_run(worker, config_file, tmp_dir, token = worker_token)
-  } else {
-    if (!requireNamespace("processx", quietly = TRUE)) {
-      stop("Package 'processx' is required for the JAX backend.\n",
-           "Install it with: install.packages('processx')")
+  if (!requireNamespace("processx", quietly = TRUE)) {
+    stop("Package 'processx' is required for the JAX backend.\n",
+         "Install it with: install.packages('processx')")
+  }
+  env <- .jax_env(python, chains, chain_method, sampler, control)
+  proc <- processx::process$new(
+    python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
+    env = env, wd = dirname(py_script),
+    stdout = "|", stderr = "|",
+    cleanup = TRUE, cleanup_tree = TRUE
+  )
+  on.exit({
+    if (proc$is_alive()) {
+      message("\nKilling NumPyro subprocess...")
+      proc$kill_tree()
     }
-    env <- .jax_env(python, chains, chain_method, sampler, control)
-    proc <- processx::process$new(
-      python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
-      env = env, wd = dirname(py_script),
-      stdout = "|", stderr = "|",
-      cleanup = TRUE, cleanup_tree = TRUE
-    )
-    on.exit({
-      if (proc$is_alive()) {
-        message("\nKilling NumPyro subprocess...")
-        proc$kill_tree()
-      }
-    }, add = TRUE)
-    .stream_process(proc)
-    exit_code <- proc$get_exit_status()
-    if (exit_code != 0) {
-      stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
-           "Check the Python output above for details.")
-    }
+  }, add = TRUE)
+  .stream_process(proc)
+  exit_code <- proc$get_exit_status()
+  if (exit_code != 0) {
+    stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
+         "Check the Python output above for details.")
   }
 
   if (!file.exists(result_file)) {
     stop("NumPyro fitting did not produce results. Check Python output.")
   }
 
-  result_meta <- jsonlite::read_json(result_file)
+  .read_jax_results(tmp_dir, loglik_precision)
+}
+
+.read_jax_results <- function(dir, loglik_precision = "f32") {
+  result_meta <- jsonlite::read_json(file.path(dir, "results.json"))
 
   loglik_path <- NULL
   samples_list <- list()
   for (name in names(result_meta$samples)) {
-    npy_file <- file.path(tmp_dir, result_meta$samples[[name]])
+    npy_file <- file.path(dir, result_meta$samples[[name]])
     if (identical(name, "log_lik")) {
       loglik_path <- tempfile("bayesroc_ll_", fileext = ".npy")
       .emit_loglik_side(npy_file, loglik_path, loglik_precision)
@@ -610,13 +603,12 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
 
   extra_fields <- list()
   for (name in names(result_meta$extra_fields)) {
-    npy_file <- file.path(tmp_dir, result_meta$extra_fields[[name]])
-    extra_fields[[name]] <- read_npy(npy_file)
+    extra_fields[[name]] <- read_npy(file.path(dir, result_meta$extra_fields[[name]]))
   }
 
   state_path <- NULL
   if (!is.null(result_meta$state) && nzchar(result_meta$state)) {
-    src <- file.path(tmp_dir, result_meta$state)
+    src <- file.path(dir, result_meta$state)
     if (file.exists(src)) {
       state_path <- tempfile("bayesroc_state_", fileext = ".pkl")
       if (!isTRUE(file.copy(src, state_path, overwrite = TRUE))) {
@@ -630,7 +622,8 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     extra_fields = extra_fields,
     elapsed = result_meta$elapsed,
     loglik_path = loglik_path,
-    state_path = state_path
+    state_path = state_path,
+    meta = result_meta
   )
 }
 
@@ -779,11 +772,12 @@ read_npy <- function(path) {
   invisible(NULL)
 }
 
-.jax_worker_run <- function(worker, config_file, out_dir, token = NULL) {
+.jax_worker_run <- function(worker, config_file, out_dir, token = NULL, op = "fit") {
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
   req <- file.path(worker$ctrl, paste0("req_", basename(out_dir), ".json"))
   jsonlite::write_json(list(config = normalizePath(config_file, winslash = "/"),
                             out = normalizePath(out_dir, winslash = "/"),
-                            token = token),
+                            token = token, op = op),
                        paste0(req, ".tmp"), auto_unbox = TRUE, null = "null")
   file.rename(paste0(req, ".tmp"), req)
   done <- file.path(out_dir, "DONE")

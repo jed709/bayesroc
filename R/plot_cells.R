@@ -14,11 +14,13 @@
   family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
 }
 
-.plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE) {
-  data_src <- build_data_source_from_model(model)
+.plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE, rows = NULL, draw_idx = NULL) {
+  data_src <- if (is.null(rows)) build_data_source_from_model(model)
+              else rebuild_design_matrices(model, model$data[rows, , drop = FALSE])
   vars <- get_predict_variables(model, include_re = !identical(re_formula, NA))
   draws <- fit$draws(variables = vars, format = "matrix")
-  if (!is.null(ndraws) && ndraws < nrow(draws)) draws <- draws[sample.int(nrow(draws), ndraws), , drop = FALSE]
+  if (!is.null(draw_idx)) draws <- draws[draw_idx, , drop = FALSE]
+  else if (!is.null(ndraws) && ndraws < nrow(draws)) draws <- draws[sample.int(nrow(draws), ndraws), , drop = FALSE]
   S <- nrow(draws)
   N <- data_src$N
   fam <- model$family
@@ -30,6 +32,21 @@
     if (.is_bivariate_family(fam$family)) th2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
   }
   list(draws = draws, data_src = data_src, tp = tp, th = th, th2 = th2, S = S, N = N)
+}
+
+.design_units <- function(fit, model, re_formula, keys) {
+  n <- length(.row_weights(model))
+  probe <- .plot_setup(fit, model, NULL, re_formula, draw_idx = unique(c(1L, max(1L, fit$num_chains() * fit$metadata()$iter_sampling %/% 2L))))
+  cols <- c(list(probe$data_src$is_old, probe$data_src$source, probe$data_src$item_type), keys)
+  for (m in probe$tp) cols <- c(cols, list(t(m)))
+  for (a in list(probe$th, probe$th2)) {
+    if (!is.null(a)) cols <- c(cols, list(matrix(aperm(a, c(2, 1, seq_along(dim(a))[-(1:2)])), nrow = n)))
+  }
+  cols <- cols[lengths(cols) > 0]
+  keymat <- do.call(cbind, lapply(cols, function(x) if (is.numeric(x) || is.matrix(x)) signif(as.matrix(x), 12) else as.character(x)))
+  key <- do.call(paste, c(as.data.frame(keymat), sep = "|"))
+  grp <- match(key, unique(key))
+  list(rows = which(!duplicated(grp)), unit = grp)
 }
 
 .row_weights <- function(model) {

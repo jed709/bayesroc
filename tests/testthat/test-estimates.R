@@ -80,9 +80,28 @@ test_that("summary() is structured and prints readable sections", {
   expect_true(grepl("Formula:", pf, fixed = TRUE) && grepl("Sampler:", pf, fixed = TRUE))
 })
 
-test_that("correlation matrices mark intervals that exclude zero", {
-  m <- matrix(c(NA, 0.8, NA, NA), 2, 2, dimnames = list(c("a: x", "a: y"), c("a: x", "a: y")))
-  sig <- matrix(c(FALSE, TRUE, FALSE, FALSE), 2, 2)
-  out <- capture.output(.print_cor_matrix(m, sig))
-  expect_true(any(grepl("0.80*", out, fixed = TRUE)))
+test_that("correlation tables list every pair of small blocks and the notable pairs of large ones", {
+  pairs <- function(n, est, lower, upper) {
+    ij <- which(lower.tri(diag(n)), arr.ind = TRUE)
+    data.frame(block = "a | g", effect_1 = paste0("a: v", ij[, 1]), effect_2 = paste0("a: v", ij[, 2]),
+               estimate = est, sd = 0.1, lower = lower, upper = upper, rhat = 1, ess_bulk = 500, ess_tail = 500)
+  }
+  small <- pairs(3, c(0.8, 0.1, -0.2), c(0.5, -0.2, -0.5), c(0.95, 0.4, 0.1))
+  r <- .cor_print_rows(small)$rows
+  expect_equal(nrow(r), 3L)
+  expect_equal(r$effect_1, c("v1", "v1", "v2"))
+  expect_equal(r$effect_2, c("v2", "v3", "v3"))
+  expect_true(all(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail") %in% names(r)))
+  n <- 8
+  m <- n * (n - 1) / 2
+  est <- seq(-0.3, 0.3, length.out = m)
+  big <- pairs(n, est, est - 0.4, est + 0.4)
+  big$estimate[5] <- -0.05; big$lower[5] <- -0.1; big$upper[5] <- -0.01
+  r <- .cor_print_rows(big)$rows
+  expect_equal(nrow(r), 10L)
+  expect_equal(r$estimate[1], -0.05)
+  expect_equal(sort(abs(r$estimate[-1]), decreasing = TRUE), abs(r$estimate[-1]))
+  mixed <- big
+  mixed$effect_2 <- sub("^a: ", "b: ", mixed$effect_2)
+  expect_match(.cor_print_rows(mixed)$rows$effect_1[1], "^b: ")
 })

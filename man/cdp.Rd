@@ -8,7 +8,8 @@ cdp(old_levels = NULL)
 }
 \arguments{
 \item{old_levels}{Integer vector specifying which confidence levels
-correspond to "old" responses (where R/K judgments apply). If \code{NULL}
+correspond to "old" responses (where R/K judgments apply), in the data's
+own coding of the confidence response. If \code{NULL}
 (default), inferred at fit time from the data as the bins where \code{rk}
 is non-NA. Pass explicitly only to override that inference (e.g. when
 some "old" bin happens to have no observed responses).}

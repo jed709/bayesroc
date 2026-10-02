@@ -173,7 +173,7 @@ run the full suite.
 | `inst/include/bayesroc/bvn_simd.h`, `bvn_tail.h`, `inst/ffi/bvn_ffi.cc`, `R/ffi_build.R` | native bivariate-normal kernels, built on the user's machine and cached in `tools::R_user_dir()` |
 | `dev/plain_stan.R` | dev-only Stan-language likelihood (incl. the bivariate-normal kernel mirror) |
 | `R/loo.R`, `R/npy.R` | streamed PSIS-LOO over the on-disk log-likelihood (`.npy`) |
-| `R/autostop.R`, `R/compact.R` | ESS-targeted fitting rounds; compact storage of random-effect draws |
+| `R/auto.R`, `R/compact.R` | `iter_sampling = "auto"` rounds and `resume`; compact storage of random-effect draws |
 | `R/jax_backend.R`, `R/install_jax.R` | JAX subprocess + Python discovery/venv mgmt |
 | `R/broc_model.R` | `broc()` + `fit_broc()` orchestration |
 | `R/broc_fit.R` | `broc_fit` S3 object + save/load |

@@ -4,8 +4,10 @@
 #' model and sampler status, then the parameter estimates on their natural scale
 #' for each design cell (as returned by [estimates()]), the regression
 #' coefficients on the model scale, random-effect standard deviations,
-#' random-effect correlations (as matrices of posterior means) and smooth-term
-#' penalty standard deviations.
+#' random-effect correlations and smooth-term penalty standard deviations, each
+#' with posterior mean, sd, interval, R-hat and bulk/tail ESS. Correlation blocks
+#' with more than 15 pairs print the pairs whose interval excludes 0 and then the
+#' largest; every pair is in `summary(fit)$correlations`.
 #'
 #' @param object A `broc_fit` object from [fit_broc()].
 #' @param prob Interval width (default 0.95).
@@ -49,7 +51,8 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
     ok <- nm %in% vars
     if (any(ok)) {
       s <- summ(nm[ok])
-      sd_rows[[length(sd_rows) + 1L]] <- cbind(group = b$group, effect = b$labels[ok], s[-1])
+      sd_rows[[length(sd_rows) + 1L]] <- cbind(group = b$group, .re_label_parts(b$labels[ok]),
+                                               effect = b$labels[ok], s[-1])
     }
     if (b$dim < 2L) next
     pairs <- do.call(rbind, lapply(2:b$dim, function(i) data.frame(i = i, j = seq_len(i - 1L))))
@@ -86,6 +89,7 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
     n_obs = sum(.row_weights(model)),
     groups = stats::setNames(vapply(groups, function(g) length(unique(model$data[[g]])), integer(1)), groups),
     n_chains = fit$num_chains(), n_iter = fit$metadata()$iter_sampling,
+    thin_stride = attr(fit, "thin_stride") %||% 1L, draws_per_chain = attr(fit, "draws_per_chain"),
     sampler = fit$.sampler %||% "nuts", digits = digits, prob = prob)
   result$diagnostics <- tryCatch(fit$diagnostic_summary(), error = function(e) NULL)
   class(result) <- "broc_summary"
@@ -144,6 +148,8 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
 }
 
 .print_tbl <- function(df, digits, indent = "  ") {
+  old <- options(width = 10000L)
+  on.exit(options(old))
   out <- utils::capture.output(print(.fmt_summary_tbl(df, digits), row.names = FALSE))
   cat(paste0(indent, out), sep = "\n")
 }
@@ -168,7 +174,9 @@ print.broc_summary <- function(x, ...) {
                       "; ", mi$K, " response categories", if (!is.null(mi$K2)) paste0(" x ", mi$K2) else "")
   if (length(mi$groups)) data_line <- paste0(data_line, "; ", paste0(names(mi$groups), ": ", mi$groups, " levels", collapse = ", "))
   cat("Data:    ", data_line, "\n", sep = "")
-  cat("Draws:   ", mi$n_chains, " chains x ", mi$n_iter, " post-warmup\n", sep = "")
+  cat("Draws:   ", mi$n_chains, " chains x ", mi$n_iter, " post-warmup",
+      if ((mi$thin_stride %||% 1L) > 1L) paste0(", every ", .ordinal(mi$thin_stride), " of ", mi$draws_per_chain),
+      "\n", sep = "")
   .print_sampler_banner(x$diagnostics, mi$sampler %||% "nuts")
 
   e <- x$estimates
@@ -189,28 +197,47 @@ print.broc_summary <- function(x, ...) {
   }
   co <- x$coefficients
   if (!is.null(co) && nrow(co)) {
-    .print_section("COEFFICIENTS", paste0("model scale; ", pct))
-    for (p in unique(co$parameter)) {
+    same <- vapply(unique(co$parameter), function(p) .same_as_estimates(co[co$parameter == p, , drop = FALSE], e[e$parameter == p, , drop = FALSE]), logical(1))
+    if (!all(same)) .print_section("COEFFICIENTS", paste0("model scale; ", pct))
+    for (p in unique(co$parameter)[!same]) {
       cat("\n", p, "\n", sep = "")
       .print_tbl(co[co$parameter == p, setdiff(names(co), "parameter"), drop = FALSE], digits)
+    }
+    if (any(same)) {
+      cat("\n", paste(unique(co$parameter)[same], collapse = ", "), ": the coefficients equal the estimates above ",
+          "(summary(fit)$coefficients).\n", sep = "")
     }
   }
   rs <- x$random_sd
   if (!is.null(rs) && nrow(rs)) {
     .print_section("RANDOM EFFECTS: STANDARD DEVIATIONS", pct)
+    stat_cols <- intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(rs))
     for (g in unique(rs$group)) {
-      cat("\n", g, "\n", sep = "")
-      .print_tbl(rs[rs$group == g, setdiff(names(rs), "group"), drop = FALSE], digits)
+      rg <- rs[rs$group == g, , drop = FALSE]
+      for (p in unique(rg$parameter)) {
+        d <- rg[rg$parameter == p, , drop = FALSE]
+        cat("\n", g, ": ", p, "\n", sep = "")
+        lab <- c("criterion", "term")[c(any(nzchar(d$criterion)), any(nzchar(d$term)))]
+        tbl <- d[c(lab, stat_cols)]
+        if (!length(lab)) tbl <- cbind(term = "(Intercept)", tbl)
+        .print_tbl(tbl, digits)
+      }
     }
   }
-  if (length(x$correlation_matrices)) {
-    .print_section("RANDOM EFFECTS: CORRELATIONS", paste0("posterior means; * = ", sub("intervals", "interval", pct), " excludes 0"))
-    for (nm in names(x$correlation_matrices)) {
-      cm <- x$correlation_matrices[[nm]]
-      cat("\n", nm, "\n", sep = "")
-      .print_cor_matrix(cm$mean, cm$excludes0)
+  co <- x$correlations
+  if (!is.null(co) && nrow(co)) {
+    .print_section("RANDOM EFFECTS: CORRELATIONS", pct)
+    any_cut <- FALSE
+    for (b in unique(co$block)) {
+      d <- co[co$block == b, , drop = FALSE]
+      tb <- .cor_print_rows(d)
+      cut <- nrow(tb$rows) < nrow(d)
+      any_cut <- any_cut || cut
+      cat("\n", b, if (cut) sprintf("  (%d of %d pairs: the %d whose interval excludes 0, then the largest |estimate|)",
+                                    nrow(tb$rows), nrow(d), sum(d$lower > 0 | d$upper < 0)), "\n", sep = "")
+      .print_tbl(tb$rows, digits)
     }
-    cat("  Full table: summary(fit)$correlations\n")
+    if (any_cut) cat("\n  All pairs: summary(fit)$correlations; as matrices: summary(fit)$correlation_matrices\n")
   }
   if (!is.null(x$smooth_sds) && nrow(x$smooth_sds)) {
     .print_section("SMOOTH TERMS: PENALTY STANDARD DEVIATIONS", pct)
@@ -223,24 +250,36 @@ print.broc_summary <- function(x, ...) {
   invisible(x)
 }
 
-.print_cor_matrix <- function(m, sig) {
-  n <- nrow(m)
-  short <- sub("^[^:]+: ", "", rownames(m))
-  if (any(duplicated(short))) short <- rownames(m)
-  cells <- matrix("", n, n)
-  for (i in seq_len(n)) for (j in seq_len(n)) {
-    if (j < i && !is.na(m[i, j])) cells[i, j] <- paste0(formatC(m[i, j], format = "f", digits = 2), if (isTRUE(sig[i, j])) "*" else " ")
+.re_label_parts <- function(labels) {
+  parameter <- sub(": .*$", "", labels)
+  rest <- sub("^[^:]+: ", "", labels)
+  crit_re <- "^((bin [0-9]+, )?c[0-9]+ \\([^)]*\\)|bin [0-9]+ \\(location\\)|location)(, (.*))?$"
+  is_crit <- grepl(crit_re, rest)
+  criterion <- ifelse(is_crit, sub(crit_re, "\\1", rest), "")
+  term <- ifelse(is_crit, sub(crit_re, "\\4", rest), rest)
+  data.frame(parameter = parameter, criterion = criterion, term = term, stringsAsFactors = FALSE)
+}
+
+.cor_print_rows <- function(d, max_full = 15L, n_show = 10L) {
+  lab <- c(d$effect_1, d$effect_2)
+  param <- unique(sub(": .*$", "", lab))
+  strip <- if (length(param) == 1L) function(v) sub("^[^:]+: ", "", v) else identity
+  rows <- data.frame(effect_1 = strip(d$effect_2), effect_2 = strip(d$effect_1),
+                     d[intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(d))],
+                     stringsAsFactors = FALSE)
+  if (nrow(rows) > max_full) {
+    sig <- d$lower > 0 | d$upper < 0
+    ord <- order(-sig, -abs(d$estimate))
+    rows <- rows[ord[seq_len(max(min(n_show, nrow(rows)), sum(sig)))], , drop = FALSE]
   }
-  filled <- matrix(nzchar(cells), n, n)
-  keep_r <- which(rowSums(filled) > 0)
-  keep_c <- which(colSums(filled) > 0)
-  if (!length(keep_r)) return(invisible())
-  w <- max(nchar(c(cells, short[keep_c])))
-  lw <- max(nchar(short[keep_r]))
-  cat("  ", formatC("", width = lw), " ", paste(formatC(short[keep_c], width = w), collapse = " "), "\n", sep = "")
-  for (i in keep_r) {
-    cat("  ", formatC(short[i], width = -lw), " ", paste(formatC(cells[i, keep_c], width = w), collapse = " "), "\n", sep = "")
-  }
+  rownames(rows) <- NULL
+  list(rows = rows)
+}
+
+.same_as_estimates <- function(co, e) {
+  if (is.null(e) || !nrow(e) || nrow(co) != nrow(e)) return(FALSE)
+  isTRUE(all(abs(sort(co$estimate) - sort(e$estimate)) < 1e-10)) &&
+    isTRUE(all(abs(sort(co$sd) - sort(e$sd)) < 1e-10))
 }
 
 .print_sampler_banner <- function(d, smp) {

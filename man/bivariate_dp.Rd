@@ -26,9 +26,9 @@ criteria are structured across detection responses (ignored otherwise).
 criteria (K1 x (K2-1) in total). \code{"shared"}: responses that judge an item
 "new" share a single set of source criteria; requires \code{old_levels}.}
 
-\item{old_levels}{Integer vector of detection response levels (on the
-1..K1 scale, e.g. \code{old_levels = 4:6}) that count as "old" judgements; the
-rest are "new". Required when \code{new_source_criteria = "shared"}; ignored
+\item{old_levels}{Integer vector of detection response values that count as
+"old" judgements, in the data's own coding (e.g. \code{old_levels = 4:6} for a
+1-6 scale, or \code{3:5} if the same scale is coded 0-5); the rest are "new". Required when \code{new_source_criteria = "shared"}; ignored
 otherwise.}
 
 \item{varying_re}{Random-effect structure for varying source criteria
