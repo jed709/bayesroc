@@ -69,10 +69,10 @@ test_that("summary() is structured and prints readable sections", {
   s <- summary(f)
   expect_s3_class(s, "broc_summary")
   expect_true(all(c("estimates", "coefficients", "random_sd", "model_info") %in% names(s)))
-  expect_true(any(grepl("(location)", s$random_sd$effect, fixed = TRUE)))
+  expect_true(any(grepl("(midpoint)", s$random_sd$effect, fixed = TRUE)))
   expect_true(any(grepl("(log gap)", s$random_sd$effect, fixed = TRUE)))
   out <- paste(capture.output(print(s)), collapse = "\n")
-  for (h in c("ESTIMATES", "COEFFICIENTS", "RANDOM EFFECTS: STANDARD DEVIATIONS", "Signal SD (log)",
+  for (h in c("ESTIMATES", "COEFFICIENTS", "RANDOM EFFECTS: STANDARD DEVIATIONS", "sigma (log)",
               "condition: read", "Sampler:", "Formula:")) {
     expect_true(grepl(h, out, fixed = TRUE), label = h)
   }
@@ -80,7 +80,7 @@ test_that("summary() is structured and prints readable sections", {
   expect_true(grepl("Formula:", pf, fixed = TRUE) && grepl("Sampler:", pf, fixed = TRUE))
 })
 
-test_that("correlation tables list every pair of small blocks and the notable pairs of large ones", {
+test_that("correlation tables list every pair", {
   pairs <- function(n, est, lower, upper) {
     ij <- which(lower.tri(diag(n)), arr.ind = TRUE)
     data.frame(block = "a | g", effect_1 = paste0("a: v", ij[, 1]), effect_2 = paste0("a: v", ij[, 2]),
@@ -93,14 +93,11 @@ test_that("correlation tables list every pair of small blocks and the notable pa
   expect_equal(r$effect_2, c("v2", "v3", "v3"))
   expect_true(all(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail") %in% names(r)))
   n <- 8
-  m <- n * (n - 1) / 2
-  est <- seq(-0.3, 0.3, length.out = m)
+  est <- seq(-0.3, 0.3, length.out = n * (n - 1) / 2)
   big <- pairs(n, est, est - 0.4, est + 0.4)
-  big$estimate[5] <- -0.05; big$lower[5] <- -0.1; big$upper[5] <- -0.01
   r <- .cor_print_rows(big)$rows
-  expect_equal(nrow(r), 10L)
-  expect_equal(r$estimate[1], -0.05)
-  expect_equal(sort(abs(r$estimate[-1]), decreasing = TRUE), abs(r$estimate[-1]))
+  expect_equal(nrow(r), nrow(big))
+  expect_equal(r$estimate, big$estimate)
   mixed <- big
   mixed$effect_2 <- sub("^a: ", "b: ", mixed$effect_2)
   expect_match(.cor_print_rows(mixed)$rows$effect_1[1], "^b: ")

@@ -15,7 +15,7 @@
 #' @return A data frame of class `conditional_smooths` with covariate value(s),
 #'   parameter, smooth label, estimate, lower, upper. Smooths on `criterion` /
 #'   `criterion2` have one set of rows per threshold component, identified by the
-#'   `component` column (`"location"`, `"gap1"`, ...).
+#'   `component` column (`"c3 (midpoint)"`, `"c3 to c4"`, ... for six response categories).
 #' @export
 conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 100,
                                 prob = 0.95, ndraws = NULL) {
@@ -58,7 +58,8 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
         pred <- build_smooth_prediction_basis(comp, grid_data)
         stan_p <- .smooth_stan_pname(model, pname)
         is_crit <- pname %in% c("criterion", "criterion2")
-        rows <- if (is_crit) seq_len(1L + .smooth_n_gaps(md, pname)) else 1L
+        n_comp <- if (is_crit) 1L + .smooth_n_gaps(md, pname) else 1L
+        rows <- seq_len(n_comp)
 
         for (r in rows) {
           smooth_contribution <- matrix(0, nrow = nrow(grid_data), ncol = S)
@@ -86,7 +87,7 @@ conditional_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 1
           res$upper <- apply(smooth_contribution, 1, quantile, probs = probs[2])
           res$parameter <- .smooth_display_pname(model, pname)
           res$smooth <- comp$sm_obj$label
-          if (is_crit) res$component <- if (r == 1L) "location" else paste0("gap", r - 1L)
+          if (is_crit) res$component <- if (r == 1L) .crit_mid_label(n_comp) else .crit_gap_label(r - 1L, n_comp)
 
           results[[length(results) + 1]] <- res
         }

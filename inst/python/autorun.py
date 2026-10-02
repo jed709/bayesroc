@@ -476,6 +476,8 @@ class AutoSession:
         self.cancel = threading.Event()
         self.mon_ready = threading.Event()
         self.pending = None
+        self.last_dg = None
+        self.skip_checks = 0
         if self.sampler == "nuts":
             self._verify(model, config, full1, itemsize)
             self._launch()
@@ -642,7 +644,7 @@ class AutoSession:
             self.mon_t[self.mon_n:self.mon_n + m] = r["t"]
             self.mon_n += m
 
-    def step(self, out_dir):
+    def step(self, out_dir, a=None):
         th, res = self.pending
         th.join()
         self.pending = None
@@ -652,11 +654,22 @@ class AutoSession:
         self._commit(r)
         self._launch()
         os.makedirs(out_dir, exist_ok=True)
+        checked = self.skip_checks == 0 or self.last_dg is None or bool((a or {}).get("force"))
         t0 = time.time()
-        dg = self._diagnose()
+        if checked:
+            self.last_dg = self._diagnose()
+            check_s = time.time() - t0
+            self.skip_checks = max(0, int(np.ceil(check_s / max(float(r["wall"]), 1e-9))) - 1)
+        else:
+            self.skip_checks -= 1
+            check_s = 0.0
+        dg = self.last_dg
         n_all = max(float(self.tot.n.sum()), 1.0)
+        kept_bytes = (self.n * self.chains * self.D * self.rows.itemsize
+                      + self.mon_n * self.mon.shape[0] * self.mon.shape[2] * self.mon.itemsize)
         info = dict(T=self.T, stride=self.stride, kept=int(self.mon_n), seconds=float(r["wall"]),
-                    check_seconds=float(time.time() - t0), divergent=int(self.tot.div.sum()),
+                    checked=bool(checked), kept_bytes=float(kept_bytes),
+                    check_seconds=float(check_s), divergent=int(self.tot.div.sum()),
                     rejected=float(self.tot.stage[:, 3].sum() / n_all),
                     max_treedepth=int(self.tot.depth.sum()), **dg)
         with open(os.path.join(out_dir, "step.json"), "w") as fh:

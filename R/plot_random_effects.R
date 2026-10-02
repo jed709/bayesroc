@@ -47,17 +47,14 @@ plot_random_effects <- function(fit, type = c("sd", "cor"), group = NULL, pars =
     base <- D %/% R
     plain <- R == 1L && identical(terms, "Intercept")
     mode <- re$varying_re_mode %||% "none"
-    gap_word <- if (identical(model$gap_link, "softplus")) "gap" else "log gap"
-    J <- if (p == "criterion2") model$model_data$K2 - 1L else if (model$family$family == "cdp") model$family$J
-         else model$model_data$K - 1L
-    mid <- ceiling(J / 2)
-    role <- function(k) if (k == mid) "location" else gap_word
+    J <- .n_thresh_of(model, p)
+    comp <- function(k) .crit_comp_label(k, J, model$gap_link)
     vapply(seq_len(D), function(d) {
       b <- (d - 1L) %/% R + 1L
       j <- (d - 1L) %% R + 1L
       bl <- switch(mode, shared = "location", per_bin = paste0("bin ", b, " (location)"),
-                   full = { k <- (b - 1L) %% J + 1L; paste0("bin ", (b - 1L) %/% J + 1L, ", c", k, " (", role(k), ")") },
-                   paste0("c", b, " (", role(b), ")"))
+                   full = { k <- (b - 1L) %% J + 1L; paste0("bin ", (b - 1L) %/% J + 1L, ", ", comp(k)) },
+                   comp(b))
       paste0(lab, ": ", paste(c(bl, if (!plain) terms[j]), collapse = ", "))
     }, character(1))
   } else {
@@ -90,7 +87,7 @@ plot_random_effects <- function(fit, type = c("sd", "cor"), group = NULL, pars =
     out[[length(out) + 1L]] <- list(group = cc$group, params = vapply(cc$members, function(m) m$param, ""),
                                     dim = length(labs), labels = labs, sd = paste0("sigma_cross_", cid, "_", cc$group),
                                     cor = paste0("corr_cross_", cid, "_", cc$group),
-                                    title = paste0("Correlation group ", cid, " | ", cc$group))
+                                    title = paste0(cid, " | ", cc$group))
   }
   out
 }

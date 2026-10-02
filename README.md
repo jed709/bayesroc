@@ -211,8 +211,9 @@ fit <- fit_broc(model, iter_sampling = "auto", resume = fit,
 
 The sampler is compiled once and the draws stay in the JAX process; each round
 returns only the monitored parameters, and the next round samples while the check
-runs. The fit keeps at most `control$max_kept` draws per chain (1000 by default),
-thinning longer runs evenly, and the stopping rule is computed on exactly the draws
+runs. Every draw is kept by default; `thin = k` keeps every `k`-th draw as it is
+sampled, and `control$max_kept` instead caps the draws kept per chain by thinning
+evenly once the run passes it. The stopping rule is computed on exactly the draws
 the fit keeps. `resume = fit` also extends any JAX fit by a fixed number of draws
 (`iter_sampling = 1000`), exactly as if the run had been that long. Adaptive-length
 sampling and `resume` are JAX-only (exact continuation needs sampler state that

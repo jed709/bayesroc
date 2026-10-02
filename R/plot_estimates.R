@@ -115,21 +115,27 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
     sfx <- if (cn == "criterion2") "_2" else ""
     coefs <- .pretty_coef(crit$coef_names %||% "(Intercept)", model$data)
     lab <- .param_label(model, cn)
+    J <- .n_thresh_of(model, cn)
     mids <- grep(paste0("^beta_thresh_mid", sfx, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
     if (length(mids)) {
-      add(paste0(lab, ": location"), mids,
+      add(paste0(lab, ": ", .crit_mid_label(J)), mids,
           if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids), "identity")
     }
     gp <- .gap_param(gl, sfx)
     gaps <- grep(paste0("^", gp, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
     if (length(gaps)) {
-      glab <- vapply(gaps, function(g) {
-        ix <- suppressWarnings(as.integer(strsplit(sub(".*\\[(.*)\\]$", "\\1", g), ",")[[1]]))
-        if (length(ix) == 2L && !grepl("_varying", g) && !anyNA(ix) && ix[2] <= length(coefs)) {
-          paste0("gap ", ix[1], ": ", coefs[ix[2]])
-        } else if (length(ix) == 1L && !anyNA(ix) && !grepl("_varying|_cov|_new", g)) paste0("gap ", ix[1]) else g
+      ix <- lapply(gaps, function(g) suppressWarnings(as.integer(strsplit(sub(".*\\[(.*)\\]$", "\\1", g), ",")[[1]])))
+      gi <- vapply(seq_along(gaps), function(i) {
+        if (grepl("_varying|_cov|_new", gaps[i]) || anyNA(ix[[i]])) NA_integer_ else ix[[i]][1]
+      }, integer(1))
+      glab <- vapply(seq_along(gaps), function(i) {
+        if (is.na(gi[i])) return(gaps[i])
+        k <- ix[[i]]
+        if (length(k) == 2L && k[2] <= length(coefs)) paste0(.crit_gap_label(gi[i], J), ": ", coefs[k[2]])
+        else .crit_gap_label(gi[i], J)
       }, character(1))
-      add(paste0(lab, ": gaps"), gaps, unname(glab), if (gl == "softplus") "softplus" else "log")
+      o <- order(ifelse(is.na(gi), Inf, .crit_gap_hi(gi, J)), seq_along(gaps))
+      add(paste0(lab, ": gaps"), gaps[o], glab[o], if (gl == "softplus") "softplus" else "log")
     }
   }
   out <- do.call(rbind, rows)

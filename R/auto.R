@@ -35,7 +35,7 @@
   out
 }
 
-.auto_settings <- function(ctrl, sampler, chains) {
+.auto_settings <- function(ctrl, sampler, chains, thin = 1L) {
   whole <- function(x, nm) {
     if (length(x) != 1L || !is.numeric(x) || !is.finite(x) || x < 1 || x != round(x)) {
       stop("`control$", nm, "` must be a positive whole number.", call. = FALSE)
@@ -56,7 +56,8 @@
   max_draws <- whole(max_draws, "max_draws")
   list(targets = targets, rhat = rhat, max_time = max_time, max_draws = max_draws,
        check_every = whole(ctrl$check_every %||% if (sampler == "drghmc") 1000L else 100L, "check_every"),
-       max_kept = whole(ctrl$max_kept %||% min(max_draws, max(1000, ceiling(2 * max(targets) / chains))), "max_kept"))
+       max_kept = if (thin > 1L) as.integer(ceiling(max_draws / thin))
+                  else whole(ctrl$max_kept %||% max_draws, "max_kept"))
 }
 
 .mon_map <- function(model, keys, shapes) {
@@ -274,13 +275,23 @@
   t_start <- proc.time()[["elapsed"]]
   stop_reason <- NULL
   stride <- stride0
+  T_prev <- T0
+  mem_next <- 4e9
   repeat {
-    sd_out <- request("auto_step", list())
+    force <- !is.null(fixed_draws) || T_prev + auto$check_every >= auto$max_draws ||
+      (!is.null(auto$max_time) && proc.time()[["elapsed"]] - t_start >= auto$max_time)
+    sd_out <- request("auto_step", list(force = force))
     st <- jsonlite::read_json(file.path(sd_out, "step.json"))
     unlink(sd_out, recursive = TRUE)
     stride <- as.integer(st$stride)
     T <- as.integer(st$T)
     kept <- as.integer(st$kept)
+    if (isTRUE(st$kept_bytes >= mem_next)) {
+      message(sprintf("Kept draws use %.1f GB of memory; set thin to keep fewer.", st$kept_bytes / 1e9))
+      while (st$kept_bytes >= mem_next) mem_next <- 2 * mem_next
+    }
+    T_prev <- T
+    if (!isTRUE(st$checked %||% TRUE)) next
     dg <- list(ess = c(pop = st$ess_pop %||% Inf, sd = st$ess_sd %||% Inf, cor = st$ess_cor %||% Inf),
                rhat = st$rhat %||% Inf, worst = st$worst %||% NA_character_)
     elapsed <- proc.time()[["elapsed"]] - t_start

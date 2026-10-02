@@ -1970,7 +1970,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   monitored parameter reaches the ESS and R-hat targets in `control` (JAX backend;
 #'   see *Adaptive-length sampling* below).
 #' @param thin Period for saving samples (default 1). `thin = k` keeps every
-#'   `k`-th post-warmup draw.
+#'   `k`-th post-warmup draw. With `iter_sampling = "auto"` the draws are thinned
+#'   as they are sampled and `control$max_kept` is ignored.
 #' @param sampler Sampling algorithm: `"nuts"` (default) or `"drghmc"`, a
 #'   delayed-rejection generalized HMC sampler (JAX backend only).
 #' @param control Named list of sampler tuning parameters (defaults in
@@ -1986,8 +1987,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
 #'     DR-G-HMC), `max_time` (seconds of sampling after warmup; none), `check_every`
 #'     (draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
-#'     `max_kept` (draws per chain kept in the fit; 1000, or more for ESS targets above
-#'     `500 * chains`).
+#'     `max_kept` (draws per chain kept in the fit; default `max_draws`, i.e. no
+#'     thinning).
 #' @param init Initial-value strategy. Default `0`: all parameters start at 0 on
 #'   the unconstrained scale. Other options: `"prior"` samples each parameter
 #'   from its prior; `"random"` uses Stan's U(-2, 2) on the unconstrained scale
@@ -2072,12 +2073,16 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' smooth SDs (`sd`) and random-effect correlations (`cor`). Sampling stops once
 #' every class meets its ESS target and every R-hat is at most `rhat_target`, or at
 #' `max_draws` or `max_time`. One line per round reports progress and what is still
-#' unmet. The next round samples while the check runs.
+#' unmet. The next round samples while the check runs; when a check takes longer
+#' than a round, checks are spaced out so sampling does not wait for them.
 #'
-#' The fit keeps at most `max_kept` draws per chain: longer runs are thinned evenly
-#' (every 2nd, 4th, ... draw), and the stopping rule is evaluated on exactly the
-#' draws the fit keeps, so `summary()` shows the ESS the rule saw. Divergence and
-#' other sampler diagnostics count every transition. The result carries attributes
+#' By default every draw is kept. `thin = k` keeps every `k`-th draw as it is
+#' sampled. Alternatively `max_kept` caps the draws kept per chain: once a run would
+#' exceed it, the kept draws are thinned evenly (every 2nd, then 4th, ... draw). In
+#' every case the stopping rule is evaluated on exactly the draws the fit keeps, so
+#' `summary()` shows the ESS and R-hat the rule saw. Divergence and other sampler
+#' diagnostics count every transition. A message reports the memory used by the
+#' kept draws once it passes 4 GB, and again each time it doubles. The result carries attributes
 #' `"stop_reason"`, `"ess_trace"` (one row per round), `"targets"`,
 #' `"draws_per_chain"` and `"thin_stride"`; a warning is issued when a cap stops the
 #' run first.
@@ -2179,7 +2184,7 @@ fit_broc <- function(model,
     stop("control$", paste(.auto_given, collapse = ", control$"), " only applies with ",
          "iter_sampling = \"auto\".", call. = FALSE)
   }
-  .auto <- if (auto) .auto_settings(.ctrl, sampler, chains) else NULL
+  .auto <- if (auto) .auto_settings(.ctrl, sampler, chains, as.integer(thin)) else NULL
   .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",

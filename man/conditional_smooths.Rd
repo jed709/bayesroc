@@ -31,7 +31,7 @@ If NULL (default), all smooth terms are evaluated.}
 A data frame of class \code{conditional_smooths} with covariate value(s),
 parameter, smooth label, estimate, lower, upper. Smooths on \code{criterion} /
 \code{criterion2} have one set of rows per threshold component, identified by the
-\code{component} column (\code{"location"}, \code{"gap1"}, ...).
+\code{component} column (\code{"c3 (midpoint)"}, \code{"c3 to c4"}, ... for six response categories).
 }
 \description{
 Evaluate smooth terms at a grid of covariate values using posterior draws.

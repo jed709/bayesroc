@@ -305,3 +305,32 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
     dims  = c(S, N)
   )
 }
+
+#' Compare Fitted SDT Models by LOO-CV
+#'
+#' Runs [loo()][loo.broc_fit] on each fit (a LOO stored at fit time with
+#' `fit_broc(loo = TRUE)` is reused) and compares them with
+#' [loo::loo_compare()]. Models are named after the arguments.
+#'
+#' @param x A `broc_fit` object from [fit_broc()].
+#' @param ... Further `broc_fit` objects.
+#' @param cores,type Passed to [loo()][loo.broc_fit].
+#' @return A `compare.loo` matrix, as from [loo::loo_compare()].
+#' @examples
+#' \dontrun{
+#' loo_compare(fit1, fit2)
+#' }
+#' @importFrom loo loo_compare
+#' @method loo_compare broc_fit
+#' @export
+loo_compare.broc_fit <- function(x, ..., cores = 4, type = c("trial", "cell")) {
+  fits <- c(list(x), list(...))
+  if (length(fits) < 2L) stop("loo_compare() needs at least two fits.", call. = FALSE)
+  if (!all(vapply(fits, inherits, logical(1), "broc_fit"))) {
+    stop("Every argument to loo_compare() must be a broc_fit.", call. = FALSE)
+  }
+  nms <- vapply(as.list(substitute(list(x, ...)))[-1], function(e) paste(deparse(e), collapse = ""), character(1))
+  type <- match.arg(type)
+  loos <- stats::setNames(lapply(fits, loo.broc_fit, cores = cores, type = type), make.unique(nms))
+  loo::loo_compare(loos)
+}

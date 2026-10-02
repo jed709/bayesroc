@@ -110,7 +110,7 @@ def run_auto(op, args_path, out_dir, held, token):
     elif op == "auto_map":
         held[("auto", token)].set_map(args)
     elif op == "auto_step":
-        held[("auto", token)].step(out_dir)
+        held[("auto", token)].step(out_dir, args)
     elif op == "auto_finish":
         sess = held.pop(("auto", token))
         try:

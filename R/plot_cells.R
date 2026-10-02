@@ -131,25 +131,34 @@
 # ---- Labels -------------------------------------------------------------------
 
 .param_label <- function(model, p) {
-  fam <- model$family$family
-  lab <- switch(fam,
-    cdp = c(dprime = "Recollection mean", dprime2 = "Familiarity mean", sigma = "Recollection SD",
-            sigma2 = "Familiarity SD", rec_crit = "Remember criterion", know_crit = "Know criterion"),
-    cumulative = c(dprime = "Location", criterion = "Cutpoints"),
-    bivariate_cumulative = c(dprime = "Location (dim 1)", discrim = "Location (dim 2)",
-                             criterion = "Cutpoints (dim 1)", criterion2 = "Cutpoints (dim 2)"),
-    mixture = c(dprime = "d' (strong)", dprime2 = "d' (weak)", lambda = "Strong proportion"),
-    dpsdt = c(lambda = "Recollection"),
-    source_mixture = c(lambda = "Source memory"),
-    character(0))
-  generic <- c(dprime = "d'", sigma = "Signal SD", lambda = "Lambda", dprime2 = "d' (2)", sigma2 = "SD (2)",
-               discrim = "Source d'", rho = "Correlation", criterion = "Criteria", criterion2 = "Source criteria",
-               dprime_B = "d' (B)", lambda_B = "Lambda (B)", discrim_B = "Source d' (B)", sigma_B = "Signal SD (B)",
-               sigma2_B = "SD (2, B)", rho_B = "Correlation (B)", rho_N = "Correlation (new)",
-               lambda2 = "Lambda (2)", lambda2_B = "Lambda (2, B)", dprime_L = "d' (lure)",
-               sigma_L = "SD (lure)", lambda_L = "Lambda (lure)", rec_crit = "Remember criterion",
-               know_crit = "Know criterion")
-  unname(if (!is.na(lab[p])) lab[p] else if (!is.na(generic[p])) generic[p] else p)
+  ext <- .param_name_map(model$family$family)[[p]]
+  if (is.null(ext)) p else ext
+}
+
+.n_thresh_of <- function(model, p) {
+  if (p == "criterion2") model$model_data$K2 - 1L
+  else if (model$family$family == "cdp") model$family$J
+  else model$model_data$K - 1L
+}
+
+.crit_mid_label <- function(J) sprintf("c%d (midpoint)", as.integer(ceiling(J / 2)))
+
+.crit_gap_hi <- function(g, J) {
+  m <- as.integer(ceiling(J / 2))
+  n_up <- J - m
+  as.integer(ifelse(g <= n_up, m + g, m - (g - n_up) + 1L))
+}
+
+.crit_gap_label <- function(g, J) {
+  hi <- .crit_gap_hi(g, J)
+  sprintf("c%d to c%d", hi - 1L, hi)
+}
+
+.crit_comp_label <- function(k, J, gap_link) {
+  m <- as.integer(ceiling(J / 2))
+  if (k == m) return(.crit_mid_label(J))
+  hi <- if (k > m) k else k + 1L
+  sprintf("c%d to c%d (%s)", hi - 1L, hi, if (identical(gap_link, "softplus")) "gap" else "log gap")
 }
 
 .pretty_coef <- function(coef, data) {

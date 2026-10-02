@@ -56,12 +56,14 @@ test_that("auto settings are validated and only accepted with iter_sampling = 'a
   expect_error(fit_broc(m, backend = "jax", save_loglik = NULL), "TRUE or FALSE")
 })
 
-test_that("auto defaults scale with the sampler and the ESS targets", {
+test_that("auto defaults keep every draw, and thin overrides max_kept", {
   a <- .auto_settings(list(), "nuts", 4)
   expect_equal(a$targets, c(pop = 400, sd = 400, cor = 400))
-  expect_equal(c(a$check_every, a$max_draws, a$max_kept, a$rhat), c(100, 50000, 1000, 1.01))
+  expect_equal(c(a$check_every, a$max_draws, a$max_kept, a$rhat), c(100, 50000, 50000, 1.01))
   d <- .auto_settings(list(ess_target = c(pop = 4000)), "drghmc", 4)
-  expect_equal(c(d$check_every, d$max_draws, d$max_kept), c(1000, 500000, 2000))
+  expect_equal(c(d$check_every, d$max_draws, d$max_kept), c(1000, 500000, 500000))
+  k <- .auto_settings(list(max_kept = 100), "drghmc", 4, thin = 4L)
+  expect_equal(k$max_kept, 125000L)
 })
 
 test_that("per-class ESS targets fill unnamed classes with 400", {

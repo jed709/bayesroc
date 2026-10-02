@@ -5,9 +5,7 @@
 #' for each design cell (as returned by [estimates()]), the regression
 #' coefficients on the model scale, random-effect standard deviations,
 #' random-effect correlations and smooth-term penalty standard deviations, each
-#' with posterior mean, sd, interval, R-hat and bulk/tail ESS. Correlation blocks
-#' with more than 15 pairs print the pairs whose interval excludes 0 and then the
-#' largest; every pair is in `summary(fit)$correlations`.
+#' with posterior mean, sd, interval, R-hat and bulk/tail ESS.
 #'
 #' @param object A `broc_fit` object from [fit_broc()].
 #' @param prob Interval width (default 0.95).
@@ -119,7 +117,7 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
           lab <- paste0(.param_label(model, pname), ": ", comp$sm_obj$label,
                         if (length(comp$Zs_list) > 1L) paste0(" [", k, "]") else "")
           nm <- if (n_thresh > 0) paste0(base, "[", seq_len(n_thresh), "]") else base
-          comp_lab <- if (n_thresh > 0) c("location", paste0("gap", seq_len(n_thresh - 1L))) else ""
+          comp_lab <- if (n_thresh > 0) c(.crit_mid_label(n_thresh), .crit_gap_label(seq_len(n_thresh - 1L), n_thresh)) else ""
           ok <- nm %in% vars
           if (!any(ok)) next
           s <- summ(nm[ok])
@@ -203,10 +201,6 @@ print.broc_summary <- function(x, ...) {
       cat("\n", p, "\n", sep = "")
       .print_tbl(co[co$parameter == p, setdiff(names(co), "parameter"), drop = FALSE], digits)
     }
-    if (any(same)) {
-      cat("\n", paste(unique(co$parameter)[same], collapse = ", "), ": the coefficients equal the estimates above ",
-          "(summary(fit)$coefficients).\n", sep = "")
-    }
   }
   rs <- x$random_sd
   if (!is.null(rs) && nrow(rs)) {
@@ -227,17 +221,12 @@ print.broc_summary <- function(x, ...) {
   co <- x$correlations
   if (!is.null(co) && nrow(co)) {
     .print_section("RANDOM EFFECTS: CORRELATIONS", pct)
-    any_cut <- FALSE
     for (b in unique(co$block)) {
       d <- co[co$block == b, , drop = FALSE]
       tb <- .cor_print_rows(d)
-      cut <- nrow(tb$rows) < nrow(d)
-      any_cut <- any_cut || cut
-      cat("\n", b, if (cut) sprintf("  (%d of %d pairs: the %d whose interval excludes 0, then the largest |estimate|)",
-                                    nrow(tb$rows), nrow(d), sum(d$lower > 0 | d$upper < 0)), "\n", sep = "")
+      cat("\n", b, "\n", sep = "")
       .print_tbl(tb$rows, digits)
     }
-    if (any_cut) cat("\n  All pairs: summary(fit)$correlations; as matrices: summary(fit)$correlation_matrices\n")
   }
   if (!is.null(x$smooth_sds) && nrow(x$smooth_sds)) {
     .print_section("SMOOTH TERMS: PENALTY STANDARD DEVIATIONS", pct)
@@ -253,25 +242,20 @@ print.broc_summary <- function(x, ...) {
 .re_label_parts <- function(labels) {
   parameter <- sub(": .*$", "", labels)
   rest <- sub("^[^:]+: ", "", labels)
-  crit_re <- "^((bin [0-9]+, )?c[0-9]+ \\([^)]*\\)|bin [0-9]+ \\(location\\)|location)(, (.*))?$"
+  crit_re <- "^((bin [0-9]+, )?c[0-9]+( to c[0-9]+)? \\([^)]*\\)|bin [0-9]+ \\(location\\)|location)(, (.*))?$"
   is_crit <- grepl(crit_re, rest)
   criterion <- ifelse(is_crit, sub(crit_re, "\\1", rest), "")
-  term <- ifelse(is_crit, sub(crit_re, "\\4", rest), rest)
+  term <- ifelse(is_crit, sub(crit_re, "\\5", rest), rest)
   data.frame(parameter = parameter, criterion = criterion, term = term, stringsAsFactors = FALSE)
 }
 
-.cor_print_rows <- function(d, max_full = 15L, n_show = 10L) {
+.cor_print_rows <- function(d) {
   lab <- c(d$effect_1, d$effect_2)
   param <- unique(sub(": .*$", "", lab))
   strip <- if (length(param) == 1L) function(v) sub("^[^:]+: ", "", v) else identity
   rows <- data.frame(effect_1 = strip(d$effect_2), effect_2 = strip(d$effect_1),
                      d[intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(d))],
                      stringsAsFactors = FALSE)
-  if (nrow(rows) > max_full) {
-    sig <- d$lower > 0 | d$upper < 0
-    ord <- order(-sig, -abs(d$estimate))
-    rows <- rows[ord[seq_len(max(min(n_show, nrow(rows)), sum(sig)))], , drop = FALSE]
-  }
   rownames(rows) <- NULL
   list(rows = rows)
 }

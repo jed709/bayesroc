@@ -51,7 +51,8 @@ monitored parameter reaches the ESS and R-hat targets in \code{control} (JAX bac
 see \emph{Adaptive-length sampling} below).}
 
 \item{thin}{Period for saving samples (default 1). \code{thin = k} keeps every
-\code{k}-th post-warmup draw.}
+\code{k}-th post-warmup draw. With \code{iter_sampling = "auto"} the draws are thinned
+as they are sampled and \code{control$max_kept} is ignored.}
 
 \item{sampler}{Sampling algorithm: \code{"nuts"} (default) or \code{"drghmc"}, a
 delayed-rejection generalized HMC sampler (JAX backend only).}
@@ -70,8 +71,8 @@ named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, 
 \code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
 DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check_every}
 (draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
-\code{max_kept} (draws per chain kept in the fit; 1000, or more for ESS targets above
-\code{500 * chains}).
+\code{max_kept} (draws per chain kept in the fit; default \code{max_draws}, i.e. no
+thinning).
 }}
 
 \item{init}{Initial-value strategy. Default \code{0}: all parameters start at 0 on
@@ -172,12 +173,16 @@ rank-normalised bulk and tail ESS and R-hat (Vehtari et al., 2021, the estimator
 smooth SDs (\code{sd}) and random-effect correlations (\code{cor}). Sampling stops once
 every class meets its ESS target and every R-hat is at most \code{rhat_target}, or at
 \code{max_draws} or \code{max_time}. One line per round reports progress and what is still
-unmet. The next round samples while the check runs.
+unmet. The next round samples while the check runs; when a check takes longer
+than a round, checks are spaced out so sampling does not wait for them.
 
-The fit keeps at most \code{max_kept} draws per chain: longer runs are thinned evenly
-(every 2nd, 4th, ... draw), and the stopping rule is evaluated on exactly the
-draws the fit keeps, so \code{summary()} shows the ESS the rule saw. Divergence and
-other sampler diagnostics count every transition. The result carries attributes
+By default every draw is kept. \code{thin = k} keeps every \code{k}-th draw as it is
+sampled. Alternatively \code{max_kept} caps the draws kept per chain: once a run would
+exceed it, the kept draws are thinned evenly (every 2nd, then 4th, ... draw). In
+every case the stopping rule is evaluated on exactly the draws the fit keeps, so
+\code{summary()} shows the ESS and R-hat the rule saw. Divergence and other sampler
+diagnostics count every transition. A message reports the memory used by the
+kept draws once it passes 4 GB, and again each time it doubles. The result carries attributes
 \code{"stop_reason"}, \code{"ess_trace"} (one row per round), \code{"targets"},
 \code{"draws_per_chain"} and \code{"thin_stride"}; a warning is issued when a cap stops the
 run first.
