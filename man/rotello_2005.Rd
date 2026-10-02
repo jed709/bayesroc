@@ -17,7 +17,7 @@ A data frame with 44 rows and 5 columns:
 \item{count}{integer count of responses in this cell, summed across
 participants.}
 \item{condition}{factor with levels \code{"conservative"} and
-\code{"neutral"} -- the response-bias instruction condition.}
+\code{"neutral"}, the response-bias instruction condition.}
 }
 }
 \source{

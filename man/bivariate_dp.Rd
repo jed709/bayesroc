@@ -95,7 +95,7 @@ Logit link.}
 \item{lambda2_B}{(optional) Source-recollection probability for Source B. If
 omitted, constrained \code{lambda2_B = lambda2}.}
 }
-Defaults for the bivariate parameters match \code{\link[=bivariate_gaussian]{bivariate_gaussian()}} -- e.g.
+Defaults for the bivariate parameters match \code{\link[=bivariate_gaussian]{bivariate_gaussian()}}, e.g.
 \code{dprime_B} defaults to \code{dprime}, \code{sigma} defaults to fixed at 1,
 \code{discrim_B} defaults to mirror-symmetric.
 }

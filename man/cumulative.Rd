@@ -7,8 +7,8 @@
 cumulative(link = link_probit())
 }
 \arguments{
-\item{link}{Link function (default: \code{\link[=link_probit]{link_probit()}}). \code{\link[=link_logit]{link_logit()}} also
-supported; GEV link not implemented for this family.}
+\item{link}{Link function: \code{\link[=link_probit]{link_probit()}} (default), \code{\link[=link_logit]{link_logit()}} or
+\code{\link[=link_cloglog]{link_cloglog()}}.}
 }
 \value{
 A \code{broc_family} object.

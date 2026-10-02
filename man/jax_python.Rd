@@ -18,8 +18,8 @@ Resolution order:
 \item The managed venv at \code{jax_backend_dir()} if it exists.
 \item \code{Sys.getenv("RETICULATE_PYTHON")} if set and the file exists.
 \item Auto-discovery: scans common Python locations and PATH for an install
-that can \verb{import jax}. (See \code{find_python_with_jax}.)
-Returns \code{NULL} if nothing is found -- call \code{\link[=install_jax_backend]{install_jax_backend()}} then.
+that can \verb{import jax}.
+Returns \code{NULL} if nothing is found; in that case run \code{\link[=install_jax_backend]{install_jax_backend()}}.
 }
 }
 \seealso{

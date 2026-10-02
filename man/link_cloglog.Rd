@@ -2,7 +2,7 @@
 % Please edit documentation in R/families.R
 \name{link_cloglog}
 \alias{link_cloglog}
-\title{Complementary log-log link (Gumbel-min latent distribution)}
+\title{Complementary Log-Log Link Function}
 \usage{
 link_cloglog()
 }
@@ -10,10 +10,9 @@ link_cloglog()
 A \code{broc_link} object to pass to a family's \code{link} argument.
 }
 \description{
-Extreme-value SDT: latent strength follows a Gumbel distribution of event
-minima, F(x) = 1 - exp(-exp(x)). Discriminability is a pure location shift,
-so an asymmetric (slope < 1) zROC arises without an unequal-variance term.
-Orientation matters: this is Gumbel-MIN, not Gumbel-max.
+Uses the CDF of the minimum extreme-value (Gumbel) distribution,
+\eqn{F(x) = 1 - \exp(-\exp(x))}. With this link the equal-variance model
+produces a zROC slope below 1 (Meyer-Grant et al., 2026).
 }
 \references{
 Meyer-Grant, Kellen, Harding & Singmann (2026), Psychological

@@ -1,4 +1,4 @@
-#' resp() -- Multi-response marker for bivariate/CDP models
+#' Multi-Response Marker for Bivariate and CDP Models
 #'
 #' Used inside [brf()] formulas to specify multiple response variables. The
 #' arguments are positional: the specified family determines whether the second
@@ -135,7 +135,7 @@ brf <- function(formula, ..., family = NULL, priors = NULL, encoding_vars = NULL
 }
 
 #' Print method for brf objects
-#' @param x An brf object
+#' @param x A `brf` object.
 #' @param ... Ignored
 #' @export
 print.brf <- function(x, ...) {

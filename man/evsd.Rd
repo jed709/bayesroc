@@ -7,8 +7,8 @@
 evsd(link = link_probit())
 }
 \arguments{
-\item{link}{Link function (default: \code{\link[=link_probit]{link_probit()}}). Also supports
-\code{\link[=link_logit]{link_logit()}} for logistic CDF.}
+\item{link}{Link function: \code{\link[=link_probit]{link_probit()}} (default), \code{\link[=link_logit]{link_logit()}} or
+\code{\link[=link_cloglog]{link_cloglog()}}.}
 }
 \value{
 A \code{broc_family} object.

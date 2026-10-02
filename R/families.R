@@ -49,13 +49,11 @@ link_logit <- function() {
   structure(list(name = "logit"), class = "broc_link")
 }
 
-#' Complementary log-log link (Gumbel-min latent distribution)
+#' Complementary Log-Log Link Function
 #'
-#' Extreme-value SDT: latent strength follows a Gumbel distribution of event
-#' minima, F(x) = 1 - exp(-exp(x)). Discriminability is a pure location shift,
-#' so an asymmetric (slope < 1) zROC arises without an unequal-variance term.
-#' Orientation matters: this is Gumbel-MIN, not Gumbel-max.
-#'
+#' Uses the CDF of the minimum extreme-value (Gumbel) distribution,
+#' \eqn{F(x) = 1 - \exp(-\exp(x))}. With this link the equal-variance model
+#' produces a zROC slope below 1 (Meyer-Grant et al., 2026).
 #' @return A `broc_link` object to pass to a family's `link` argument.
 #' @references Meyer-Grant, Kellen, Harding & Singmann (2026), Psychological
 #'   Review. doi:10.1037/rev0000615
@@ -83,8 +81,8 @@ print.broc_link <- function(x, ...) {
 #' Canonical signal detection model. Signal and noise distributions are assumed
 #' normal with equal variance fixed at 1 (Macmillan & Creelman, 2005).
 #'
-#' @param link Link function (default: [link_probit()]). Also supports
-#'   [link_logit()] for logistic CDF.
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -145,7 +143,8 @@ evsd <- function(link = link_probit()) {
 #' different variance than the noise (new-item) distribution (Macmillan &
 #' Creelman, 2005).
 #'
-#' @param link Link function (default: [link_probit()]).
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -205,7 +204,8 @@ uvsd <- function(link = link_probit()) {
 #' Recognition-memory model combining discrete recollection and continuous (UVSD)
 #' familiarity (Yonelinas, 1994).
 #'
-#' @param link Link function (default: [link_probit()]).
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -272,7 +272,8 @@ dpsd <- function(link = link_probit()) {
 #' Two-state mixture model for old items, combining a high- and a low-strength
 #' Gaussian component (DeCarlo, 2002).
 #'
-#' @param link Link function (default: [link_probit()]).
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -378,8 +379,8 @@ mixture <- function(link = link_probit()) {
 #' Ordinal regression with cumulative-link cutpoints and no SDT structure
 #' (Agresti, 2010).
 #'
-#' @param link Link function (default: [link_probit()]). [link_logit()] also
-#'   supported; GEV link not implemented for this family.
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -516,7 +517,8 @@ bivariate_cumulative <- function() {
 #' Finite-mixture signal detection model for source-discrimination tasks
 #' (DeCarlo, 2003).
 #'
-#' @param link Link function (default: [link_probit()]).
+#' @param link Link function: [link_probit()] (default), [link_logit()] or
+#'   [link_cloglog()].
 #'
 #' @details
 #' ## Likelihood
@@ -569,7 +571,7 @@ bivariate_cumulative <- function() {
 #' @export
 source_mixture <- function(link = link_probit()) {
   if (!inherits(link, "broc_link")) {
-    stop("link must be created with link_probit() or link_logit()")
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
   structure(
     list(
@@ -656,7 +658,7 @@ source_mixture <- function(link = link_probit()) {
 #'   \item{dprime}{(required) \eqn{d'_A} on the detection axis. Identity link
 #'     (unbounded) or log link (bounded).}
 #'   \item{discrim}{(required) Signed source-axis position of A items.
-#'     Identity link (unbounded) or log link (bounded -- positive magnitude,
+#'     Identity link (unbounded) or log link (bounded: positive magnitude,
 #'     placed on the negative source axis via internal negation).}
 #'   \item{criterion}{(required) K1-1 detection thresholds. Identity link.}
 #'   \item{criterion2}{(required) K2-1 source thresholds. Identity link.}
@@ -863,7 +865,7 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
 #'   \item{lambda2_B}{(optional) Source-recollection probability for Source B. If
 #'     omitted, constrained `lambda2_B = lambda2`.}
 #' }
-#' Defaults for the bivariate parameters match [bivariate_gaussian()] -- e.g.
+#' Defaults for the bivariate parameters match [bivariate_gaussian()], e.g.
 #' `dprime_B` defaults to `dprime`, `sigma` defaults to fixed at 1,
 #' `discrim_B` defaults to mirror-symmetric.
 #'

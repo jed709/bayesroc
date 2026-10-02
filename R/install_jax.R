@@ -157,8 +157,8 @@ install_jax_backend <- function(dir = jax_backend_dir(),
 #'   2. The managed venv at `jax_backend_dir()` if it exists.
 #'   3. `Sys.getenv("RETICULATE_PYTHON")` if set and the file exists.
 #'   4. Auto-discovery: scans common Python locations and PATH for an install
-#'      that can `import jax`. (See `find_python_with_jax`.)
-#' Returns `NULL` if nothing is found -- call [install_jax_backend()] then.
+#'      that can `import jax`.
+#' Returns `NULL` if nothing is found; in that case run [install_jax_backend()].
 #'
 #' @return Character path to a Python executable, or `NULL`.
 #' @seealso [set_jax_python()], [check_jax_backend()], [install_jax_backend()].

@@ -44,10 +44,9 @@ also be set in \code{\link[=brf]{brf()}}; a value in broc() takes precedence.}
 
 \item{smooth_info}{If \code{TRUE}, sample the coefficients of population-level
 smooth terms on a scale matched to how strongly the data inform them. This
-is an exact change of variables (the posterior is unchanged) that removes
-the divergences smooth terms otherwise produce when their wiggliness SDs are
-weakly identified. Model construction runs a short maximum-likelihood pilot
-to measure that information. Random smooths (\code{bs = "fs"}, \code{"re"}) keep the
+is an exact change of variables, so the posterior is unchanged; it can remove
+divergences when the smooths' SDs are weakly identified. Model construction
+runs a short maximum-likelihood pilot to measure that information. Random smooths (\code{bs = "fs"}, \code{"re"}) keep the
 default parameterization. Default \code{FALSE}.}
 }
 \value{

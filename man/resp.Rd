@@ -2,7 +2,7 @@
 % Please edit documentation in R/brf.R
 \name{resp}
 \alias{resp}
-\title{resp() -- Multi-response marker for bivariate/CDP models}
+\title{Multi-Response Marker for Bivariate and CDP Models}
 \usage{
 resp(response1, response2)
 }

@@ -7,7 +7,7 @@
 \method{print}{brf}(x, ...)
 }
 \arguments{
-\item{x}{An brf object}
+\item{x}{A \code{brf} object.}
 
 \item{...}{Ignored}
 }

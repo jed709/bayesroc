@@ -57,13 +57,14 @@ see \emph{Adaptive-length sampling} below).}
 delayed-rejection generalized HMC sampler (JAX backend only).}
 
 \item{control}{Named list of sampler tuning parameters (defaults in
-parentheses; unknown keys are ignored with a warning):
+parentheses; an unknown key is an error):
 \itemize{
 \item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
 \code{precision} ("f64" or "f32"; JAX backend only).
 \item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
-\code{eps_c} (1.0), \code{precision} ("f64" or "f32").
+\code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
+("f64" or "f32").
 \item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
 named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
 \code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
@@ -104,7 +105,7 @@ uses a random seed.}
 \item{file}{Optional path to save the fitted model to. When set,
 the fit is written there with \code{\link[=save_broc_fit]{save_broc_fit()}} once sampling finishes (a
 \code{.rds} extension is appended if absent). If the file already exists, the
-saved fit is loaded and returned instead of refitting -- unless
+saved fit is loaded and returned instead of refitting, unless
 \code{file_refit = TRUE}. \code{NULL} (default) does not save.}
 
 \item{file_refit}{If \code{FALSE} (default), an existing \code{file} is loaded and

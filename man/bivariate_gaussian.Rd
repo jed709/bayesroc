@@ -84,7 +84,7 @@ source discrimination at low item evidence (Starns et al., 2014).
 \item{dprime}{(required) \eqn{d'_A} on the detection axis. Identity link
 (unbounded) or log link (bounded).}
 \item{discrim}{(required) Signed source-axis position of A items.
-Identity link (unbounded) or log link (bounded -- positive magnitude,
+Identity link (unbounded) or log link (bounded: positive magnitude,
 placed on the negative source axis via internal negation).}
 \item{criterion}{(required) K1-1 detection thresholds. Identity link.}
 \item{criterion2}{(required) K2-1 source thresholds. Identity link.}

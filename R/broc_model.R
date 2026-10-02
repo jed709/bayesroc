@@ -154,10 +154,9 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   `NULL` uses the family default.
 #' @param smooth_info If `TRUE`, sample the coefficients of population-level
 #'   smooth terms on a scale matched to how strongly the data inform them. This
-#'   is an exact change of variables (the posterior is unchanged) that removes
-#'   the divergences smooth terms otherwise produce when their wiggliness SDs are
-#'   weakly identified. Model construction runs a short maximum-likelihood pilot
-#'   to measure that information. Random smooths (`bs = "fs"`, `"re"`) keep the
+#'   is an exact change of variables, so the posterior is unchanged; it can remove
+#'   divergences when the smooths' SDs are weakly identified. Model construction
+#'   runs a short maximum-likelihood pilot to measure that information. Random smooths (`bs = "fs"`, `"re"`) keep the
 #'   default parameterization. Default `FALSE`.
 #' @section Data coding:
 #' \describe{
@@ -1975,12 +1974,13 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param sampler Sampling algorithm: `"nuts"` (default) or `"drghmc"`, a
 #'   delayed-rejection generalized HMC sampler (JAX backend only).
 #' @param control Named list of sampler tuning parameters (defaults in
-#'   parentheses; unknown keys are ignored with a warning):
+#'   parentheses; an unknown key is an error):
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
 #'     `precision` ("f64" or "f32"; JAX backend only).
 #'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
-#'     `eps_c` (1.0), `precision` ("f64" or "f32").
+#'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
+#'     ("f64" or "f32").
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
 #'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
@@ -2012,7 +2012,7 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param file Optional path to save the fitted model to. When set,
 #'   the fit is written there with [save_broc_fit()] once sampling finishes (a
 #'   `.rds` extension is appended if absent). If the file already exists, the
-#'   saved fit is loaded and returned instead of refitting -- unless
+#'   saved fit is loaded and returned instead of refitting, unless
 #'   `file_refit = TRUE`. `NULL` (default) does not save.
 #' @param file_refit If `FALSE` (default), an existing `file` is loaded and
 #'   sampling is skipped; if `TRUE`, the model is refit and the file overwritten.

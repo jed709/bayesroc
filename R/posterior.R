@@ -11,7 +11,7 @@
 #' @param transform Ignored.
 #' @param newdata Optional data frame. If `NULL`, uses the training data.
 #' @param dpar Distributional parameter to extract (default `"dprime"`). Valid
-#'   names depend on the family -- the same names used in [brf()] and
+#'   names depend on the family and are the names used in [brf()] and
 #'   [broc_prior()].
 #' @param re_formula `NULL` (default) includes random effects; `NA` excludes
 #'   them (population-level prediction).

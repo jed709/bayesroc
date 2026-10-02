@@ -51,7 +51,7 @@
 #' # Prior on specific d' coefficient
 #' broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime", coef = "conditionread")
 #' 
-#' # Prior on ALL random effect standard deviations
+#' # Prior on every random-effect standard deviation
 #' broc_prior("normal(0, 0.5)", class = "sd")
 #' 
 #' # Prior on random effect SDs for d' only
@@ -60,7 +60,7 @@
 #' # Prior on random effect SDs for d' for participant group only
 #' broc_prior("normal(0, 0.3)", class = "sd", dpar = "dprime", group = "participant")
 #' 
-#' # Prior on ALL correlations
+#' # Prior on every correlation
 #' broc_prior("lkj(2)", class = "cor")
 #' 
 #' # Prior on criterion correlations for participant
@@ -631,7 +631,7 @@ print.prior_lookup <- function(x, ...) {
 #'
 #' @examples
 #' \dontrun{
-#' # Straight from a formula -- no need to build the model first
+#' # From a formula
 #' get_broc_prior(conf | old ~ condition + (1 | subject),
 #'                data = my_data, family = evsd())
 #'

@@ -26,7 +26,7 @@
 \item{newdata}{Optional data frame. If \code{NULL}, uses the training data.}
 
 \item{dpar}{Distributional parameter to extract (default \code{"dprime"}). Valid
-names depend on the family -- the same names used in \code{\link[=brf]{brf()}} and
+names depend on the family and are the names used in \code{\link[=brf]{brf()}} and
 \code{\link[=broc_prior]{broc_prior()}}.}
 
 \item{re_formula}{\code{NULL} (default) includes random effects; \code{NA} excludes

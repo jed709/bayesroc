@@ -24,9 +24,9 @@ install.packages("cmdstanr",
 cmdstanr::install_cmdstan()
 ```
 
-The optional JAX backend runs in a managed Python virtual environment. It
-requires a **system Python (>= 3.10) installed first** — bayesroc creates the
-venv but does not install Python itself. On macOS/Linux a `python.org`,
+The optional JAX backend runs in a managed Python virtual environment. bayesroc
+creates the environment but does not install Python, so Python 3.10 or later must
+already be installed. On macOS/Linux a `python.org`,
 Homebrew (`brew install python`), pyenv, or conda interpreter all work and are
 auto-discovered. On Windows, install Python from
 [python.org](https://www.python.org/downloads/) rather than the Microsoft Store
@@ -48,7 +48,7 @@ for fitting with `set_jax_python()`. See `?install_jax_backend` and
 
 Formulas provided to univariate bayesroc models must supply both a response variable 
 and a binary indicator variable using either 0/1 or -0.5/0.5 coding that denotes 
-whether the trial is a lure or a target. These variables should be provided in the form `response | is_old ~ predictors`, where this formula implictly applies to d' and subsequent formulae are provided for other model parameters (e.g., `criterion ~ predictors`, `sigma ~ predictors`). 
+whether the trial is a lure or a target. These variables should be provided in the form `response | is_old ~ predictors`, where this formula implicitly applies to d' and subsequent formulae are provided for other model parameters (e.g., `criterion ~ predictors`, `sigma ~ predictors`). 
 
 The code below shows how a hierarchical unequal variance signal detection model (UVSD) 
 can be fit to the bundled `prm09` dataset (97 subjects, 480 items, 6-point confidence;
@@ -104,10 +104,9 @@ by default; `fit_broc(threads_per_chain = N)` with N > 1 compiles a `reduce_sum`
 version of the model and runs each chain on N threads.
 
 The NumPyro backend (`fit_broc(m, backend = "jax")`) is generally faster than Stan and 
-uses analytic custom JVPs. This backend only supports multithreading and the number
-of threads spawned for each chain depends on the model family, fixed- and random-
-effects structure, and dataset size. Threads per chain cannot be set directly. At 
-present, the NumPyro backend is CPU-only, but GPU support may be added in future releases.
+uses analytic custom JVPs. Each chain runs on several threads; the number depends on
+the model family, the fixed- and random-effects structure and the dataset size, and
+cannot be set directly. The NumPyro backend currently runs on CPU only.
 
 ## Supported families
 
@@ -131,11 +130,11 @@ bayesroc ships five datasets:
 
 | Dataset | Format | Use |
 |---|---|---|
-| `prm09` | trial-level, 46,495 × 5 (97 subjects, 480 items, 6-point confidence) | Pratte et al. (2010) — hierarchical univariate models |
-| `whitridge_2024` | trial-level, 7,560 × 6 (42 subjects, 360 items, 6-point confidence) | Whitridge et al. (2024) — hierarchical univariate models with within-subject effects |
-| `yonelinas_1999` | aggregated counts, 108 × 4 (3 item types × 6×6 detect/source ratings) | Yonelinas (1999) — item/source judgements for bivariate SDT models (`bivariate_gaussian`, `bivariate_dp`, `vrdp2d`) |
-| `hilford_2002` | aggregated counts, 12 × 3 (2 sources × 6 ratings) | Hilford et al. (2002) — `source_mixture()` models |
-| `rotello_2005` | aggregated counts, 44 × 5 | Rotello et al. (2005) — Remember/Know data for `cdp()` |
+| `prm09` | trial-level, 46,495 × 5 (97 subjects, 480 items, 6-point confidence) | Pratte et al. (2010): hierarchical univariate models |
+| `whitridge_2024` | trial-level, 7,560 × 6 (42 subjects, 360 items, 6-point confidence) | Whitridge et al. (2024): hierarchical univariate models with within-subject effects |
+| `yonelinas_1999` | aggregated counts, 108 × 4 (3 item types × 6×6 detect/source ratings) | Yonelinas (1999): item/source judgements for bivariate SDT models (`bivariate_gaussian`, `bivariate_dp`, `vrdp2d`) |
+| `hilford_2002` | aggregated counts, 12 × 3 (2 sources × 6 ratings) | Hilford et al. (2002): `source_mixture()` models |
+| `rotello_2005` | aggregated counts, 44 × 5 | Rotello et al. (2005): Remember/Know data for `cdp()` |
 
 ```r
 data(prm09)
@@ -149,24 +148,24 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 
 ## Documentation
 
-- `?broc` — main entry point
-- `?brf` — formula composition
-- `?fit_broc` — fitting (Stan or JAX)
+- `?broc`: main entry point
+- `?brf`: formula composition
+- `?fit_broc`: fitting (Stan or JAX)
 - `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`,
-  `posterior_epred(fit)`, `posterior_linpred(fit)` — S3 methods on the fitted model
-- `?estimates`, `?compare_estimates` — parameters on their natural scale per design
+  `posterior_epred(fit)`, `posterior_linpred(fit)`: S3 methods on the fitted model
+- `?estimates`, `?compare_estimates`: parameters on their natural scale per design
   cell (the numbers behind `plot(fit)` and the first section of `summary(fit)`), and
   posterior differences between cells
 - Plots (all return ggplot objects and share `by`, `ndraws`, `prob`, `re_formula`,
   `seed`): `?plot_estimates` (also `plot(fit)`), `?plot_roc` (ROC and zROC),
   `?plot_distributions` (latent distributions with criteria), `?pp_check.broc_fit`,
   `?plot_random_effects`, `?plot_smooths`; `?theme_broc` for the shared theme and palette
-- `?conditional_smooths` — smooth-term evaluation (mgcv `s()` / `t2()`
+- `?conditional_smooths`: smooth-term evaluation (mgcv `s()` / `t2()`
   are supported in any parameter formula). If a model with smooth terms reports
   divergences, `broc(..., smooth_info = TRUE)` samples the population-level smooth
   coefficients on a data-informed scale; the posterior is unchanged
-- `?broc_prior` — prior specification
-- `?drop_loglik` — reclaim a fit's log-likelihood sidecar
+- `?broc_prior`: prior specification
+- `?drop_loglik`: reclaim a fit's log-likelihood sidecar
 
 ## Log-likelihood and LOO
 

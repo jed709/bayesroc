@@ -1,8 +1,8 @@
 # bayesroc architecture
 
-Developer/maintainer notes. Not shipped to users (build-ignored). The single
-most important thing to understand before editing the likelihood or gradient
-code is the **three-generator design** and the **parity contract** (below).
+Developer notes; not shipped (build-ignored). Read the sections on the three
+likelihood implementations and the parity tests before editing likelihood or
+gradient code.
 
 ## Pipeline
 
@@ -24,41 +24,38 @@ broc_fit            S3 wrapper (environment) over the backend result
 summary / predict / plot / pp_check / loo / posterior_*   (R/summary.R, predict.R, ...)
 ```
 
-## The three-generator design (read this)
+## Three likelihood implementations
 
-The same SDT **likelihood + gradient algebra** for each family is implemented
-**three independent times**, because the package supports three compute paths
-and you cannot share a hand-coded JAX JVP with emitted C++ or Stan strings:
+The likelihood and gradient algebra of each family is implemented three times,
+because a hand-coded JAX JVP cannot be shared with emitted C++ or Stan code:
 
 | Path | File | What it emits / does |
 |---|---|---|
 | Stan (plain, dev only) | `dev/plain_stan.R` (not shipped; `.Rbuildignore`d) | Stan-language likelihood with vanilla Stan autodiff, kept as the independent verification oracle. |
-| Stan (batch) | `R/generate_batch_cpp.R`, `inst/stan/batch_sdt_core.hpp` | A per-model C++ function with **analytic** gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
+| Stan (batch) | `R/generate_batch_cpp.R`, `inst/stan/batch_sdt_core.hpp` | A per-model C++ function with analytic gradients via `stan::math::precomputed_gradients`, injected through cmdstanr's `user_header`. ~10-16x faster than plain. |
 | JAX | `inst/python/numpyro_backend.py` | Fused per-observation likelihoods with hand-coded `@custom_jvp` analytic gradients; batch-vectorized (no vmap). Bivariate-normal and f64 probit cells run natively through XLA FFI (`inst/ffi/bvn_ffi.cc`, `inst/include/bayesroc/bvn_simd.h`). The native kernel is required: it is built on first use with the C++ toolchain cmdstanr uses, and the JAX backend stops with a fix-it message if it cannot be built. The pure-JAX kernels remain as test references (`BAYESROC_PURE_JAX_REFERENCE=1`). |
 
-Plain Stan and the batch path share **one** generator (`generate_stan_code_v2`);
+Plain Stan and the batch path share one generator (`generate_stan_code_v2`);
 `batch_info` swaps only the likelihood lines (functions block, model-block likelihood,
 generated-quantities `log_lik`). Without `batch_info` the generator calls into the
 dev-only file through `.plain_stan_dev()`, which errors in an installed package. The JAX backend
 is wholly separate (different language + transport).
 
-**Consequence:** any change to the likelihood, the gradient math, the threshold
-parameterization, or the probability-floor strategy must be made in ~8-12 places
-across these three generators and kept **bit-compatible by hand**. This is the
-largest maintainability cost in the package and is intrinsic to the 3-backend goal.
+A change to the likelihood, the gradients, the threshold parameterization or the
+probability floors therefore has to be made in 8-12 places across the three
+implementations and kept consistent by hand.
 
-## The parity contract
+## Parity tests
 
-All three paths must produce **identical** posteriors for the same model. This
-is enforced by tests, which are the guardrail for any likelihood/gradient edit:
+All three paths must give the same posterior for the same model. These tests check
+it and must pass after any likelihood or gradient edit:
 
-- `tests/testthat/test-stan_jax_agreement.R` — Stan(batch) vs JAX posterior means.
-- `tests/testthat/test-batch_parity.R` — Stan(batch) vs Stan(plain). Plain Stan is
-  the **independent autodiff oracle**: batch-C++ and JAX are both *hand-derived*
-  gradients, so plain Stan (vanilla autodiff) is the one independent check that
-  catches a shared derivation bug. **Do not remove plain Stan** from `dev/`; the
-  parity tests load it with `.broc_plain()` (tests/testthat/helper-parity.R) and skip
-  when the file is absent (e.g. under `R CMD check` of a built tarball).
+- `tests/testthat/test-stan_jax_agreement.R`: Stan (batch) vs JAX posterior means.
+- `tests/testthat/test-batch_parity.R`: Stan (batch) vs Stan (plain). Batch C++ and
+  JAX both use hand-derived gradients, so plain Stan, with ordinary autodiff, is the
+  only check that catches a derivation error they share. Keep `dev/plain_stan.R`;
+  the parity tests load it with `.broc_plain()` (tests/testthat/helper-parity.R) and
+  skip when it is absent (e.g. under `R CMD check` of a built tarball).
 
 When you touch likelihood/gradient code in one generator, change all three and
 run the full suite.
@@ -66,21 +63,21 @@ run the full suite.
 ## Backends
 
 - The Stan backend always uses the batch C++ likelihood (no extra toolchain beyond
-  cmdstanr -- it uses `user_header`, not FFI). Its `log_lik` comes from the same
+  cmdstanr; it uses `user_header`, not FFI). Its `log_lik` comes from the same
   kernel (`batch_sdt_loglik_vec`).
 - `generate_batch_cpp()` covers every family/config; a `NULL` return is an internal
   error at model build.
 - Dev only: `env <- new.env(parent = asNamespace("bayesroc")); sys.source("dev/plain_stan.R", env);
   options(bayesroc.dev_plain_stan = env)` makes `broc()` emit the plain Stan-language
   likelihood instead.
-- `backend = "jax"` runs NumPyro in a **subprocess** (`processx`, not reticulate,
+- `backend = "jax"` runs NumPyro in a subprocess (`processx`, not reticulate,
   to avoid RStudio DLL conflicts). R writes a JSON config + reads `.npy` results;
   Python discovery is shared by `.python_candidate_paths()` (R/jax_backend.R).
 
 ## Shared modeling conventions
 
 - **Mid-anchor thresholds:** the K-1 ordered thresholds are parameterized as a
-  middle anchor `thresh_mid` plus ordered positive **gaps** under a `gap_link`
+  middle anchor `thresh_mid` plus ordered positive gaps under a `gap_link`
   (`"log"` default, or `"softplus"`). All three generators must build thresholds
   the same way (cumsum from the mid anchor).
 - **Bivariate cell probabilities:** every cell is one rectangle probability
@@ -107,7 +104,7 @@ run the full suite.
   stay 0, not NaN). In Stan, standardise a possibly-infinite bound with `bvn_std()`:
   arithmetic on an infinite var poisons the gradient with 0 * Inf.
 
-## Numerical landmines (don't relearn these the hard way)
+## Numerical details
 
 - **Probability floors sit at the float underflow limit** (1e-300 in double,
   1e-37 in JAX float32 via `_pfloor()`), not 1e-20. A floor above the smallest
@@ -173,7 +170,8 @@ run the full suite.
 | `inst/include/bayesroc/bvn_simd.h`, `bvn_tail.h`, `inst/ffi/bvn_ffi.cc`, `R/ffi_build.R` | native bivariate-normal kernels, built on the user's machine and cached in `tools::R_user_dir()` |
 | `dev/plain_stan.R` | dev-only Stan-language likelihood (incl. the bivariate-normal kernel mirror) |
 | `R/loo.R`, `R/npy.R` | streamed PSIS-LOO over the on-disk log-likelihood (`.npy`) |
-| `R/auto.R`, `R/compact.R` | `iter_sampling = "auto"` rounds and `resume`; compact storage of random-effect draws |
+| `R/auto.R`, `inst/python/autorun.py`, `inst/python/essrhat.py` | `iter_sampling = "auto"` and `resume`: R driver, worker-side sampling session, vectorised ESS/R-hat |
+| `R/compact.R` | compact storage of random-effect draws |
 | `R/jax_backend.R`, `R/install_jax.R` | JAX subprocess + Python discovery/venv mgmt |
 | `R/broc_model.R` | `broc()` + `fit_broc()` orchestration |
 | `R/broc_fit.R` | `broc_fit` S3 object + save/load |
@@ -181,10 +179,9 @@ run the full suite.
 | `R/plot_*.R`, `R/pp_check.R`, `R/conditional_smooths.R` | plots: shared theme (`plot_theme.R`), design cells and posterior setup (`plot_cells.R`); ROC curves and latent densities come from one engine (`.roc_survival`) that evaluates each family's own category probabilities at moving criteria, averaged over the observed rows |
 | `R/priors.R`, `R/prior_init.R` | prior specification + defaults |
 
-## Things deliberately NOT done (and why)
+## Not done
 
-- **No symbolic IR unifying the three generators.** It would be the "right" DRY
-  fix but means rewriting the validated gradients; the risk/ROI is poor. The
-  triplication is documented here instead.
-- The god-functions (`sdt_model`, `build_model_data`, `generate_functions_block_v2`)
-  are long but are codegen orchestrators; left as-is.
+- No shared intermediate representation for the three implementations: it would
+  mean rewriting validated gradients for little gain.
+- `sdt_model`, `build_model_data` and `generate_functions_block_v2` are long, but
+  they orchestrate code generation and are left as they are.

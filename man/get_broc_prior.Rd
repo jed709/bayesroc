@@ -36,7 +36,7 @@ family.
 }
 \examples{
 \dontrun{
-# Straight from a formula -- no need to build the model first
+# From a formula
 get_broc_prior(conf | old ~ condition + (1 | subject),
                data = my_data, family = evsd())
 
