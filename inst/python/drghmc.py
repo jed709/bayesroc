@@ -19,7 +19,7 @@ _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 
 _DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
-                 mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64")
+                 mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64", mean_moves=True)
 _INTEGRATORS = ("bcss3", "bcss2", "leapfrog")
 
 
@@ -43,6 +43,7 @@ def _merge_control(control):
         (0.0 <= float(c["mass_burn_frac"]) < float(c["mass_end_frac"]) <= 1.0,
          "need 0 <= mass_burn_frac < mass_end_frac <= 1"),
         (c["precision"] in ("f64", "f32"), "precision must be 'f64' or 'f32'"),
+        (isinstance(c["mean_moves"], (bool, np.bool_)), "mean_moves must be TRUE or FALSE"),
     ]
     for ok, msg in checks:
         if not ok:
@@ -312,7 +313,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     return np.asarray(imm), eps, np.asarray(th), time.time() - t0
 
 
-def _sampler_fns(vg_off, D, ctrl, parallel):
+def _sampler_fns(vg_off, D, ctrl, parallel, move=None):
     """State-independent sampler functions (setup_p, chunk_p). (imm, eps) are
     runtime arguments, so chunk_p can be lowered/compiled before adaptation ends.
     The key for global step t of a chain is fold_in(chain_key, t), so a run split
@@ -397,6 +398,8 @@ def _sampler_fns(vg_off, D, ctrl, parallel):
             on_reject = reject_all if kmax == 1 else rejected1
             th_n, rho_n, U_n, g_n, stage = jax.lax.cond(acc1, accepted1, on_reject, None)
             rho_n = jnp.where(stage > 0, -rho_n, rho_n)
+            if move is not None:
+                th_n, U_n, g_n = move(jax.random.fold_in(jax.random.fold_in(ckey, t), 7), th_n, U_n, g_n)
             return (th_n, rho_n, U_n, g_n), (th_n, stage, H0)
 
         return jax.lax.scan(dr_step, c, ts)
@@ -426,13 +429,24 @@ def _chain_map(f, in_axes, parallel):
     return jax.jit(run)
 
 
+def _mean_move(model, config, ctrl, keys, off, unflatten, progress_bar=False):
+    """meanmove.build when ctrl['mean_moves'], else None."""
+    if not ctrl.get("mean_moves", True):
+        return None
+    import meanmove
+    mv = meanmove.build(model, config, keys, off, unflatten)
+    if mv is not None and progress_bar:
+        print(f"[DR-G-HMC] exact population-mean moves on {', '.join(mv.specs)}", flush=True)
+    return mv
+
+
 def _chunk_len(samples):
     return max(1, samples // 100)
 
 
 def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
                   imm, eps, state, parallel, progress_bar=False,
-                  donor_loader=None, prebuilt=None, n_obs=None, offset_fn=None):
+                  donor_loader=None, prebuilt=None, n_obs=None, offset_fn=None, move=None):
     """DR-G-HMC sampling from a fixed (imm, eps). `state` holds the chains'
     positions `th` [chains, D], optional momenta `rho`, and the global step
     offset `t0` (0 for a fresh run). Returns (thinned draws [chains, kept, D],
@@ -441,7 +455,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     if prebuilt is not None:
         setup_p, chunk_c, chunk_raw = prebuilt
     else:
-        setup_p, chunk_raw = _sampler_fns(vg_off, D, ctrl, parallel)
+        setup_p, chunk_raw = _sampler_fns(vg_off, D, ctrl, parallel, move)
         chunk_c = chunk_raw
     chain_keys = jax.random.split(_tagged(seed, 1), chains)
     zero_off = jnp.zeros(n_obs)
@@ -647,7 +661,8 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
         smp_thread = None
         if ctrl["precision"] != "f32":
             import threading
-            setup_p, chunk_raw = _sampler_fns(_build_offset(model, config, unflatten), D, ctrl, parallel)
+            setup_p, chunk_raw = _sampler_fns(_build_offset(model, config, unflatten), D, ctrl, parallel,
+                                              _mean_move(model, config, ctrl, keys, off, unflatten, progress_bar))
             step = _chunk_len(samples)
             _ck = jax.random.split(_tagged(seed, 1), chains)
             _th0 = jnp.zeros((chains, D))
@@ -739,6 +754,7 @@ def _main_sample_f32(argfile):
     _convert_matrices(config)
     vg, unflatten, keys, off, D, postprocess_fn = _build(backend.sdt_model, config)
     vg_off = _build_offset(backend.sdt_model, config, unflatten)
+    mv = _mean_move(backend.sdt_model, config, p["ctrl"], keys, off, unflatten)
 
     def load_donor(timeout=3600.0):
         t0 = time.time()
@@ -753,7 +769,7 @@ def _main_sample_f32(argfile):
     ths, stages, energy, end = _sample_phase(
         vg_off, D, p["chains"], p["samples"], p["thinning"], p["seed"], p["ctrl"],
         None, None, None, p["parallel"], p.get("progress_bar", False),
-        donor_loader=load_donor, n_obs=int(config["N"]),
+        donor_loader=load_donor, n_obs=int(config["N"]), move=mv,
         offset_fn=lambda st: (jnp.asarray(st["offset"]) if st.get("offset") is not None else
                               ll_offset(postprocess_fn, unflatten, config, np.asarray(st["th"])[0])))
     np.savez(p["out"], ths=ths, stages=stages, energy=energy,

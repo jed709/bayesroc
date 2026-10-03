@@ -1981,7 +1981,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
-#'     ("f64" or "f32").
+#'     ("f64" or "f32"), `mean_moves` (`TRUE`: an exact population-mean update after each
+#'     step for random-effect terms that match a fixed effect; see *Population-mean moves*).
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
 #'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
@@ -2086,6 +2087,16 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' `"stop_reason"`, `"ess_trace"` (one row per round), `"targets"`,
 #' `"draws_per_chain"` and `"thin_stride"`; a warning is issued when a cap stops the
 #' run first.
+#' @section Population-mean moves:
+#' When a random-effect term has the same design column as a fixed effect (for example
+#' `Condition` in both `dprime ~ Condition` and `(1 + Condition | study)`), raising the
+#' fixed coefficient and lowering every group's effect by the same amount leaves the
+#' likelihood unchanged. With few groups and many observations per group the posterior is
+#' a long narrow ridge in that direction, which DR-G-HMC's short trajectories cross slowly.
+#' After each step DR-G-HMC therefore draws that shift from its conditional distribution
+#' given the groups' effects and accepts it on the coefficients' prior ratio, an exact
+#' update that never evaluates the likelihood. Set `control = list(mean_moves = FALSE)` to
+#' turn it off.
 #' @references Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
 #'   (2021). Rank-normalization, folding, and localization: An improved R-hat for
 #'   assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667-718.
@@ -2189,7 +2200,11 @@ fit_broc <- function(model,
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
-                    "precision")
+                    "precision", "mean_moves")
+  if (!is.null(.ctrl$mean_moves) && !(is.logical(.ctrl$mean_moves) && length(.ctrl$mean_moves) == 1L &&
+                                      !is.na(.ctrl$mean_moves))) {
+    stop("`control$mean_moves` must be TRUE or FALSE.", call. = FALSE)
+  }
   .valid <- if (sampler == "drghmc") .drghmc_keys else .nuts_keys
   .unknown <- setdiff(names(.ctrl), .valid)
   if (length(.unknown)) {

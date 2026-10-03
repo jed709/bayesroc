@@ -230,8 +230,9 @@ class _Dr(_InProcess):
         ctrl = dr._merge_control(a.get("control"))
         C, D, N = s.chains, s.D, int(config["N"])
         self.seed = int(resume["seed"]) if resume is not None else int(a["seed"])
+        mv = dr._mean_move(model, config, ctrl, s.keys, s.off, s.unflatten, s.progress)
         setup_p, chunk = dr._sampler_fns(dr._build_offset(model, config, s.unflatten), D, ctrl,
-                                         s.parallel)
+                                         s.parallel, mv)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
         off0 = jnp.zeros(N)
@@ -359,8 +360,9 @@ def _dr_f32_server(argfile):
     dr._convert_matrices(config)
     C, b, seed, d = int(p["chains"]), int(p["b"]), int(p["seed"]), p["dir"]
     vg, unflatten, keys, off, D, pp = dr._build(nb.sdt_model, config)
+    mv = dr._mean_move(nb.sdt_model, config, p["ctrl"], keys, off, unflatten)
     setup_p, chunk = dr._sampler_fns(dr._build_offset(nb.sdt_model, config, unflatten), D,
-                                     p["ctrl"], bool(p["parallel"]))
+                                     p["ctrl"], bool(p["parallel"]), mv)
     ck = jax.random.split(dr._tagged(seed, 1), C)
     N = int(config["N"])
     z0 = jnp.zeros((C, D))
