@@ -40,3 +40,12 @@ test_that("class-wide user priors override the per-parameter defaults and nested
   expect_true(all(s$prior[s$dpar != "sigma"] == "student_t(3, 0, 2.5)"))
   expect_error(c(broc_prior("normal(0, 1)", class = "b"), list(1)), "broc_prior")
 })
+
+test_that("lkj correlation priors written as lkj() reach Stan as lkj_corr_cholesky()", {
+  d <- .fixture_crossed()
+  m <- suppressMessages(broc(brf(item_resp | is_old ~ 1 + (1 + is_old | sub), family = evsd()), d,
+                             priors = broc_prior("lkj(2)", class = "cor")))
+  code <- get_stan_code(m)
+  expect_true(grepl("lkj_corr_cholesky(2)", code, fixed = TRUE))
+  expect_false(grepl("~ lkj(", code, fixed = TRUE))
+})

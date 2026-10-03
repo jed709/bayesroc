@@ -100,6 +100,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "sigma_F") dpar <- "sigma2"
   }
   
+  if (class == "cor") prior <- sub("^\\s*lkj(_corr)?\\s*\\(", "lkj_corr_cholesky(", prior)
+
   if (!is.null(coef) && !class %in% c("b", "sd", "sds")) {
     warning("coef argument is ignored for class '", class, "'")
     coef <- NULL
