@@ -162,14 +162,22 @@ parse_prior_string <- function(prior_str) {
 
 #' Combine Multiple Priors
 #'
-#' @param ... Prior specifications from broc_prior()
+#' @param ... Prior specifications from broc_prior(), or lists of them made by
+#'   earlier calls to `c()`.
 #' @return A list of prior specifications
 #' @export
 c.broc_prior <- function(...) {
-  priors <- list(...)
+  parts <- lapply(list(...), function(p) if (inherits(p, "broc_prior_list")) unclass(p) else list(p))
+  priors <- do.call(c, parts)
+  bad <- !vapply(priors, inherits, logical(1), "broc_prior")
+  if (any(bad)) stop("c() combines priors made with broc_prior().", call. = FALSE)
   class(priors) <- "broc_prior_list"
   priors
 }
+
+#' @rdname c.broc_prior
+#' @export
+c.broc_prior_list <- c.broc_prior
 
 #' Print Method for Prior
 #' @param x The object to print.
@@ -336,6 +344,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
   
   lookup$user_set <- list(
     b = character(0),
+    b_all = NULL,
     sd = FALSE,
     sd_dpar = character(0),
     cor = FALSE
@@ -353,6 +362,8 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       } else if (!is.null(p$dpar)) {
         lookup$b[[p$dpar]] <- p$prior
         lookup$user_set$b <- unique(c(lookup$user_set$b, p$dpar))
+      } else if (is.null(p$coef)) {
+        lookup$user_set$b_all <- p$prior
       }
 
     } else if (p$class == "sd") {
@@ -398,6 +409,15 @@ build_prior_lookup <- function(user_priors, family = NULL) {
         lookup$sds <- p$prior
       }
     }
+  }
+
+  if (!is.null(lookup$user_set$b_all)) {
+    for (k in setdiff(names(lookup$b), lookup$user_set$b)) lookup$b[[k]] <- lookup$user_set$b_all
+    lookup$user_set$b <- names(lookup$b)
+  }
+  if (isTRUE(lookup$user_set$sd)) {
+    for (k in setdiff(names(lookup$sd_dpar), lookup$user_set$sd_dpar)) lookup$sd_dpar[[k]] <- lookup$sd
+    lookup$user_set$sd_dpar <- names(lookup$sd_dpar)
   }
 
   if (!is.null(family) && inherits(family, "broc_family") && !is.null(family$params)) {

@@ -516,6 +516,8 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
   if (!requireNamespace("posterior", quietly = TRUE)) {
     stop("Package 'posterior' is required for JAX backend.")
   }
+  src <- if (is.environment(samples)) samples else NULL
+  if (!is.null(src)) samples <- src$samples
 
   var_names <- character(0)
   for (name in names(samples)) {
@@ -532,12 +534,15 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
   }
 
   n_params <- length(var_names)
+  site_names <- names(samples)
+  if (!is.null(src)) rm(samples)
 
   draws_3d <- array(NA_real_, dim = c(n_draws, n_chains, n_params))
   col_idx <- 1L
 
-  for (name in names(samples)) {
-    arr <- samples[[name]]
+  for (name in site_names) {
+    arr <- if (is.null(src)) samples[[name]] else src$samples[[name]]
+    if (!is.null(src)) src$samples[[name]] <- NULL
     dims <- dim(arr)
 
     if (is.null(dims) || length(dims) == 2) {

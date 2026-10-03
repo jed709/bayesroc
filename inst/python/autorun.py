@@ -685,8 +685,13 @@ class AutoSession:
         with open(os.path.join(out_dir, "state.pkl"), "wb") as fh:
             pickle.dump(self.ad.state(self.carry, self.T), fh)
         rows = self.rows[:, :self.n]
-        one = (lambda z: self.pp(self.unflatten(z))) if (save_loglik or self.trim1 is None) \
+        base = (lambda z: self.pp(self.unflatten(z))) if (save_loglik or self.trim1 is None) \
             else self.trim1
+        keep = lambda k: not ((k.startswith("z_") and not keep_re) or (k == "log_lik" and not save_loglik))
+        one = lambda z: {k: v for k, v in base(z).items() if keep(k)}
+        shapes = jax.eval_shape(one, jax.ShapeDtypeStruct(rows.shape[2:], rows.dtype))
+        per_draw = sum(int(np.prod(v.shape)) * np.dtype(v.dtype).itemsize for v in shapes.values())
+        chunk = int(max(1, min(_FINAL_CHUNK, dr._CONSTRAIN_BYTES // max(1, per_draw * self.chains))))
         batch = jax.vmap(one)
         par = self.chains > 1 and jax.local_device_count() >= self.chains
         fn = jax.pmap(batch) if par else jax.jit(jax.vmap(batch))
@@ -700,8 +705,8 @@ class AutoSession:
         n_old = 0 if old_sel is None else len(old_sel)
 
         out, files = {}, {}
-        bar = dr._pbar(-(-self.n // _FINAL_CHUNK), "constrain") if self.progress and self.n else None
-        for i, m, blk in _padded_chains(fn, rows, _FINAL_CHUNK):
+        bar = dr._pbar(-(-self.n // chunk), "constrain") if self.progress and self.n else None
+        for i, m, blk in _padded_chains(fn, rows, chunk):
             for k, v in blk.items():
                 if k.startswith("z_") and not keep_re:
                     continue

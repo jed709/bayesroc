@@ -2304,13 +2304,12 @@ fit_broc <- function(model,
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)
 
-    jax_result$samples <- .jax_samples_as_stan(jax_result$samples, model)
-    kept <- dim(jax_result$samples[[1]])[2]
-    draws_arr <- numpyro_samples_to_draws_array(
-      jax_result$samples,
-      n_chains = chains,
-      n_draws = kept
-    )
+    src <- new.env()
+    src$samples <- .jax_samples_as_stan(jax_result$samples, model)
+    jax_result$samples <- NULL
+    kept <- dim(src$samples[[1]])[2]
+    draws_arr <- numpyro_samples_to_draws_array(src, n_chains = chains, n_draws = kept)
+    rm(src)
 
     fit <- new_broc_fit(
       backend_fit = jax_result,

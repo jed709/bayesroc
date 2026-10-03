@@ -553,22 +553,23 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
     cc <- model_data$cross_cor[[cor_id]]
     group <- cc$group
     dim_var <- sprintf("D_cross_%s_%s", cor_id, group)
-    lines <- c(lines, sprintf(
-      "  matrix[N_%s, %s] u_cross_%s_%s = u_cross_%s_%s_raw * diag_pre_multiply(sigma_cross_%s_%s, L_corr_cross_%s_%s)';",
-      group, dim_var, cor_id, group, cor_id, group, cor_id, group, cor_id, group))
-    
+    for (member in cc$members) {
+      lines <- c(lines, if (member$dim == 1)
+        sprintf("  vector[N_%s] u_%s_%s_from_%s;", group, member$param, group, cor_id)
+      else sprintf("  matrix[N_%s, %d] u_%s_%s_from_%s;", group, member$dim, member$param, group, cor_id))
+    }
+    lines <- c(lines, "  {", sprintf(
+      "    matrix[N_%s, %s] u_cross = u_cross_%s_%s_raw * diag_pre_multiply(sigma_cross_%s_%s, L_corr_cross_%s_%s)';",
+      group, dim_var, cor_id, group, cor_id, group, cor_id, group))
     col_start <- 1
     for (member in cc$members) {
       col_end <- col_start + member$dim - 1
-      if (member$dim == 1) {
-        lines <- c(lines, sprintf("  vector[N_%s] u_%s_%s_from_%s = u_cross_%s_%s[, %d];",
-                                  group, member$param, group, cor_id, cor_id, group, col_start))
-      } else {
-        lines <- c(lines, sprintf("  matrix[N_%s, %d] u_%s_%s_from_%s = u_cross_%s_%s[, %d:%d];",
-                                  group, member$dim, member$param, group, cor_id, cor_id, group, col_start, col_end))
-      }
+      lines <- c(lines, if (member$dim == 1)
+        sprintf("    u_%s_%s_from_%s = u_cross[, %d];", member$param, group, cor_id, col_start)
+      else sprintf("    u_%s_%s_from_%s = u_cross[, %d:%d];", member$param, group, cor_id, col_start, col_end))
       col_start <- col_end + 1
     }
+    lines <- c(lines, "  }")
   }
 
   lines <- c(lines, generate_smooth_transformed_params(model_data))

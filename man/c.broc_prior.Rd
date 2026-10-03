@@ -2,12 +2,16 @@
 % Please edit documentation in R/priors.R
 \name{c.broc_prior}
 \alias{c.broc_prior}
+\alias{c.broc_prior_list}
 \title{Combine Multiple Priors}
 \usage{
 \method{c}{broc_prior}(...)
+
+\method{c}{broc_prior_list}(...)
 }
 \arguments{
-\item{...}{Prior specifications from broc_prior()}
+\item{...}{Prior specifications from broc_prior(), or lists of them made by
+earlier calls to \code{c()}.}
 }
 \value{
 A list of prior specifications

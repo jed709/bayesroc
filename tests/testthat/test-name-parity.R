@@ -47,7 +47,10 @@ test_that("JAX random-effect draws use Stan's names and satisfy Stan's identitie
   sg <- r$dm[, paste0("sigma_cross_c_sub[", 1:3, "]"), drop = FALSE]
   L <- .np_cols(r$dm, "L_corr_cross_c_sub", 3, 3)
   raw <- .np_cols(r$dm, "u_cross_c_sub_raw", G, 3)
-  u <- .np_cols(r$dm, "u_cross_c_sub", G, 3)
+  ud <- .np_cols(r$dm, "u_dprime_sub_from_c", G, 2)
+  us <- .np_cols(r$dm, "u_sigma_sub_from_c", G)
+  u <- lapply(seq_len(nrow(r$dm)), function(s) cbind(ud[[s]], as.numeric(us[s, ])))
+  expect_false(any(grepl("^u_cross_c_sub\\[", colnames(r$dm))))
   err <- max(vapply(seq_len(nrow(r$dm)), function(s)
     max(abs(u[[s]] - raw[[s]] %*% t(diag(as.numeric(sg[s, ])) %*% L[[s]]))), numeric(1)))
   expect_lt(err, 1e-10)

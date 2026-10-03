@@ -485,6 +485,9 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
             np.concatenate(ep, 1)[:, sl], end)
 
 
+_CONSTRAIN_BYTES = 256 * 2 ** 20
+
+
 def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
                          keep_re=False, progress_bar=False, chunk=500):
     """Constrain flat draws -> named sites (+ deterministics). Chains constrain
@@ -493,17 +496,22 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
     z_* unless keep_re, to match NUTS get_samples; drops log_lik (the largest array by
     far) when it is not needed."""
     chains, kept, _ = ths.shape
-    named1 = jax.vmap(lambda z: postprocess_fn(unflatten(z)))
-    par = chains > 1 and jax.local_device_count() >= chains
-    namedC = jax.pmap(named1) if par else None
-    n_chunks = (kept + chunk - 1) // chunk
-    bar = _pbar(n_chunks if par else chains * n_chunks,
-                "DR-G-HMC constrain") if progress_bar else None
 
     def _keep(k):
         if k.startswith("z_") and not keep_re:
             return False
         return not (k == "log_lik" and not save_loglik)
+
+    one = lambda z: {k: v for k, v in postprocess_fn(unflatten(z)).items() if _keep(k)}
+    shapes = jax.eval_shape(one, jax.ShapeDtypeStruct(ths.shape[2:], ths.dtype))
+    per_draw = sum(int(np.prod(v.shape)) * np.dtype(v.dtype).itemsize for v in shapes.values())
+    chunk = int(max(1, min(chunk, _CONSTRAIN_BYTES // max(1, per_draw * chains))))
+    named1 = jax.vmap(one)
+    par = chains > 1 and jax.local_device_count() >= chains
+    namedC = jax.pmap(named1) if par else None
+    n_chunks = (kept + chunk - 1) // chunk
+    bar = _pbar(n_chunks if par else chains * n_chunks,
+                "DR-G-HMC constrain") if progress_bar else None
 
     out = {}
     if par:

@@ -4073,7 +4073,6 @@ def sdt_model(config):
         z = numpyro.sample(f"z_cross_{cor_id}_{group}",
                            dist.Normal(0, 1).expand([total_dim, n_groups]))
         u = L @ z
-        numpyro.deterministic(f"u_cross_{cor_id}_{group}", u.T)
 
         for param, nt, d_off, m_conf in member_dims:
             u_portion = u[d_off:d_off + nt]

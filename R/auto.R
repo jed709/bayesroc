@@ -333,7 +333,14 @@
   stride <- as.integer(meta$stride)
   n_new <- as.integer(meta$kept_new)
 
-  draws <- if (n_new > 0) .as_iter_chain_var(res$samples, model, chains, n_new) else NULL
+  draws <- NULL
+  if (n_new > 0) {
+    src <- new.env()
+    src$samples <- .jax_samples_as_stan(res$samples, model)
+    res$samples <- NULL
+    draws <- unclass(numpyro_samples_to_draws_array(src, n_chains = chains, n_draws = n_new))
+    rm(src)
+  }
   extra <- lapply(res$extra_fields, function(x) matrix(x, nrow = chains))
   if (!is.null(rs)) {
     sel <- which((seq_len(rs$kept) * rs$stride) %% stride == 0)
