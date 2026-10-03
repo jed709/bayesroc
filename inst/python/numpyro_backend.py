@@ -284,6 +284,14 @@ def _gap_thresh_pos(g, mid, n_upper):
 def _crit_re_shift(u, idx, conf, n_thresh, mid, n_gaps):
     """Per-observation threshold shifts from one criterion RE term: (mid [N],
     gaps [n_gaps, N]). Dimensions are threshold-major, matching Stan."""
+    if conf.get("location_only"):
+        if conf.get("type", "index") == "matrix":
+            Z = _ensure_2d(jnp.asarray(conf["Z"], dtype=_FLOAT))
+            return jnp.sum(Z * u[:, idx].T, axis=1), None
+        if conf.get("term_idx") is not None:
+            tidx = jnp.array(conf["term_idx"], dtype=jnp.int32) - 1
+            return jnp.where(tidx >= 0, u[jnp.clip(tidx, 0, u.shape[0] - 1), idx], 0.0), None
+        return u[0, idx], None
     n_upper = n_thresh - mid - 1
     n_dims = u.shape[0]
     if conf.get("type", "index") == "matrix":
@@ -3713,11 +3721,27 @@ def _rkg_knob(config):
     return {"X": X, "v": v, "B_perp": B_perp, "G": G, "band": band[G]}
 
 
+def _apply_crit_scalar(config, n_thresh):
+    mid = (n_thresh + 1) // 2 - 1
+    for rc in config.get("random_effects") or []:
+        if rc.get("param") != "criterion" or rc.get("location_only"):
+            continue
+        Rt = int(rc["n_terms"]) // n_thresh
+        per = rc.get("prior_sd_per_coef")
+        if isinstance(per, list) and len(per) == int(rc["n_terms"]):
+            rc["prior_sd_per_coef"] = per[mid * Rt:(mid + 1) * Rt]
+        rc["n_terms"] = Rt
+        rc.pop("cor_blocks", None)
+        rc["location_only"] = True
+
+
 def sdt_model(config):
     """NumPyro model function driven by config dict."""
     N = config["N"]
     K = config["K"]
     n_thresh = config.get("n_thresh", K - 1)
+    if config.get("crit_scalar"):
+        _apply_crit_scalar(config, n_thresh)
     gap_link = config.get("gap_link", "log")
     y = jnp.array(config["y"], dtype=jnp.int32)
     family_name = config["family"]
@@ -4211,7 +4235,12 @@ def sdt_model(config):
 
     gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
     beta_log_gaps = jnp.zeros((n_gaps, P_crit)) if n_gaps > 0 else None
-    if n_gaps > 0:
+    if n_gaps > 0 and config.get("crit_scalar") and P_crit > 1:
+        for k in range(n_gaps):
+            lg_k = numpyro.sample(f"{gap_param_prefix}[{k+1},1]", parse_prior(_gap_prior(k, 0)))
+            beta_log_gaps = beta_log_gaps.at[k, 0].set(lg_k)
+        log_gaps_obs = beta_log_gaps @ X_crit.T
+    elif n_gaps > 0:
         gap_pri = [[_gap_prior(k, j) for j in range(P_crit)] for k in range(n_gaps)]
         uniform_gaps = len({p for row in gap_pri for p in row}) == 1
         if P_crit == 1 and uniform_gaps:

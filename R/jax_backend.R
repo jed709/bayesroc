@@ -456,6 +456,7 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$new_source_criteria)) config$new_source_criteria <- md$new_source_criteria
   if (!is.null(md$stan_data$is_new_response)) config$is_new_response <- as.integer(md$stan_data$is_new_response)
   if (!is.null(md$gap_link)) config$gap_link <- md$gap_link
+  if (isTRUE(getOption("bayesroc.crit_scalar"))) config$crit_scalar <- TRUE
 
   config
 }
