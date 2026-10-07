@@ -61,9 +61,8 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     K <- if (!is.null(model$family$n_rkg)) model$family$n_rkg else 2L
     cat_labels <- c("Remember", "Know", "Guess")[seq_len(K)]
   } else {
-    probs <- predict(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
-                     cores = cores)
-    if (bivariate) probs <- apply(probs, if (response == 1) c(1, 2, 3) else c(1, 2, 4), sum)
+    probs <- .predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
+                           cores = cores, margin = if (bivariate) as.integer(response))
     y_obs <- if (bivariate && response == 2) model$stan_data$y2 else model$stan_data$y
     K <- dim(probs)[3]
     labs <- if (bivariate && response == 2) model$model_data$response2_labels else model$model_data$response_labels

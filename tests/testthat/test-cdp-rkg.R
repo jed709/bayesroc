@@ -105,7 +105,15 @@ test_that("R/K/G know-criterion knob: X v = 1, orthonormal complement, Guess tri
   d <- fixture_cdp_rkg()
   d$cond <- factor(ifelse(as.integer(d$sub) %% 2 == 0, "a", "b"))
   d$x <- seq(-1, 1, length.out = nrow(d))
-  for (kc in list(know_crit ~ 1, know_crit ~ 0 + cond + x, know_crit ~ 1 + x + (1 | sub))) {
+  # a random effect on the know criterion (or thresholds, or rec_crit) puts it in the Guess
+  # bound and switches the slack transform off
+  f <- brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1, know_crit ~ 1 + x + (1 | sub),
+           sigma_R ~ 1, family = cdp(old_levels = 2:4))
+  expect_equal(suppressMessages(broc(f, data = d))$stan_data$kc_knob, 0L)
+  f <- brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ (1 | sub), rec_crit ~ 1, know_crit ~ 1,
+           sigma_R ~ 1, family = cdp(old_levels = 2:4))
+  expect_equal(suppressMessages(broc(f, data = d))$stan_data$kc_knob, 0L)
+  for (kc in list(know_crit ~ 1, know_crit ~ 0 + cond + x)) {
     f <- brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1, kc, sigma_R ~ 1,
              family = cdp(old_levels = 2:4))
     sd <- suppressMessages(broc(f, data = d))$stan_data

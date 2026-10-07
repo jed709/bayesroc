@@ -181,43 +181,70 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
     }, numeric(nrow(mat)))
     matrix(vals, nrow = nrow(mat), dimnames = list(NULL, levels(cells)))
   }
-  collapse <- function(vals) {
-    keep <- colSums(is.na(vals)) == 0
-    vals <- vals[, keep, drop = FALSE]
-    if (ncol(vals) > 1L && max(abs(sweep(vals, 1, vals[, 1]))) < 1e-10) {
-      vals <- vals[, 1, drop = FALSE]
-      colnames(vals) <- NA_character_
+  # a parameter is reported over the `by` variables it actually varies with: variables
+  # along which every cell agrees are dropped one at a time (a criterion with `exp` in
+  # its formula is one row per experiment, not one per condition x experiment)
+  reduce <- function(vals) {
+    vals <- vals[, colSums(is.na(vals)) == 0, drop = FALSE]
+    active <- by
+    while (ncol(vals) > 1L && length(active)) {
+      dropped <- FALSE
+      for (v in active) {
+        rest <- setdiff(active, v)
+        cfi <- cf[match(colnames(vals), as.character(cf$.cell)), , drop = FALSE]
+        key <- if (length(rest)) interaction(cfi[rest], drop = TRUE) else factor(rep(1L, ncol(vals)))
+        agree <- all(vapply(split(seq_len(ncol(vals)), key), function(idx)
+          max(abs(sweep(vals[, idx, drop = FALSE], 1, vals[, idx[1]]))) < 1e-10, logical(1)))
+        if (agree) {
+          vals <- vals[, !duplicated(key), drop = FALSE]
+          active <- rest
+          dropped <- TRUE
+          break
+        }
+      }
+      if (!dropped) break
     }
-    vals
+    if (ncol(vals) == 1L && !length(active)) colnames(vals) <- NA_character_
+    list(vals = vals, active = active)
   }
   mats <- list(); infos <- list()
-  push <- function(p, vals, crit = NA_character_) {
-    if (!ncol(vals)) return()
-    mats[[length(mats) + 1L]] <<- vals
+  push <- function(p, red, crit = NA_character_) {
+    if (!ncol(red$vals)) return()
+    mats[[length(mats) + 1L]] <<- red$vals
     infos[[length(infos) + 1L]] <<- data.frame(parameter = .param_label(model, p), name = ext(p),
-                                               .cell = colnames(vals), criterion = crit)
+                                               .cell = colnames(red$vals), criterion = crit,
+                                               .active = paste(red$active, collapse = ","))
   }
   for (p in names(setup$tp)) {
     if (!is.null(internal) && !p %in% internal) next
     rows <- if (p %in% .lure_param_set && !is.null(roles)) roles$noise
             else if (p %in% .signal_param_set && !is.null(roles) && fam != "source_mixture") roles$signal
             else seq_len(setup$N)
-    push(p, collapse(cell_mean(setup$tp[[p]], rows)))
+    push(p, reduce(cell_mean(setup$tp[[p]], rows)))
   }
   crit_sets <- list(criterion = setup$th, criterion2 = if (length(dim(setup$th2)) == 3L) setup$th2)
   for (cn in names(crit_sets)) {
     th <- crit_sets[[cn]]
     if (is.null(th) || (!is.null(internal) && !cn %in% internal)) next
     J <- dim(th)[3]
-    per_k <- lapply(seq_len(J), function(k) cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N)))
-    same <- all(vapply(per_k, function(v) {
-      v <- v[, colSums(is.na(v)) == 0, drop = FALSE]
-      ncol(v) <= 1L || max(abs(sweep(v, 1, v[, 1]))) < 1e-10
-    }, logical(1)))
     for (k in seq_len(J)) {
-      v <- per_k[[k]][, colSums(is.na(per_k[[k]])) == 0, drop = FALSE]
-      if (same) { v <- v[, 1, drop = FALSE]; colnames(v) <- NA_character_ }
-      push(cn, v, paste0("c", k))
+      push(cn, reduce(cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N))), paste0("c", k))
+    }
+  }
+  # source criteria that vary with the detection response: one set per set of the model (the
+  # "new" responses share one under source_criteria = "varying_shared_new")
+  th2 <- setup$th2
+  if (length(dim(th2)) == 4L && (is.null(internal) || "criterion2" %in% internal)) {
+    vbin <- .vbin_of(model$model_data)
+    labs <- .vbin_labels(model$model_data)
+    for (v in seq_along(labs)) {
+      b <- match(v, vbin)
+      if (is.na(b)) next
+      lab <- if (labs[v] == "new") "new" else paste0("bin ", labs[v])
+      for (k in seq_len(dim(th2)[4])) {
+        push("criterion2", reduce(cell_mean(matrix(th2[, , b, k], nrow = setup$S), seq_len(setup$N))),
+             paste0(lab, ", c", k))
+      }
     }
   }
   if (!length(mats)) return(list(draws = matrix(numeric(0), nrow = setup$S, ncol = 0), info = data.frame()))
@@ -226,11 +253,13 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   if (!is.null(by)) {
     bycols <- cf[match(as.character(info$.cell), as.character(cf$.cell)), by, drop = FALSE]
     rownames(bycols) <- NULL
+    for (v in by) bycols[[v]][!vapply(strsplit(info$.active, ","), function(a) v %in% a, logical(1))] <- NA
     info <- cbind(info[c("parameter", "name")], bycols, info[c("criterion", ".cell")])
   } else {
     info <- info[c("parameter", "name", "criterion", ".cell")]
   }
-  ord <- order(match(info$name, unique(info$name)), info$criterion, as.integer(info$.cell), na.last = FALSE)
+  ord <- order(match(info$name, unique(info$name)), match(info$criterion, unique(info$criterion)),
+               as.integer(info$.cell), na.last = FALSE)
   draws <- do.call(cbind, mats)[, ord, drop = FALSE]
   info <- info[ord, , drop = FALSE]
   rownames(info) <- NULL

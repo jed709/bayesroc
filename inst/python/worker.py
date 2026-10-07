@@ -121,8 +121,23 @@ def run_auto(op, args_path, out_dir, held, token):
         raise ValueError(f"unknown worker op {op!r}")
 
 
+def _watch_stop(control_dir):
+    """Leave as soon as R asks, even mid-computation: the stop file is R's interrupt, and a
+    request in flight cannot be resumed anyway."""
+    import threading
+
+    def watch():
+        stop = os.path.join(control_dir, "stop")
+        while True:
+            if os.path.exists(stop):
+                os._exit(0)
+            time.sleep(0.1)
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def serve(control_dir):
     held = {}
+    _watch_stop(control_dir)
     print("[bayesroc worker] ready", flush=True)
     while True:
         if os.path.exists(os.path.join(control_dir, "stop")):

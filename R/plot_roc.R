@@ -26,6 +26,8 @@
 #'   items; `NA` gives the population-level (typical participant) curve.
 #' @param ndraws Number of posterior draws used (default 200).
 #' @param prob Width of the posterior band (default 0.95).
+#' @param cores Number of cores for the curves' survival computation (default 1): the cells'
+#'   signal and noise curves are independent and are spread over a cluster when `cores > 1`.
 #' @param seed Optional seed for the draw subset; the global random-number state
 #'   is restored afterwards.
 #' @return A ggplot object.
@@ -38,7 +40,7 @@
 #' plot_roc(fit_bivariate, response = 2)
 #' }
 plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z"), observed = TRUE,
-                     re_formula = NULL, ndraws = 200, prob = 0.95, seed = NULL) {
+                     re_formula = NULL, ndraws = 200, prob = 0.95, seed = NULL, cores = 1) {
   .need_ggplot2()
   restore_seed <- .seed_scope(seed)
   on.exit(restore_seed(), add = TRUE)
@@ -62,19 +64,18 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
   pairs <- .pair_cells(model, by, cells, roles$signal, roles$noise)
   if (!length(pairs)) stop("No cell has both signal and noise items.", call. = FALSE)
 
-  setup <- .plot_setup(fit, model, ndraws, re_formula)
+  setup <- .plot_setup(fit, model, ndraws, re_formula, thresholds2 = !identical(as.numeric(response), 1))
   setup$cache <- new.env(parent = emptyenv())
   w <- .row_weights(model)
   J <- K - 1L
   u <- .roc_u_grid(J)
   y_obs <- if (bivariate && response == 2) model$stan_data$y2 else model$stan_data$y
 
+  surv <- .roc_survival_pairs(model, setup, pairs, w, response, u, cores)
   curves <- list(); points <- list()
   for (lev in names(pairs)) {
     pr <- pairs[[lev]]
-    hr <- .roc_survival(model, setup, pr$signal, w, response, u)
-    far <- .roc_survival(model, setup, pr$noise, w, response, u)
-    curves[[lev]] <- cbind(.roc_band(far, hr, scale, prob), .cell = lev)
+    curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob), .cell = lev)
     if (observed) points[[lev]] <- cbind(.roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
   }
   cf <- .cell_frame(model, by, cells)
@@ -139,14 +140,79 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
   out
 }
 
+.roc_survival_pairs <- function(model, setup, pairs, w, response, u, cores = 1) {
+  # survival curves for every cell's signal and noise rows: list(cell = list(signal, noise)).
+  # Workers get each job's rows only (collapsed to the distinct ones first), not the full
+  # per-trial draws.
+  jobs <- unlist(lapply(names(pairs), function(lev) list(
+    list(cell = lev, role = "signal", rows = pairs[[lev]]$signal),
+    list(cell = lev, role = "noise", rows = pairs[[lev]]$noise))), recursive = FALSE)
+  cores <- max(1L, as.integer(cores))
+  if (cores > 1L && .is_bivariate_family(model$family$family) && .bvn_native_ready()) {
+    # the native kernels thread the survival computation; no cluster
+    old_threads <- .bvn_native$threads
+    .bvn_native$threads <- cores
+    on.exit(.bvn_native$threads <- old_threads, add = TRUE)
+    cores <- 1L
+  }
+  if (cores > 1L && length(jobs) > 1L) {
+    # cells often share a row set (one noise set for every signal condition): compute each
+    # distinct set once
+    keys <- vapply(jobs, function(job) digest_string(paste(sort(job$rows), collapse = ",")), "")
+    first <- which(!duplicated(keys))
+    # the survival of a row set is a weighted sum over its rows, so each distinct set is cut
+    # into chunks that spread over the workers and are summed back
+    units <- list()
+    for (j in first) {
+      red <- .collapse_rows(setup, jobs[[j]]$rows, w)
+      n_chunk <- max(1L, min(cores * 2L, ceiling(length(red$rows) / 200)))
+      parts <- split(seq_along(red$rows), cut(seq_along(red$rows), n_chunk, labels = FALSE))
+      for (pt in parts) {
+        units[[length(units) + 1L]] <- list(
+          key = keys[j], setup = .roc_rows_setup(setup, red$rows[pt]), w = red$w[pt],
+          is_old = model$stan_data$is_old[red$rows[pt]])
+      }
+    }
+    slim <- model
+    slim$stan_data <- list(is_old = NULL)
+    cl <- parallel::makeCluster(min(cores, length(units)))
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    .export_pkg_fns(cl, c(".roc_survival_rows", ".criterion_path"))
+    part <- parallel::parLapply(cl, units, function(un, model, response, u) {
+      model$stan_data$is_old <- un$is_old
+      .roc_survival_rows(model, un$setup, seq_along(un$w), un$w, response, length(u),
+                         function(th) .criterion_path(th, u))
+    }, model = slim, response = response, u = u)
+    ukeys <- vapply(units, function(un) un$key, "")
+    res <- lapply(keys, function(k) Reduce(`+`, part[ukeys == k]))
+  } else {
+    res <- lapply(jobs, function(job) .roc_survival(model, setup, job$rows, w, response, u))
+  }
+  out <- list()
+  for (i in seq_along(jobs)) out[[jobs[[i]]$cell]][[jobs[[i]]$role]] <- res[[i]]
+  out
+}
+
+.roc_rows_setup <- function(setup, rows) {
+  # the per-trial parts of a plot setup restricted to `rows`, renumbered 1..length(rows)
+  list(S = setup$S, tp = lapply(setup$tp, function(m) m[, rows, drop = FALSE]),
+       th = setup$th[, rows, , drop = FALSE],
+       th2 = if (is.null(setup$th2)) NULL else .subset_thresh2(setup$th2, rows),
+       data_src = lapply(setup$data_src, function(v) if (is.null(v)) NULL else v[rows]),
+       cache = NULL)
+}
+
 .roc_survival <- function(model, setup, rows, w, response, u, mode = c("path", "grid")) {
   mode <- match.arg(mode)
-  key <- paste(mode, response, length(u), paste(sort(rows), collapse = ","))
+  # the row set can run to thousands of indices; an environment key must stay short
+  key <- digest_string(paste(mode, response, length(u), paste(sort(rows), collapse = ",")))
   cache <- setup$cache
   if (!is.null(cache) && !is.null(cache[[key]])) return(cache[[key]])
   red <- .collapse_rows(setup, rows, w)
   crit <- if (mode == "path") function(th) .criterion_path(th, u)
           else function(th) array(rep(u, each = dim(th)[1] * dim(th)[2]), c(dim(th)[1:2], length(u)))
+  attr(crit, "u") <- u
+  attr(crit, "mode") <- mode
   out <- .roc_survival_rows(model, setup, red$rows, red$w, response, length(u), crit)
   if (!is.null(cache)) assign(key, out, envir = cache)
   out
@@ -174,6 +240,20 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
   fam <- model$family$family
   S <- setup$S
   link <- model$family$link$name
+  u <- attr(crit, "u")
+  if (.is_bivariate_family(fam) && response == 1 && !is.null(u) && .bvn_native_ready()) {
+    # the detection response's survival along the criterion path, accumulated natively
+    r <- length(rows)
+    pt <- .detection_margin_parts(fam, lapply(setup$tp, function(m) m[, rows, drop = FALSE]),
+                                  setup$data_src$item_type[rows], S, r, model)
+    th <- setup$th[, rows, , drop = FALSE]
+    acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(pt$mu), as.double(pt$sig),
+              as.double(pt$lam %||% 0), as.double(pt$mu_rec %||% 0), as.double(u), as.double(w_rows),
+              as.integer(c(S, r, dim(th)[3], length(u), pt$kind, identical(attr(crit, "mode"), "path"),
+                           .native_threads())),
+              8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
+    return(matrix(acc, S, length(u)) / sum(w_rows))
+  }
   acc <- matrix(0, S, U)
   chunk <- max(1L, floor(4e6 / (S * (U + 1))))
   for (start in seq(1L, length(rows), by = chunk)) {
@@ -198,15 +278,8 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
       pr <- compute_category_probs(tps, crit(setup$th[, idx, , drop = FALSE]), ds, model,
                                    link, S, r, U + 1L)
     } else if (response == 1) {
-      t2 <- .subset_thresh2(setup$th2, idx)
-      if (length(dim(t2)) == 4L) {
-        nw <- attr(t2, "thresh2_new")
-        t2 <- t2[, , rep(1L, U + 1L), , drop = FALSE]
-        if (!is.null(nw)) attr(t2, "thresh2_new") <- nw
-      }
       pr <- compute_category_probs(tps, crit(setup$th[, idx, , drop = FALSE]), ds, model,
-                                   link, S, r, U + 1L, thresh2 = t2)
-      pr <- apply(pr, c(1, 2, 3), sum)
+                                   link, S, r, U + 1L, margin = 1L)
     } else {
       t2 <- .subset_thresh2(setup$th2, idx)
       t2g <- if (length(dim(t2)) == 4L) {
@@ -219,8 +292,7 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
       m2 <- model
       m2$model_data$K2 <- U + 1L
       pr <- compute_category_probs(tps, setup$th[, idx, , drop = FALSE], ds, m2, link, S, r,
-                                   model$model_data$K, thresh2 = t2g)
-      pr <- apply(pr, c(1, 2, 4), sum)
+                                   model$model_data$K, thresh2 = t2g, margin = 2L)
     }
     acc <- acc + .tail_by_rows(pr, w[idx])
   }

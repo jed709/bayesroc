@@ -200,7 +200,7 @@ class _Nuts(_InProcess):
             return st, (flat(st.z), st.num_steps, st.energy, st.accept_prob, st.diverging)
 
         run = lambda st: jax.lax.scan(body, st, None, length=s.b)
-        self.fn = jax.pmap(run) if s.parallel else jax.jit(lambda st: jax.lax.map(run, st))
+        self.fn = jax.pmap(run, axis_name="chain") if s.parallel else jax.jit(lambda st: jax.lax.map(run, st))
         self.carry0 = state
         self.positions = np.asarray(jax.vmap(flat)(state.z))
 
@@ -213,64 +213,99 @@ class _Nuts(_InProcess):
                 "offset": None if self.offset is None else np.asarray(self.offset)}
 
 
-def _dr_adapt(s, model, config, a, ctrl, resume, seed):
+def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None):
+    """(imm, eps, positions in sampler coordinates, momenta, transport anchors)."""
     if resume is not None:
         return (np.asarray(resume["imm"]), float(resume["eps"]), np.asarray(resume["th"]),
-                None if resume.get("rho") is None else np.asarray(resume["rho"]))
+                None if resume.get("rho") is None else np.asarray(resume["rho"]),
+                None if tm is None else np.asarray(resume["aux"]))
     th0 = dr._initial_positions(model, config, s.keys, s.off, s.D, s.chains, seed,
                                 a.get("init_strategy", "numeric"), a.get("init_radius", 0.0),
                                 s.init_z)
-    imm, eps, th, _ = dr._self_adapt(s.vg, s.D, s.chains, int(a["warmup"]), seed, ctrl,
-                                     s.parallel, s.progress, th0=th0)
-    return np.asarray(imm), float(eps), np.asarray(th), None
+    imm, eps, th, aux, _ = dr._adapt(model, config, s.keys, s.off, s.vg, vg_s, tm, s.D, s.chains,
+                                     int(a["warmup"]), seed, ctrl, s.parallel, s.progress, th0,
+                                     user_init=s.init_z is not None, init=init)
+    return np.asarray(imm), float(eps), np.asarray(th), None, aux
+
+
+def _resume_ctrl(ctrl, resume):
+    """A resumed fit keeps the coordinates it was sampled in."""
+    if resume is not None:
+        had = bool(resume.get("transport"))
+        if had and not ctrl["transport"]:
+            raise ValueError("the fit being resumed was sampled with control$transport = TRUE; "
+                             "it cannot be continued with transport = FALSE")
+        ctrl = {**ctrl, "transport": had}
+    return ctrl
+
+
+def _model_positions(tm, th, aux):
+    return np.asarray(th) if tm is None else tm.forward_chains(th, aux)
 
 
 class _Dr(_InProcess):
     def __init__(self, s, model, config, a, resume):
-        ctrl = dr._merge_control(a.get("control"))
+        ctrl = _resume_ctrl(dr._merge_control(a.get("control")), resume)
         C, D, N = s.chains, s.D, int(config["N"])
         self.seed = int(resume["seed"]) if resume is not None else int(a["seed"])
-        mv = dr._mean_move(model, config, ctrl, s.keys, s.off, s.unflatten, s.progress)
-        setup_p, chunk = dr._sampler_fns(dr._build_offset(model, config, s.unflatten), D, ctrl,
-                                         s.parallel, mv)
+        tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
+        vg_s = dr._sampler_vg(model, config, s.unflatten, tm)
+        setup_p, chunk = dr._sampler_fns(vg_s, D, ctrl, s.parallel, tm)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
         off0 = jnp.zeros(N)
-        low_setup = setup_p.lower(z0, z0, off0)
+        aux0 = dr.aux_zeros(tm, C)
+        low_setup = setup_p.lower(z0, z0, off0, aux0)
         low_chunk = chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), ck, jnp.ones(D),
-                                jnp.ones(D), jnp.asarray(1e-3), off0)
+                                jnp.ones(D), jnp.asarray(1e-3), off0, aux0)
         comp = {}
+        setup_ready = threading.Event()
 
         def _compile():
             try:
-                comp["setup"], comp["chunk"] = low_setup.compile(), low_chunk.compile()
+                comp["setup"] = low_setup.compile()
+                setup_ready.set()
+                comp["chunk"] = low_chunk.compile()
+                msg = dr.memory_check(comp["chunk"], C, s.parallel)
+                if msg is not None:
+                    print(f"[auto] warning: {msg}", flush=True)
             except BaseException as e:
                 comp["err"] = e
+                setup_ready.set()
 
         th_c = threading.Thread(target=_compile, daemon=True)
         th_c.start()
-        imm, eps, th, rho = _dr_adapt(s, model, config, a, ctrl, resume, self.seed)
+        imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s,
+                                           dr._setup_init(setup_ready, comp, z0, off0))
         th_c.join()
         if "err" in comp:
             raise comp["err"]
+
         IMM = jnp.asarray(imm)
         MSQ = jnp.sqrt(1.0 / IMM)
         if rho is None:
             rho = MSQ * jax.random.normal(dr._tagged(self.seed, 2), (C, D))
         self.imm, self.eps, self.b = imm, eps, s.b
         self.chunk = comp["chunk"]
-        self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0)
-        self.carry0 = jax.tree.map(np.asarray, comp["setup"](jnp.asarray(th), jnp.asarray(rho), off0))
-        self.positions = np.asarray(th)
+        if tm is not None:
+            self.aux = np.asarray(aux)
+        else:
+            self.aux = np.zeros(1)
+        self.transport = tm is not None
+        self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0, jnp.asarray(self.aux))
+        self.carry0 = jax.tree.map(np.asarray, comp["setup"](jnp.asarray(th), jnp.asarray(rho), off0,
+                                                             jnp.asarray(self.aux)))
+        self.positions = _model_positions(tm, th, self.aux)
 
     def block(self, carry, t):
-        ck, IMM, MSQ, E0, OFF = self.args
-        carry, (th, stage, H0) = self.chunk(carry, jnp.arange(t, t + self.b), ck, IMM, MSQ, E0, OFF)
+        ck, IMM, MSQ, E0, OFF, AUX = self.args
+        carry, (th, stage, H0) = self.chunk(carry, jnp.arange(t, t + self.b), ck, IMM, MSQ, E0, OFF, AUX)
         return jax.tree.map(np.asarray, carry), th, dict(dr_stage=stage, energy=H0)
 
     def state(self, carry, T):
         return dict(imm=np.asarray(self.imm), eps=float(self.eps), th=np.asarray(carry[0]),
-                    rho=np.asarray(carry[1]), t0=int(T), seed=self.seed, offset=None)
+                    rho=np.asarray(carry[1]), t0=int(T), seed=self.seed, offset=None, aux=self.aux,
+                    transport=self.transport)
 
 
 class _DrF32:
@@ -278,7 +313,7 @@ class _DrF32:
     parent adapts in float64 meanwhile and constrains the returned rows."""
 
     def __init__(self, s, model, config, a, resume):
-        ctrl = dr._merge_control(a.get("control"))
+        ctrl = _resume_ctrl(dr._merge_control(a.get("control")), resume)
         self.seed = int(resume["seed"]) if resume is not None else int(a["seed"])
         self.tmp = tempfile.mkdtemp(prefix="bayesroc_auto_f32_")
         cfg = os.path.join(self.tmp, "config.json")
@@ -296,19 +331,22 @@ class _DrF32:
         self.proc = subprocess.Popen([sys.executable, os.path.abspath(__file__),
                                       "_dr_f32_server", argfile], env=env)
         try:
-            imm, eps, th, rho = _dr_adapt(s, model, config, a, ctrl, resume, self.seed)
+            tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
+            vg_s = dr._sampler_vg(model, config, s.unflatten, tm)
+            imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s)
             off = None if resume is None else resume.get("offset")
             donor = os.path.join(self.tmp, "donor.pkl")
             with open(donor + ".tmp", "wb") as fh:
-                pickle.dump(dict(imm=imm, eps=eps, th=th, rho=rho,
+                pickle.dump(dict(imm=imm, eps=eps, th=th, rho=rho, aux=aux,
                                  offset=None if off is None else np.asarray(off)), fh)
             os.replace(donor + ".tmp", donor)
         except BaseException:
             self.close()
             raise
-        self.imm, self.eps = imm, eps
+        self.imm, self.eps, self.aux = imm, eps, aux
+        self.transport = tm is not None
         self.carry0 = dict(th=th, rho=rho, offset=off)
-        self.positions = np.asarray(th)
+        self.positions = _model_positions(tm, th, aux)
         self.n = 0
 
     def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0):
@@ -337,7 +375,8 @@ class _DrF32:
         return dict(imm=np.asarray(self.imm), eps=float(self.eps), th=np.asarray(carry["th"]),
                     rho=None if carry["rho"] is None else np.asarray(carry["rho"]), t0=int(T),
                     seed=self.seed,
-                    offset=None if carry["offset"] is None else np.asarray(carry["offset"]))
+                    offset=None if carry["offset"] is None else np.asarray(carry["offset"]),
+                    aux=None if self.aux is None else np.asarray(self.aux), transport=self.transport)
 
     def close(self):
         try:
@@ -360,16 +399,17 @@ def _dr_f32_server(argfile):
     dr._convert_matrices(config)
     C, b, seed, d = int(p["chains"]), int(p["b"]), int(p["seed"]), p["dir"]
     vg, unflatten, keys, off, D, pp = dr._build(nb.sdt_model, config)
-    mv = dr._mean_move(nb.sdt_model, config, p["ctrl"], keys, off, unflatten)
-    setup_p, chunk = dr._sampler_fns(dr._build_offset(nb.sdt_model, config, unflatten), D,
-                                     p["ctrl"], bool(p["parallel"]), mv)
+    tm = dr._transport(nb.sdt_model, config, p["ctrl"], off, unflatten)
+    setup_p, chunk = dr._sampler_fns(dr._sampler_vg(nb.sdt_model, config, unflatten, tm), D,
+                                     p["ctrl"], bool(p["parallel"]), tm)
     ck = jax.random.split(dr._tagged(seed, 1), C)
     N = int(config["N"])
     z0 = jnp.zeros((C, D))
-    c0 = setup_p(z0, z0, jnp.zeros(N))
+    aux0 = dr.aux_zeros(tm, C)
+    c0 = setup_p(z0, z0, jnp.zeros(N), aux0)
     c0 = jax.tree.map(np.asarray, c0)
     jax.block_until_ready(chunk(c0, jnp.arange(b), ck, jnp.ones(D), jnp.ones(D),
-                                jnp.asarray(1e-3), jnp.zeros(N)))
+                                jnp.asarray(1e-3), jnp.zeros(N), aux0))
     stop = os.path.join(d, "stop")
     donor = os.path.join(d, "donor.pkl")
     while not os.path.exists(donor):
@@ -379,15 +419,17 @@ def _dr_f32_server(argfile):
     with open(donor, "rb") as fh:
         don = pickle.load(fh)
     th = np.asarray(don["th"])
+    AUX = jnp.asarray(don["aux"] if don.get("aux") is not None else np.zeros(1))
     OFF = (jnp.asarray(don["offset"]) if don.get("offset") is not None
-           else dr.ll_offset(pp, unflatten, config, th[0]))
+           else dr.ll_offset(pp, unflatten, config,
+                             (th[:1] if tm is None else tm.forward_chains(th[:1], np.asarray(don["aux"])[:1]))[0]))
     IMM = jnp.asarray(don["imm"])
     MSQ = jnp.sqrt(1.0 / IMM)
     E0 = jnp.asarray(p["ctrl"]["eps_c"] * float(don["eps"]))
     rho = don.get("rho")
     rho = (MSQ * jax.random.normal(dr._tagged(seed, 2), (C, D)) if rho is None
            else jnp.asarray(rho))
-    carry = jax.tree.map(np.asarray, setup_p(jnp.asarray(th), rho, OFF))
+    carry = jax.tree.map(np.asarray, setup_p(jnp.asarray(th), rho, OFF, AUX))
     n = 0
     while True:
         req = os.path.join(d, f"req_{n}.json")
@@ -404,7 +446,7 @@ def _dr_f32_server(argfile):
             if os.path.exists(os.path.join(d, f"cancel_{n}")):
                 cancelled = True
                 break
-            carry, (thb, st, e) = chunk(carry, jnp.arange(t, t + b), ck, IMM, MSQ, E0, OFF)
+            carry, (thb, st, e) = chunk(carry, jnp.arange(t, t + b), ck, IMM, MSQ, E0, OFF, AUX)
             carry = jax.tree.map(np.asarray, carry)
             pos = np.arange(t, t + b)
             sel = np.nonzero(_kept(pos, k, int(r.get("burn", 0))))[0]
@@ -647,6 +689,12 @@ class AutoSession:
             self.mon_n += m
 
     def step(self, out_dir, a=None):
+        """One round: commit the pending round, diagnose, and start the next round unless
+        the stopping rule (`targets`, `rhat`; never with `fixed` draws) is met or this is
+        the last check (`force`), so that finishing never has to cut a running block."""
+        a = a or {}
+        if self.pending is None:
+            self._launch()
         th, res = self.pending
         th.join()
         self.pending = None
@@ -654,9 +702,8 @@ class AutoSession:
             raise res["err"]
         r = res["out"]
         self._commit(r)
-        self._launch()
         os.makedirs(out_dir, exist_ok=True)
-        checked = self.skip_checks == 0 or self.last_dg is None or bool((a or {}).get("force"))
+        checked = self.skip_checks == 0 or self.last_dg is None or bool(a.get("force"))
         t0 = time.time()
         if checked:
             self.last_dg = self._diagnose()
@@ -666,6 +713,12 @@ class AutoSession:
             self.skip_checks -= 1
             check_s = 0.0
         dg = self.last_dg
+        met = checked and not a.get("fixed") and all(
+            dg.get("ess_" + c) is None or dg["ess_" + c] >= float(t)
+            for c, t in (a.get("targets") or {}).items()) and (
+            dg.get("rhat") is None or dg["rhat"] <= float(a.get("rhat", np.inf)))
+        if not (met or a.get("force")):
+            self._launch()
         n_all = max(float(self.tot.n.sum()), 1.0)
         kept_bytes = (self.n * self.chains * self.D * self.rows.itemsize
                       + self.mon_n * self.mon.shape[0] * self.mon.shape[2] * self.mon.itemsize)
@@ -696,7 +749,7 @@ class AutoSession:
         chunk = int(max(1, min(_FINAL_CHUNK, dr._CONSTRAIN_BYTES // max(1, per_draw * self.chains))))
         batch = jax.vmap(one)
         par = self.chains > 1 and jax.local_device_count() >= self.chains
-        fn = jax.pmap(batch) if par else jax.jit(jax.vmap(batch))
+        fn = jax.pmap(batch, axis_name="chain") if par else jax.jit(jax.vmap(batch))
 
         old_ll, old_sel = f.get("old_loglik"), None
         if save_loglik and old_ll:

@@ -40,7 +40,7 @@
     if (!is.null(md$criterion2)) {
       expand[[.gap_param(gl, "_2")]] <- grid(.gap_param(gl, "_2"), seq_len(n_gaps2), seq_len(md$criterion2$n_coef))
     }
-    expand[[.gap_param(gl, "_2_varying")]] <- grid(.gap_param(gl, "_2_varying"), seq_len(md$K), seq_len(n_gaps2))
+    expand[[.gap_param(gl, "_2_varying")]] <- grid(.gap_param(gl, "_2_varying"), seq_len(md$stan_data$n_vbin %||% md$K), seq_len(n_gaps2))
     expand[[.gap_param(gl, "_2_cov")]] <- grid(.gap_param(gl, "_2_cov"), seq_len(n_gaps2),
                                                seq_len(md$stan_data$P_criterion2_cov %||% 0L))
     expand[[.gap_param(gl, "_2_new")]] <- paste0(.gap_param(gl, "_2_new"), "[", seq_len(n_gaps2), "]")

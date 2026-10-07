@@ -44,9 +44,9 @@
                   rho ~ 1, criterion2 ~ 1)
     if (fam == "bivariate_dp") {
       parts <- c(parts, lambda ~ 1, lambda2 ~ 1)
-      parts$family <- bivariate_dp(bounded = bounded, varying_source_criteria = varying)
+      parts$family <- bivariate_dp(bounded = bounded, source_criteria = if (varying) "varying" else "common")
     } else {
-      parts$family <- bivariate_gaussian(bounded = bounded, varying_source_criteria = varying)
+      parts$family <- bivariate_gaussian(bounded = bounded, source_criteria = if (varying) "varying" else "common")
     }
     d$detect_rat <- factor(d$detect_rat, levels = seq_len(K1))
     d$source_rat <- factor(d$source_rat, levels = seq_len(K2))

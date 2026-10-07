@@ -597,6 +597,23 @@ source_mixture <- function(link = link_probit()) {
     class = "broc_family"
   )
 }
+# The source-criteria structure shared by the two-response SDT families: one set for every
+# detection response ("common"), one set per detection response ("varying"), or one set per
+# "old" response plus a single set for all "new" responses ("varying_shared_new").
+.source_criteria_arg <- function(source_criteria, old_levels) {
+  source_criteria <- match.arg(source_criteria, c("common", "varying", "varying_shared_new"))
+  if (source_criteria == "varying_shared_new") {
+    if (is.null(old_levels) || !is.numeric(old_levels) || length(old_levels) < 1) {
+      stop("old_levels must be a numeric vector of the detection responses that count as ",
+           "'old' (e.g. old_levels = 4:6) when source_criteria = \"varying_shared_new\".",
+           call. = FALSE)
+    }
+    old_levels <- sort(as.integer(old_levels))
+  } else if (!is.null(old_levels)) {
+    stop("old_levels is only used with source_criteria = \"varying_shared_new\".", call. = FALSE)
+  }
+  list(source_criteria = source_criteria, varying = source_criteria != "common", old_levels = old_levels)
+}
 
 #' Bivariate Gaussian Signal Detection Model
 #'
@@ -609,28 +626,23 @@ source_mixture <- function(link = link_probit()) {
 #' In bounded mode, A items are anchored at the negative source-axis end and
 #' B items at the positive end.
 #'
-#' @param varying_source_criteria If `TRUE`, estimate separate source criteria
-#'   for each detection confidence level.
+#' @param source_criteria How the source criteria are structured across
+#'   detection responses. `"common"` (default): one set of source criteria for
+#'   every detection response. `"varying"`: a separate set for each detection
+#'   response (K1 x (K2-1) criteria in total). `"varying_shared_new"`: a separate
+#'   set for each "old" detection response and a single set shared by all "new"
+#'   responses; requires `old_levels`. Covariates, smooths and random effects on
+#'   `criterion2` apply to every set, and a random effect on `criterion2` gives
+#'   each source threshold of each set its own effect.
+#' @param old_levels Integer vector of detection response values that count as
+#'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
+#'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new".
+#'   Required when `source_criteria = "varying_shared_new"`; not used otherwise.
 #' @param bounded If `TRUE`, fit the Bounded Bivariate Gaussian (BBG; Starns
 #'   et al. 2014) variant: dprime/discrim use log links (positive magnitudes),
 #'   rho uses logistic link (in (0,1)), and the model anchors A on the
 #'   negative source axis / B on the positive axis. Default `FALSE` fits the
 #'   standard unbounded BG model (DeCarlo, 2003).
-#' @param new_source_criteria With `varying_source_criteria = TRUE`, how source
-#'   criteria are structured across detection responses (ignored otherwise).
-#'   `"full"` (default): every detection response level has its own source
-#'   criteria (K1 x (K2-1) in total). `"shared"`: responses that judge an item
-#'   "new" share a single set of source criteria; requires `old_levels`.
-#' @param old_levels Integer vector of detection response values that count as
-#'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
-#'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new". Required when `new_source_criteria = "shared"`; ignored
-#'   otherwise.
-#' @param varying_re Random-effect structure for varying source criteria
-#'   (distinct from `new_source_criteria`, which governs the fixed criteria).
-#'   `"shared"` (default): one source-criterion RE shift shared across all
-#'   detection bins. `"per_bin"`: a separate RE shift per detection bin.
-#'   `"full"`: a separate RE for every source threshold within every detection
-#'   bin. Requires `varying_source_criteria = TRUE` unless `"shared"`.
 #'
 #' @details
 #' ## Likelihood
@@ -713,28 +725,10 @@ source_mixture <- function(link = link_probit()) {
 #'   variable recollection, [source_mixture()] for the single-response
 #'   mixture approach.
 #' @export
-bivariate_gaussian <- function(varying_source_criteria = FALSE,
-                          bounded = FALSE, new_source_criteria = c("full", "shared"),
-                          old_levels = NULL, varying_re = "shared") {
+bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying_shared_new"),
+                               bounded = FALSE, old_levels = NULL) {
   link <- link_probit()
-  varying_re <- match.arg(varying_re, c("shared", "per_bin", "full"))
-  if (varying_re != "shared" && !varying_source_criteria) {
-    stop("varying_re = '", varying_re, "' requires varying_source_criteria = TRUE")
-  }
-  new_source_criteria <- match.arg(new_source_criteria)
-  if (new_source_criteria == "shared") {
-    if (!varying_source_criteria) {
-      stop("new_source_criteria = 'shared' requires varying_source_criteria = TRUE")
-    }
-    if (is.null(old_levels) || !is.numeric(old_levels) || length(old_levels) < 1) {
-      stop("old_levels must be a numeric vector of detection response levels ",
-           "that count as 'old' (e.g., old_levels = 4:6) when ",
-           "new_source_criteria = 'shared'")
-    }
-    old_levels <- sort(as.integer(old_levels))
-  } else if (!is.null(old_levels)) {
-    stop("old_levels is only used when new_source_criteria = 'shared'")
-  }
+  sc <- .source_criteria_arg(source_criteria, old_levels)
   dprime_link <- if (bounded) "log" else "identity"
   discrim_link <- if (bounded) "log" else "identity"
   rho_link <- if (bounded) "logis" else "fisherz"
@@ -748,11 +742,10 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
     list(
       family = "bivariate_sdt",
       link = link,
-      varying_source_criteria = varying_source_criteria,
+      source_criteria = sc$source_criteria,
+      varying_source_criteria = sc$varying,
       bounded = bounded,
-      new_source_criteria = new_source_criteria,
-      old_levels = old_levels,
-      varying_re = varying_re,
+      old_levels = sc$old_levels,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = dprime_link,
                       description = "d' for Source A detection (dimension 1 mean)"),
@@ -815,8 +808,18 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
 #' Same source labeling convention as [bivariate_gaussian()]: source A = low
 #' source ratings, source B = high.
 #'
-#' @param varying_source_criteria If `TRUE`, estimate separate source
-#'   criteria for each detection confidence level.
+#' @param source_criteria How the source criteria are structured across
+#'   detection responses. `"common"` (default): one set of source criteria for
+#'   every detection response. `"varying"`: a separate set for each detection
+#'   response (K1 x (K2-1) criteria in total). `"varying_shared_new"`: a separate
+#'   set for each "old" detection response and a single set shared by all "new"
+#'   responses; requires `old_levels`. Covariates, smooths and random effects on
+#'   `criterion2` apply to every set, and a random effect on `criterion2` gives
+#'   each source threshold of each set its own effect.
+#' @param old_levels Integer vector of detection response values that count as
+#'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
+#'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new".
+#'   Required when `source_criteria = "varying_shared_new"`; not used otherwise.
 #' @param bounded If `TRUE`, fit the BBDP variant (conditional source mean
 #'   clamped at the new-item baseline). If `FALSE` (default), fit the BDP
 #'   variant with standard bivariate Gaussian familiarity.
@@ -892,28 +895,10 @@ bivariate_gaussian <- function(varying_source_criteria = FALSE,
 #' @return A `broc_family` object.
 #' @seealso [bivariate_gaussian()], [vrdp2d()].
 #' @export
-bivariate_dp <- function(varying_source_criteria = FALSE,
-                         bounded = FALSE, new_source_criteria = c("full", "shared"),
-                         old_levels = NULL, varying_re = "shared") {
+bivariate_dp <- function(source_criteria = c("common", "varying", "varying_shared_new"),
+                         bounded = FALSE, old_levels = NULL) {
   link <- link_probit()
-  varying_re <- match.arg(varying_re, c("shared", "per_bin", "full"))
-  if (varying_re != "shared" && !varying_source_criteria) {
-    stop("varying_re = '", varying_re, "' requires varying_source_criteria = TRUE")
-  }
-  new_source_criteria <- match.arg(new_source_criteria)
-  if (new_source_criteria == "shared") {
-    if (!varying_source_criteria) {
-      stop("new_source_criteria = 'shared' requires varying_source_criteria = TRUE")
-    }
-    if (is.null(old_levels) || !is.numeric(old_levels) || length(old_levels) < 1) {
-      stop("old_levels must be a numeric vector of detection response levels ",
-           "that count as 'old' (e.g., old_levels = 4:6) when ",
-           "new_source_criteria = 'shared'")
-    }
-    old_levels <- sort(as.integer(old_levels))
-  } else if (!is.null(old_levels)) {
-    stop("old_levels is only used when new_source_criteria = 'shared'")
-  }
+  sc <- .source_criteria_arg(source_criteria, old_levels)
   dprime_link <- if (bounded) "log" else "identity"
   discrim_link <- if (bounded) "log" else "identity"
   rho_link <- if (bounded) "logis" else "fisherz"
@@ -924,11 +909,10 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
     list(
       family = "bivariate_dp",
       link = link,
-      varying_source_criteria = varying_source_criteria,
+      source_criteria = sc$source_criteria,
+      varying_source_criteria = sc$varying,
       bounded = bounded,
-      new_source_criteria = new_source_criteria,
-      old_levels = old_levels,
-      varying_re = varying_re,
+      old_levels = sc$old_levels,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = dprime_link,
                       description = dprime_desc),
@@ -1003,12 +987,6 @@ bivariate_dp <- function(varying_source_criteria = FALSE,
 #' summed strength, and the Remember judgment is a criterion on the recollection
 #' signal (Wixted & Mickes, 2010).
 #'
-#' @param old_levels Integer vector specifying which confidence levels
-#'   correspond to "old" responses (where R/K judgments apply), in the data's
-#'   own coding of the confidence response. If `NULL`
-#'   (default), inferred at fit time from the data as the bins where `rk`
-#'   is non-NA. Pass explicitly only to override that inference (e.g. when
-#'   some "old" bin happens to have no observed responses).
 #'
 #' @details
 #' ## Likelihood
@@ -1131,16 +1109,19 @@ cdp <- function(old_levels = NULL) {
 #' item-source recognition, with recollection-gated source discrimination
 #' (Onyper, Zhang & Howard, 2010).
 #'
-#' @param varying_source_criteria If `TRUE`, estimate separate source
-#'   criteria for each item confidence level (K1 x (K2-1) source thresholds);
-#'   the full model of Onyper et al. (2010). If `FALSE` (default), a single
-#'   set of source criteria (K2-1 thresholds) shared across detection levels.
-#' @param varying_re Random-effect structure for varying source criteria.
-#'   `"shared"` (default): one source-criterion RE shift shared across all
-#'   detection bins. `"per_bin"`: a separate RE shift per detection bin.
-#'   `"full"`: a separate RE for every source threshold within every detection
-#'   bin. Requires `varying_source_criteria = TRUE` unless `"shared"`.
 #'
+#' @param source_criteria How the source criteria are structured across
+#'   detection responses. `"common"` (default): one set of source criteria for
+#'   every detection response. `"varying"`: a separate set for each detection
+#'   response (K1 x (K2-1) criteria in total). `"varying_shared_new"`: a separate
+#'   set for each "old" detection response and a single set shared by all "new"
+#'   responses; requires `old_levels`. Covariates, smooths and random effects on
+#'   `criterion2` apply to every set, and a random effect on `criterion2` gives
+#'   each source threshold of each set its own effect.
+#' @param old_levels Integer vector of detection response values that count as
+#'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
+#'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new".
+#'   Required when `source_criteria = "varying_shared_new"`; not used otherwise.
 #' @details
 #' ## Likelihood
 #' Both states have diagonal covariance (zero detection-source correlation),
@@ -1200,19 +1181,16 @@ cdp <- function(old_levels = NULL) {
 #' @return A `broc_family` object.
 #' @seealso [bivariate_gaussian()], [bivariate_dp()].
 #' @export
-vrdp2d <- function(varying_source_criteria = FALSE,
-                   varying_re = "shared") {
+vrdp2d <- function(source_criteria = c("common", "varying", "varying_shared_new"), old_levels = NULL) {
   link <- link_probit()
-  varying_re <- match.arg(varying_re, c("shared", "per_bin", "full"))
-  if (varying_re != "shared" && !varying_source_criteria) {
-    stop("varying_re = '", varying_re, "' requires varying_source_criteria = TRUE")
-  }
+  sc <- .source_criteria_arg(source_criteria, old_levels)
   structure(
     list(
       family = "vrdp2d",
       link = link,
-      varying_source_criteria = varying_source_criteria,
-      varying_re = varying_re,
+      source_criteria = sc$source_criteria,
+      varying_source_criteria = sc$varying,
+      old_levels = sc$old_levels,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "Familiarity strength (item dimension, new vs old)"),

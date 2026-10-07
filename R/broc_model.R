@@ -235,7 +235,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   # --- 2b. Up-front data validation ----------------------------------------
   validate_broc_data(data, brf_obj, family, encoding_vars, counts)
   nd <- .drop_incomplete_rows(data, brf_obj, family, encoding_vars, counts)
-  data <- nd$data
+  data <- .drop_unused_levels(nd$data, brf_obj, encoding_vars)
   dropped_rows <- nd$dropped
 
   # --- 2c. Drop zero-count rows ---------------------------------------------
@@ -659,8 +659,13 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 #' @param counts Optional column name for count weights
 #' @return List with all model data
 #' @noRd
-.rkg_knob_data <- function(stan_data) {
+.rkg_knob_data <- function(stan_data, re_in_bound) {
+  # the know-criterion slack transform is used only when the Guess bound is fixed-effects
+  # only: with random effects on the thresholds or criteria the bound couples every
+  # effect through a max over trials and sampling collapses (measured, Oct 2026)
   if (!isTRUE(stan_data$n_rkg == 3) || is.null(stan_data$X_know_crit)) return(stan_data)
+  stan_data$kc_knob <- 0L
+  if (isTRUE(re_in_bound)) return(stan_data)
   band <- match(stan_data$y, stan_data$old_level_map)
   live <- if (is.null(stan_data$counts)) rep(TRUE, length(band)) else stan_data$counts > 0
   g <- which(!is.na(band) & stan_data$rk == 3 & live)
@@ -893,14 +898,20 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stan_data$y2 <- y2_raw
     stan_data$K2 <- K2
     stan_data$K1 <- K
-    if (identical(family$new_source_criteria, "shared")) {
+    if (identical(family$source_criteria, "varying_shared_new")) {
       old_resp <- family$old_levels
       if (any(old_resp < 1L) || any(old_resp > K)) {
-        stop("old_levels values must be between 1 and ", K,
-             " (the number of detection response levels)")
+        stop("old_levels must be detection responses within the data's range")
       }
-      is_new_response <- as.integer(!(seq_len(K) %in% old_resp))
-      stan_data$is_new_response <- as.array(is_new_response)
+      if (length(unique(old_resp)) >= K) {
+        stop("old_levels covers every detection response, so there are no \"new\" responses to share ",
+             "source criteria; use source_criteria = \"varying\".")
+      }
+    }
+    if (isTRUE(family$varying_source_criteria)) {
+      vb <- .varying_bins(family, K)
+      stan_data$n_vbin <- vb$n
+      stan_data$vbin <- as.array(vb$of)
     }
     stan_data$is_old <- NULL
   } else if (is_source_mixture) {
@@ -1321,7 +1332,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       parsed$criterion2$fixed$intercept <- TRUE
       criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
     }
-    criterion2 <- build_criterion_structure(criterion2_fixed_formula, parsed$criterion2$random, data, K2,
+    criterion2 <- build_criterion_structure(criterion2_fixed_formula, parsed$criterion2$random, data, K2 - 1L,
                                             conditional_terms = criterion2_cond,
                                             parsed_fixed = parsed$criterion2$fixed)
 
@@ -1347,14 +1358,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stan_data$P_criterion2 <- criterion2$n_coef
     stan_data$X_criterion2 <- criterion2$X
 
-    varying_re_mode <- if (!is.null(family$varying_re)) family$varying_re else "shared"
-
     if (isTRUE(family$varying_source_criteria) && !is.null(criterion2$random)) {
-      n_bins <- K
-      
+      vb <- .varying_bins(family, K)
       for (group in names(criterion2$random)) {
-        criterion2$random[[group]] <- .varying_crit2_re(criterion2$random[[group]], varying_re_mode,
-                                                        n_bins, K2)
+        criterion2$random[[group]] <- .varying_crit2_re(criterion2$random[[group]], "full", vb$n, K2)
+        criterion2$random[[group]]$bin_levels <- vb$labels
       }
     }
   }
@@ -1528,7 +1536,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
   
   .check_criterion_designs(stan_data)
-  if (isTRUE(has_know_crit)) stan_data <- .rkg_knob_data(stan_data)
+  if (isTRUE(has_know_crit)) {
+    re_in_bound <- any(lengths(list(criterion$random, rec_crit_random, know_crit_random)) > 0)
+    stan_data <- .rkg_knob_data(stan_data, re_in_bound)
+  }
 
   list(
     N = N,
@@ -1615,9 +1626,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
     bounded = isTRUE(family$bounded),
-    new_source_criteria = family$new_source_criteria,
+    source_criteria = family$source_criteria,
     old_levels = family$old_levels,
-    varying_re = if (!is.null(family$varying_re)) family$varying_re else "shared",
+    varying_re = if (isTRUE(family$varying_source_criteria)) "full" else "shared",
     cross_cor = cross_cor,
     smooth_data = if (length(smooth_data) > 0) smooth_data else NULL,
     stan_data = stan_data
@@ -1981,8 +1992,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
-#'     ("f64" or "f32"), `mean_moves` (`TRUE`: an exact population-mean update after each
-#'     step for random-effect terms that match a fixed effect; see *Population-mean moves*).
+#'     ("f64" or "f32"), `transport` (`TRUE`: random effects are sampled through a
+#'     per-group transport map; see *Group transport map*).
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
 #'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
@@ -2087,16 +2098,20 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' `"stop_reason"`, `"ess_trace"` (one row per round), `"targets"`,
 #' `"draws_per_chain"` and `"thin_stride"`; a warning is issued when a cap stops the
 #' run first.
-#' @section Population-mean moves:
-#' When a random-effect term has the same design column as a fixed effect (for example
-#' `Condition` in both `dprime ~ Condition` and `(1 + Condition | study)`), raising the
-#' fixed coefficient and lowering every group's effect by the same amount leaves the
-#' likelihood unchanged. With few groups and many observations per group the posterior is
-#' a long narrow ridge in that direction, which DR-G-HMC's short trajectories cross slowly.
-#' After each step DR-G-HMC therefore draws that shift from its conditional distribution
-#' given the groups' effects and accepts it on the coefficients' prior ratio, an exact
-#' update that never evaluates the likelihood. Set `control = list(mean_moves = FALSE)` to
-#' turn it off.
+#' @section Group transport map:
+#' With many groups, or many observations per group, the standard deviations and
+#' correlations of random effects are tied to the groups' standardised effects through the
+#' likelihood, and a sampler has to move all of them together to change either. DR-G-HMC
+#' removes most of that tie by sampling each group's effects in coordinates built from a
+#' Gaussian approximation of that group's likelihood: part of the warmup runs in the
+#' model's own coordinates, the approximation is built from where the chains are, and it is
+#' rebuilt once before the step size is settled. Effects of one grouping factor are mapped
+#' together, and they follow the population coefficients and any enclosing or crossed
+#' factor they share predictor terms with. The map is a one-to-one change of variables
+#' with its Jacobian, so the posterior of every model parameter is unchanged; draws are
+#' returned in the model's own parameters. Each gradient costs more, by an amount that
+#' grows with the number of groups relative to the number of observations. Set
+#' `control = list(transport = FALSE)` to sample the standardised effects directly.
 #' @references Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
 #'   (2021). Rank-normalization, folding, and localization: An improved R-hat for
 #'   assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667-718.
@@ -2200,10 +2215,10 @@ fit_broc <- function(model,
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
-                    "precision", "mean_moves")
-  if (!is.null(.ctrl$mean_moves) && !(is.logical(.ctrl$mean_moves) && length(.ctrl$mean_moves) == 1L &&
-                                      !is.na(.ctrl$mean_moves))) {
-    stop("`control$mean_moves` must be TRUE or FALSE.", call. = FALSE)
+                    "precision", "transport")
+  if (!is.null(.ctrl$transport) && !(is.logical(.ctrl$transport) && length(.ctrl$transport) == 1L &&
+                                     !is.na(.ctrl$transport))) {
+    stop("`control$transport` must be TRUE or FALSE.", call. = FALSE)
   }
   .valid <- if (sampler == "drghmc") .drghmc_keys else .nuts_keys
   .unknown <- setdiff(names(.ctrl), .valid)
@@ -3037,6 +3052,30 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   stop(sprintf(paste0("%d of %d Stan chains failed and their output is incomplete; ",
                       "refusing to return a fit built from a subset of chains. ",
                       "Inspect the chains' output or refit."), chains - kept, chains), call. = FALSE)
+}
+
+# The sets of source criteria and which one each detection response reads. "varying": one set
+# per response. "varying_shared_new": the "new" responses all read set 1 and each "old"
+# response its own set after it. Every set carries the same structure (coefficients, smooths
+# and random effects).
+.varying_bins <- function(family, K) {
+  if (identical(family$source_criteria, "varying_shared_new")) {
+    lv <- sort(unique(as.integer(family$old_levels)))
+    of <- rep(1L, K)
+    of[lv] <- 1L + seq_along(lv)
+    labels <- c("new", as.character(lv))
+  } else {
+    of <- seq_len(K)
+    labels <- as.character(of)
+  }
+  list(n = length(labels), of = of, labels = labels)
+}
+
+# vbin of a model, including fits saved before the map existed (one set per response)
+.vbin_of <- function(md) as.integer(md$stan_data$vbin %||% seq_len(md$K))
+.vbin_labels <- function(md) {
+  if (identical(md$source_criteria, "varying_shared_new")) c("new", as.character(sort(unique(as.integer(md$old_levels)))))
+  else as.character(seq_len(max(.vbin_of(md))))
 }
 
 .varying_crit2_re <- function(re, mode, n_bins, K2) {

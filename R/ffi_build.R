@@ -60,7 +60,7 @@
   cxx <- .cxx17_command()
   if (is.null(cxx)) return(fail("no C++17 compiler", toolchain))
   flags <- .bvn_ffi_flags()
-  hdr <- file.path(src$include, "bayesroc", c("bvn_simd.h", "bvn_tail.h"))
+  hdr <- file.path(src$include, "bayesroc", c("bvn_simd.h", "bvn_tail.h", "tmap_kernel.h"))
   key <- paste(c(unname(tools::md5sum(c(src$cc, hdr))), jl$jax_version, jl$include,
                  cxx$prog, cxx$args, flags, R.version$platform), collapse = "|")
   tag <- substr(digest_string(key), 1, 16)

@@ -13,7 +13,8 @@ plot_roc(
   re_formula = NULL,
   ndraws = 200,
   prob = 0.95,
-  seed = NULL
+  seed = NULL,
+  cores = 1
 )
 }
 \arguments{
@@ -43,6 +44,9 @@ items; \code{NA} gives the population-level (typical participant) curve.}
 
 \item{seed}{Optional seed for the draw subset; the global random-number state
 is restored afterwards.}
+
+\item{cores}{Number of cores for the curves' survival computation (default 1): the cells'
+signal and noise curves are independent and are spread over a cluster when \code{cores > 1}.}
 }
 \value{
 A ggplot object.

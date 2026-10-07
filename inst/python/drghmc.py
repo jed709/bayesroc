@@ -15,11 +15,13 @@ from numpyro.infer import init_to_uniform
 _LAM = 0.19318332750378357
 _B1, _A1 = 0.11888010966548, 0.29619504261126
 _B2, _A2 = 0.5 - _B1, 1.0 - 2.0 * _A1
+_DR_EPS = (0, 1, 0, 2, 0, 1, 0)
 _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 
 _DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
-                 mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64", mean_moves=True)
+                 mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64",
+                 transport=True)
 _INTEGRATORS = ("bcss3", "bcss2", "leapfrog")
 
 
@@ -43,7 +45,7 @@ def _merge_control(control):
         (0.0 <= float(c["mass_burn_frac"]) < float(c["mass_end_frac"]) <= 1.0,
          "need 0 <= mass_burn_frac < mass_end_frac <= 1"),
         (c["precision"] in ("f64", "f32"), "precision must be 'f64' or 'f32'"),
-        (isinstance(c["mean_moves"], (bool, np.bool_)), "mean_moves must be TRUE or FALSE"),
+        (isinstance(c["transport"], (bool, np.bool_)), "transport must be TRUE or FALSE"),
     ]
     for ok, msg in checks:
         if not ok:
@@ -59,6 +61,25 @@ def _root(seed):
 
 def _tagged(seed, tag):
     return jax.random.fold_in(_root(seed), tag)
+
+
+def memory_check(compiled, chains, parallel):
+    """Scratch memory of the compiled sampler for all chains, against available RAM.
+    Returns a message when it will not fit, else None."""
+    try:
+        per = compiled.memory_analysis().temp_size_in_bytes
+    except Exception:
+        return None
+    need = per * (chains if parallel else 1)
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available
+    except Exception:
+        return None
+    if need > 0.8 * avail:
+        return (f"sampler needs about {need / 2**30:.1f} GB of working memory for {chains} chains "
+                f"but only {avail / 2**30:.1f} GB is free")
+    return None
 
 
 def _pbar(total, desc):
@@ -82,22 +103,38 @@ def _convert_matrices(obj):
                 _convert_matrices(it)
 
 
+def _trim_rows(config, n_keep):
+    """The rows a trimmed config keeps: the first n_keep, plus whatever row keeps the
+    model's parameterisation the same as on the full data (the CDP R/K/G know-criterion
+    slack transform exists only when a Guess trial is present)."""
+    rows = list(range(n_keep))
+    if config.get("family") == "cdp" and int(config.get("n_rkg", 2)) == 3:
+        y = np.asarray(config["y"]); rk = np.asarray(config["rk"])
+        olm = np.asarray(config["old_level_map"])
+        live = np.ones(y.shape[0], bool) if config.get("counts") is None else np.asarray(config["counts"]) > 0
+        g = np.where(np.isin(y, olm) & (rk == 3) & live)[0]
+        if g.size and int(g[0]) not in rows:
+            rows.append(int(g[0]))
+    return rows
+
+
 def _trim_config(config, n_keep=1):
-    """A tiny (n_keep-row) copy of config. u_*/corr_*/params are data-independent,
-    so constraining against this yields identical draws with no per-obs likelihood
-    cost. Slices length-N arrays without copying the full data."""
+    """A tiny copy of config (n_keep rows, see _trim_rows). u_*/corr_*/params are
+    data-independent, so constraining against this yields identical draws with no per-obs
+    likelihood cost. Slices length-N arrays without copying the full data."""
     n = config.get("N")
+    rows = _trim_rows(config, n_keep) if n is not None else list(range(n_keep))
 
     def t(o):
         if isinstance(o, dict):
-            return {k: (v[:n_keep] if isinstance(v, list) and n is not None
+            return {k: ([v[i] for i in rows] if isinstance(v, list) and n is not None
                         and len(v) == n else t(v)) for k, v in o.items()}
         if isinstance(o, list):
             return [t(it) if isinstance(it, dict) else it for it in o]
         return o
 
     c = t(config)
-    c["N"] = n_keep
+    c["N"] = len(rows)
     return c
 
 
@@ -166,10 +203,24 @@ def _build(model, config):
         o += sz
     D = o
 
+    # The sites partition v in key order, so the cotangent of v is their cotangents
+    # concatenated. Left to autodiff, XLA assembles it from one padded full-length vector
+    # per site, which costs more than the likelihood gradient itself whenever v is not
+    # the program's own input (any reparameterisation in front of the model).
+    @jax.custom_vjp
     def unflatten(v):
         return {k: v[off[k][0]].reshape(off[k][1]) for k in keys}
 
-    pot = lambda v: potential_fn(unflatten(v))
+    def unflatten_fwd(v):
+        return unflatten(v), None
+
+    def unflatten_bwd(_, ct):
+        return (jnp.concatenate([jnp.reshape(ct[k], (-1,)) for k in keys]),)
+
+    unflatten.defvjp(unflatten_fwd, unflatten_bwd)
+    # jitted: every program that embeds the potential then reuses one traced jaxpr instead
+    # of re-tracing the model (XLA inlines the call, so the compiled code is unchanged)
+    pot = jax.jit(lambda v: potential_fn(unflatten(v)))
     return jax.value_and_grad(pot), unflatten, keys, off, D, postprocess_fn
 
 
@@ -177,11 +228,241 @@ def _build_offset(model, config, unflatten):
     """value_and_grad of the potential with a runtime per-observation log-likelihood
     offset (see ll_offset): the sampler takes it as an argument, so a compiled
     sampler serves any offset."""
+    return jax.value_and_grad(_pot_offset(model, config, unflatten))
+
+
+def _pot_offset(model, config, unflatten):
     from numpyro.infer.util import potential_energy
 
+    @jax.jit
     def pot(v, offset):
         return potential_energy(model, ({**config, "_ll_offset": offset},), {}, unflatten(v))
-    return jax.value_and_grad(pot)
+    return pot
+
+
+def _transport(model, config, ctrl, off, unflatten, progress_bar=False):
+    """tmap.build when ctrl['transport'] and the model has random-effect blocks, else None."""
+    if not ctrl.get("transport", True):
+        return None
+    import tmap
+    tm = tmap.build(model, config, off, unflatten)
+    if tm is not None and progress_bar:
+        print(f"[DR-G-HMC] group transport map on {', '.join(tm.specs)}", flush=True)
+    return tm
+
+
+def _sampler_vg(model, config, unflatten, tm):
+    """The sampler's value-and-grad: (v, OFF) -> (U, g), or (v, OFF, AUX) with a transport map."""
+    if tm is None:
+        return _build_offset(model, config, unflatten)
+    return tm.wrap(_pot_offset(model, config, unflatten))
+
+
+_PILOT_ABOVE = 7500
+_DISAGREE = 2.0
+_PILOT_LEVELS = 5000
+
+
+def _subset_config(config, group, levels):
+    """The model restricted to the rows of `levels` (0-based) of grouping factor `group`:
+    every length-N array is cut to those rows and the factor is re-indexed to 1..len(levels)."""
+    N = int(config["N"])
+    idx = next(np.asarray(r["index"], dtype=int) - 1 for r in config["random_effects"]
+               if r["group"] == group)
+    new_id = np.full(int(idx.max()) + 1, -1)
+    new_id[levels] = np.arange(len(levels))
+    rows = np.nonzero(new_id[idx] >= 0)[0]
+
+    def cut(o):
+        if isinstance(o, dict):
+            return {k: ([v[i] for i in rows] if isinstance(v, list) and len(v) == N else cut(v))
+                    for k, v in o.items()}
+        if isinstance(o, list):
+            return [cut(it) if isinstance(it, dict) else it for it in o]
+        return o
+
+    c = cut(config)
+    c["N"] = int(len(rows))
+    for r in c["random_effects"]:
+        if r["group"] == group:
+            r["index"] = (new_id[np.asarray(r["index"], dtype=int) - 1] + 1).tolist()
+            r["n_groups"] = int(len(levels))
+    return c
+
+
+def _pilot_start(model, config, keys, off, D, tm, chains, warmup, seed, ctrl, parallel, progress_bar):
+    """Starting positions [chains, D] from the warmup of the same model on a random subset of
+    the levels of its largest grouping factor: every site of unchanged shape is copied, the
+    sampled levels keep their standardised effects and the others start at zero."""
+    sb = max(tm.sbs, key=lambda s: s.n)
+    levels = np.sort(np.random.default_rng(int(seed)).choice(sb.n, _PILOT_LEVELS, replace=False))
+    if progress_bar:
+        print(f"[DR-G-HMC] starting values from a pilot warmup on {_PILOT_LEVELS} of {sb.n} "
+              f"levels of {sb.name}", flush=True)
+    cfg_p = _subset_config(config, sb.name, levels)
+    vg_p, unfl_p, keys_p, off_p, D_p, _ = _build(model, cfg_p)
+    tm_p = _transport(model, cfg_p, ctrl, off_p, unfl_p)
+    vg_s_p = _sampler_vg(model, cfg_p, unfl_p, tm_p)
+    _, _, tht, aux, _ = _adapt_stages(vg_p, vg_s_p, tm_p, D_p, chains, warmup, seed + 7, ctrl, parallel,
+                                      progress_bar, np.zeros((chains, D_p)), int(cfg_p["N"]), True)
+    th_p = tm_p.forward_chains(tht, aux)
+    th0 = np.zeros((chains, D))
+    for k in keys:
+        if k not in off_p:
+            continue
+        (sl, shp), (sl_p, shp_p) = off[k], off_p[k]
+        if tuple(shp) == tuple(shp_p):
+            th0[:, sl] = th_p[:, sl_p]
+        elif len(shp) == len(shp_p) and shp[:-1] == shp_p[:-1] and shp[-1] == sb.n and shp_p[-1] == len(levels):
+            full = np.zeros((chains,) + tuple(shp))
+            full[..., levels] = th_p[:, sl_p].reshape((chains,) + tuple(shp_p))
+            th0[:, sl] = full.reshape(chains, -1)
+    return th0
+
+
+def _compile_ahead(vg_plain, vg_m, tm, D, chains, ctrl, parallel, c_plain, c_mapped):
+    """Compile the warmup's programs on a thread: the plain window first, then, while the
+    plain stage runs, the map build and the mapped window. Tracing stays on this thread
+    (NumPyro's handler stack is not shared safely across threads), overlapping the plain
+    window's compile. Returns (wait for the plain window, wait for the rest); either
+    re-raises a compile error."""
+    import threading
+    low_plain = _lower_window(vg_plain, True, D, chains, ctrl, parallel, D + 1)
+    _map = (lambda f: jax.pmap(f, axis_name="chain")) if parallel else jax.vmap
+    low_vg0 = _map(vg_plain).lower(jnp.zeros((chains, D)), jnp.zeros((chains, D + 1)))
+    res, plain_done, done = {}, threading.Event(), threading.Event()
+    rest = []
+
+    def work():
+        try:
+            c_plain["vg0"] = low_vg0.compile()
+            c_plain["window"] = low_plain.compile()
+            plain_done.set()
+            while not rest:
+                time.sleep(0.01)
+            tm._anch = rest[0].compile()
+            c_mapped["window"] = rest[1].compile()
+        except BaseException as e:
+            res["err"] = e
+        plain_done.set()
+        done.set()
+
+    threading.Thread(target=work, daemon=True).start()
+    rest += [tm.lower_anchors(vg_plain_base(vg_plain, D), chains, D, parallel),
+             _lower_window(vg_m, True, D, chains, ctrl, parallel, tm.aux_size)]
+
+    def waiter(evt):
+        def wait():
+            evt.wait()
+            if "err" in res:
+                raise res.pop("err")
+        return wait
+    return waiter(plain_done), waiter(done)
+
+
+def vg_plain_base(vg_plain, D):
+    """The plain gradient v -> (U, g) from the flagged window gradient (flag off)."""
+    return lambda v: vg_plain(v, jnp.zeros(D + 1))
+
+
+def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progress_bar, th0, n_obs, cold,
+                  init=None):
+    H = int(ctrl["adapt_windows"])
+    if warmup < 5 * H:
+        raise ValueError(f"DR-G-HMC with transport needs warmup >= {5 * H}; got {warmup}")
+    off0 = jnp.zeros(n_obs)
+    vg_m = lambda v, a: vg_s(v, off0, a)
+    mask_np = tm.scale_mask(D)
+    mask = jnp.asarray(mask_np)
+
+    def vg_plain(v, ax):
+        # ax = [fixed values, flag]: with the flag set the scale coordinates are held at the
+        # fixed values (unit-normal dummies in their place), so the plain and the frozen
+        # stages share one compiled window
+        on = mask & (ax[D] > 0.5)
+        U, g = vg(jnp.where(on, ax[:D], v))
+        return U + 0.5 * jnp.sum(jnp.where(on, v * v, 0.0)), jnp.where(on, v, g)
+
+    c_plain, c_mapped = {}, {}
+    plain_ready, ahead = _compile_ahead(vg_plain, vg_m, tm, D, chains, ctrl, parallel, c_plain, c_mapped)
+
+    def build(th, w, sd):
+        _, _, tf, _, mf = _self_adapt(vg_plain, D, chains, w, sd, ctrl, parallel, progress_bar,
+                                      th0=np.where(mask_np, 0.0, th), return_mean=True, cache=c_plain,
+                                      aux=np.concatenate([th, np.ones((chains, 1))], 1))
+        ahead()
+        return np.where(mask_np, th, tf), tm.anchors_chains(vg, np.where(mask_np, th, mf), parallel)
+
+    th = np.asarray(th0)
+    plain_ready()
+    if cold:
+        w0, wf, w1 = max(H, warmup // 5), max(H, warmup // 10), max(H, warmup // 5)
+        _, _, th, _ = _self_adapt(vg_plain, D, chains, w0, seed, ctrl, parallel, progress_bar, th0=th,
+                                  cache=c_plain, aux=np.zeros((chains, D + 1)))
+        th, aux = build(th, wf, seed + 1)
+        _, _, tht, _ = _self_adapt(vg_m, D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
+                                   th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, init=init)
+        th = tm.forward_chains(tht, aux)
+        th, aux = build(th, wf, seed + 3)
+        rest = warmup - w0 - 2 * wf - w1
+    else:
+        wf = max(H, warmup // 4)
+        th, aux = build(th, wf, seed + 1)
+        rest = warmup - wf
+    imm, eps, tht, _, (between, within) = _self_adapt(
+        vg_m, D, chains, rest, seed + 4, ctrl, parallel, progress_bar,
+        th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, spread=True, init=init)
+    slow = mask_np & (between > _DISAGREE * within)
+    if slow.any():
+        if progress_bar:
+            print(f"[DR-G-HMC] chains still disagree on {int(slow.sum())} scale parameter(s); "
+                  f"extending warmup by {rest // 2 + wf + rest} iterations", flush=True)
+        imm, eps, tht, _ = _self_adapt(vg_m, D, chains, rest // 2, seed + 5, ctrl, parallel, progress_bar,
+                                       th0=tht, aux=aux, cache=c_mapped, pooled=True, init=init)
+        th, aux = build(tm.forward_chains(tht, aux), wf, seed + 6)
+        imm, eps, tht, _ = _self_adapt(vg_m, D, chains, rest, seed + 7, ctrl, parallel, progress_bar,
+                                       th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped,
+                                       imm0=imm, eps0=eps, init=init)
+    return imm, eps, tht, aux, None
+
+
+def _adapt(model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
+           progress_bar, th0, user_init=False, init=None):
+    """Adaptation. Without a transport map this is _self_adapt. With one:
+
+    1. the scale parameters of the mapped blocks are held where they are while everything
+       else is sampled, so the groups' effects settle around those scales;
+    2. each chain builds its map at its own effects averaged over the second half of 1;
+    3. the rest adapts the step size and masses in mapped coordinates.
+
+    Chains that do not start from a pilot first run a fifth of the warmup in the model's own
+    coordinates, then 1-2, a fifth in mapped coordinates to reach the posterior, and 1-3 again
+    so the map used for sampling is built there.
+
+    If, over the draws the final masses were estimated from, the chains' means of some scale
+    parameter of a mapped block vary more than _DISAGREE times its variance within a chain,
+    that parameter is still travelling: its within-chain variance understates how far it has
+    to go, which makes its steps small and keeps it slow. Warmup is then extended: a pass
+    whose masses are the variances over all chains' draws together, so the spread between
+    chains counts and the chains can finish travelling; the maps rebuilt where they arrive;
+    and a final pass that starts from those masses and that step size and re-estimates within
+    chains. Models whose chains agree are unaffected.
+
+    A model whose largest grouping factor has more than _PILOT_ABOVE levels first runs this
+    warmup on a random _PILOT_LEVELS of them and starts from where that ends, which puts the
+    scale parameters near their posterior before the full data are used. Returns (imm, eps,
+    positions in sampler coordinates, aux [chains, A], wall)."""
+    t0 = time.time()
+    if tm is None:
+        imm, eps, th, wall = _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar, th0=th0)
+        return imm, eps, th, None, wall
+    cold = True
+    if not user_init and max(sb.n for sb in tm.sbs) > _PILOT_ABOVE:
+        th0 = _pilot_start(model, config, keys, off, D, tm, chains, warmup, seed, ctrl, parallel, progress_bar)
+        cold = False
+    imm, eps, tht, aux, _ = _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
+                                          progress_bar, th0, int(config["N"]), cold, init)
+    return imm, eps, tht, aux, time.time() - t0
 
 
 def ll_offset(postprocess_fn, unflatten, config, th):
@@ -193,42 +474,91 @@ def ll_offset(postprocess_fn, unflatten, config, th):
     return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
 
 
+_COEF = {
+    "bcss3": ((_B1, _B2, _B2, _B1), (_A1, _A2, _A1)),
+    "bcss2": ((_LAM, 1.0 - 2.0 * _LAM, _LAM), (0.5, 0.5)),
+    "leapfrog": ((0.5, 0.5), (1.0,)),
+}
+
+
 def _leap_flip(vg, integ, th, rho, g_th, eps, imm):
-    """One reversible integrator step + momentum flip (involution)."""
-    if integ == "bcss3":
-        rho1 = rho - _B1 * eps * g_th
-        th1 = th + _A1 * eps * imm * rho1
-        _, g1 = vg(th1)
-        rho2 = rho1 - _B2 * eps * g1
-        th2 = th1 + _A2 * eps * imm * rho2
-        _, g2 = vg(th2)
-        rho3 = rho2 - _B2 * eps * g2
-        th3 = th2 + _A1 * eps * imm * rho3
-        U3, g3 = vg(th3)
-        rho4 = rho3 - _B1 * eps * g3
-        return th3, -rho4, U3, g3
-    if integ == "bcss2":
-        rho1 = rho - _LAM * eps * g_th
-        th1 = th + 0.5 * eps * imm * rho1
-        _, g1 = vg(th1)
-        rho2 = rho1 - (1.0 - 2.0 * _LAM) * eps * g1
-        th2 = th1 + 0.5 * eps * imm * rho2
-        U2, g2 = vg(th2)
-        rho3 = rho2 - _LAM * eps * g2
-        return th2, -rho3, U2, g2
-    rho_h = rho - 0.5 * eps * g_th
-    th2 = th + eps * imm * rho_h
-    U2, g2 = vg(th2)
-    rho2 = rho_h - 0.5 * eps * g2
-    return th2, -rho2, U2, g2
+    """One reversible integrator step + momentum flip (involution). The sub-steps run in a
+    fori_loop so the gradient is compiled once per program, not once per sub-step."""
+    B, A = (jnp.asarray(c, dtype=th.dtype) for c in _COEF[integ])
+    n = len(_COEF[integ][1])
+
+    def sub(i, c):
+        th, rho, U, g = c
+        rho = rho - B[i] * eps * g
+        th = th + A[i] * eps * imm * rho
+        U, g = vg(th)
+        return th, rho, U, g
+    th, rho, U, g = jax.lax.fori_loop(0, n, sub, (th, rho, jnp.zeros((), th.dtype), g_th))
+    return th, -(rho - B[n] * eps * g), U, g
+
+
+def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
+    """One adaptation window of run-time length n (pmap over chains): a fori_loop of
+    single-proposal steps with per-chain Robbins-Monro on log(eps) and Welford moments."""
+    acc_t, gamma, integ = ctrl["acc_target"], ctrl["gamma"], ctrl["integrator"]
+    _map = (lambda f, **kw: jax.pmap(f, axis_name="chain", **kw)) if parallel else jax.vmap
+
+    def window(key, th0, rho0, U0, g0, le0, ax, imm, lr, n):
+        vg = (lambda v: vg_in(v, ax)) if with_aux else vg_in
+        msq = jnp.sqrt(1.0 / imm)
+
+        def body(i, c):
+            th, rho, U, g, le, mean, m2, cnt, asum = c
+            k1, k2 = jax.random.split(jax.random.fold_in(key, i))
+            xi = msq * jax.random.normal(k1, (D,))
+            rho = jnp.sqrt(1.0 - gamma) * rho + jnp.sqrt(gamma) * xi
+            th1, rho1, U1, g1 = _leap_flip(vg, integ, th, rho, g, jnp.exp(le), imm)
+            H0 = U + 0.5 * jnp.sum(imm * rho * rho)
+            H1 = U1 + 0.5 * jnp.sum(imm * rho1 * rho1)
+            a = jnp.minimum(1.0, jnp.exp(H0 - H1))
+            a = jnp.where(jnp.isfinite(a), a, 0.0)
+            acc = jax.random.uniform(k2) < a
+            th, U, g = jax.tree.map(
+                lambda x, y: jnp.where(acc, x, y), (th1, U1, g1), (th, U, g))
+            rho = jnp.where(acc, -rho1, -rho)
+            le = le + lr * (a - acc_t)
+            cnt = cnt + 1.0
+            d = th - mean
+            mean = mean + d / cnt
+            m2 = m2 + d * (th - mean)
+            return (th, rho, U, g, le, mean, m2, cnt, asum + a)
+
+        thf, rhof, Uf, gf, lef, mean, m2, cnt, asum = jax.lax.fori_loop(
+            0, n, body, (th0, rho0, U0, g0, le0, jnp.zeros(D), jnp.zeros(D), 0.0, 0.0))
+        return thf, rhof, Uf, gf, lef, mean, m2, asum / cnt
+
+    return _map(window, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None, None))
+
+
+def _lower_window(vg_in, with_aux, D, chains, ctrl, parallel, aux_width):
+    """The dynamic window lowered on representative arguments; its compiled executable takes
+    any input placement, so it serves every later call of any length."""
+    z = jnp.zeros((chains, D))
+    args = (jax.random.split(_tagged(0, 4), chains), z, z, jnp.zeros(chains), z, jnp.zeros(chains),
+            jnp.zeros((chains, aux_width)), jnp.ones(D), 0.1, jnp.asarray(1))
+    return _dynamic_window(vg_in, with_aux, D, ctrl, parallel).lower(*args)
 
 
 def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
-                th0=None):
+                th0=None, aux=None, return_mean=False, cache=None, imm0=None, eps0=None,
+                spread=False, pooled=False, init=None):
     """DR-native adaptation: per-chain RM on log(eps) -> acc_target, progressive
     diagonal mass from accumulated within-chain Welford variance. `warmup`
     iterations are split exactly across the adaptation windows. Returns
-    (imm, eps, final positions, wall). th0 [chains, D] sets the starting points."""
+    (imm, eps, final positions, wall). th0 [chains, D] sets the starting points.
+    With `cache` (a dict kept by the caller for one `vg`) the window takes its length at
+    run time, so repeated calls of any length compile once. `imm0` and `eps0` start from an
+    earlier call's masses and step size instead of unit masses. With `spread` the return
+    ends with (between, within): per coordinate, the variance of the chains' means and the
+    average variance within a chain over the draws the masses were estimated from. With
+    `pooled` every mass is the variance over all chains' draws together. `init(th, aux)`
+    -> (U, g), when given, supplies the starting values from an already compiled program
+    instead of compiling `vg` over the chains for that alone."""
     acc_t = ctrl["acc_target"]
     gamma = ctrl["gamma"]
     integ = ctrl["integrator"]
@@ -238,10 +568,12 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     if warmup < H:
         raise ValueError(f"DR-G-HMC needs warmup >= adapt_windows ({H}); got {warmup}")
     lengths = [warmup // H + (1 if w < warmup % H else 0) for w in range(H)]
-    _map = jax.pmap if parallel else jax.vmap
+    _map = (lambda f, **kw: jax.pmap(f, axis_name="chain", **kw)) if parallel else jax.vmap
+    vg_in = vg
 
     def make_window(nw):
-        def window(key, th0, rho0, U0, g0, le0, imm, lr):
+        def window(key, th0, rho0, U0, g0, le0, ax, imm, lr):
+            vg = vg_in if aux is None else (lambda v: vg_in(v, ax))
             msq = jnp.sqrt(1.0 / imm)
 
             def step(c, k):
@@ -271,26 +603,48 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
                 jax.random.split(key, nw))
             return thf, rhof, Uf, gf, lef, mean, m2, jnp.mean(accs)
 
-        return _map(window, in_axes=(0, 0, 0, 0, 0, 0, None, None))
+        return _map(window, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None))
 
-    pws = {n: make_window(n) for n in sorted(set(lengths))}
+    if cache is None:
+        pws = {n: make_window(n) for n in sorted(set(lengths))}
+        vg0 = _map(vg_in)
+    else:
+        if "window" not in cache:
+            cache["window"] = _dynamic_window(vg_in, aux is not None, D, ctrl, parallel)
+        if "vg0" not in cache:
+            cache["vg0"] = _map(vg_in)
+        pws = {n: (lambda *a, n=n: cache["window"](*a, jnp.asarray(n))) for n in set(lengths)}
+        vg0 = cache["vg0"]
     t0 = time.time()
-    th = jnp.zeros((chains, D)) if th0 is None else jnp.asarray(th0)
-    U, g = _map(vg)(th)
+    # fresh inputs go through an identity map first: pmap compiles its program once for
+    # host-placed arguments and again for its own outputs, so every window call must see
+    # the same placement
+    ident = _map(lambda x: x)
+    th = ident(jnp.zeros((chains, D)) if th0 is None else jnp.asarray(th0))
+    AX = jnp.zeros((chains, 1)) if aux is None else jnp.asarray(aux)
+    if init is not None:
+        U, g = init(th, AX)
+    else:
+        U, g = vg0(th) if aux is None else vg0(th, AX)
     rho = _map(lambda k: jax.random.normal(k, (D,)))(
         jax.random.split(_tagged(seed, 4), chains))
-    imm = jnp.ones(D)
-    le = jnp.full((chains,), float(np.log(0.02)))
+    imm = jnp.ones(D) if imm0 is None else jnp.asarray(imm0)
+    le = ident(jnp.asarray(np.full(chains, np.log(0.02 if eps0 is None else eps0))))
     acc_mean = np.zeros((chains, D)); acc_m2 = np.zeros((chains, D))
     acc_n = np.zeros(chains)
     burn = max(1, int(round(ctrl["mass_burn_frac"] * H)))
     mass_end = max(burn + 1, int(round(ctrl["mass_end_frac"] * H)))
+    late_sum, late_n = 0.0, 0
+    spread_out = None
     bar = _pbar(warmup, "DR-G-HMC adapt") if progress_bar else None
     for w, lr0 in enumerate(sched):
         nw = lengths[w]
         lr = (0.10 * 0.65 ** (w - mass_end)) if w >= mass_end else lr0
         keys = jax.random.split(jax.random.fold_in(_tagged(seed, 3), w), chains)
-        th, rho, U, g, le, mn, m2, am = pws[nw](keys, th, rho, U, g, le, imm, lr)
+        th, rho, U, g, le, mn, m2, am = pws[nw](keys, th, rho, U, g, le, AX, imm, lr)
+        if return_mean and w >= H // 2:
+            late_sum = late_sum + np.asarray(mn) * nw
+            late_n += nw
         th = jax.block_until_ready(th)
         if bar is not None:
             bar.update(nw)
@@ -303,6 +657,10 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
             acc_m2 = acc_m2 + m2s + delta ** 2 * (acc_n[:, None] * nwf / tot)
             acc_n = acc_n + nwf
             within = acc_m2.sum(0) / acc_n.sum()
+            grand = (acc_mean * acc_n[:, None]).sum(0) / acc_n.sum()
+            spread_out = ((acc_n[:, None] * (acc_mean - grand) ** 2).sum(0) / acc_n.sum(), within)
+            if pooled:
+                within = within + spread_out[0]
             ne = float(acc_n.sum())
             imm = jnp.asarray((ne / (ne + 5.0)) * within + 1e-3 * (5.0 / (ne + 5.0)))
         if w < H - 1 and float(np.asarray(am).mean()) > 0.97:
@@ -310,10 +668,14 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     if bar is not None:
         bar.close()
     eps = float(np.exp(np.median(np.asarray(le))))
+    if spread:
+        return np.asarray(imm), eps, np.asarray(th), time.time() - t0, spread_out
+    if return_mean:
+        return np.asarray(imm), eps, np.asarray(th), time.time() - t0, late_sum / late_n
     return np.asarray(imm), eps, np.asarray(th), time.time() - t0
 
 
-def _sampler_fns(vg_off, D, ctrl, parallel, move=None):
+def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
     """State-independent sampler functions (setup_p, chunk_p). (imm, eps) are
     runtime arguments, so chunk_p can be lowered/compiled before adaptation ends.
     The key for global step t of a chain is fold_in(chain_key, t), so a run split
@@ -325,98 +687,87 @@ def _sampler_fns(vg_off, D, ctrl, parallel, move=None):
     RSC = jnp.asarray([(1.0 / rfac) ** k for k in range(3)])
     SQ1MG, SQG = jnp.sqrt(1.0 - gamma), jnp.sqrt(gamma)
 
-    def scanner(c, ts, ckey, IMM, MSQ, E0, OFF):
-        vg = lambda v: vg_off(v, OFF)
+    last = {1: 0, 2: 2, 3: 6}[kmax]
+
+    def scanner(c, ts, ckey, IMM, MSQ, E0, OFF, AUX):
+        vg = (lambda v: vg_off(v, OFF)) if tm is None else (lambda v: vg_off(v, OFF, AUX))
         eps_k = E0 * RSC
         tiny = jnp.finfo(c[0].dtype).tiny
+        EIDX = jnp.asarray(_DR_EPS)
 
         def kinetic(rho):
             return 0.5 * jnp.sum(IMM * rho * rho)
 
-        def alpha1(th, rho, U_th, g_th):
-            th1, rho1, U1, g1 = _leap_flip(vg, integ, th, rho, g_th, eps_k[0], IMM)
-            H1 = U1 + kinetic(rho1)
-            a1 = jnp.minimum(1.0, jnp.exp((U_th + kinetic(rho)) - H1))
-            a1 = jnp.where(jnp.isfinite(a1), a1, 0.0)
-            return a1, (th1, rho1, U1, g1)
+        def ap(x):
+            return jnp.where(jnp.isfinite(x), jnp.minimum(1.0, x), 0.0)
+
+        def sel(p, a, b):
+            return jax.tree.map(lambda x, y: jnp.where(p, x, y), a, b)
 
         def dr_step(carry, t):
+            # Delayed rejection as a while_loop over at most 7 integrator steps (one compiled
+            # copy of the gradient): 0 proposal 1; 1 proposal 2; 2 its ghost; 3 proposal 3;
+            # 4 its ghost; 5 proposal 2 from 3; 6 that one's ghost. S2 holds proposal 2 and
+            # later the ghost-chain proposal, S3 proposal 3, R the accepted state.
             th, rho, U_th, g_th = carry
             k1, k2 = jax.random.split(jax.random.fold_in(ckey, t))
             xi = MSQ * jax.random.normal(k1, (D,))
             rho = SQ1MG * rho + SQG * xi
             H0 = U_th + kinetic(rho)
             u = jax.random.uniform(k2, (3,))
-            a1, (th1, rho1, U1, g1) = alpha1(th, rho, U_th, g_th)
-            acc1 = u[0] < a1
+            X0 = (th, rho, U_th, g_th)
+            z = jnp.zeros((), th.dtype)
 
-            def stage2(_):
-                th2, rho2, U2, g2 = _leap_flip(vg, integ, th, rho, g_th, eps_k[1], IMM)
-                a1g, _ = alpha1(th2, rho2, U2, g2)
-                H2 = U2 + kinetic(rho2)
-                raw = jnp.exp(H0 - H2) * (1.0 - a1g) / jnp.maximum(1.0 - a1, tiny)
-                return th2, rho2, U2, g2, jnp.where(jnp.isfinite(raw), jnp.minimum(1.0, raw), 0.0)
-
-            def stage3(th2, rho2, U2, g2, a2):
-                th3, rho3, U3, g3 = _leap_flip(vg, integ, th, rho, g_th, eps_k[2], IMM)
-                a1g3, _ = alpha1(th3, rho3, U3, g3)
-                th2g, rho2g, U2g, g2g = _leap_flip(vg, integ, th3, rho3, g3, eps_k[1], IMM)
-                a1gg, _ = alpha1(th2g, rho2g, U2g, g2g)
-                H3 = U3 + kinetic(rho3)
-                H2g = U2g + kinetic(rho2g)
-                raw2g = jnp.exp(H3 - H2g) * (1.0 - a1gg) / jnp.maximum(1.0 - a1g3, tiny)
-                a2g = jnp.where(jnp.isfinite(raw2g), jnp.minimum(1.0, raw2g), 0.0)
-                raw3 = (jnp.exp(H0 - H3)
-                        * (1.0 - a1g3) / jnp.maximum(1.0 - a1, tiny)
+            def body(s):
+                k, done, S2, S3, R, stage, H2, H3, a1, a2, a1g3 = s
+                src = sel((k == 2) | (k == 6), S2, sel((k == 4) | (k == 5), S3, X0))
+                L = _leap_flip(vg, integ, src[0], src[1], src[3], eps_k[EIDX[k]], IMM)
+                HL = L[2] + kinetic(L[1])
+                a1n = ap(jnp.exp(H0 - HL))
+                a1gn = ap(jnp.exp(H2 - HL))
+                a2n = ap(jnp.exp(H0 - H2) * (1.0 - a1gn) / jnp.maximum(1.0 - a1, tiny))
+                a1g3n = ap(jnp.exp(H3 - HL))
+                a2g = ap(jnp.exp(H3 - H2) * (1.0 - a1gn) / jnp.maximum(1.0 - a1g3, tiny))
+                a3 = ap(jnp.exp(H0 - H3) * (1.0 - a1g3) / jnp.maximum(1.0 - a1, tiny)
                         * (1.0 - a2g) / jnp.maximum(1.0 - a2, tiny))
-                return th3, rho3, U3, g3, jnp.where(jnp.isfinite(raw3), jnp.minimum(1.0, raw3), 0.0)
+                a1 = jnp.where(k == 0, a1n, a1)
+                a2 = jnp.where(k == 2, a2n, a2)
+                a1g3 = jnp.where(k == 4, a1g3n, a1g3)
+                hit1 = (k == 0) & (u[0] < a1n)
+                hit2 = (k == 2) & (u[1] < a2n)
+                hit3 = (k == 6) & (u[2] < a3)
+                R = sel(hit1, L, sel(hit2, S2, sel(hit3, S3, R)))
+                stage = jnp.where(hit1, 1.0, jnp.where(hit2, 2.0, jnp.where(hit3, 3.0, stage)))
+                S2 = sel((k == 1) | (k == 5), L, S2)
+                S3 = sel(k == 3, L, S3)
+                H2 = jnp.where((k == 1) | (k == 5), HL, H2)
+                H3 = jnp.where(k == 3, HL, H3)
+                return (k + 1, hit1 | hit2 | hit3 | (k == last), S2, S3, R, stage, H2, H3, a1, a2, a1g3)
 
-            def reject_all(_):
-                return (th, -rho, U_th, g_th, -1.0)
-
-            def rejected1(_):
-                th2, rho2, U2, g2, a2 = stage2(None)
-                acc2 = u[1] < a2
-
-                def rejected2(_):
-                    if kmax >= 3:
-                        th3, rho3, U3, g3, a3 = stage3(th2, rho2, U2, g2, a2)
-                        acc3 = u[2] < a3
-                        return jax.tree.map(
-                            lambda a, b: jnp.where(acc3, a, b),
-                            (th3, rho3, U3, g3, 3.0), (th, -rho, U_th, g_th, -1.0))
-                    return reject_all(None)
-
-                def accepted2(_):
-                    return (th2, rho2, U2, g2, 2.0)
-
-                return jax.lax.cond(acc2, accepted2, rejected2, None)
-
-            def accepted1(_):
-                return (th1, rho1, U1, g1, 1.0)
-
-            on_reject = reject_all if kmax == 1 else rejected1
-            th_n, rho_n, U_n, g_n, stage = jax.lax.cond(acc1, accepted1, on_reject, None)
+            s = jax.lax.while_loop(lambda s: ~s[1], body, (
+                0, False, X0, X0, (th, -rho, U_th, g_th), -1.0 + z, z, z, z, z, z))
+            th_n, rho_n, U_n, g_n = s[4]
+            stage = s[5]
             rho_n = jnp.where(stage > 0, -rho_n, rho_n)
-            if move is not None:
-                th_n, U_n, g_n = move(jax.random.fold_in(jax.random.fold_in(ckey, t), 7), th_n, U_n, g_n)
-            return (th_n, rho_n, U_n, g_n), (th_n, stage, H0)
+            out = th_n if tm is None else tm.forward(th_n, AUX)[0]
+            return (th_n, rho_n, U_n, g_n), (out, stage, H0)
 
         return jax.lax.scan(dr_step, c, ts)
 
-    def setup(th0, rho0, OFF):
-        U0, g0 = vg_off(th0, OFF)
+    def setup(th0, rho0, OFF, AUX):
+        U0, g0 = vg_off(th0, OFF) if tm is None else vg_off(th0, OFF, AUX)
         return (th0, rho0, U0, g0)
 
-    return (_chain_map(setup, (0, 0, None), parallel),
-            _chain_map(scanner, (0, None, 0, None, None, None, None), parallel))
+    ax = None if tm is None else 0
+    return (_chain_map(setup, (0, 0, None, ax), parallel),
+            _chain_map(scanner, (0, None, 0, None, None, None, None, ax), parallel))
 
 
 def _chain_map(f, in_axes, parallel):
     """pmap across devices, or one chain at a time under jit: lax.map keeps each chain's
     delayed-rejection lax.cond a real branch, where vmap would run every stage for all."""
     if parallel:
-        return jax.pmap(f, in_axes=in_axes)
+        return jax.pmap(f, axis_name="chain", in_axes=in_axes)
     mapped = [i for i, ax in enumerate(in_axes) if ax == 0]
 
     def run(*args):
@@ -429,42 +780,49 @@ def _chain_map(f, in_axes, parallel):
     return jax.jit(run)
 
 
-def _mean_move(model, config, ctrl, keys, off, unflatten, progress_bar=False):
-    """meanmove.build when ctrl['mean_moves'], else None."""
-    if not ctrl.get("mean_moves", True):
-        return None
-    import meanmove
-    mv = meanmove.build(model, config, keys, off, unflatten)
-    if mv is not None and progress_bar:
-        print(f"[DR-G-HMC] exact population-mean moves on {', '.join(mv.specs)}", flush=True)
-    return mv
+def aux_zeros(tm, chains):
+    """A placeholder with the shape of the sampler's AUX input: one row per chain for a
+    transport map's anchors, a single zero otherwise."""
+    return jnp.zeros((chains, tm.aux_size)) if tm is not None else jnp.zeros(1)
 
 
 def _chunk_len(samples):
     return max(1, samples // 100)
 
 
+def _setup_init(ready, res, zeros, off0):
+    """(th, aux) -> (U, g) from the sampler's compiled setup program, waiting for its compile."""
+    def init(th, aux):
+        ready.wait()
+        if "err" in res:
+            raise res["err"]
+        return res["setup"](th, zeros, off0, aux)[2:4]
+    return init
+
+
 def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
                   imm, eps, state, parallel, progress_bar=False,
-                  donor_loader=None, prebuilt=None, n_obs=None, offset_fn=None, move=None):
+                  donor_loader=None, prebuilt=None, n_obs=None, offset_fn=None, tm=None):
     """DR-G-HMC sampling from a fixed (imm, eps). `state` holds the chains'
-    positions `th` [chains, D], optional momenta `rho`, and the global step
-    offset `t0` (0 for a fresh run). Returns (thinned draws [chains, kept, D],
-    stages, energy, end state)."""
+    positions `th` [chains, D] in sampler coordinates, optional momenta `rho`, the
+    global step offset `t0` (0 for a fresh run) and, with a transport map, its anchors
+    `aux`. Returns (thinned draws [chains, kept, D] in the model's coordinates, stages,
+    energy, end state)."""
     step = _chunk_len(samples)
     if prebuilt is not None:
         setup_p, chunk_c, chunk_raw = prebuilt
     else:
-        setup_p, chunk_raw = _sampler_fns(vg_off, D, ctrl, parallel, move)
+        setup_p, chunk_raw = _sampler_fns(vg_off, D, ctrl, parallel, tm)
         chunk_c = chunk_raw
     chain_keys = jax.random.split(_tagged(seed, 1), chains)
     zero_off = jnp.zeros(n_obs)
 
     if donor_loader is not None:
         dummy = jnp.zeros((chains, D))
-        c0 = jax.tree.map(np.asarray, setup_p(dummy, dummy, zero_off))
+        aux0 = aux_zeros(tm, chains)
+        c0 = jax.tree.map(np.asarray, setup_p(dummy, dummy, zero_off, aux0))
         cw = chunk_c(c0, jnp.arange(step), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3),
-                     zero_off)
+                     zero_off, aux0)
         jax.block_until_ready(cw)
         del c0, cw, dummy
         imm, eps, state = donor_loader()
@@ -478,23 +836,27 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     if rho0 is None:
         rho0 = MSQ * jax.random.normal(_tagged(seed, 2), (chains, D))
     t0 = int(state.get("t0", 0))
-    carry = jax.tree.map(np.asarray, setup_p(th0, jnp.asarray(rho0), OFF))
+    if state.get("aux") is None:
+        state["aux"] = np.zeros(1)
+    AUX = jnp.asarray(state["aux"])
+    carry = jax.tree.map(np.asarray, setup_p(th0, jnp.asarray(rho0), OFF, AUX))
 
     bar = _pbar(samples, "DR-G-HMC sample") if progress_bar else None
     tp, sp, ep = [], [], []
     for i in range(t0, t0 + samples, step):
         ts = jnp.arange(i, min(i + step, t0 + samples))
         fn = chunk_c if ts.shape[0] == step else chunk_raw
-        carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0, OFF)
+        carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0, OFF, AUX)
         carry = jax.tree.map(np.asarray, carry)
-        tp.append(np.asarray(t)); sp.append(np.asarray(s)); ep.append(np.asarray(e))
+        keep = (np.asarray(ts) - t0) % thinning == 0
+        tp.append(np.asarray(t)[:, keep]); sp.append(np.asarray(s)[:, keep]); ep.append(np.asarray(e)[:, keep])
         if bar is not None:
             bar.update(int(ts.shape[0]))
     if bar is not None:
         bar.close()
-    sl = slice(None, None, thinning)
+    sl = slice(None)
     end = dict(th=np.asarray(carry[0]), rho=np.asarray(carry[1]), t0=t0 + samples,
-               offset=None if offset_fn is None else np.asarray(OFF))
+               offset=None if offset_fn is None else np.asarray(OFF), aux=np.asarray(AUX))
     return (np.concatenate(tp, 1)[:, sl], np.concatenate(sp, 1)[:, sl],
             np.concatenate(ep, 1)[:, sl], end)
 
@@ -522,7 +884,7 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
     chunk = int(max(1, min(chunk, _CONSTRAIN_BYTES // max(1, per_draw * chains))))
     named1 = jax.vmap(one)
     par = chains > 1 and jax.local_device_count() >= chains
-    namedC = jax.pmap(named1) if par else None
+    namedC = jax.pmap(named1, axis_name="chain") if par else None
     n_chunks = (kept + chunk - 1) // chunk
     bar = _pbar(n_chunks if par else chains * n_chunks,
                 "DR-G-HMC constrain") if progress_bar else None
@@ -597,7 +959,8 @@ def _f32_send_donor_and_collect(proc, tmp, donor, out, imm, eps, state):
         if rc != 0:
             raise RuntimeError(f"f32 sampling subprocess failed (exit {rc})")
         d = np.load(out)
-        end = dict(th=d["end_th"], rho=d["end_rho"], t0=int(d["end_t0"]), offset=d["offset"])
+        end = dict(th=d["end_th"], rho=d["end_rho"], t0=int(d["end_t0"]), offset=d["offset"],
+                   aux=state.get("aux"))
         return d["ths"], d["stages"], d["energy"], end
     finally:
         if proc.poll() is None:
@@ -657,41 +1020,50 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
         print("[DR-G-HMC] building model + compiling adaptation...", flush=True)
     try:
         vg, unflatten, keys, off, D, postprocess_fn = _build(model, config)
+        tm = _transport(model, config, ctrl, off, unflatten, progress_bar)
+        vg_s = _sampler_vg(model, config, unflatten, tm)
 
-        smp_thread = None
+        smp_thread, init = None, None
         if ctrl["precision"] != "f32":
             import threading
-            setup_p, chunk_raw = _sampler_fns(_build_offset(model, config, unflatten), D, ctrl, parallel,
-                                              _mean_move(model, config, ctrl, keys, off, unflatten, progress_bar))
+            setup_p, chunk_raw = _sampler_fns(vg_s, D, ctrl, parallel, tm)
             step = _chunk_len(samples)
             _ck = jax.random.split(_tagged(seed, 1), chains)
             _th0 = jnp.zeros((chains, D))
             _c0 = (_th0, _th0, jnp.zeros(chains), _th0)
             _off0 = jnp.zeros(int(config["N"]))
-            low_setup = setup_p.lower(_th0, _th0, _off0)
+            _aux0 = aux_zeros(tm, chains)
+            low_setup = setup_p.lower(_th0, _th0, _off0, _aux0)
             low_chunk = chunk_raw.lower(_c0, jnp.arange(step), _ck, jnp.ones(D), jnp.ones(D),
-                                        jnp.asarray(1e-3), _off0)
+                                        jnp.asarray(1e-3), _off0, _aux0)
             _res = {}
+            setup_ready = threading.Event()
 
             def _worker():
                 try:
                     _res["setup"] = low_setup.compile()
+                    setup_ready.set()
                     _res["chunk"] = low_chunk.compile()
+                    msg = memory_check(_res["chunk"], chains, parallel)
+                    if msg is not None:
+                        print(f"[DR-G-HMC] warning: {msg}", flush=True)
                 except BaseException as e:
                     _res["err"] = e
+                    setup_ready.set()
 
             if progress_bar:
                 print("[DR-G-HMC] compiling sampler (overlapped with "
                       "adaptation)...", flush=True)
             smp_thread = threading.Thread(target=_worker, daemon=True)
             smp_thread.start()
+            init = _setup_init(setup_ready, _res, _th0, _off0)
 
         th_init = _initial_positions(model, config, keys, off, D, chains, seed,
                                      init_strategy, init_radius, init_z)
-        imm, eps, th_adapted, wall_warm = _self_adapt(
-            vg, D, chains, warmup, seed, ctrl, parallel, progress_bar,
-            th0=th_init)
-        state = dict(th=th_adapted, rho=None, t0=0)
+        imm, eps, th_adapted, aux_adapted, wall_warm = _adapt(
+            model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
+            progress_bar, th_init, user_init=init_z is not None, init=init)
+        state = dict(th=th_adapted, rho=None, t0=0, aux=aux_adapted)
     except Exception:
         if f32_proc is not None:
             f32_proc.kill()
@@ -707,10 +1079,11 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             smp_thread.join()
         if "err" in _res:
             raise _res["err"]
+
         ths, stages, energy, end = _sample_phase(
             None, D, chains, samples, thinning, seed, ctrl, imm, eps, state,
             parallel, progress_bar,
-            prebuilt=(_res["setup"], _res["chunk"], chunk_raw), n_obs=int(config["N"]))
+            prebuilt=(_res["setup"], _res["chunk"], chunk_raw), n_obs=int(config["N"]), tm=tm)
 
     pp_fn = postprocess_fn
     if not save_loglik:
@@ -738,7 +1111,8 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
     state_out = None
     if save_state:
         state_out = dict(imm=np.asarray(imm), eps=float(eps), th=end["th"], rho=end["rho"],
-                         t0=int(end["t0"]), seed=int(seed), offset=end.get("offset"))
+                         t0=int(end["t0"]), seed=int(seed), offset=end.get("offset"),
+                         aux=end.get("aux"), transport=tm is not None)
     return {"samples": samples_np, "extra_fields": extra_fields,
             "elapsed": float(elapsed), "state": state_out}
 
@@ -753,8 +1127,12 @@ def _main_sample_f32(argfile):
         config = json.load(fh)
     _convert_matrices(config)
     vg, unflatten, keys, off, D, postprocess_fn = _build(backend.sdt_model, config)
-    vg_off = _build_offset(backend.sdt_model, config, unflatten)
-    mv = _mean_move(backend.sdt_model, config, p["ctrl"], keys, off, unflatten)
+    tm = _transport(backend.sdt_model, config, p["ctrl"], off, unflatten)
+    vg_off = _sampler_vg(backend.sdt_model, config, unflatten, tm)
+
+    def first_position(st):
+        th = np.asarray(st["th"])[:1]
+        return (th if tm is None else tm.forward_chains(th, np.asarray(st["aux"])[:1]))[0]
 
     def load_donor(timeout=3600.0):
         t0 = time.time()
@@ -769,9 +1147,9 @@ def _main_sample_f32(argfile):
     ths, stages, energy, end = _sample_phase(
         vg_off, D, p["chains"], p["samples"], p["thinning"], p["seed"], p["ctrl"],
         None, None, None, p["parallel"], p.get("progress_bar", False),
-        donor_loader=load_donor, n_obs=int(config["N"]), move=mv,
+        donor_loader=load_donor, n_obs=int(config["N"]), tm=tm,
         offset_fn=lambda st: (jnp.asarray(st["offset"]) if st.get("offset") is not None else
-                              ll_offset(postprocess_fn, unflatten, config, np.asarray(st["th"])[0])))
+                              ll_offset(postprocess_fn, unflatten, config, first_position(st))))
     np.savez(p["out"], ths=ths, stages=stages, energy=energy,
              end_th=end["th"], end_rho=end["rho"], end_t0=end["t0"], offset=end["offset"])
 

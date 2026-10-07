@@ -450,13 +450,27 @@ build_numpyro_config <- function(model) {
   }
 
   config$varying_source_criteria <- isTRUE(family$varying_source_criteria)
-  if (!is.null(family$varying_re)) config$varying_re <- family$varying_re
   if (isTRUE(md$needs_ordered_dprime)) config$needs_ordered_dprime <- TRUE
   if (!is.null(md$bounded)) config$bounded <- md$bounded
-  if (!is.null(md$new_source_criteria)) config$new_source_criteria <- md$new_source_criteria
-  if (!is.null(md$stan_data$is_new_response)) config$is_new_response <- as.integer(md$stan_data$is_new_response)
+  if (!is.null(md$stan_data$vbin)) {
+    config$vbin <- as.list(as.integer(md$stan_data$vbin))
+    config$n_vbin <- as.integer(md$stan_data$n_vbin)
+  }
   if (!is.null(md$gap_link)) config$gap_link <- md$gap_link
-  if (isTRUE(getOption("bayesroc.crit_scalar"))) config$crit_scalar <- TRUE
+  cs <- getOption("bayesroc.crit_scalar")
+  if (isTRUE(cs)) config$crit_scalar <- TRUE
+  if (is.character(cs)) config$crit_scalar_groups <- as.list(cs)
+  wh <- getOption("bayesroc.whiten")
+  if (is.list(wh) && length(config$random_effects)) {
+    for (i in seq_along(config$random_effects)) {
+      re <- config$random_effects[[i]]
+      key <- paste0(re$param, "_", re$group)
+      if (!is.null(wh[[key]])) {
+        W <- as.matrix(wh[[key]])
+        config$random_effects[[i]]$whiten <- lapply(seq_len(nrow(W)), function(r) as.numeric(W[r, ]))
+      }
+    }
+  }
 
   config
 }
@@ -536,15 +550,8 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     )
   )
 
-  fit_args_json <- rapply(fit_args, function(x) {
-    if (is.matrix(x)) {
-      lapply(seq_len(nrow(x)), function(i) as.numeric(x[i, ]))
-    } else {
-      x
-    }
-  }, how = "replace")
-
-  jsonlite::write_json(fit_args_json, config_file, auto_unbox = TRUE,
+  # matrices go through jsonlite's own row-major encoding (a list of rows takes seconds)
+  jsonlite::write_json(fit_args, config_file, auto_unbox = TRUE,
                        digits = 17, null = "null")
 
   chain_note <- if (identical(chain_method, "sequential")) ", sequential" else ""
@@ -783,20 +790,27 @@ read_npy <- function(path) {
   file.rename(paste0(req, ".tmp"), req)
   done <- file.path(out_dir, "DONE")
   errf <- file.path(out_dir, "ERROR")
-  repeat {
-    worker$proc$poll_io(100)
-    out <- worker$proc$read_output()
-    err <- worker$proc$read_error()
-    if (nzchar(out)) cat(out)
-    if (nzchar(err)) cat(err)
-    if (file.exists(done)) break
-    if (file.exists(errf)) {
-      stop("The JAX worker failed:\n", paste(utils::tail(readLines(errf), 12), collapse = "\n"),
-           call. = FALSE)
-    }
-    if (!worker$proc$is_alive()) {
-      stop("The JAX worker process exited before returning a result.", call. = FALSE)
-    }
-  }
+  # an interrupt ends the fit: tell the worker (it leaves at once, mid-computation) and
+  # kill its tree before unwinding, so no later cleanup has to wait on it
+  withCallingHandlers(
+    repeat {
+      worker$proc$poll_io(100)
+      out <- worker$proc$read_output()
+      err <- worker$proc$read_error()
+      if (nzchar(out)) cat(out)
+      if (nzchar(err)) cat(err)
+      if (file.exists(done)) break
+      if (file.exists(errf)) {
+        stop("The JAX worker failed:\n", paste(utils::tail(readLines(errf), 12), collapse = "\n"),
+             call. = FALSE)
+      }
+      if (!worker$proc$is_alive()) {
+        stop("The JAX worker process exited before returning a result.", call. = FALSE)
+      }
+    },
+    interrupt = function(e) {
+      try(file.create(file.path(worker$ctrl, "stop")), silent = TRUE)
+      try(worker$proc$kill_tree(), silent = TRUE)
+    })
   invisible(out_dir)
 }

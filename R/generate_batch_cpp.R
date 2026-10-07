@@ -1302,9 +1302,11 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     if (varying_sc) {
       gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
-      L$add("  // Pre-compute varying source thresholds: thresh2_all[k1][k2]")
-      L$add("  Eigen::MatrixXd thresh2_all(K1, n_thresh2);")
-      L$add("  for (int k1 = 0; k1 < K1; ++k1) {")
+      vb <- .vbin_cpp(model_data)
+      L$add("  // Pre-compute varying source thresholds, one row per set: thresh2_all[set][k2]")
+      L$add(paste0("  ", vb$decl))
+      L$add(sprintf("  Eigen::MatrixXd thresh2_all(%d, n_thresh2);", vb$n))
+      L$add(sprintf("  for (int k1 = 0; k1 < %d; ++k1) {", vb$n))
       L$add("    thresh2_all(k1, mid2) = vary_mid2_d(k1);")
       L$add("    for (int k = mid2 + 1; k < n_thresh2; ++k) {")
       L$add("      int g = k - mid2 - 1;")
@@ -1331,16 +1333,16 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
         L$add(sprintf("    thresh2_new_vec(k) = thresh2_new_vec(k + 1) - %s;", gap_fn_new))
         L$add("  }")
       }
-      L$add("  Eigen::MatrixXd vary_exp_gaps2(K1, n_gaps2);")
+      L$add(sprintf("  Eigen::MatrixXd vary_exp_gaps2(%d, n_gaps2);", vb$n))
       gap_fn2_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
-      L$add("  for (int k1 = 0; k1 < K1; ++k1)")
+      L$add(sprintf("  for (int k1 = 0; k1 < %d; ++k1)", vb$n))
       L$add(sprintf("    for (int g = 0; g < n_gaps2; ++g) vary_exp_gaps2(k1, g) = %s;", gap_fn2_raw))
-      .dgap_decl(L, params, "vary_exp_gaps2", "Eigen::MatrixXd", "K1, n_gaps2")
+      .dgap_decl(L, params, "vary_exp_gaps2", "Eigen::MatrixXd", sprintf("%d, n_gaps2", vb$n))
       if (.varying_per_obs(model_data, params)) {
         L$add("  Eigen::VectorXd exp_eff_gaps2(n_gaps2);")
         .dgap_decl(L, params, "exp_eff_gaps2", "Eigen::VectorXd", "n_gaps2")
       }
-      .dgap_set(L, params, "  for (int k1 = 0; k1 < K1; ++k1) for (int g = 0; g < n_gaps2; ++g) ",
+      .dgap_set(L, params, sprintf("  for (int k1 = 0; k1 < %d; ++k1) for (int g = 0; g < n_gaps2; ++g) ", vb$n),
                 "vary_exp_gaps2(k1, g)", "vary_gaps2_d(k1, g)")
       if (identical(params$.new_source_criteria, "shared")) {
         gap_fn_new_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(new_gaps2_d(g)))" else "std::exp(new_gaps2_d(g))"
@@ -1405,11 +1407,11 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
         L$add("    if (is_new_response[yn - 1] == 1) {")
         L$add("      thresh2_n = thresh2_new_vec;")
         L$add("    } else {")
-        L$add("      thresh2_n = thresh2_all.row(yn - 1).transpose();")
+        L$add("      thresh2_n = thresh2_all.row(vbin0_[yn - 1]).transpose();")
         L$add("    }")
       } else {
         L$add("    // Varying source thresholds: index by detection response yn")
-        L$add("    thresh2_n = thresh2_all.row(yn - 1).transpose();")
+        L$add("    thresh2_n = thresh2_all.row(vbin0_[yn - 1]).transpose();")
       }
     } else {
       emit_thresh2_computation(L, model_data, params, has_crit2_re)
@@ -2279,8 +2281,9 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
     varying_sc <- isTRUE(params$.varying_source_criteria)
     if (varying_sc) {
-      L$add("  Eigen::VectorXd grad_vary_mid2 = Eigen::VectorXd::Zero(K1);")
-      L$add("  Eigen::MatrixXd grad_vary_gaps2 = Eigen::MatrixXd::Zero(K1, n_gaps2);")
+      vb <- .vbin_cpp(model_data)
+      L$add(sprintf("  Eigen::VectorXd grad_vary_mid2 = Eigen::VectorXd::Zero(%d);", vb$n))
+      L$add(sprintf("  Eigen::MatrixXd grad_vary_gaps2 = Eigen::MatrixXd::Zero(%d, n_gaps2);", vb$n))
       if (identical(params$.new_source_criteria, "shared")) {
         L$add("  double grad_new_mid2 = 0.0;")
         L$add("  Eigen::VectorXd grad_new_gaps2 = Eigen::VectorXd::Zero(n_gaps2);")
@@ -3937,7 +3940,8 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     emit_grad_thresh2_varying_obs(L, model_data, params, "vr.k2_lo", "vr.k2_hi", d_lo2, d_hi2)
   } else if (varying_sc) {
     L$add("    {")
-    L$add("      int bin = yn - 1;")
+    L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+    L$add("      int bin = vbin0_[yn - 1];")
     L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
     L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
     L$add("      auto propagate_vary = [&](int k, double d) {")
@@ -5995,7 +5999,8 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       L$add(sprintf("      if (bv.k2_hi >= 0) batch_sdt::propagate_thresh_grad(bv.k2_hi, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_hi2))
       L$add("    } else {")
       L$add("      // Old response: propagate to varying thresholds for this detection bin")
-      L$add("      int bin = yn - 1;")
+      L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+      L$add("      int bin = vbin0_[yn - 1];")
       L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
       L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
       L$add("      auto propagate_vary = [&](int k, double d) {")
@@ -6008,7 +6013,8 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       L$add("    }")
     } else {
       L$add("    {")
-      L$add("      int bin = yn - 1;")
+      L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+      L$add("      int bin = vbin0_[yn - 1];")
       L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
       L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
       L$add("      auto propagate_vary = [&](int k, double d) {")
@@ -6132,6 +6138,13 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
        !is.null(params$.smooth_data[["criterion2"]]))
 }
 
+# The set of varying source criteria a detection response reads, as a 0-based C++ table
+# indexed by yn - 1 (see .varying_bins()), and the number of sets.
+.vbin_cpp <- function(model_data) {
+  vb <- as.integer(model_data$stan_data$vbin %||% seq_len(model_data$stan_data$K1))
+  list(n = max(vb), decl = sprintf("static const int vbin0_[%d] = {%s};", length(vb), paste(vb - 1L, collapse = ", ")))
+}
+
 .varying_re_cols <- function(model_data, re) {
   mode <- model_data$varying_re %||% "shared"
   if (mode == "full") {
@@ -6185,7 +6198,8 @@ emit_thresh2_varying_obs <- function(L, model_data, params) {
     L$add("      }")
   }
   L$add("    {")
-  L$add("      const int bin = yn - 1;")
+  L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+  L$add("      const int bin = vbin0_[yn - 1];")
   if (new_shared) {
     L$add("      if (is_new_response[yn - 1] == 1) {")
     L$add("        thresh2_n = thresh2_new_vec;")
@@ -6207,7 +6221,8 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
   new_shared <- identical(params$.new_source_criteria, "shared")
   res <- params$criterion2$random
   L$add("    {")
-  L$add("      const int bin = yn - 1;")
+  L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+  L$add("      const int bin = vbin0_[yn - 1];")
   if (new_shared) {
     L$add("      if (is_new_response[yn - 1] == 1) {")
     L$add(sprintf("        if (%s >= 0) batch_sdt::propagate_thresh_grad(%s, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", lo, lo, d_lo2))

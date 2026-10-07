@@ -169,8 +169,14 @@
   sm <- if (identical(sampler, "drghmc")) sprintf("rej %.1f%%", 100 * st$rejected)
         else sprintf("div %d", as.integer(st$divergent))
   keep <- if (stride > 1L) sprintf(" (kept %d, every %s)", kept, .ordinal(stride)) else ""
-  sprintf("[auto] %d draws/chain%s | ESS pop %s sd %s cor %s | R-hat %.3f/%g | %s | %s | %.1fs/round | %.0fs",
-          T, keep, fmt("pop"), fmt("sd"), fmt("cor"), dg$rhat, rhat, sm, need_txt, round_s, elapsed)
+  sprintf("[auto] %d draws/chain%s | ESS pop %s sd %s cor %s | R-hat %s/%g | %s | %s | %.1fs/round | %.0fs",
+          T, keep, fmt("pop"), fmt("sd"), fmt("cor"), .fmt_rhat(dg$rhat, rhat), rhat, sm, need_txt, round_s, elapsed)
+}
+
+.fmt_rhat <- function(x, target) {
+  d <- 3L
+  while (d < 6L && is.finite(x) && x > target && round(x, d) <= target) d <- d + 1L
+  formatC(x, format = "f", digits = d)
 }
 
 .ordinal <- function(k) {
@@ -235,8 +241,6 @@
                     auto$check_every))
   }
   cfg <- build_numpyro_config(model)
-  cfg <- rapply(cfg, function(x) if (is.matrix(x)) lapply(seq_len(nrow(x)), function(i) as.numeric(x[i, ])) else x,
-                how = "replace")
   kwargs <- list(
     sampler = sampler, chains = as.integer(chains), warmup = as.integer(iter_warmup),
     seed = as.integer(seed), chain_method = chain_method, progress_bar = isTRUE(progress_bar),
@@ -280,7 +284,8 @@
   repeat {
     force <- !is.null(fixed_draws) || T_prev + auto$check_every >= auto$max_draws ||
       (!is.null(auto$max_time) && proc.time()[["elapsed"]] - t_start >= auto$max_time)
-    sd_out <- request("auto_step", list(force = force))
+    sd_out <- request("auto_step", list(force = force, targets = as.list(auto$targets), rhat = auto$rhat,
+                                        fixed = !is.null(fixed_draws)))
     st <- jsonlite::read_json(file.path(sd_out, "step.json"))
     unlink(sd_out, recursive = TRUE)
     stride <- as.integer(st$stride)
@@ -306,8 +311,10 @@
     if (isTRUE(progress_bar)) {
       need_txt <- if (!is.null(fixed_draws)) sprintf("%d/%d", T - T0, as.integer(fixed_draws))
         else if (met) "targets met"
-        else paste0("waiting on ", paste(c(if (any(!ess_ok)) paste("ESS", paste(names(ess_ok)[!ess_ok], collapse = "/")),
-                                            if (dg$rhat > auto$rhat) "R-hat"), collapse = " + "),
+        else paste0("waiting on ", paste(c(if (any(!ess_ok)) sprintf("ESS %s (%s)", paste(names(ess_ok)[!ess_ok], collapse = "/"),
+                                                                      st$worst %||% "?"),
+                                            if (dg$rhat > auto$rhat) sprintf("R-hat (%s)", st$worst_rhat %||% "?")),
+                                          collapse = " + "),
                     if (any(!ess_ok)) sprintf(" (~%d more draws)", as.integer(ceiling(need - T))) else "")
       message(.auto_status(T, kept, stride, dg, st, sampler, need_txt, st$seconds, elapsed,
                            auto$targets, auto$rhat))

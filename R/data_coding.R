@@ -10,6 +10,19 @@
   if (length(m) == 3L) m[2:3] else character(0)
 }
 
+# factor levels with no rows (left over from subsetting) would otherwise become
+# prior-only coefficients and empty random-effect groups
+.drop_unused_levels <- function(data, brf_obj, encoding_vars) {
+  vars <- unique(c(unlist(lapply(c(list(brf_obj$primary), brf_obj$params), function(f) {
+    if (is.null(f)) character(0) else tryCatch(all.vars(f), error = function(e) character(0))
+  })), encoding_vars))
+  for (v in intersect(vars, names(data))) {
+    x <- data[[v]]
+    if (is.factor(x) && !all(levels(x) %in% as.character(unique(x)))) data[[v]] <- droplevels(x)
+  }
+  data
+}
+
 .drop_incomplete_rows <- function(data, brf_obj, family, encoding_vars, counts) {
   vars <- unique(c(unlist(lapply(c(list(brf_obj$primary), brf_obj$params), function(f) {
     if (is.null(f)) character(0) else tryCatch(all.vars(f), error = function(e) character(0))

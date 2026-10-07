@@ -14,7 +14,8 @@
   family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
 }
 
-.plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE, rows = NULL, draw_idx = NULL) {
+.plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE, rows = NULL, draw_idx = NULL,
+                        thresholds2 = TRUE) {
   data_src <- if (is.null(rows)) build_data_source_from_model(model)
               else rebuild_design_matrices(model, model$data[rows, , drop = FALSE])
   vars <- get_predict_variables(model, include_re = !identical(re_formula, NA))
@@ -29,7 +30,9 @@
   if (thresholds) {
     n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else model$model_data$K
     th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
-    if (.is_bivariate_family(fam$family)) th2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
+    if (thresholds2 && .is_bivariate_family(fam$family)) {
+      th2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
+    }
   }
   list(draws = draws, data_src = data_src, tp = tp, th = th, th2 = th2, S = S, N = N)
 }

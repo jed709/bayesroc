@@ -24,7 +24,8 @@
 #' plot_distributions(fit)
 #' plot_distributions(fit, by = "condition")
 #' }
-plot_distributions <- function(fit, by = NULL, response = 1, re_formula = NULL, ndraws = 100, seed = NULL) {
+plot_distributions <- function(fit, by = NULL, response = 1, re_formula = NULL, ndraws = 100, seed = NULL,
+                               cores = 1) {
   .need_ggplot2()
   restore_seed <- .seed_scope(seed)
   on.exit(restore_seed(), add = TRUE)
@@ -32,6 +33,11 @@ plot_distributions <- function(fit, by = NULL, response = 1, re_formula = NULL, 
   by <- .check_by(model, by)
   fam <- model$family$family
   bivariate <- .is_bivariate_family(fam)
+  if (cores > 1 && bivariate && .bvn_native_ready()) {
+    old_threads <- .bvn_native$threads
+    .bvn_native$threads <- as.integer(cores)
+    on.exit(.bvn_native$threads <- old_threads, add = TRUE)
+  }
   if (!bivariate && !identical(as.numeric(response), 1)) {
     stop("response = 2 is only available for bivariate families.", call. = FALSE)
   }
@@ -39,7 +45,7 @@ plot_distributions <- function(fit, by = NULL, response = 1, re_formula = NULL, 
     list(signal = seq_along(model$stan_data$y), noise = integer(0), what = "ordinal")
   } else .roc_roles(model, response)
   cells <- .cell_of_rows(model, by)
-  setup <- .plot_setup(fit, model, ndraws, re_formula)
+  setup <- .plot_setup(fit, model, ndraws, re_formula, thresholds2 = !identical(as.numeric(response), 1))
   setup$cache <- new.env(parent = emptyenv())
   w <- .row_weights(model)
   th_all <- if (bivariate && response == 2) setup$th2 else setup$th

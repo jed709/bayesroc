@@ -49,11 +49,15 @@ plot_random_effects <- function(fit, type = c("sd", "cor"), group = NULL, pars =
     mode <- re$varying_re_mode %||% "none"
     J <- .n_thresh_of(model, p)
     comp <- function(k) .crit_comp_label(k, J, model$gap_link)
+    bin <- function(i) {
+      lab <- (re$bin_levels %||% seq_len(i))[i]
+      if (identical(as.character(lab), "new")) "new" else paste0("bin ", lab)
+    }
     vapply(seq_len(D), function(d) {
       b <- (d - 1L) %/% R + 1L
       j <- (d - 1L) %% R + 1L
-      bl <- switch(mode, shared = "location", per_bin = paste0("bin ", b, " (location)"),
-                   full = { k <- (b - 1L) %% J + 1L; paste0("bin ", (b - 1L) %/% J + 1L, ", ", comp(k)) },
+      bl <- switch(mode, shared = "location", per_bin = paste0(bin(b), " (location)"),
+                   full = { k <- (b - 1L) %% J + 1L; paste0(bin((b - 1L) %/% J + 1L), ", ", comp(k)) },
                    comp(b))
       paste0(lab, ": ", paste(c(bl, if (!plain) terms[j]), collapse = ", "))
     }, character(1))

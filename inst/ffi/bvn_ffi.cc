@@ -4,9 +4,11 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <type_traits>
 
 #include "xla/ffi/api/ffi.h"
 #include "bayesroc/bvn_simd.h"
+#include "bayesroc/tmap_kernel.h"
 
 namespace ffi = xla::ffi;
 
@@ -84,6 +86,126 @@ void pool_for(ffi::ThreadPool& pool, int64_t n, int64_t grain, F body) {
   st->work();
   while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
 }
+
+// ---- transport map: fused per-group factor / solves and their adjoint ----
+
+template <typename T>
+struct DBuf {
+  std::vector<double> own;
+  const double* ptr;
+  int64_t n;
+  explicit DBuf(const ffi::AnyBuffer& b) : n(b.element_count()) {
+    if constexpr (std::is_same<T, double>::value) {
+      ptr = static_cast<const double*>(b.untyped_data());
+    } else {
+      own.resize(n);
+      const T* src = static_cast<const T*>(b.untyped_data());
+      for (int64_t k = 0; k < n; ++k) own[k] = src[k];
+      ptr = own.data();
+    }
+  }
+};
+
+template <typename T>
+struct DOut {
+  std::vector<double> own;
+  double* ptr;
+  T* dst;
+  int64_t n;
+  explicit DOut(ffi::Result<ffi::AnyBuffer>& b) : n(b->element_count()) {
+    dst = static_cast<T*>(b->untyped_data());
+    if constexpr (std::is_same<T, double>::value) {
+      ptr = reinterpret_cast<double*>(dst);
+    } else {
+      own.resize(n);
+      ptr = own.data();
+    }
+  }
+  ~DOut() {
+    if constexpr (!std::is_same<T, double>::value)
+      for (int64_t k = 0; k < n; ++k) dst[k] = static_cast<T>(own[k]);
+  }
+};
+
+constexpr int kTmapChunks = 8;
+
+// groups are split into at most kTmapChunks ranges of whole 4-group tiles
+template <typename F>
+void tmap_for(ffi::ThreadPool& pool, int64_t n, F body) {
+  int64_t tiles = (n + 3) / 4;
+  int64_t per = std::max<int64_t>(64, (tiles + kTmapChunks - 1) / kTmapChunks);
+  int64_t nchunks = (tiles + per - 1) / per;
+  int64_t threads = std::min<int64_t>(pool.num_threads(), nchunks);
+  if (threads <= 1) {
+    for (int64_t c = 0; c < nchunks; ++c) body(c, c * per * 4, std::min(n, (c + 1) * per * 4));
+    return;
+  }
+  struct State {
+    std::atomic<int64_t> next{0}, done{0};
+    int64_t n, per, nchunks;
+    F body;
+    State(int64_t n_, int64_t p_, int64_t k_, F b) : n(n_), per(p_), nchunks(k_), body(std::move(b)) {}
+    void work() {
+      for (int64_t c; (c = next.fetch_add(1, std::memory_order_relaxed)) < nchunks;) {
+        body(c, c * per * 4, std::min(n, (c + 1) * per * 4));
+        done.fetch_add(1, std::memory_order_release);
+      }
+    }
+  };
+  auto st = std::make_shared<State>(n, per, nchunks, std::move(body));
+  for (int64_t k = 1; k < threads; ++k) pool.Schedule([st] { st->work(); });
+  st->work();
+  while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
+}
+
+// Lam [n4, D, D, 4], Q [D, D], s, delta, zeta [D, n] -> u [D, n], ld [n]
+template <typename T>
+ffi::Error TmapFwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer Q, ffi::AnyBuffer s,
+                       ffi::AnyBuffer delta, ffi::AnyBuffer zeta, ffi::Result<ffi::AnyBuffer> u,
+                       ffi::Result<ffi::AnyBuffer> ld) {
+  const int D = static_cast<int>(Lam.dimensions()[1]);
+  const int64_t n = s.dimensions()[1];
+  tmap::FwdFn f = tmap::forward_for(D);
+  if (!f) return ffi::Error::InvalidArgument("bayesroc: transport block too wide for the native kernel");
+  DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta);
+  DOut<T> uo(u), ldo(ld);
+  std::vector<double> r(size_t(D) * n);
+  for (int64_t k = 0; k < int64_t(D) * n; ++k) r[k] = ss.ptr[k];
+  const double *pl = lam.ptr, *pq = q.ptr, *pd = dd.ptr, *pz = z.ptr;
+  double *pr = r.data(), *pu = uo.ptr, *pld = ldo.ptr;
+  tmap_for(pool, n, [=](int64_t, int64_t g0, int64_t g1) {
+    tmap::coupling(D, n, g0, g1, pl, pd, pr);
+    f(g0, g1, n, pl, pq, pr, pz, pu, pld);
+  });
+  return ffi::Error::Success();
+}
+
+// Lam, Q, s, delta, zeta as above, ubar [D, n], ldbar [n] -> zetabar [D, n], deltabar [D, n],
+// Qbar [kTmapChunks, D, D] (lower-triangle cotangent of Q, per chunk; sum over chunks)
+template <typename T>
+ffi::Error TmapBwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer Q, ffi::AnyBuffer s,
+                       ffi::AnyBuffer delta, ffi::AnyBuffer zeta, ffi::AnyBuffer ubar,
+                       ffi::AnyBuffer ldbar, ffi::Result<ffi::AnyBuffer> zetabar,
+                       ffi::Result<ffi::AnyBuffer> deltabar, ffi::Result<ffi::AnyBuffer> Qbar) {
+  const int D = static_cast<int>(Lam.dimensions()[1]);
+  const int64_t n = s.dimensions()[1];
+  tmap::BwdFn f = tmap::backward_for(D);
+  if (!f) return ffi::Error::InvalidArgument("bayesroc: transport block too wide for the native kernel");
+  DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta), ub(ubar), lb(ldbar);
+  DOut<T> zo(zetabar), dob(deltabar), qo(Qbar);
+  std::vector<double> r(size_t(D) * n);
+  for (int64_t k = 0; k < int64_t(D) * n; ++k) r[k] = ss.ptr[k];
+  for (int64_t k = 0; k < int64_t(kTmapChunks) * D * D; ++k) qo.ptr[k] = 0.0;
+  const double *pl = lam.ptr, *pq = q.ptr, *pd = dd.ptr, *pz = z.ptr, *pub = ub.ptr, *plb = lb.ptr;
+  double *pr = r.data(), *pzb = zo.ptr, *pdb = dob.ptr, *pqb = qo.ptr;
+  tmap_for(pool, n, [=](int64_t c, int64_t g0, int64_t g1) {
+    tmap::coupling(D, n, g0, g1, pl, pd, pr);
+    f(g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
+    tmap::coupling_adjoint(D, n, g0, g1, pl, pdb);
+  });
+  return ffi::Error::Success();
+}
+
 
 ffi::Error ProbitCellImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::Buffer<ffi::F64> zhi,
                           ffi::ResultBuffer<ffi::F64> lp, ffi::ResultBuffer<ffi::F64> glo,
@@ -349,3 +471,151 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnCdf4, BvnCdf4Impl,
                                   .Ret<ffi::Buffer<ffi::F64>>()
                                   .Ret<ffi::Buffer<ffi::F64>>()
                                   .Ret<ffi::Buffer<ffi::F64>>());
+
+#define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
+#define A_ .Arg<ffi::AnyBuffer>()
+#define R_ .Ret<ffi::AnyBuffer>()
+BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_);
+BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_);
+BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBwdF32, TmapBwdImpl<float>, A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+
+// Plain C entry for R's .C(): Phi2(h, k; rho) at n finite points, split over threads.
+extern "C" void bayesroc_r_bvn_cdf(const double* h, const double* k, const double* rho, const int* n,
+                                   const int* threads, double* p) {
+  const int64_t N = *n;
+  if (N <= 0) return;
+  const int64_t grain = 4096;
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(*threads, (N + grain - 1) / grain));
+  auto work = [=](int64_t i0, int64_t i1) {
+    std::vector<double> d(size_t(3) * size_t(i1 - i0));
+    const int64_t m = i1 - i0;
+    bvn::cdf_array(m, h + i0, k + i0, rho + i0, p + i0, d.data(), d.data() + m, d.data() + 2 * m);
+  };
+  if (T == 1) { work(0, N); return; }
+  const int64_t per = ((N + T - 1) / T + 3) / 4 * 4;
+  std::vector<std::thread> pool;
+  for (int64_t t = 1; t < T; ++t) {
+    const int64_t i0 = t * per;
+    if (i0 >= N) break;
+    pool.emplace_back(work, i0, std::min(N, i0 + per));
+  }
+  work(0, std::min(N, per));
+  for (auto& th : pool) th.join();
+}
+
+// Plain C entry for R's .C(): the standard normal CDF at n points, split over threads.
+extern "C" void bayesroc_r_pnorm(const double* x, const int* n, const int* threads, double* p) {
+  const int64_t N = *n;
+  if (N <= 0) return;
+  const int64_t grain = 16384;
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(*threads, (N + grain - 1) / grain));
+  auto work = [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i) p[i] = 0.5 * std::erfc(-x[i] * 0.7071067811865476);
+  };
+  if (T == 1) { work(0, N); return; }
+  const int64_t per = (N + T - 1) / T;
+  std::vector<std::thread> pool;
+  for (int64_t t = 1; t < T; ++t) {
+    const int64_t i0 = t * per;
+    if (i0 >= N) break;
+    pool.emplace_back(work, i0, std::min(N, i0 + per));
+  }
+  work(0, std::min(N, per));
+  for (auto& th : pool) th.join();
+}
+
+namespace {
+// run body(i0, i1) over [0, N) on up to `threads` threads, in blocks of at least `grain`
+template <typename F>
+void r_threads(int64_t N, int threads, int64_t grain, F body) {
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, (N + grain - 1) / grain));
+  if (T == 1) { body(0, N); return; }
+  const int64_t per = ((N + T - 1) / T + 3) / 4 * 4;
+  std::vector<std::thread> pool;
+  for (int64_t t = 1; t < T; ++t) {
+    const int64_t i0 = t * per;
+    if (i0 >= N) break;
+    pool.emplace_back(body, i0, std::min(N, i0 + per));
+  }
+  body(0, std::min(N, per));
+  for (auto& th : pool) th.join();
+}
+}  // namespace
+
+// Plain C entry for R's .C(): P(a1 < Z1 <= b1, a2 < Z2 <= b2) at n points; edges beyond
+// +-1e9 are infinite.
+extern "C" void bayesroc_r_bvn_rect(const double* a1, const double* b1, const double* a2, const double* b2,
+                                    const double* rho, const int* n, const int* threads, double* p) {
+  const int64_t N = *n;
+  if (N <= 0) return;
+  r_threads(N, *threads, 4096, [=](int64_t i0, int64_t i1) {
+    const int64_t m = i1 - i0;
+    std::vector<double> d(size_t(5) * size_t(m));
+    bvn::rect_array(m, a1 + i0, b1 + i0, a2 + i0, b2 + i0, rho + i0, p + i0, d.data(), d.data() + m,
+                    d.data() + 2 * m, d.data() + 3 * m, d.data() + 4 * m);
+  });
+}
+
+// Plain C entry for R's .C(): weighted survival curves of the detection response.
+// th [S, R, J] thresholds, mu, sig, lam, mu2 [S, R], u [U], w [R]; dims = {S, R, J, U, kind,
+// path, threads}. kind 0: normal(mu, sig); 1: (1 - lam) normal + lam at the top response;
+// 2: (1 - lam) normal(mu, sig) + lam normal(mu2, sig). path 1: criterion j lies at u[j] along
+// the row's own thresholds (extended by ext at both ends, linear between knots); path 0: at
+// u[j] itself. acc [S, U] receives sum over rows of w * max(1 - F(criterion), 0).
+extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, const double* sig,
+                                        const double* lam, const double* mu2, const double* u,
+                                        const double* w, const int* dims, const double* ext,
+                                        double* acc) {
+  const int64_t S = dims[0], R = dims[1], J = dims[2], U = dims[3];
+  const int kind = dims[4], path = dims[5], threads = dims[6];
+  const double e = *ext, rs2 = 0.7071067811865476;
+  std::vector<int> lo(U);
+  std::vector<double> fr(U);
+  for (int64_t j = 0; j < U; ++j) {
+    double f = std::floor(u[j]);
+    int l = static_cast<int>(f < J ? f : J);
+    lo[j] = l;
+    fr[j] = u[j] - l;
+  }
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, R));
+  std::vector<std::vector<double>> part(T, std::vector<double>(size_t(S) * size_t(U), 0.0));
+  auto work = [&](int64_t t, int64_t r0, int64_t r1) {
+    double* out = part[t].data();
+    std::vector<double> knots(J + 2);
+    for (int64_t r = r0; r < r1; ++r) {
+      const double wr = w[r];
+      if (wr == 0.0) continue;
+      for (int64_t s = 0; s < S; ++s) {
+        const int64_t sr = s + S * r;
+        const double m = mu[sr], is = 1.0 / sig[sr];
+        const double l = kind ? lam[sr] : 0.0, m2 = kind == 2 ? mu2[sr] : 0.0;
+        if (path) {
+          for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
+          knots[0] = knots[1] - e;
+          knots[J + 1] = knots[J] + e;
+        }
+        for (int64_t j = 0; j < U; ++j) {
+          const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
+          double F = 0.5 * std::erfc(-(c - m) * is * rs2);
+          if (kind == 1) F = (1.0 - l) * F;
+          else if (kind == 2) F = (1.0 - l) * F + l * 0.5 * std::erfc(-(c - m2) * is * rs2);
+          const double sv = 1.0 - F;
+          if (sv > 0.0) out[s + S * j] += wr * sv;
+        }
+      }
+    }
+  };
+  if (T == 1) {
+    work(0, 0, R);
+  } else {
+    const int64_t per = (R + T - 1) / T;
+    std::vector<std::thread> pool;
+    for (int64_t t = 1; t < T; ++t)
+      if (t * per < R) pool.emplace_back(work, t, t * per, std::min(R, (t + 1) * per));
+    work(0, 0, std::min(R, per));
+    for (auto& th_ : pool) th_.join();
+  }
+  for (int64_t t = 0; t < T; ++t)
+    for (int64_t k = 0; k < S * U; ++k) acc[k] += part[t][k];
+}

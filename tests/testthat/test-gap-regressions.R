@@ -42,13 +42,11 @@
                                    family = evsd()), du, "u_criterion_sub", du$ind == 0),
     criterion2_indicator_per_bin = list(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
                                             criterion2 ~ 1 + ind + (0 + ind | sub), rho ~ 1,
-                                            family = bivariate_gaussian(varying_source_criteria = TRUE,
-                                                                        varying_re = "per_bin")),
+                                            family = bivariate_gaussian(source_criteria = "varying")),
                                         db, "u_criterion2_sub", db$ind == 0),
     criterion2_slope_full = list(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
                                      criterion2 ~ 1 + x + (1 + x | sub), rho ~ 1,
-                                     family = bivariate_gaussian(varying_source_criteria = TRUE,
-                                                                 varying_re = "full")),
+                                     family = bivariate_gaussian(source_criteria = "varying")),
                                  db, NULL, NULL),
     cdp_criterion_slope = list(brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1 + x + (1 + x | sub),
                                    rec_crit ~ 1, know_crit ~ 1, sigma_R ~ 1, family = cdp(old_levels = 2:4)),
@@ -107,8 +105,7 @@ test_that("every listed prior can be set, is echoed back, and reaches Stan and t
                                criterion2 ~ 1 + x + (1 + x | sub), rho ~ x, family = bivariate_gaussian()), db),
     varying_full = list(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
                             criterion2 ~ 1 + x + (1 + x | sub), rho ~ 1,
-                            family = bivariate_gaussian(varying_source_criteria = TRUE, varying_re = "full",
-                                                        new_source_criteria = "shared", old_levels = 3:4)), db),
+                            family = bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)), db),
     cumulative = list(brf(item_resp ~ cond + (1 + cond | sub), cutpoints ~ 1 + x + (1 | sub),
                           family = cumulative()), du),
     cross = list(brf(item_resp | is_old ~ 1 + (1 | p | sub), sigma ~ 1 + (1 | p | sub),
@@ -150,13 +147,14 @@ test_that("threshold and cross-group dpars from get_broc_prior are accepted by b
 
 test_that("criterion2 slope effects under varying source criteria keep their slope structure", {
   db <- .gap_bivariate()
-  for (mode in c("shared", "per_bin", "full")) {
+  for (sc in c("varying", "varying_shared_new")) {
+    fam <- if (sc == "varying") bivariate_gaussian(source_criteria = sc)
+           else bivariate_gaussian(source_criteria = sc, old_levels = 3:4)
     m <- suppressMessages(broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
-                                   criterion2 ~ 1 + x + (1 + x | sub), rho ~ 1,
-                                   family = bivariate_gaussian(varying_source_criteria = TRUE, varying_re = mode)), db))
+                                   criterion2 ~ 1 + x + (1 + x | sub), rho ~ 1, family = fam), db))
     re <- m$model_data$criterion2$random$sub
-    n_base <- switch(mode, shared = 1L, per_bin = m$model_data$K, full = m$model_data$K * (m$model_data$K2 - 1L))
-    expect_identical(as.integer(re$dim), as.integer(n_base * 2L), label = mode)
-    expect_true(isTRUE(re$use_z_matrix), label = mode)
+    n_base <- m$stan_data$n_vbin * (m$model_data$K2 - 1L)
+    expect_identical(as.integer(re$dim), as.integer(n_base * 2L), label = sc)
+    expect_true(isTRUE(re$use_z_matrix), label = sc)
   }
 })

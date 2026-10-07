@@ -1,8 +1,8 @@
 test_that("softplus gap link reaches every threshold construction in the generated Stan", {
   d <- .fixture_bivariate_sdt()
   fams <- list(
-    bivariate_gaussian(varying_source_criteria = TRUE),
-    bivariate_gaussian(varying_source_criteria = TRUE, new_source_criteria = "shared", old_levels = 3:4)
+    bivariate_gaussian(source_criteria = "varying"),
+    bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)
   )
   for (fam in fams) {
     m <- .broc_plain(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,

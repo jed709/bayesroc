@@ -129,8 +129,8 @@ binormal_cdf_r <- function(z1, z2, rho) {
   result[inf1_neg | inf2_neg] <- 0
   mask_inf1p <- inf1_pos & !inf2_neg
   mask_inf2p <- inf2_pos & !inf1_neg & !inf1_pos
-  if (any(mask_inf1p)) result[mask_inf1p] <- pnorm(z2[mask_inf1p])
-  if (any(mask_inf2p)) result[mask_inf2p] <- pnorm(z1[mask_inf2p])
+  if (any(mask_inf1p)) result[mask_inf1p] <- .pnorm_v(z2[mask_inf1p])
+  if (any(mask_inf2p)) result[mask_inf2p] <- .pnorm_v(z1[mask_inf2p])
 
   finite <- !is.infinite(z1) & !is.infinite(z2)
   if (!any(finite)) return(result)
@@ -138,6 +138,11 @@ binormal_cdf_r <- function(z1, z2, rho) {
   z1f <- z1[finite]
   z2f <- z2[finite]
   rhof <- rho[finite]
+
+  if (.bvn_native_ready() && isTRUE(all(abs(rhof) < 1))) {
+    result[finite] <- .bvn_native_cdf(z1f, z2f, rhof)
+    return(result)
+  }
 
   z1f[z1f == 0] <- 1e-10
   z2f[z2f == 0] <- 1e-10
@@ -151,6 +156,126 @@ binormal_cdf_r <- function(z1, z2, rho) {
   result[finite] <- 0.5 * (pnorm(z1f) + pnorm(z2f) - delta) -
                     owens_t_r(z1f, a1) - owens_t_r(z2f, a2)
   result
+}
+
+# =============================================================================
+# Native Bivariate Normal CDF
+# =============================================================================
+
+.bvn_native <- new.env(parent = emptyenv())
+
+# Whether the native kernel library (the one the JAX backend builds) can serve Phi2 to R.
+# Without it, or with options(bayesroc.native_predict = FALSE), the R quadrature is used.
+.bvn_native_ready <- function() {
+  st <- .bvn_native
+  if (!is.null(st$ok)) return(st$ok)
+  st$ok <- FALSE
+  if (isFALSE(getOption("bayesroc.native_predict", TRUE))) return(FALSE)
+  lib <- Sys.getenv("BAYESROC_BVN_LIB", "")
+  if (!nzchar(lib) || !file.exists(lib)) {
+    lib <- tryCatch(.bvn_ffi_lib(), error = function(e) NULL)
+  }
+  if (is.null(lib) || !nzchar(lib) || !file.exists(lib)) return(FALSE)
+  ok <- tryCatch({
+    dll <- dyn.load(lib)
+    st$sym <- getNativeSymbolInfo("bayesroc_r_bvn_cdf", PACKAGE = dll)
+    st$sym_pnorm <- getNativeSymbolInfo("bayesroc_r_pnorm", PACKAGE = dll)
+    st$sym_rect <- getNativeSymbolInfo("bayesroc_r_bvn_rect", PACKAGE = dll)
+    st$sym_surv <- getNativeSymbolInfo("bayesroc_r_det_survival", PACKAGE = dll)
+    TRUE
+  }, error = function(e) FALSE)
+  if (ok) Sys.setenv(BAYESROC_BVN_LIB = lib)
+  st$ok <- ok
+  ok
+}
+
+.bvn_native_cdf <- function(z1, z2, rho) {
+  n <- length(z1)
+  .C(.bvn_native$sym, as.double(z1), as.double(z2), as.double(rho), as.integer(n),
+     .native_threads(), p = double(n), NAOK = TRUE)$p
+}
+
+.native_threads <- function() {
+  max(1L, as.integer(.bvn_native$threads %||% getOption("bayesroc.predict_threads", 1L)))
+}
+
+# stats::pnorm() for long vectors, threaded through the native library when it is there
+.pnorm_v <- function(x) {
+  n <- length(x)
+  if (n < 50000L || !.bvn_native_ready()) return(stats::pnorm(x))
+  .C(.bvn_native$sym_pnorm, as.double(x), as.integer(n), .native_threads(), p = double(n), NAOK = TRUE)$p
+}
+
+# =============================================================================
+# Vectorised Cell Probabilities
+# =============================================================================
+
+# P(z1lo < Z1 <= z1hi, z2lo < Z2 <= z2hi) elementwise for a standard bivariate normal; edges
+# may be infinite. Independent where rho is 0.
+.bvn_rect_v <- function(z1lo, z1hi, z2lo, z2hi, rho) {
+  n <- length(rho)
+  if (n && .bvn_native_ready() && isTRUE(all(abs(rho) < 1)) &&
+      !anyNA(z1lo) && !anyNA(z1hi) && !anyNA(z2lo) && !anyNA(z2hi)) {
+    edge <- function(x) pmin(pmax(x, -1e10), 1e10)
+    return(.C(.bvn_native$sym_rect, edge(z1lo), edge(z1hi), edge(z2lo), edge(z2hi), as.double(rho),
+              as.integer(n), .native_threads(), p = double(n))$p)
+  }
+  out <- (.pnorm_v(z1hi) - .pnorm_v(z1lo)) * (.pnorm_v(z2hi) - .pnorm_v(z2lo))
+  nz <- which(rho != 0)
+  m <- length(nz)
+  if (m) {
+    a <- z1lo[nz]; b <- z1hi[nz]; cc <- z2lo[nz]; d <- z2hi[nz]
+    p <- binormal_cdf_r(c(b, b, a, a), c(d, cc, d, cc), rep(rho[nz], 4L))
+    i <- seq_len(m)
+    out[nz] <- p[i] - p[m + i] - p[2L * m + i] + p[3L * m + i]
+  }
+  out
+}
+
+# compute_bounded_prob_r() elementwise: the cell [y_lo, y_hi] x [c2_lo, c2_hi] on the raw
+# scale (edges may be infinite).
+.bounded_cell_v <- function(y_lo, y_hi, c2_lo, c2_hi, mu_I, mu_S, sigma_I, sigma_S, rho) {
+  z1lo <- (y_lo - mu_I) / sigma_I
+  z1hi <- (y_hi - mu_I) / sigma_I
+  z2lo <- (c2_lo - mu_S) / sigma_S
+  z2hi <- (c2_hi - mu_S) / sigma_S
+  out <- (.pnorm_v(z1hi) - .pnorm_v(z1lo)) * (.pnorm_v(z2hi) - .pnorm_v(z2lo))
+  dep <- which(abs(rho) >= 1e-10)
+  if (!length(dep)) return(out)
+  r <- rho[dep]; mI <- mu_I[dep]; sI <- sigma_I[dep]; sS <- sigma_S[dep]
+  cp <- mI - sI * mu_S[dep] / (r * sS)
+  s_cond <- sS * sqrt(1 - r * r)
+  src_below <- .pnorm_v(c2_hi[dep] / s_cond) - .pnorm_v(c2_lo[dep] / s_cond)
+  ylo <- y_lo[dep]; yhi <- y_hi[dep]
+  a1 <- z1lo[dep]; b1 <- z1hi[dep]; a2 <- z2lo[dep]; b2 <- z2hi[dep]
+  below <- yhi <= cp
+  above <- !below & ylo >= cp
+  res <- (.pnorm_v(b1) - .pnorm_v(a1)) * src_below
+  i <- which(above)
+  if (length(i)) res[i] <- .bvn_rect_v(a1[i], b1[i], a2[i], b2[i], r[i])
+  i <- which(!below & !above)
+  if (length(i)) {
+    z_cp <- (cp[i] - mI[i]) / sI[i]
+    z_lo_b <- ifelse(is.infinite(ylo[i]), -8.0, a1[i])
+    res[i] <- (.pnorm_v(z_cp) - .pnorm_v(z_lo_b)) * src_below[i] + .bvn_rect_v(z_cp, b1[i], a2[i], b2[i], r[i])
+  }
+  out[dep] <- res
+  out
+}
+
+# compute_bounded_marginal_source_r() elementwise, for the source cell [c2_lo, c2_hi].
+.bounded_marginal_source_v <- function(c2_lo, c2_hi, mu_I, mu_S, sigma_I, sigma_S, rho) {
+  z2lo <- (c2_lo - mu_S) / sigma_S
+  z2hi <- (c2_hi - mu_S) / sigma_S
+  out <- .pnorm_v(z2hi) - .pnorm_v(z2lo)
+  dep <- which(abs(rho) >= 1e-10)
+  if (!length(dep)) return(out)
+  r <- rho[dep]; sS <- sigma_S[dep]
+  z_cp <- -mu_S[dep] / (r * sS)
+  s_cond <- sS * sqrt(1 - r * r)
+  out[dep] <- .pnorm_v(z_cp) * (.pnorm_v(c2_hi[dep] / s_cond) - .pnorm_v(c2_lo[dep] / s_cond)) +
+    .bvn_rect_v(z_cp, rep(Inf, length(dep)), z2lo[dep], z2hi[dep], r)
+  out
 }
 
 # =============================================================================

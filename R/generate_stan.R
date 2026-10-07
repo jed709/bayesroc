@@ -74,7 +74,10 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "  array[N] int<lower=1, upper=K2> y2;  // Source responses",
       "  array[N] int<lower=1, upper=3> item_type;  // 1=new, 2=A, 3=B",
       if (identical(model_data$new_source_criteria, "shared"))
-        "  array[K1] int<lower=0, upper=1> is_new_response;  // 1=new response, 0=old response"
+        "  array[K1] int<lower=0, upper=1> is_new_response;  // 1=new response, 0=old response",
+      if (isTRUE(model_data$varying_source_criteria))
+        c("  int<lower=1, upper=K1> n_vbin;  // sets of varying source criteria",
+          "  array[K1] int<lower=1, upper=n_vbin> vbin;  // set read by each detection response")
     )
   } else if (is_cdp) {
     J <- model_data$stan_data$J
@@ -385,8 +388,8 @@ generate_parameters_block_v2 <- function(model_data, family) {
   if (isTRUE(model_data$has_criterion2)) {
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines,
-                 "  vector[K1] beta_thresh_mid_2_varying;  // Mid-anchor source threshold for each item level",
-                 "  matrix[K1, K2-2] beta_log_gaps_2_varying;  // Log-gaps for each item level")
+                 "  vector[n_vbin] beta_thresh_mid_2_varying;  // Mid-anchor source threshold of each set",
+                 "  matrix[n_vbin, K2-2] beta_log_gaps_2_varying;  // Log-gaps of each set")
       if (.has_crit2_cov(model_data)) {
         lines <- c(lines,
                    "  vector[P_criterion2_cov] beta_thresh_mid_2_cov;",

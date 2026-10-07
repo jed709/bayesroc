@@ -94,3 +94,17 @@ test_that("cdp rejects text old/new labels and out-of-range old_levels", {
   expect_identical(m1$stan_data$y, m0$stan_data$y)
   expect_identical(m1$stan_data$old_level_map, m0$stan_data$old_level_map)
 })
+
+test_that("broc() drops factor levels a subset no longer contains", {
+  set.seed(4)
+  d <- data.frame(sub = factor(rep(1:8, each = 30)), cond = factor(rep(c("a", "b", "c", "d"), each = 60)),
+                  old = rep(0:1, 120), conf = sample(1:4, 240, TRUE))
+  sub_d <- d[d$cond %in% c("a", "b"), ]
+  expect_equal(nlevels(sub_d$cond), 4L)
+  m <- suppressMessages(broc(brf(conf | old ~ cond - 1 + (cond - 1 | sub), criterion ~ 1, family = evsd()), sub_d))
+  expect_equal(nlevels(m$data$cond), 2L)
+  expect_equal(nlevels(m$data$sub), 4L)
+  cfg <- build_numpyro_config(m)
+  expect_equal(as.integer(cfg$random_effects[[1]]$n_terms), 2L)
+  expect_equal(as.integer(cfg$random_effects[[1]]$n_groups), 4L)
+})

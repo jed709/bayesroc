@@ -15,13 +15,17 @@
 #' @param threshold_natural If `TRUE`, additionally report the criterion
 #'   random-effect standard deviations and correlations on the natural threshold
 #'   scale rather than the internal location and gap scale.
+#' @param sd,cor Whether to summarise the random effects' standard deviations and
+#'   correlations (both default `TRUE`). Setting either to `FALSE` skips its computation and
+#'   its section of the printout.
 #' @param ... Unused.
 #' @return An object of class `broc_summary`: a list with `estimates`,
 #'   `coefficients`, `random_sd`, `correlations` (long table) and
 #'   `correlation_matrices`, `smooth_sds`, `model_info` and `diagnostics`.
 #' @method summary broc_fit
 #' @export
-summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, threshold_natural = FALSE, ...) {
+summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, threshold_natural = FALSE,
+                             sd = TRUE, cor = TRUE, ...) {
   fit <- object
   model <- .plot_model(fit)
   lo <- (1 - prob) / 2
@@ -45,14 +49,15 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   blocks <- .re_blocks(model)
   sd_rows <- list(); cor_rows <- list(); cor_mats <- list()
   for (b in blocks) {
+    if (!isTRUE(sd) && !isTRUE(cor)) break
     nm <- if (b$dim == 1L && b$sd %in% vars) b$sd else paste0(b$sd, "[", seq_len(b$dim), "]")
     ok <- nm %in% vars
-    if (any(ok)) {
+    if (isTRUE(sd) && any(ok)) {
       s <- summ(nm[ok])
       sd_rows[[length(sd_rows) + 1L]] <- cbind(group = b$group, .re_label_parts(b$labels[ok]),
                                                effect = b$labels[ok], s[-1])
     }
-    if (b$dim < 2L) next
+    if (b$dim < 2L || !isTRUE(cor)) next
     pairs <- do.call(rbind, lapply(2:b$dim, function(i) data.frame(i = i, j = seq_len(i - 1L))))
     cv <- paste0(b$cor, "[", pairs$i, ",", pairs$j, "]")
     keep <- cv %in% vars
@@ -145,11 +150,32 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   df
 }
 
-.print_tbl <- function(df, digits, indent = "  ") {
-  old <- options(width = 10000L)
+.tbl_lines <- function(df, digits, indent = "  ") {
+  old <- options(width = 10000L, max.print = .Machine$integer.max)
   on.exit(options(old))
-  out <- utils::capture.output(print(.fmt_summary_tbl(df, digits), row.names = FALSE))
-  cat(paste0(indent, out), sep = "\n")
+  paste0(indent, utils::capture.output(print(.fmt_summary_tbl(df, digits), row.names = FALSE)))
+}
+
+.print_tbl <- function(df, digits, indent = "  ") {
+  cat(.tbl_lines(df, digits, indent), sep = "\n")
+}
+
+# A correlation block as a table of effect pairs. When the two label columns would run past
+# the console width, the effects are listed once with numbers and the rows refer to those.
+.print_cor_tbl <- function(rows, digits, indent = "  ") {
+  lines <- .tbl_lines(rows, digits, indent)
+  if (max(nchar(lines)) <= getOption("width", 80L)) {
+    cat(lines, sep = "\n")
+    return(invisible())
+  }
+  effects <- unique(c(rows$effect_1, rows$effect_2))
+  w <- nchar(length(effects))
+  cat(paste0(indent, "[", formatC(seq_along(effects), width = w), "] ", effects), sep = "\n")
+  cat("\n")
+  num <- function(v) formatC(match(v, effects), width = w)
+  short <- cbind(pair = paste0(num(rows$effect_1), " - ", num(rows$effect_2)),
+                 rows[setdiff(names(rows), c("effect_1", "effect_2"))], stringsAsFactors = FALSE)
+  cat(.tbl_lines(short, digits, indent), sep = "\n")
 }
 
 .print_section <- function(title, note = NULL) {
@@ -225,7 +251,7 @@ print.broc_summary <- function(x, ...) {
       d <- co[co$block == b, , drop = FALSE]
       tb <- .cor_print_rows(d)
       cat("\n", b, "\n", sep = "")
-      .print_tbl(tb$rows, digits)
+      .print_cor_tbl(tb$rows, digits)
     }
   }
   if (!is.null(x$smooth_sds) && nrow(x$smooth_sds)) {
@@ -242,10 +268,10 @@ print.broc_summary <- function(x, ...) {
 .re_label_parts <- function(labels) {
   parameter <- sub(": .*$", "", labels)
   rest <- sub("^[^:]+: ", "", labels)
-  crit_re <- "^((bin [0-9]+, )?c[0-9]+( to c[0-9]+)? \\([^)]*\\)|bin [0-9]+ \\(location\\)|location)(, (.*))?$"
+  crit_re <- "^(((bin [0-9]+|new), )?c[0-9]+( to c[0-9]+)? \\([^)]*\\)|(bin [0-9]+|new) \\(location\\)|location)(, (.*))?$"
   is_crit <- grepl(crit_re, rest)
   criterion <- ifelse(is_crit, sub(crit_re, "\\1", rest), "")
-  term <- ifelse(is_crit, sub(crit_re, "\\5", rest), rest)
+  term <- ifelse(is_crit, sub(crit_re, "\\7", rest), rest)
   data.frame(parameter = parameter, criterion = criterion, term = term, stringsAsFactors = FALSE)
 }
 

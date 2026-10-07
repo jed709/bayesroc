@@ -4,19 +4,25 @@
 \alias{vrdp2d}
 \title{Two-Dimensional Variable Recollection Dual Process Model}
 \usage{
-vrdp2d(varying_source_criteria = FALSE, varying_re = "shared")
+vrdp2d(
+  source_criteria = c("common", "varying", "varying_shared_new"),
+  old_levels = NULL
+)
 }
 \arguments{
-\item{varying_source_criteria}{If \code{TRUE}, estimate separate source
-criteria for each item confidence level (K1 x (K2-1) source thresholds);
-the full model of Onyper et al. (2010). If \code{FALSE} (default), a single
-set of source criteria (K2-1 thresholds) shared across detection levels.}
+\item{source_criteria}{How the source criteria are structured across
+detection responses. \code{"common"} (default): one set of source criteria for
+every detection response. \code{"varying"}: a separate set for each detection
+response (K1 x (K2-1) criteria in total). \code{"varying_shared_new"}: a separate
+set for each "old" detection response and a single set shared by all "new"
+responses; requires \code{old_levels}. Covariates, smooths and random effects on
+\code{criterion2} apply to every set, and a random effect on \code{criterion2} gives
+each source threshold of each set its own effect.}
 
-\item{varying_re}{Random-effect structure for varying source criteria.
-\code{"shared"} (default): one source-criterion RE shift shared across all
-detection bins. \code{"per_bin"}: a separate RE shift per detection bin.
-\code{"full"}: a separate RE for every source threshold within every detection
-bin. Requires \code{varying_source_criteria = TRUE} unless \code{"shared"}.}
+\item{old_levels}{Integer vector of detection response values that count as
+"old" judgements, in the data's own coding (e.g. \code{old_levels = 4:6} for a
+1-6 scale, or \code{3:5} if the same scale is coded 0-5); the rest are "new".
+Required when \code{source_criteria = "varying_shared_new"}; not used otherwise.}
 }
 \value{
 A \code{broc_family} object.

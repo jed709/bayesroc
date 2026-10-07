@@ -572,11 +572,13 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("probit_cell", "ProbitCell"),
-                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell")):
+                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"),
+                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("cdp_cell", "CdpCell")):
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("cdp_cell", "CdpCell"),
+                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
     except Exception as _e:
@@ -3329,8 +3331,8 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     is_simple = family_name in ("evsdt", "uvsdt", "cumulative")
 
     if is_simple and has_fused_inputs and lambda_val is None:
-        mu_per_obs = jnp.where(is_old == 1, mu_signal, mu_noise)
-        sd_per_obs = jnp.where(is_old == 1, sd_signal, sd_noise)
+        mu_per_obs = is_old * mu_signal
+        sd_per_obs = jnp.where(is_old > 0, sd_signal, sd_noise)
         log_lik = fused_loglik_simple(y, K, mu_per_obs, sd_per_obs,
                                        thresh_mid, log_gaps, gap_link,
                                        link_name=link_name)
@@ -3675,6 +3677,37 @@ def _re_corr_cholesky(prefix, conf, dim):
     return numpyro.deterministic(f"L_corr_{prefix}", L)
 
 
+def _whitened_cov(prefix, conf, dim, sd_dists):
+    """Correlated block sampled in coordinates whitened by a fixed W: Sigma = W Sigma~ W^T with
+    Sigma~ = diag(e^l) Lc(y) Lc(y)^T diag(e^l) and (l, y) unconstrained. The original priors on
+    (sd, L_corr) of Sigma are kept exactly through the log-Jacobian of (l, y) -> (log sd, y_corr).
+    Returns (sd, L_corr, L) with Sigma = L L^T."""
+    from numpyro.distributions.transforms import CorrCholeskyTransform
+    cct = CorrCholeskyTransform()
+    W = jnp.asarray(conf["whiten"], dtype=_FLOAT).reshape(dim, dim)
+    dx = dim + dim * (dim - 1) // 2
+    xw = numpyro.sample(f"xw_{prefix}", dist.ImproperUniform(dist.constraints.real, (), (dx,)))
+
+    def to_x(v):
+        Aw = jnp.exp(v[:dim])[:, None] * cct(v[dim:])
+        S = W @ Aw @ Aw.T @ W.T
+        sd = jnp.sqrt(jnp.diag(S))
+        Lc = jnp.linalg.cholesky(S / jnp.outer(sd, sd))
+        return jnp.concatenate([jnp.log(sd), cct.inv(Lc)]), Aw
+
+    xu, Aw = to_x(xw)
+    J = jax.jacfwd(lambda v: to_x(v)[0])(xw)
+    sd = jnp.exp(xu[:dim])
+    Lc = cct(xu[dim:])
+    lp = sum(sd_dists[t].log_prob(sd[t]) for t in range(dim)) + jnp.sum(xu[:dim])
+    lp = lp + parse_prior(conf.get("prior_cor", "lkj_corr_cholesky(1)"), dim=dim).log_prob(Lc)
+    lp = lp + cct.log_abs_det_jacobian(xu[dim:], Lc) + jnp.linalg.slogdet(J)[1]
+    numpyro.factor(f"whiten_prior_{prefix}", lp)
+    numpyro.deterministic(f"sigma_{prefix}", sd)
+    numpyro.deterministic(f"L_corr_{prefix}", Lc)
+    return sd, Lc, W @ Aw
+
+
 def _smooth_info_scale(sd, info, w):
     """Information-scaled smooth coefficients: s = sd * v with v = K^-T w, K K^T = I + sd^2 info.
 
@@ -3695,6 +3728,10 @@ def _rkg_knob(config):
     exp(slack): an exact bijection onto the feasible set whose coordinates never meet a
     wall. Returns None when no Guess response constrains the model."""
     if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
+        return None
+    # fixed-effects bounds only: with random effects on the thresholds or criteria the bound
+    # couples every effect through a max over trials and sampling collapses (measured)
+    if any(rc.get("param") in ("criterion", "rec_crit", "know_crit") for rc in config.get("random_effects") or []):
         return None
     pconf = config.get("params", {}).get("know_crit")
     if pconf is None or pconf.get("n_coef", 0) < 1:
@@ -3726,6 +3763,9 @@ def _apply_crit_scalar(config, n_thresh):
     for rc in config.get("random_effects") or []:
         if rc.get("param") != "criterion" or rc.get("location_only"):
             continue
+        groups = config.get("crit_scalar_groups")
+        if groups is not None and rc.get("group") not in groups:
+            continue
         Rt = int(rc["n_terms"]) // n_thresh
         per = rc.get("prior_sd_per_coef")
         if isinstance(per, list) and len(per) == int(rc["n_terms"]):
@@ -3740,7 +3780,7 @@ def sdt_model(config):
     N = config["N"]
     K = config["K"]
     n_thresh = config.get("n_thresh", K - 1)
-    if config.get("crit_scalar"):
+    if config.get("crit_scalar") or config.get("crit_scalar_groups") is not None:
         _apply_crit_scalar(config, n_thresh)
     gap_link = config.get("gap_link", "log")
     y = jnp.array(config["y"], dtype=jnp.int32)
@@ -3981,6 +4021,28 @@ def sdt_model(config):
                     _apply_re_offset(param, offset, param_values)
 
                 numpyro.deterministic(f"u_{param}_{group}", u_all.T)
+        elif re_conf.get("whiten") is not None and not re_conf.get("cor_blocks"):
+            sd_list = sd_priors if per_coef_varies else [sd_prior] * n_terms
+            sds, L_corr, L = _whitened_cov(f"{param}_{group}", re_conf, n_terms, sd_list)
+            numpyro.deterministic(f"corr_{param}_{group}", L_corr @ L_corr.T)
+            z = numpyro.sample(f"z_{param}_{group}",
+                               dist.Normal(0, 1).expand([n_terms, n_groups]))
+            u = L @ z
+            numpyro.deterministic(f"u_{param}_{group}", u.T)
+            if re_type == "index":
+                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
+                if has_term_idx:
+                    tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
+                    for t in range(n_terms):
+                        _apply_re_offset(param, jnp.where(tidx == t, u[t][idx], 0.0), param_values)
+                else:
+                    for t in range(n_terms):
+                        _apply_re_offset(param, u[t][idx], param_values)
+            else:
+                Z = _ensure_2d(jnp.array(re_conf["Z"], dtype=_FLOAT))
+                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
+                for t in range(n_terms):
+                    _apply_re_offset(param, Z[:, t] * u[t][idx], param_values)
         else:
             if per_coef_varies:
                 sds = jnp.stack([numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_priors[t])
@@ -4280,7 +4342,15 @@ def sdt_model(config):
                           and len(per_coef_sd) == n_dims
                           and len(set(per_coef_sd)) > 1)
 
-        if crit_correlated and n_dims > 1:
+        if crit_correlated and n_dims > 1 and crit_re.get("whiten") is not None and not crit_re.get("cor_blocks"):
+            sd_list = ([_positive_dist(parse_prior(per_coef_sd[t])) for t in range(n_dims)] if has_per_coef_sd
+                       else [crit_sd_prior] * n_dims)
+            crit_sds, L_corr_crit, L_crit = _whitened_cov(f"criterion_{crit_group}", crit_re, n_dims, sd_list)
+            numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
+            z_crit = numpyro.sample(f"z_criterion_{crit_group}",
+                                    dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
+            u_crit = L_crit @ z_crit
+        elif crit_correlated and n_dims > 1:
             if has_per_coef_sd:
                 crit_sds_list = []
                 for t in range(n_dims):
@@ -4389,7 +4459,7 @@ def sdt_model(config):
 
         # -- Sample criterion2 REs first (needed for threshold construction) --
         crit2_re_list = [rc for rc in criterion_re_configs if rc["param"] == "criterion2"]
-        varying_re_mode = config.get("varying_re", "shared")
+        varying_re_mode = "full"
         c2_terms = [(u, i, c) for (u, i, c) in crit_re_contributions
                     if c.get("param") == "criterion2"]
 
@@ -4441,17 +4511,19 @@ def sdt_model(config):
             v2_gaps = pv2.get("gaps", [prior_log_gaps2] * n_gaps2)
             if isinstance(v2_gaps, str):
                 v2_gaps = [v2_gaps]
+            vbin = config.get("vbin")
+            n_vbin = int(config.get("n_vbin", K))
             beta_thresh_mid_2 = numpyro.sample(
                 "beta_thresh_mid_2_varying",
-                parse_prior(v2_mid).expand([K]))
+                parse_prior(v2_mid).expand([n_vbin]))
 
             if n_gaps2 > 0:
                 gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
-                beta_log_gaps_2 = _grid_sample(gap2_name, [list(v2_gaps) for _ in range(K)], (K, n_gaps2))
+                beta_log_gaps_2 = _grid_sample(gap2_name, [list(v2_gaps) for _ in range(n_vbin)], (n_vbin, n_gaps2))
             else:
                 beta_log_gaps_2 = None
 
-            y1_idx = y - 1
+            y1_idx = y - 1 if vbin is None else jnp.asarray(np.asarray(vbin, dtype=np.int32).reshape(-1) - 1)[y - 1]
 
             thresh2_mid_per_obs = beta_thresh_mid_2[y1_idx]
             if beta_log_gaps_2 is not None:

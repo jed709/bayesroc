@@ -18,6 +18,7 @@ Imports:
     utils,
     tools,
     parallel,
+    codetools,
     cmdstanr,
     posterior,
     processx,

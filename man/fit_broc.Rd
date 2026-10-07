@@ -65,7 +65,8 @@ parentheses; an unknown key is an error):
 \item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
-("f64" or "f32").
+("f64" or "f32"), \code{transport} (\code{TRUE}: random effects are sampled through a
+per-group transport map; see \emph{Group transport map}).
 \item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
 named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
 \code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
@@ -186,6 +187,23 @@ kept draws once it passes 4 GB, and again each time it doubles. The result carri
 \code{"stop_reason"}, \code{"ess_trace"} (one row per round), \code{"targets"},
 \code{"draws_per_chain"} and \code{"thin_stride"}; a warning is issued when a cap stops the
 run first.
+}
+
+\section{Group transport map}{
+
+With many groups, or many observations per group, the standard deviations and
+correlations of random effects are tied to the groups' standardised effects through the
+likelihood, and a sampler has to move all of them together to change either. DR-G-HMC
+removes most of that tie by sampling each group's effects in coordinates built from a
+Gaussian approximation of that group's likelihood: part of the warmup runs in the
+model's own coordinates, the approximation is built from where the chains are, and it is
+rebuilt once before the step size is settled. Effects of one grouping factor are mapped
+together, and they follow the population coefficients and any enclosing or crossed
+factor they share predictor terms with. The map is a one-to-one change of variables
+with its Jacobian, so the posterior of every model parameter is unchanged; draws are
+returned in the model's own parameters. Each gradient costs more, by an amount that
+grows with the number of groups relative to the number of observations. Set
+\code{control = list(transport = FALSE)} to sample the standardised effects directly.
 }
 
 \examples{

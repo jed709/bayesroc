@@ -1510,6 +1510,7 @@ build_reduce_sum_args <- function(model_data, family) {
     if (isTRUE(model_data$varying_source_criteria)) {
       add("vector beta_thresh_mid_2_varying", "beta_thresh_mid_2_varying")
       add("matrix beta_log_gaps_2_varying", "beta_log_gaps_2_varying")
+      add("data array[] int vbin", "vbin")
       if (.has_crit2_cov(model_data)) {
         add("data matrix X_criterion2_cov", "X_criterion2_cov")
         add("vector beta_thresh_mid_2_cov", "beta_thresh_mid_2_cov")
@@ -2213,10 +2214,10 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
       }
     }
     if (varying_re_mode == "full") {
-      mid_terms <- c(mid_terms, at("(k1-1)*(K2-1)+mid_thresh2-1"))
-      gap_terms <- c(gap_terms, at("(k1-1)*(K2-1)+k2-1"))
+      mid_terms <- c(mid_terms, at("(vbin[k1]-1)*(K2-1)+mid_thresh2-1"))
+      gap_terms <- c(gap_terms, at("(vbin[k1]-1)*(K2-1)+k2-1"))
     } else if (varying_re_mode == "per_bin" && re$dim > R) {
-      mid_terms <- c(mid_terms, at("k1-1"))
+      mid_terms <- c(mid_terms, at("vbin[k1]-1"))
     } else {
       mid_terms <- c(mid_terms, at("0"))
     }
@@ -2248,15 +2249,15 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
     "    // Source thresholds varying by item response (mid-anchor)",
     "    matrix[K1, K2-1] thresh2_varying;",
     "    for (k1 in 1:K1) {",
-    sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[k1]%s;",
+    sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[vbin[k1]]%s;",
             plus(mid_terms)),
     "      for (k2 in (mid_thresh2+1):(K2-1)) {",
-    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[k1, k2-mid_thresh2]%s);",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[vbin[k1], k2-mid_thresh2]%s);",
             plus(up_terms)),
     "      }",
     "      for (k2_down in 1:(mid_thresh2-1)) {",
     "        int k2 = mid_thresh2 - k2_down;",
-    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[k1, K2-1-mid_thresh2+k2_down]%s);",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[vbin[k1], K2-1-mid_thresh2+k2_down]%s);",
             plus(down_terms)),
     "      }",
     "    }"
