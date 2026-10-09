@@ -72,7 +72,8 @@ for \code{\link[=cdp]{cdp()}}). Text labels such as "old"/"new" are rejected.}
 \item{Item type (bivariate families)}{Codes 1/2/3 or 0/1/2 (new, source A,
 source B), or a factor whose levels are in that order.}
 \item{Remember/know (cdp)}{"remember"/"know"/"guess", "R"/"K"/"G" or 1/2/3;
-missing for responses that are not "old".}
+may be missing on any response (that response then enters through its
+confidence rating alone).}
 \item{Counts}{Non-negative whole numbers; rows with a count of zero are
 dropped.}
 \item{Missing values}{Rows with a missing value in any variable the model

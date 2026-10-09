@@ -266,16 +266,17 @@
     real B = -sR / sF;
     real xcR = (cR - muR) / sR;
     real xkh = is_inf(thi) ? positive_infinity() : (thi - cK - muR) / sR;
-    real xkl = (tlo - cK - muR) / sR;
-    real Alo = (tlo - muR - muF) / sF;
+    real xkl = is_inf(tlo) ? negative_infinity() : (tlo - cK - muR) / sR;
+    real Alo = is_inf(tlo) ? negative_infinity() : (tlo - muR - muF) / sF;
+    real Blo = is_inf(tlo) ? 0 : B;
     real Ahi = is_inf(thi) ? positive_infinity() : (thi - muR - muF) / sF;
     real Bhi = is_inf(thi) ? 0 : B;
     real AK = (cK - muF) / sF;
-    if (kind == 1) return bvn_log_lin_integral(Alo, B, Ahi, Bhi, xcR, positive_infinity());
-    if (kind == 3) return log_sum_exp(bvn_log_lin_integral(Alo, B, AK, 0, xkl, fmin(xkh, xcR)),
-                                      bvn_log_lin_integral(Alo, B, Ahi, Bhi, fmax(xkh, xkl), xcR));
+    if (kind == 1) return bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, xcR, positive_infinity());
+    if (kind == 3) return log_sum_exp(bvn_log_lin_integral(Alo, Blo, AK, 0, xkl, fmin(xkh, xcR)),
+                                      bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, fmax(xkh, xkl), xcR));
     real ub = fmin(xcR, xkh);
-    return log_sum_exp(bvn_log_lin_integral(Alo, B, Ahi, Bhi, negative_infinity(), fmin(xkl, ub)),
+    return log_sum_exp(bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, negative_infinity(), fmin(xkl, ub)),
                        bvn_log_lin_integral(AK, 0, Ahi, Bhi, xkl, ub));
   }
 
@@ -1138,12 +1139,12 @@
     real z_cK_F = (c_K - mu_F) / sigma_F;
 
     // Standardized thresholds
-    real z_lo = (tau_lo - mu_M) / sigma_M;
+    real z_lo = bvn_std(tau_lo, mu_M, sigma_M);
     real z_hi = bvn_std(tau_hi, mu_M, sigma_M);
 
     // SHARED: Phi2(z_cR, z_hi/z_lo, rho) -- used by both Remember and Guess
     real bv_cR_hi = binormal_cdf_cdp(z_cR, z_hi, rho);
-    real bv_cR_lo = binormal_cdf_cdp(z_cR, z_lo, rho);
+    real bv_cR_lo = is_inf(tau_lo) ? 0 : binormal_cdf_cdp(z_cR, z_lo, rho);
 
     // REMEMBER: P(R > c_R, tau_lo < M < tau_hi)
     real p_Remember = bvn_rect(z_cR, positive_infinity(), z_lo, z_hi, rho);
@@ -1160,12 +1161,13 @@
       G_hi = Phi(z_s_hi) * Phi(z_cK_F) + bv_cR_hi - binormal_cdf_cdp(z_s_hi, z_hi, rho);
     }
 
-    real s_lo = fmin(c_R, tau_lo - c_K);
-    real z_s_lo = (s_lo - mu_R) / sigma_R;
     real G_lo;
-    if (c_R <= tau_lo - c_K) {
+    if (is_inf(tau_lo)) {
+      G_lo = 0;
+    } else if (c_R <= tau_lo - c_K) {
       G_lo = Phi(z_cR) * Phi(z_cK_F);
     } else {
+      real z_s_lo = (tau_lo - c_K - mu_R) / sigma_R;
       G_lo = Phi(z_s_lo) * Phi(z_cK_F) + bv_cR_lo - binormal_cdf_cdp(z_s_lo, z_lo, rho);
     }
 
@@ -2026,85 +2028,29 @@ generate_cdp_likelihood_code <- function(model_data) {
              "      }",
              "    }")
 
-  if (isTRUE(n_rkg == 3)) {
-    # ---- R/K/G likelihood (n_rkg == 3) ----
-    lines <- c(lines, "",
-               "    if (is_old[n] == 1) {",
-               "      // Target trial",
-               "      if (is_old_resp == 1) {",
-               "        // 'Old' response - use R/K/G",
-               "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
-               "        vector[3] rkg = compute_rkg_probs(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi);",
-               "        ll = log(fmax(rkg[rk[n]], 1e-300));",
-               "      } else {",
-               "        // 'New' response (below tau[1])",
-               "        real z_tau1 = (tau[1] - mu_M) / sigma_M;",
-               "        ll = bvn_log_interval(negative_infinity(), z_tau1);",
-               "      }",
-               "    } else {",
-               "      // Lure trial",
-               "      if (is_old_resp == 1) {",
-               "        // 'Old' response (false alarm) - use R/K/G with lure params",
-               "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
-               "        vector[3] rkg_l = compute_rkg_probs(0, 1, 0, 1, c_R, c_K, tau_lo, tau_hi);",
-               "        ll = log(fmax(rkg_l[rk[n]], 1e-300));",
-               "      } else {",
-               "        // Correct rejection",
-               "        real z_tau1_l = tau[1] / sigma_M_l;",
-               "        ll = bvn_log_interval(negative_infinity(), z_tau1_l);",
-               "      }",
-               "    }")
-  } else {
-    # ---- R/K likelihood (n_rkg == 2, existing behavior) ----
-    lines <- c(lines, "",
-               "    if (is_old[n] == 1) {",
-               "      // Target trial",
-               "      real z_cR = (c_R - mu_R) / sigma_R;",
-               "      ",
-               "      if (is_old_resp == 1) {",
-               "        // 'Old' response - use R/K",
-               "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
-               "        real z_tau_lo = (tau_lo - mu_M) / sigma_M;",
-               "        real z_tau_hi = bvn_std(tau_hi, mu_M, sigma_M);",
-               "        ",
-               "        if (rk[n] == 1) {",
-               "          // Remember",
-               "          ll = log(binormal_strip_upper(z_cR, z_tau_lo, z_tau_hi, rho));",
-               "        } else {",
-               "          // Know",
-               "          ll = log(binormal_strip_lower(z_cR, z_tau_lo, z_tau_hi, rho));",
-               "        }",
-               "      } else {",
-               "        // 'New' response (below tau[1])",
-               "        real z_tau1 = (tau[1] - mu_M) / sigma_M;",
-               "        ll = bvn_log_interval(negative_infinity(), z_tau1);",
-               "      }",
-               "    } else {",
-               "      // Lure trial",
-               "      real z_cR_l = c_R;  // Reference: mu_R=0, sigma_R=1",
-               "      ",
-               "      if (is_old_resp == 1) {",
-               "        // 'Old' response (false alarm) - use R/K",
-               "        real tau_lo = tau[old_idx];",
-               "        real tau_hi = (old_idx == J) ? positive_infinity() : tau[old_idx + 1];",
-               "        real z_tau_lo_l = tau_lo / sigma_M_l;",
-               "        real z_tau_hi_l = tau_hi / sigma_M_l;",
-               "        ",
-               "        if (rk[n] == 1) {",
-               "          ll = log(binormal_strip_upper(z_cR_l, z_tau_lo_l, z_tau_hi_l, rho_l));",
-               "        } else {",
-               "          ll = log(binormal_strip_lower(z_cR_l, z_tau_lo_l, z_tau_hi_l, rho_l));",
-               "        }",
-               "      } else {",
-               "        // Correct rejection",
-               "        real z_tau1_l = tau[1] / sigma_M_l;",
-               "        ll = bvn_log_interval(negative_infinity(), z_tau1_l);",
-               "      }",
-               "    }")
-  }
+  lines <- c(lines, "",
+             "    real tau_lo = (is_old_resp == 1) ? tau[old_idx] : negative_infinity();",
+             "    real tau_hi = (is_old_resp == 1) ? ((old_idx == J) ? positive_infinity() : tau[old_idx + 1]) : tau[1];",
+             "    real mR = (is_old[n] == 1) ? mu_R : 0;",
+             "    real sR = (is_old[n] == 1) ? sigma_R : 1;",
+             "    real mF = (is_old[n] == 1) ? mu_F : 0;",
+             "    real sF = (is_old[n] == 1) ? sigma_F : 1;",
+             "    real mM = mR + mF;",
+             "    real sM = sqrt(square(sR) + square(sF));",
+             "    real z_tau_lo = bvn_std(tau_lo, mM, sM);",
+             "    real z_tau_hi = bvn_std(tau_hi, mM, sM);",
+             "    if (rk[n] == 0) {",
+             "      ll = bvn_log_interval(z_tau_lo, z_tau_hi);",
+             if (isTRUE(n_rkg == 3)) c(
+             "    } else {",
+             "      vector[3] rkg = compute_rkg_probs(mR, sR, mF, sF, c_R, c_K, tau_lo, tau_hi);",
+             "      ll = log(fmax(rkg[rk[n]], 1e-300));",
+             "    }") else c(
+             "    } else if (rk[n] == 1) {",
+             "      ll = log(binormal_strip_upper((c_R - mR) / sR, z_tau_lo, z_tau_hi, sR / sM));",
+             "    } else {",
+             "      ll = log(binormal_strip_lower((c_R - mR) / sR, z_tau_lo, z_tau_hi, sR / sM));",
+             "    }"))
 
   lines <- c(lines,
              if (has_counts) "    target += counts[n] * ll;" else "    target += ll;")

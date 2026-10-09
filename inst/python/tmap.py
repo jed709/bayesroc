@@ -31,6 +31,8 @@ _FD_STEP = 1e-3
 _NEWTON = 3
 _NEWTON_CAP = 0.5
 _UNINFORMED = 0.1
+_MIN_TRIALS_PER_DIM = 2.0
+_THIN_MAX_DIM = 10
 _MAX_LINK = 4_000_000
 
 
@@ -105,6 +107,17 @@ class _Block:
         Lk = f"L_corr_{self.prefix}"
         L = post[Lk] if Lk in post else jnp.eye(self.dim, dtype=sd.dtype)
         return sd[:, None] * L
+
+    def Ainv(self, post):
+        """(sd * L)^-1 = L^-1 diag(1/sd); a diagonal when the block is uncorrelated."""
+        if self.sd_det is not None:
+            sd = post[self.sd_det]
+        else:
+            sd = jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
+        Lk = f"L_corr_{self.prefix}"
+        if Lk in post:
+            return solve_triangular(post[Lk], jnp.eye(self.dim, dtype=sd.dtype), lower=True) / sd[None, :]
+        return jnp.diag(1.0 / sd)
 
 
 
@@ -319,6 +332,100 @@ def _group_fixed_map(config, conf, param, off, n_thresh, mid, gap_prefix, batche
     return out
 
 
+def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
+    """The population design a random-effect conf's terms act on, in the sampler's (centred)
+    coordinates, and the flat coefficient indices of each threshold component:
+    (Xc [N, P], [(dim offset of the component, flats [P] or None)]) or None."""
+    N = int(config["N"])
+    R, nt = _re_columns(conf, N).shape[1], int(conf["n_terms"])
+    comps = []
+    if param in ("criterion", "criterion2"):
+        mid_name = "beta_thresh_mid"
+        if param == "criterion2":
+            pc = (config.get("params") or {}).get("criterion2")
+            X = np.asarray(pc["X"], dtype=float).reshape(N, -1) if pc and pc.get("X") is not None else np.ones((N, 1))
+            centre = pc.get("centre") if pc else None
+            n_thresh = int(config["K2"]) - 1
+            mid = (n_thresh + 1) // 2 - 1
+            mid_name, gap_prefix = "beta_thresh_mid_2", gap_prefix + "_2"
+        else:
+            X = np.asarray(config["X_crit"], dtype=float).reshape(N, -1)
+            centre = config.get("crit_centre")
+        P = X.shape[1]
+        scalar = bool(conf.get("location_only"))
+        n_comp = 1 if scalar else n_thresh
+        if nt != n_comp * R:
+            return None
+        for k in range(n_comp):
+            flats = []
+            for j in range(P):
+                if scalar or k == mid:
+                    flats.append(_beta_site(off, None, [(f"{mid_name}[{j + 1}]", None)]))
+                else:
+                    g = _gap_of_component(k, mid, n_thresh)
+                    flats.append(_beta_site(off, None, [(f"{gap_prefix}[{g + 1},{j + 1}]", None),
+                                                        (f"{gap_prefix}[{g + 1}]", None) if P == 1 else ("", None),
+                                                        (gap_prefix, (g,)) if P == 1 else ("", None)]))
+            comps.append((k * R, flats))
+    else:
+        pc = (config.get("params") or {}).get(param)
+        if not pc or int(pc.get("n_coef", 0)) < 1 or nt != R:
+            return None
+        X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
+        centre = pc.get("centre")
+        P = X.shape[1]
+        flats = [_beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))]) for j in range(P)]
+        if P == 1 and flats[0] is None and batched:
+            flats = [batched.get(param)]
+        comps.append((0, flats))
+    if centre:
+        cols = centre["col"] if isinstance(centre["col"], list) else [centre["col"]]
+        m = np.asarray(centre["means"][0], dtype=float)
+        X = X - np.outer(X[:, [int(j) for j in cols]].sum(1), m)
+    return X, comps
+
+
+def _proj_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched, index, n):
+    """How a change of the population coefficients moves each group's effects: within every
+    group, the least-squares projection of the (centred) population design onto the term's
+    columns, W_g = (Z_g' Z_g)^-1 Z_g' X_g. A column that one term reproduces exactly gets weight
+    one there and nothing elsewhere (the one-to-one pairs); a between-group column, an
+    interaction with a within-group factor or a continuous covariate gets its share in every
+    group it enters. Independent of how the factors are coded.
+    Returns (one-to-one pairs [(dim, flat)], weighted pairs [(dim, flats, W [n, P'])])."""
+    des = _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched)
+    if des is None:
+        return [], []
+    X, comps = des
+    N = int(config["N"])
+    Zc = _re_columns(conf, N)
+    R, P = Zc.shape[1], X.shape[1]
+    W = np.zeros((n, R, P))
+    act = np.zeros((n, R), bool)
+    order = np.argsort(index, kind="stable")
+    bounds = np.searchsorted(index[order], np.arange(n + 1))
+    for g in range(n):
+        rows = order[bounds[g]:bounds[g + 1]]
+        if not len(rows):
+            continue
+        act[g] = np.any(Zc[rows] != 0.0, 0)
+        W[g] = np.linalg.lstsq(Zc[rows], X[rows], rcond=None)[0]
+    W[np.abs(W) < 1e-10] = 0.0
+    bp, gp = [], []
+    for d0, flats in comps:
+        for r in range(R):
+            Wr = W[:, r, :]
+            # weight one wherever the term is active and nothing elsewhere: the column is the term
+            one = [j for j in range(P) if flats[j] is not None and act[:, r].any()
+                   and np.all(np.abs(Wr[act[:, r], j] - 1.0) < 1e-9) and np.all(Wr[~act[:, r], j] == 0.0)]
+            rest = [j for j in range(P) if flats[j] is not None and j not in one and np.any(Wr[:, j] != 0.0)]
+            for j in one:
+                bp.append((d0 + r, int(flats[j])))
+            if rest:
+                gp.append((d0 + r, [int(flats[j]) for j in rest], Wr[:, rest].copy()))
+    return bp, gp
+
+
 class _Super:
     """The blocks of one grouping factor, mapped jointly."""
 
@@ -348,17 +455,21 @@ class _Super:
             for c, f in enumerate(flats):
                 self.gW[i, :, pos[f]] += W[:, c]
         self.links = []
+        # one gather / one scatter for the whole [D, n] block: D chained dynamic_update_slices
+        # each copied the full parameter vector, forward and again in the VJP
+        self.pos = jnp.asarray(np.add.outer(np.array(self.starts, int), np.arange(self.n)))
 
     def A(self, post):
         return block_diag(*[b.A(post) for b in self.blocks])
 
+    def Ainv(self, post):
+        return block_diag(*[b.Ainv(post) for b in self.blocks])
+
     def get(self, v):
-        return jnp.stack([v[a:a + self.n] for a in self.starts])
+        return v[self.pos]
 
     def put(self, v, z):
-        for i, a in enumerate(self.starts):
-            v = jax.lax.dynamic_update_slice(v, z[i], (a,))
-        return v
+        return v.at[self.pos].set(z)
 
 
 def _batched_sites(res, off):
@@ -381,7 +492,10 @@ def _batched_sites(res, off):
     return out
 
 
-def _supers(config, off, split=False):
+def _supers(config, off, split=False, thin_rule=True):
+    """Super-blocks and the blocks left unmapped: wider than _THIN_MAX_DIM with fewer than _MIN_TRIALS_PER_DIM
+    trials per group per dimension, where the per-group expansion is poorly determined and costs D^3 per group
+    (HANDOFF_bayesroc_tmap_wide_blocks, REPORT_tmap_wide_blocks_resolution)."""
     res = config.get("random_effects") or []
     batched = _batched_sites(res, off)
     batched_betas = _batched_betas(config, off)
@@ -393,7 +507,7 @@ def _supers(config, off, split=False):
     for r in res:
         if r.get("cor_id") is not None:
             cross.setdefault(r["cor_id"], []).append(r)
-    by_group, seen = {}, set()
+    by_group, seen, skipped = {}, set(), []
     for conf in res:
         cid = conf.get("cor_id")
         key = ("cross", cid, conf["group"]) if cid is not None else ("re", conf.get("param"), conf["group"])
@@ -432,13 +546,18 @@ def _supers(config, off, split=False):
                 for r in range(R):
                     B.slots[o + r] = (mp, 0, Zc[:, r].tobytes())
             if mp in _RE_PARAMS:
-                pairs = _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)
-                B.bpairs += [(o + d, f) for d, f in pairs]
-                B.gpairs += [(o + d, flats, W) for d, flats, W in
-                             _group_fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas,
-                                              B.index, B.n, {d for d, _ in pairs})]
+                if mp == "criterion2" and config.get("varying_source_criteria"):
+                    B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
+                else:
+                    bp, gp = _proj_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas, B.index, B.n)
+                    B.bpairs += [(o + d, f) for d, f in bp]
+                    B.gpairs += [(o + d, flats, W) for d, flats, W in gp]
             o += nt
         if o != B.dim:
+            continue
+        per_dim = N / (B.n * B.dim)
+        if thin_rule and B.dim > _THIN_MAX_DIM and per_dim < _MIN_TRIALS_PER_DIM:
+            skipped.append(f"{B.prefix} ({B.dim} x {B.n}, {per_dim:.1f} trials per group per dimension)")
             continue
         by_group.setdefault((B.prefix if split else conf["group"], B.n), []).append(B)
     sbs = sorted([_Super(g, bl) for (g, _), bl in by_group.items()], key=lambda s: s.n)
@@ -452,7 +571,7 @@ def _supers(config, off, split=False):
             cnt = np.zeros((sb.n, E.n))
             np.add.at(cnt, (sb.index, E.index), 1.0)
             sb.links.append((e, cd, ed, cnt / np.maximum(cnt.sum(1, keepdims=True), 1.0)))
-    return sbs
+    return sbs, skipped
 
 
 def _chol(Lam, Q):
@@ -621,7 +740,7 @@ class TMap:
     def _prior(self, k, v, post, an):
         sb = self.sbs[k]
         A = sb.A(post).astype(v.dtype)
-        Ainv = solve_triangular(A, jnp.eye(sb.D, dtype=v.dtype), lower=True)
+        Ainv = sb.Ainv(post).astype(v.dtype)
         Q = Ainv.T @ Ainv
         return A, Ainv, jnp.take(jnp.take(Q, an["perm"], axis=0), an["perm"], axis=1)[::-1, ::-1]
 
@@ -795,11 +914,19 @@ class TMap:
         return out
 
 
-def build(model, config, off, unflatten, split=False):
-    """A TMap over every random-effect block it can represent, or None when there is none."""
+def build(model, config, off, unflatten, split=False, thin_rule=True, links=None):
+    """A TMap over every random-effect block it can represent, or None when there is none. Thin wide blocks are left
+    unmapped by the design rule unless thin_rule is False. `links`: True keeps the links between super-blocks, False
+    cuts them, None cuts them only when a block was left unmapped (measured on vrdp2d: 1.6-2.5x on the mapped classes)."""
     import drghmc as dr
-    sbs = _supers(config, off, split)
+    sbs, skipped = _supers(config, off, split, thin_rule)
     if not sbs:
         return None
+    keep_links = (not skipped) if links is None else bool(links)
+    if not keep_links:
+        for sb in sbs:
+            sb.links = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
-    return TMap(sbs, lambda th: post_trim(unflatten(th)))
+    tm = TMap(sbs, lambda th: post_trim(unflatten(th)))
+    tm.skipped, tm.links_kept = skipped, keep_links
+    return tm

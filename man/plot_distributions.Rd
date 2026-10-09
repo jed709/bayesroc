@@ -7,7 +7,8 @@
 plot_distributions(
   fit,
   by = NULL,
-  response = 1,
+  response = NULL,
+  type = c("marginal", "joint"),
   re_formula = NULL,
   ndraws = 100,
   seed = NULL,
@@ -23,8 +24,18 @@ cell are compared with the lures that share its non-encoding variables, so
 an encoding condition (see \code{encoding_vars} in \code{\link[=broc]{broc()}}) is compared with
 the common lures.}
 
-\item{response}{For bivariate families, \code{1} (default) shows the detection
-dimension and \code{2} the source dimension.}
+\item{response}{For bivariate families, which dimension to draw: \code{1} the detection dimension, \code{2} the
+source dimension, or both (the default, one panel each). Other families have one dimension.}
+
+\item{type}{\code{"marginal"} (default) draws one latent dimension per panel. \code{"joint"} draws the latent plane
+of the two dimensions: for the bivariate families the (detection, source) evidence densities of new,
+source-A and source-B items as contours with the detection criteria (vertical) and the source criteria
+(horizontal; per detection response when they vary); for the CDP the recollection and familiarity
+densities of lures and targets with the recollection criterion, the know criterion and the confidence
+criteria on their sum. Densities come from the posterior-mean parameters of each distinct row of a cell,
+averaged over the rows with their weights. The recollected mass of the bivariate_dp model is not a
+density (it sits in the top detection category) and is left out, so its old-item contours are the
+familiarity component scaled by 1 - lambda; the vrdp2d mixture is drawn in full.}
 
 \item{re_formula}{\code{NULL} (default) averages over the observed participants and
 items; \code{NA} gives the population-level (typical participant) curve.}

@@ -83,6 +83,8 @@
   on.exit(unlink(tf))
   con <- file(tf, "wb")
   writeLines(c(model$family$family, model$stan_code, model$batch_cpp$cpp_code %||% ""), con)
+  # the JAX sampler's coordinates (centred designs) are part of what a saved state means
+  writeLines(c("centred-1", utils::capture.output(utils::str(.centre_all(model)))), con)
   for (k in sort(names(sd))) {
     writeLines(k, con)
     v <- sd[[k]]

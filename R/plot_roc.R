@@ -16,9 +16,17 @@
 #'   cell are compared with the lures that share its non-encoding variables, so
 #'   an encoding condition (see `encoding_vars` in [broc()]) is compared with
 #'   the common lures.
-#' @param response For bivariate families, `1` (default) plots the detection ROC
-#'   (old versus new items) and `2` the source ROC (source B versus source A
-#'   items, with high source ratings meaning source B).
+#' @param response For bivariate families, which ROC to plot: `1` the detection ROC, `2` the
+#'   source ROC, or both (the default, one panel each). Other families have one ROC.
+#' @param type `"marginal"` (default) draws the ROC of each response dimension. For the bivariate families
+#'   two joint displays are available: `"conditional"` draws the source ROC separately for the trials in each
+#'   detection response (one panel per detection category), with the model-implied conditional curve, which is
+#'   where the model's claim that source accuracy rises with detection confidence is tested; `"joint"` draws
+#'   the three-way ROC surface (Mossman, 1999) as a map: for every decision rule "new if detection evidence is
+#'   below c, else B if source evidence is above k, else A", the rate P(say B | B) is shown as colour and
+#'   contours over P(say new | new) and P(say A | A), with the rules the rating grid realises as labelled
+#'   points and the volume under the surface (VUS; chance 1/6) with its posterior interval. The surface is
+#'   drawn for a typical participant (random effects at zero) regardless of `re_formula`.
 #' @param scale `"probability"` (default) or `"z"` for the zROC (probit axes).
 #' @param observed If `TRUE` (default), overlay the observed operating points
 #'   with 95% intervals.
@@ -39,53 +47,80 @@
 #' plot_roc(fit, by = "condition", scale = "z")
 #' plot_roc(fit_bivariate, response = 2)
 #' }
-plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z"), observed = TRUE,
+plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "conditional", "joint"),
+                     scale = c("probability", "z"), observed = TRUE,
                      re_formula = NULL, ndraws = 200, prob = 0.95, seed = NULL, cores = 1) {
   .need_ggplot2()
   restore_seed <- .seed_scope(seed)
   on.exit(restore_seed(), add = TRUE)
   scale <- match.arg(scale)
+  type <- match.arg(type)
   model <- .plot_model(fit)
   by <- .check_by(model, by)
   fam <- model$family$family
+  if (type != "marginal") {
+    .joint_family_fn(fam)
+    cells <- .cell_of_rows(model, by)
+    cf <- .cell_frame(model, by, cells)
+    w <- .row_weights(model)
+    if (type == "joint") {
+      # the surface scans both axes over a grid, so it is drawn for the typical participant
+      setup <- .plot_setup(fit, model, ndraws, NA)
+      return(.roc_joint_plot(.roc_joint(model, setup, cells, cf, w, prob, observed), by, prob))
+    }
+    setup <- .plot_setup(fit, model, ndraws, re_formula)
+    return(.roc_conditional_plot(.roc_conditional(model, setup, cells, cf, w, by, scale, prob, observed), by, scale, prob, re_formula))
+  }
   if (fam %in% c("cumulative", "bivariate_cumulative")) {
     stop("ROC curves are not defined for the ", family_display_name(fam), " family: ordinal ",
          "models without signal and noise items have no ROC.", call. = FALSE)
   }
   bivariate <- .is_bivariate_family(fam)
-  if (!bivariate && !identical(as.numeric(response), 1)) {
-    stop("response = 2 is only available for bivariate families.", call. = FALSE)
-  }
-  roles <- .roc_roles(model, response)
-  K <- if (bivariate && response == 2) model$model_data$K2 else model$model_data$K
-  if (K < 3) stop("An ROC needs at least three response categories; this model has ", K, ".", call. = FALSE)
-
+  responses <- .plot_responses(response, bivariate)
   cells <- .cell_of_rows(model, by)
-  pairs <- .pair_cells(model, by, cells, roles$signal, roles$noise)
-  if (!length(pairs)) stop("No cell has both signal and noise items.", call. = FALSE)
-
-  setup <- .plot_setup(fit, model, ndraws, re_formula, thresholds2 = !identical(as.numeric(response), 1))
+  if (cores > 1 && .bvn_native_ready()) {
+    # the native kernels thread the threshold construction and the survival computation
+    old_threads <- .bvn_native$threads
+    .bvn_native$threads <- as.integer(cores)
+    on.exit(.bvn_native$threads <- old_threads, add = TRUE)
+  }
+  setup <- .plot_setup(fit, model, ndraws, re_formula, thresholds2 = any(responses == 2L))
   setup$cache <- new.env(parent = emptyenv())
   w <- .row_weights(model)
-  J <- K - 1L
-  u <- .roc_u_grid(J)
-  y_obs <- if (bivariate && response == 2) model$stan_data$y2 else model$stan_data$y
-
-  surv <- .roc_survival_pairs(model, setup, pairs, w, response, u, cores)
-  curves <- list(); points <- list()
-  for (lev in names(pairs)) {
-    pr <- pairs[[lev]]
-    curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob), .cell = lev)
-    if (observed) points[[lev]] <- cbind(.roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
-  }
   cf <- .cell_frame(model, by, cells)
-  curves <- merge(do.call(rbind, curves), cf, by = ".cell", sort = FALSE)
-  pts <- if (observed) merge(do.call(rbind, points), cf, by = ".cell", sort = FALSE)
+  parts <- lapply(responses, function(resp) {
+    roles <- .roc_roles(model, resp)
+    K <- if (bivariate && resp == 2L) model$model_data$K2 else model$model_data$K
+    if (K < 3) stop("An ROC needs at least three response categories; this model has ", K, ".", call. = FALSE)
+    pairs <- .pair_cells(model, by, cells, roles$signal, roles$noise)
+    if (!length(pairs)) stop("No cell has both signal and noise items.", call. = FALSE)
+    u <- .roc_u_grid(K - 1L)
+    y_obs <- if (bivariate && resp == 2L) model$stan_data$y2 else model$stan_data$y
+    surv <- .roc_survival_pairs(model, setup, pairs, w, resp, u, cores)
+    curves <- list(); points <- list()
+    for (lev in names(pairs)) {
+      pr <- pairs[[lev]]
+      curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob), .cell = lev)
+      if (observed) points[[lev]] <- cbind(.roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
+    }
+    dim_label <- if (roles$what == "source") "Source" else "Detection"
+    curves <- cbind(merge(do.call(rbind, curves), cf, by = ".cell", sort = FALSE), .dim = dim_label)
+    pts <- if (observed) cbind(merge(do.call(rbind, points), cf, by = ".cell", sort = FALSE), .dim = dim_label)
+    list(curves = curves, pts = pts, what = roles$what, n_cells = length(pairs))
+  })
+  curves <- do.call(rbind, lapply(parts, `[[`, "curves"))
+  pts <- if (observed) do.call(rbind, lapply(parts, `[[`, "pts"))
+  dims <- vapply(parts, function(p) as.character(p$curves$.dim[1]), character(1))
   for (nm in c("curves", "pts")) {
     x <- get(nm)
-    if (!is.null(x)) { x$.cell <- factor(x$.cell, levels = levels(cf$.cell)); assign(nm, x) }
+    if (!is.null(x)) {
+      x$.cell <- factor(x$.cell, levels = levels(cf$.cell))
+      x$.dim <- factor(x$.dim, levels = dims)
+      assign(nm, x)
+    }
   }
-  .roc_plot(curves, pts, by, scale, prob, roles$what, length(pairs), re_formula)
+  .roc_plot(curves, pts, by, scale, prob, if (length(parts) > 1L) "both" else parts[[1]]$what,
+            max(vapply(parts, `[[`, integer(1), "n_cells")), re_formula)
 }
 
 .roc_band <- function(far, hr, scale, prob) {
@@ -148,7 +183,7 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
     list(cell = lev, role = "signal", rows = pairs[[lev]]$signal),
     list(cell = lev, role = "noise", rows = pairs[[lev]]$noise))), recursive = FALSE)
   cores <- max(1L, as.integer(cores))
-  if (cores > 1L && .is_bivariate_family(model$family$family) && .bvn_native_ready()) {
+  if (cores > 1L && .bvn_native_ready()) {
     # the native kernels thread the survival computation; no cluster
     old_threads <- .bvn_native$threads
     .bvn_native$threads <- cores
@@ -255,7 +290,9 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
     return(matrix(acc, S, length(u)) / sum(w_rows))
   }
   acc <- matrix(0, S, U)
-  chunk <- max(1L, floor(4e6 / (S * (U + 1))))
+  fast2 <- .is_bivariate_family(fam) && response == 2 && isTRUE(getOption("bayesroc.source_survival_fast", TRUE))
+  # the direct survival holds one [S, r, U] block, so its chunks can be large enough for the threaded pnorm
+  chunk <- max(1L, floor((if (fast2) 1.6e7 else 4e6) / (S * (U + 1))))
   for (start in seq(1L, length(rows), by = chunk)) {
     idx <- rows[start:min(length(rows), start + chunk - 1L)]
     r <- length(idx)
@@ -267,7 +304,8 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
       sg <- sqrt((tps$sigma %||% 1)^2 + (tps$sigma2 %||% 1)^2)
       mu[, !old] <- 0
       sg[, !old] <- sqrt(2)
-      surv <- 1 - stats::pnorm((c_path - as.vector(mu)) / as.vector(sg))
+      surv <- 1 - .pnorm_v((c_path - as.vector(mu)) / as.vector(sg))
+      dim(surv) <- dim(c_path)
       for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
       next
     }
@@ -280,6 +318,41 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
     } else if (response == 1) {
       pr <- compute_category_probs(tps, crit(setup$th[, idx, , drop = FALSE]), ds, model,
                                    link, S, r, U + 1L, margin = 1L)
+    } else if (fam == "vrdp2d" && !is.null(u) && .bvn_native_ready() && !is.null(.bvn_native$sym_srcsurv) &&
+               isTRUE(getOption("bayesroc.source_survival_native", TRUE))) {
+      # the source response's survival along the criterion path, accumulated natively
+      t2 <- .subset_thresh2(setup$th2, idx)
+      pt <- .vrdp2d_source_parts(tps, setup$data_src$item_type[idx], S, r, model$model_data)
+      th1 <- setup$th[, idx, , drop = FALSE]
+      varying <- length(dim(t2)) == 4L
+      res <- .C(.bvn_native$sym_srcsurv, as.double(th1), as.double(t2), as.double(pt$muF), as.double(pt$sig1),
+                as.double(pt$muR), as.double(pt$lam), as.double(pt$mu2), as.double(pt$sig2), as.double(u),
+                as.double(w[idx]),
+                as.integer(c(S, r, dim(th1)[3], dim(t2)[length(dim(t2))], length(u), varying,
+                             identical(attr(crit, "mode"), "path"), .native_threads(), 0L)),
+                8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
+      acc <- acc + matrix(res, S, length(u))
+      next
+    } else if (fam %in% c("bivariate_sdt", "bivariate_dp") && !is.null(u) && .bvn_native_ready() &&
+               !is.null(.bvn_native$sym_srcsurv_g) && isTRUE(getOption("bayesroc.source_survival_native", TRUE)) &&
+               is.null(attr(.subset_thresh2(setup$th2, idx), "thresh2_new"))) {
+      t2 <- .subset_thresh2(setup$th2, idx)
+      md <- model$model_data
+      st <- .biv_trial_setup(tps, setup$data_src$item_type[idx], seq_len(r), S, md)
+      th1 <- setup$th[, idx, , drop = FALSE]
+      varying <- length(dim(t2)) == 4L
+      oldv <- as.double(st$it != 1L) + as.double(st$it == 3L)
+      lam <- if (fam == "bivariate_dp") st$sub(tps$lambda) else double(S * r)
+      lam2 <- if (fam == "bivariate_dp") st$sub(tps$lambda2) else double(S * r)
+      res <- .C(.bvn_native$sym_srcsurv_g, as.double(th1), as.double(t2), as.double(st$mu1), as.double(st$mu2),
+                as.double(st$sig1), as.double(st$sig2), as.double(st$rho), oldv, as.double(lam), as.double(lam2),
+                as.double(u), as.double(w[idx]),
+                as.integer(c(S, r, dim(th1)[3], dim(t2)[length(dim(t2))], length(u), varying,
+                             identical(attr(crit, "mode"), "path"), .native_threads(), isTRUE(md$bounded),
+                             fam == "bivariate_dp", 0L)),
+                8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
+      acc <- acc + matrix(res, S, length(u))
+      next
     } else {
       t2 <- .subset_thresh2(setup$th2, idx)
       t2g <- if (length(dim(t2)) == 4L) {
@@ -289,6 +362,12 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
       } else crit(t2)
       nw <- attr(t2, "thresh2_new")
       if (!is.null(nw)) attr(t2g, "thresh2_new") <- crit(array(nw, c(S, 1L, ncol(nw))))[, 1, ]
+      if (isTRUE(getOption("bayesroc.source_survival_fast", TRUE))) {
+        sv <- probs_source_survival(fam, tps, setup$th[, idx, , drop = FALSE], t2g, ds$item_type, S, r,
+                                    model$model_data$K, U, model, thresh2_new = attr(t2g, "thresh2_new"))
+        for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(sv[, , j], S, r) %*% w[idx]
+        next
+      }
       m2 <- model
       m2$model_data$K2 <- U + 1L
       pr <- compute_category_probs(tps, setup$th[, idx, , drop = FALSE], ds, m2, link, S, r,
@@ -330,14 +409,24 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
       ggplot2::geom_linerange(data = pts, ggplot2::aes(xmin = .data$xlo, xmax = .data$xhi), orientation = "y", linewidth = 0.35) +
       ggplot2::geom_point(data = pts, shape = 21, fill = "white", size = 2.1, stroke = 0.9)
   }
-  if (length(by) > 1L) p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", paste(by[-1], collapse = " + "))))
-  axis_x <- if (what == "source") "Source A items called B" else "False-alarm rate"
-  axis_y <- if (what == "source") "Source B items called B" else "Hit rate"
+  both <- what == "both"
+  if (both && length(by) > 1L) {
+    p <- p + ggplot2::facet_grid(stats::as.formula(paste(paste(by[-1], collapse = " + "), "~ .dim")))
+  } else if (both) {
+    p <- p + ggplot2::facet_wrap(~ .dim)
+  } else if (length(by) > 1L) {
+    p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", paste(by[-1], collapse = " + "))))
+  }
+  axis_x <- switch(what, source = "Source A items called B", both = "False-alarm rate (detection); A items called B (source)",
+                   "False-alarm rate")
+  axis_y <- switch(what, source = "Source B items called B", both = "Hit rate (detection); B items called B (source)",
+                   "Hit rate")
   if (z) {
     rng <- if (!is.null(pts)) range(c(pts$x, pts$y), na.rm = TRUE) + c(-0.75, 0.75)
            else range(c(curves$x, curves$y), na.rm = TRUE)
     p <- p + ggplot2::coord_equal(xlim = rng, ylim = rng) +
-      ggplot2::labs(x = paste0("z(", tolower(axis_x), ")"), y = paste0("z(", tolower(axis_y), ")"))
+      ggplot2::labs(x = paste0("z(", if (both) axis_x else tolower(axis_x), ")"),
+                    y = paste0("z(", if (both) axis_y else tolower(axis_y), ")"))
   } else {
     p <- p + ggplot2::coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
       ggplot2::scale_x_continuous(breaks = seq(0, 1, 0.25), labels = c("0", ".25", ".5", ".75", "1")) +
@@ -346,7 +435,7 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
   }
   level <- if (identical(re_formula, NA)) "Model curve for a typical participant (random effects at zero)."
            else "Model curve averaged over the observed data."
-  title <- paste0(if (z) "zROC" else "ROC", if (what == "source") ": source memory" else "")
+  title <- paste0(if (z) "zROC" else "ROC", switch(what, source = ": source memory", both = ": detection and source memory", ""))
   p + .colour_scales(n_cells, if (length(by)) by[1] else NULL) +
     ggplot2::labs(title = title,
                   subtitle = paste0("Model with ", round(100 * prob), "% band",
@@ -357,4 +446,44 @@ plot_roc <- function(fit, by = NULL, response = 1, scale = c("probability", "z")
 
 .roc_u_grid <- function(J) {
   unique(c(seq(0, 1, length.out = 30), seq(1, J, length.out = 14L * (J - 1L) + 1L), seq(J, J + 1, length.out = 30)))
+}
+
+# Per-(draw, trial) parts of the vrdp2d source survival for the native kernel: familiarity and recollection
+# detection means, the shared detection SD, the recollection weight, and the source mean/SD of the
+# recollected component (new items: mean 0, SD 1, weight 0), each [S, r].
+.vrdp2d_source_parts <- function(tps, item_type, S, r, md) {
+  it <- matrix(rep(item_type, each = S), S, r)
+  isnew <- it == 1L; isB <- it == 3L
+  one <- matrix(1, S, r)
+  dF <- tps$dprime; dR <- dF + tps$dprime2; lam <- tps$lambda
+  s1 <- if (!is.null(tps$sigma)) tps$sigma else one
+  s2 <- if (!is.null(tps$sigma2)) tps$sigma2 else one
+  qA <- tps$discrim
+  src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, tps$discrim_B, qA) else ifelse(isB, -qA, qA)
+  list(muF = ifelse(isnew, 0, dF), sig1 = ifelse(isnew, 1, s1), muR = ifelse(isnew, 0, dR),
+       lam = ifelse(isnew, 0, lam), mu2 = ifelse(isnew, 0, src), sig2 = ifelse(isnew, 1, s2))
+}
+
+# Native vrdp2d source survival against the R probs_source_survival on rows of a plot setup.
+.parity_src_native <- function(model, setup, rows, u) {
+  acc_r <- function(on) {
+    options(bayesroc.source_survival_native = on)
+    .roc_survival_rows(model, setup, rows, rep(1, length(rows)), 2, length(u), structure(function(th) .criterion_path(th, u), u = u, mode = "path"))
+  }
+  old <- getOption("bayesroc.source_survival_native", TRUE); on.exit(options(bayesroc.source_survival_native = old), add = TRUE)
+  a <- acc_r(TRUE); b <- acc_r(FALSE)
+  c(max_abs_diff = max(abs(a - b)), cells = length(a))
+}
+
+# The same on the absolute criterion grid of the distribution plots.
+.parity_src_native_grid <- function(model, setup, rows, u) {
+  crit <- function(th) array(rep(u, each = dim(th)[1] * dim(th)[2]), c(dim(th)[1:2], length(u)))
+  attr(crit, "u") <- u; attr(crit, "mode") <- "grid"
+  acc_r <- function(on) {
+    options(bayesroc.source_survival_native = on)
+    .roc_survival_rows(model, setup, rows, rep(1, length(rows)), 2, length(u), crit)
+  }
+  old <- getOption("bayesroc.source_survival_native", TRUE); on.exit(options(bayesroc.source_survival_native = old), add = TRUE)
+  a <- acc_r(TRUE); b <- acc_r(FALSE)
+  c(max_abs_diff = max(abs(a - b)), cells = length(a))
 }

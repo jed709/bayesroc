@@ -99,7 +99,10 @@
   idx <- idx[vapply(idx, function(f) file.exists(file.path(cache, f)), logical(1))]
   try(saveRDS(idx, idx_file), silent = TRUE)
   stale <- setdiff(list.files(cache, pattern = paste0("^bvn_ffi_.*\\", ext, "$")), unlist(idx))
-  if (length(stale)) suppressWarnings(unlink(file.path(cache, stale)))
+  # two R setups sharing one Python environment key different libraries: keep anything built in the last day
+  stale <- file.path(cache, stale)
+  stale <- stale[difftime(Sys.time(), file.mtime(stale), units = "hours") > 24]
+  if (length(stale)) suppressWarnings(unlink(stale))
   invisible(NULL)
 }
 

@@ -90,7 +90,7 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       sprintf("  int<lower=1> n_new;  // Number of new confidence levels (=%d)", n_new),
       "  array[N] int<lower=1, upper=K> y;  // Confidence response",
       sprintf("  int<lower=2, upper=3> n_rkg;  // 2=R/K, 3=R/K/G (=%d)", model_data$stan_data$n_rkg),
-      "  array[N] int<lower=1, upper=n_rkg> rk;  // 1=R, 2=K, (3=G)",
+      "  array[N] int<lower=0, upper=n_rkg> rk;  // 1=R, 2=K, (3=G), 0=no judgement",
       "  array[N] real is_old;  // 0=lure, 1=target (or centered: -0.5/0.5)",
       "  array[J] int<lower=1> old_level_map;  // Maps 1:J to actual confidence levels",
       "  array[n_new] int<lower=1> new_level_map;  // Maps 1:n_new to actual confidence levels"

@@ -164,26 +164,47 @@ binormal_cdf_r <- function(z1, z2, rho) {
 
 .bvn_native <- new.env(parent = emptyenv())
 
-# Whether the native kernel library (the one the JAX backend builds) can serve Phi2 to R.
-# Without it, or with options(bayesroc.native_predict = FALSE), the R quadrature is used.
+# Whether the native kernel library (the one the JAX backend builds) can serve Phi2 and the prediction
+# kernels to R. Without it, or with options(bayesroc.native_predict = FALSE), the R paths are used. A library
+# named by BAYESROC_BVN_LIB is taken only when it carries every kernel; otherwise the library of the current
+# sources is built (or found in the cache). A session that ends up on the R path says so once.
 .bvn_native_ready <- function() {
   st <- .bvn_native
-  if (!is.null(st$ok)) return(st$ok)
+  # a cluster worker inherits this environment with dead symbol pointers: reload in the new process
+  if (!is.null(st$ok) && identical(st$pid, Sys.getpid())) return(st$ok)
   st$ok <- FALSE
+  st$pid <- Sys.getpid()
   if (isFALSE(getOption("bayesroc.native_predict", TRUE))) return(FALSE)
-  lib <- Sys.getenv("BAYESROC_BVN_LIB", "")
-  if (!nzchar(lib) || !file.exists(lib)) {
-    lib <- tryCatch(.bvn_ffi_lib(), error = function(e) NULL)
+  load_lib <- function(lib) {
+    tryCatch({
+      dll <- dyn.load(lib)
+      sym <- function(nm) getNativeSymbolInfo(nm, PACKAGE = dll)
+      st$sym <- sym("bayesroc_r_bvn_cdf")
+      st$sym_pnorm <- sym("bayesroc_r_pnorm")
+      st$sym_rect <- sym("bayesroc_r_bvn_rect")
+      st$sym_surv <- sym("bayesroc_r_det_survival")
+      st$sym_srcsurv <- sym("bayesroc_r_src_survival")
+      st$sym_srcsurv_g <- sym("bayesroc_r_src_survival_gauss")
+      st$sym_exp <- sym("bayesroc_r_exp")
+      st$sym_cdp <- sym("bayesroc_r_cdp_probs")
+      TRUE
+    }, error = function(e) FALSE)
   }
-  if (is.null(lib) || !nzchar(lib) || !file.exists(lib)) return(FALSE)
-  ok <- tryCatch({
-    dll <- dyn.load(lib)
-    st$sym <- getNativeSymbolInfo("bayesroc_r_bvn_cdf", PACKAGE = dll)
-    st$sym_pnorm <- getNativeSymbolInfo("bayesroc_r_pnorm", PACKAGE = dll)
-    st$sym_rect <- getNativeSymbolInfo("bayesroc_r_bvn_rect", PACKAGE = dll)
-    st$sym_surv <- getNativeSymbolInfo("bayesroc_r_det_survival", PACKAGE = dll)
-    TRUE
-  }, error = function(e) FALSE)
+  ok <- FALSE
+  lib <- Sys.getenv("BAYESROC_BVN_LIB", "")
+  if (nzchar(lib) && file.exists(lib)) ok <- load_lib(lib)
+  if (!ok) {
+    why <- NULL
+    lib <- tryCatch(.bvn_ffi_lib(), error = function(e) { why <<- conditionMessage(e); NULL })
+    if (!is.null(lib) && nzchar(lib) && file.exists(lib)) {
+      ok <- load_lib(lib)
+      if (!ok) why <- paste("could not load", lib)
+    } else if (is.null(why)) {
+      why <- "no C++ toolchain or JAX environment to build it"
+    }
+    if (!ok) message("bayesroc: native prediction kernels unavailable (", why, "); bivariate predictions take the R path, ",
+                     "which is many times slower.")
+  }
   if (ok) Sys.setenv(BAYESROC_BVN_LIB = lib)
   st$ok <- ok
   ok
@@ -197,6 +218,15 @@ binormal_cdf_r <- function(z1, z2, rho) {
 
 .native_threads <- function() {
   max(1L, as.integer(.bvn_native$threads %||% getOption("bayesroc.predict_threads", 1L)))
+}
+
+# exp() for long vectors (the threshold gaps), threaded through the native library when it is there
+.exp_v <- function(x) {
+  n <- length(x)
+  if (n < 50000L || !.bvn_native_ready() || is.null(.bvn_native$sym_exp)) return(exp(x))
+  out <- .C(.bvn_native$sym_exp, as.double(x), as.integer(n), .native_threads(), p = double(n), NAOK = TRUE)$p
+  dim(out) <- dim(x)
+  out
 }
 
 # stats::pnorm() for long vectors, threaded through the native library when it is there

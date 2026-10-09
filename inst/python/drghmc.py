@@ -21,7 +21,7 @@ _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 _DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
                  mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64",
-                 transport=True)
+                 transport=True, transport_thin=True, transport_links=None)
 _INTEGRATORS = ("bcss3", "bcss2", "leapfrog")
 
 
@@ -46,6 +46,8 @@ def _merge_control(control):
          "need 0 <= mass_burn_frac < mass_end_frac <= 1"),
         (c["precision"] in ("f64", "f32"), "precision must be 'f64' or 'f32'"),
         (isinstance(c["transport"], (bool, np.bool_)), "transport must be TRUE or FALSE"),
+        (isinstance(c["transport_thin"], (bool, np.bool_)), "transport_thin must be TRUE or FALSE"),
+        (c["transport_links"] is None or isinstance(c["transport_links"], (bool, np.bool_)), "transport_links must be TRUE, FALSE or NULL (auto: cut when a block is left unmapped)"),
     ]
     for ok, msg in checks:
         if not ok:
@@ -245,9 +247,13 @@ def _transport(model, config, ctrl, off, unflatten, progress_bar=False):
     if not ctrl.get("transport", True):
         return None
     import tmap
-    tm = tmap.build(model, config, off, unflatten)
+    tm = tmap.build(model, config, off, unflatten, thin_rule=bool(ctrl.get("transport_thin", True)),
+                    links=ctrl.get("transport_links", None))
     if tm is not None and progress_bar:
         print(f"[DR-G-HMC] group transport map on {', '.join(tm.specs)}", flush=True)
+        if tm.skipped:
+            print(f"[DR-G-HMC] left to the non-centred transform (thin wide blocks): {'; '.join(tm.skipped)}"
+                  f"{'; links between super-blocks cut' if not tm.links_kept else ''}", flush=True)
     return tm
 
 
@@ -917,7 +923,8 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
                     bar.update(1)
     if bar is not None:
         bar.close()
-    return out
+    import numpyro_backend as backend
+    return backend._restore_centred(out)
 
 
 def _f32_spawn(config, chains, samples, thinning, seed, ctrl, parallel,

@@ -229,6 +229,11 @@ build_numpyro_config <- function(model) {
                   "rec_crit", "know_crit",
                   "dprime_L", "sigma_L", "lambda_L")
 
+  # the sampler centres each design's non-intercept columns (the intercept absorbs them; see
+  # .centre_info); not for an ordered d' pair or a know criterion under the slack transform,
+  # whose intercepts carry constraints of their own
+  skip_centre <- c(if (isTRUE(md$needs_ordered_dprime)) c("dprime", "dprime2"),
+                   if (isTRUE(md$stan_data$kc_knob == 1L)) "know_crit")
   for (param in all_params) {
     fe_key <- paste0(param, "_fixed")
     fe <- md[[fe_key]]
@@ -254,6 +259,7 @@ build_numpyro_config <- function(model) {
         pconf$priors[[coef_name]] <- get_fixed_prior(prior_lookup, param, coef_name)
       }
 
+      pconf$centre <- .centre_info(fe$X, col_names, skip = param %in% skip_centre)
       config$params[[param]] <- pconf
     }
   }
@@ -304,6 +310,7 @@ build_numpyro_config <- function(model) {
     config$P_crit <- crit$n_coef
     config$X_crit <- as.matrix(crit$X)
     config$crit_col_names <- crit$col_names
+    config$crit_centre <- .centre_info(crit$X, crit$coef_names %||% colnames(crit$X))
   } else {
     config$P_crit <- 1L
     config$X_crit <- matrix(1, nrow = config$N, ncol = 1)
@@ -333,6 +340,7 @@ build_numpyro_config <- function(model) {
     for (j in seq_len(crit2$n_coef)) {
       c2_conf$priors[[c2_cols[j]]] <- config$prior_thresh_mid2
     }
+    c2_conf$centre <- .centre_info(crit2$X, c2_cols)
     config$params[["criterion2"]] <- c2_conf
   }
 
@@ -813,4 +821,40 @@ read_npy <- function(path) {
       try(worker$proc$kill_tree(), silent = TRUE)
     })
   invisible(out_dir)
+}
+
+
+# The sampler's coordinates for a design with an intercept and other columns: the intercept it
+# samples is the value at the columns' means, b0_c = b0 + sum_j m_j b_j, an exact linear map that
+# removes the intercept-slope ridge (and, through the map's couplings, the one between a
+# between-group coefficient and the nested groups' effects). Means are taken over the rows the
+# intercept column switches on, so encoded designs (lure rows all zero) centre their old rows only.
+# Stored as list(col, means = list(m)): the nested list keeps `_trim_config` from slicing it.
+.centre_info <- function(X, col_names, skip = FALSE) {
+  X <- as.matrix(X)
+  if (skip || ncol(X) < 2L) return(NULL)
+  nm <- colnames(X) %||% col_names
+  j <- match("(Intercept)", nm)
+  if (is.na(j)) {
+    # cell-means designs: the 0/1 columns that partition the rows act as the intercept jointly
+    bin <- which(apply(X, 2, function(v) all(v %in% c(0, 1))))
+    if (!length(bin) || length(bin) == ncol(X)) return(NULL)
+    S <- rowSums(X[, bin, drop = FALSE])
+    if (any(S > 1)) return(NULL)
+    on <- S == 1
+    j <- bin
+  } else {
+    on <- X[, j] == 1
+  }
+  if (!any(on)) return(NULL)
+  m <- colMeans(X[on, , drop = FALSE])
+  m[j] <- 0
+  if (all(abs(m) < 1e-12)) return(NULL)
+  list(col = as.list(unname(j - 1L)), means = list(unname(m)))
+}
+
+.centre_all <- function(model) {
+  cfg <- tryCatch(build_numpyro_config(model), error = function(e) NULL)
+  if (is.null(cfg)) return(NULL)
+  list(params = lapply(cfg$params, `[[`, "centre"), crit = cfg$crit_centre)
 }

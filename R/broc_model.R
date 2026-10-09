@@ -172,7 +172,8 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'   \item{Item type (bivariate families)}{Codes 1/2/3 or 0/1/2 (new, source A,
 #'     source B), or a factor whose levels are in that order.}
 #'   \item{Remember/know (cdp)}{"remember"/"know"/"guess", "R"/"K"/"G" or 1/2/3;
-#'     missing for responses that are not "old".}
+#'     may be missing on any response (that response then enters through its
+#'     confidence rating alone).}
 #'   \item{Counts}{Non-negative whole numbers; rows with a count of zero are
 #'     dropped.}
 #'   \item{Missing values}{Rows with a missing value in any variable the model
@@ -618,10 +619,11 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     data[[is_old_var]] <- as.numeric(model_data$stan_data$is_old)
   }
 
-  if (!is.null(model_data$old_levels) && is.null(family$old_levels)) {
+  if (!is.null(model_data$old_levels) && (is.null(family$old_levels) || identical(family$family, "cdp"))) {
     family$old_levels <- model_data$old_levels
     family$J <- length(model_data$old_levels)
   }
+  if (!is.null(model_data$rk_levels)) family$rk_levels <- model_data$rk_levels
   if (!is.null(model_data$stan_data$n_rkg) && is.null(family$n_rkg)) {
     family$n_rkg <- as.integer(model_data$stan_data$n_rkg)
   }
@@ -819,43 +821,43 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       rk_numeric <- as.integer(rk_values)
     }
 
+    has_rk <- !is.na(rk_numeric)
+    if (!any(has_rk)) {
+      stop("No rows have a usable remember/know value in `", rk_var, "`.", call. = FALSE)
+    }
+    judged <- sort(unique(stan_data$y[has_rk]))
     if (is.null(family$old_levels)) {
-      has_rk <- !is.na(rk_numeric)
-      if (!any(has_rk)) {
-        stop("Cannot infer old_levels: no rows have non-NA rk values. ",
-             "Either provide rk for 'old' responses or pass old_levels explicitly to cdp().",
-             call. = FALSE)
+      thr_levels <- judged
+    } else {
+      if (any(family$old_levels < 1L | family$old_levels > K)) {
+        stop("cdp(old_levels = ...) must be response values within the data's range (",
+             paste(range(rc$labels), collapse = " to "), ", in the data's own coding).", call. = FALSE)
       }
-      inferred <- sort(unique(stan_data$y[has_rk]))
-      family$old_levels <- inferred
-      family$J <- length(inferred)
-      message("cdp(): inferred old_levels = c(",
-              paste(inferred, collapse = ", "), ") from rk data.")
+      thr_levels <- sort(union(family$old_levels, judged))
     }
-
-    if (any(family$old_levels < 1L | family$old_levels > K)) {
-      stop("cdp(old_levels = ...) must be response values within the data's range (",
-           paste(range(rc$labels), collapse = " to "), ", in the data's own coding).", call. = FALSE)
+    thr_levels <- seq.int(max(min(thr_levels), 2L), K)
+    if (is.null(family$old_levels)) {
+      message("cdp(): remember/know judgements found on responses ",
+              paste(rc$labels[range(judged)], collapse = " to "), "; ",
+              if (min(judged) == 1L) "modelling every confidence level."
+              else paste0("responses below ", rc$labels[min(thr_levels)], " are treated as one \"new\" category."))
+    } else if (!identical(as.integer(thr_levels), as.integer(family$old_levels))) {
+      message("cdp(): remember/know judgements are present outside old_levels; modelling confidence levels ",
+              paste(rc$labels[range(thr_levels)], collapse = " to "), " separately.")
     }
-    old_resp_mask <- stan_data$y %in% family$old_levels
+    family$old_levels <- as.integer(thr_levels)
+    family$J <- length(thr_levels)
+    family$rk_levels <- if (any(has_rk & !(stan_data$y %in% thr_levels))) seq_len(K) else as.integer(thr_levels)
 
-    invalid_old <- old_resp_mask & is.na(rk_numeric)
-    if (any(invalid_old)) {
-      n_bad <- sum(invalid_old)
-      stop("Found ", n_bad, " row(s) with response in old_levels but missing/invalid rk value. ",
-           "R/K judgments are required for all 'old' responses (confidence levels ",
-           paste(family$old_levels, collapse = ", "), ").")
-    }
-
-    rk_old <- rk_numeric[old_resp_mask]
-    n_rkg <- max(rk_old, na.rm = TRUE)
-    if (!n_rkg %in% c(2L, 3L)) {
-      stop("rk values must have 2 (R/K) or 3 (R/K/G) unique levels, found: ", n_rkg)
+    n_rkg <- max(rk_numeric, na.rm = TRUE)
+    if (!n_rkg %in% c(2L, 3L) || any(rk_numeric[has_rk] < 1L)) {
+      stop("rk values must have 2 (R/K) or 3 (R/K/G) levels coded 1, 2(, 3); found: ",
+           paste(sort(unique(rk_numeric[has_rk])), collapse = ", "))
     }
     stan_data$n_rkg <- as.integer(n_rkg)
     family$n_rkg <- n_rkg
 
-    rk_numeric[is.na(rk_numeric)] <- 1L
+    rk_numeric[is.na(rk_numeric)] <- 0L
     stan_data$rk <- rk_numeric
 
     if (n_rkg == 3L && !has_know_crit) {
@@ -1628,6 +1630,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     bounded = isTRUE(family$bounded),
     source_criteria = family$source_criteria,
     old_levels = family$old_levels,
+    rk_levels = family$rk_levels,
     varying_re = if (isTRUE(family$varying_source_criteria)) "full" else "shared",
     cross_cor = cross_cor,
     smooth_data = if (length(smooth_data) > 0) smooth_data else NULL,
@@ -2215,7 +2218,7 @@ fit_broc <- function(model,
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
-                    "precision", "transport")
+                    "precision", "transport", "transport_thin", "transport_links")
   if (!is.null(.ctrl$transport) && !(is.logical(.ctrl$transport) && length(.ctrl$transport) == 1L &&
                                      !is.na(.ctrl$transport))) {
     stop("`control$transport` must be TRUE or FALSE.", call. = FALSE)

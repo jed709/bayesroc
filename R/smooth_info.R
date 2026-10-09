@@ -69,7 +69,7 @@
     rk <- md$stan_data$rk
     for (n in seq_len(N)) {
       marg <- pr[, n, y[n]]
-      if (y[n] %in% fam$old_levels && !is.na(rk[n])) {
+      if (!is.na(rk[n]) && rk[n] > 0L) {
         cond <- if (rk[n] == 1L) pR[, n, y[n]]
                 else if (rk[n] == 2L) (if (!is.null(pK)) pK[, n, y[n]] else 1 - pR[, n, y[n]])
                 else 1 - pR[, n, y[n]] - (if (!is.null(pK)) pK[, n, y[n]] else 0)

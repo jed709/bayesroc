@@ -7,7 +7,8 @@
 plot_roc(
   fit,
   by = NULL,
-  response = 1,
+  response = NULL,
+  type = c("marginal", "conditional", "joint"),
   scale = c("probability", "z"),
   observed = TRUE,
   re_formula = NULL,
@@ -26,9 +27,18 @@ cell are compared with the lures that share its non-encoding variables, so
 an encoding condition (see \code{encoding_vars} in \code{\link[=broc]{broc()}}) is compared with
 the common lures.}
 
-\item{response}{For bivariate families, \code{1} (default) plots the detection ROC
-(old versus new items) and \code{2} the source ROC (source B versus source A
-items, with high source ratings meaning source B).}
+\item{response}{For bivariate families, which ROC to plot: \code{1} the detection ROC, \code{2} the
+source ROC, or both (the default, one panel each). Other families have one ROC.}
+
+\item{type}{\code{"marginal"} (default) draws the ROC of each response dimension. For the bivariate families
+two joint displays are available: \code{"conditional"} draws the source ROC separately for the trials in each
+detection response (one panel per detection category), with the model-implied conditional curve, which is
+where the model's claim that source accuracy rises with detection confidence is tested; \code{"joint"} draws
+the three-way ROC surface (Mossman, 1999) as a map: for every decision rule "new if detection evidence is
+below c, else B if source evidence is above k, else A", the rate P(say B | B) is shown as colour and
+contours over P(say new | new) and P(say A | A), with the rules the rating grid realises as labelled
+points and the volume under the surface (VUS; chance 1/6) with its posterior interval. The surface is
+drawn for a typical participant (random effects at zero) regardless of \code{re_formula}.}
 
 \item{scale}{\code{"probability"} (default) or \code{"z"} for the zROC (probit axes).}
 

@@ -4,7 +4,7 @@
 # =============================================================================
 
 .gap_transform <- function(x, gap_link = "log") {
-  if (identical(gap_link, "softplus")) log1p(exp(x)) else exp(x)
+  if (identical(gap_link, "softplus")) log1p(.exp_v(x)) else .exp_v(x)
 }
 
 .gap_param <- function(gap_link = "log", suffix = "") {
@@ -255,8 +255,8 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
             category1 = j,
             category2 = k,
             mean = colMeans(p_jk),
-            lower = apply(p_jk, 2, quantile, probs = probs_lower),
-            upper = apply(p_jk, 2, quantile, probs = probs_upper)
+            lower = (q_jk <- .col_quantiles(p_jk, c(probs_lower, probs_upper)))[1, ],
+            upper = q_jk[2, ]
           )
         }
       }
@@ -272,38 +272,26 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   if (is_cdp && response == 2) {
     p_remember <- attr(probs, "p_remember")
     p_know <- attr(probs, "p_know")
-    old_levels <- family$old_levels
+    old_levels <- if (!is.null(family$rk_levels)) family$rk_levels else family$old_levels
     n_rkg <- if (!is.null(family$n_rkg)) family$n_rkg else 2L
 
     rk_probs <- array(0, dim = c(S, N, n_rkg))
-
-    for (s in seq_len(S)) {
-      for (n in seq_len(N)) {
-        p_old <- sum(probs[s, n, old_levels])
-        if (p_old < 1e-10) {
-          rk_probs[s, n, ] <- 1 / n_rkg
-          next
-        }
-        p_r <- sum(p_remember[s, n, old_levels] * probs[s, n, old_levels]) / p_old
-        if (n_rkg == 3 && !is.null(p_know)) {
-          p_k <- sum(p_know[s, n, old_levels] * probs[s, n, old_levels]) / p_old
-          p_g <- max(1 - p_r - p_k, 0)
-          rk_probs[s, n, ] <- c(p_r, p_k, p_g)
-        } else {
-          rk_probs[s, n, ] <- c(p_r, max(1 - p_r, 0))
-        }
-      }
+    pl <- probs[, , old_levels, drop = FALSE]
+    p_old <- rowSums(pl, dims = 2L)
+    small <- p_old < 1e-10
+    p_r <- rowSums(p_remember[, , old_levels, drop = FALSE] * pl, dims = 2L) / p_old
+    if (n_rkg == 3 && !is.null(p_know)) {
+      p_k <- rowSums(p_know[, , old_levels, drop = FALSE] * pl, dims = 2L) / p_old
+      rk_probs[, , 1] <- p_r; rk_probs[, , 2] <- p_k; rk_probs[, , 3] <- pmax(1 - p_r - p_k, 0)
+    } else {
+      rk_probs[, , 1] <- p_r; rk_probs[, , 2] <- pmax(1 - p_r, 0)
     }
+    if (any(small)) for (r in seq_len(n_rkg)) rk_probs[, , r][small] <- 1 / n_rkg
 
     rk_labels <- if (n_rkg == 3) c("Remember", "Know", "Guess") else c("Remember", "Know")
 
     if (type == "prediction") {
-      pred_rk <- matrix(0L, nrow = S, ncol = N)
-      for (s in seq_len(S)) {
-        for (n in seq_len(N)) {
-          pred_rk[s, n] <- sample.int(n_rkg, 1L, prob = pmax(rk_probs[s, n, ], 1e-10))
-        }
-      }
+      pred_rk <- matrix(.pp_draw_categories(matrix(pmax(rk_probs, 1e-10), S * N, n_rkg), n_rkg), S, N)
       if (summary) {
         return(data.frame(
           trial = seq_len(N),
@@ -323,8 +311,8 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
           trial = seq_len(N),
           category = rk_labels[r],
           mean = colMeans(rk_probs[, , r]),
-          lower = apply(rk_probs[, , r], 2, quantile, probs = probs_lower),
-          upper = apply(rk_probs[, , r], 2, quantile, probs = probs_upper)
+          lower = (q_r <- .col_quantiles(rk_probs[, , r], c(probs_lower, probs_upper)))[1, ],
+          upper = q_r[2, ]
         )
       }
       return(do.call(rbind, result_list))
@@ -336,34 +324,24 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   if (is_cdp && type == "prediction") {
     p_remember <- attr(probs, "p_remember")
     p_know <- attr(probs, "p_know")
-    old_levels <- family$old_levels
+    old_levels <- if (!is.null(family$rk_levels)) family$rk_levels else family$old_levels
     n_rkg <- if (!is.null(family$n_rkg)) family$n_rkg else 2L
 
-    pred_y <- matrix(0L, nrow = S, ncol = N)
+    pred_y <- matrix(.pp_draw_categories(matrix(pmax(probs, 0), S * N, K), K), S, N)
     pred_rk <- matrix(NA_integer_, nrow = S, ncol = N)
-
-    for (s in seq_len(S)) {
-      for (n in seq_len(N)) {
-        p <- pmax(probs[s, n, ], 0)
-        p <- p / sum(p)
-        y <- sample.int(K, 1L, prob = p)
-        pred_y[s, n] <- y
-
-        if (y %in% old_levels) {
-          p_r <- p_remember[s, n, y]
-          if (n_rkg == 3 && !is.null(p_know)) {
-            p_k <- p_know[s, n, y]
-            p_g <- max(1 - p_r - p_k, 0)
-            pred_rk[s, n] <- sample(1:3, 1L, prob = c(p_r, p_k, p_g))
-          } else {
-            if (!is.na(p_r) && p_r > 0) {
-              pred_rk[s, n] <- if (runif(1) < p_r) 1L else 2L
-            } else {
-              pred_rk[s, n] <- 2L
-            }
-          }
-        }
+    at <- cbind(as.vector(row(pred_y)), as.vector(col(pred_y)), as.vector(pred_y))
+    judged <- as.vector(pred_y) %in% old_levels
+    if (any(judged)) {
+      p_r <- p_remember[at[judged, , drop = FALSE]]
+      p_r[is.na(p_r)] <- 0
+      if (n_rkg == 3 && !is.null(p_know)) {
+        p_k <- p_know[at[judged, , drop = FALSE]]
+        p_k[is.na(p_k)] <- 0
+        rk <- .pp_draw_categories(cbind(p_r, p_k, pmax(1 - p_r - p_k, 0)), 3L)
+      } else {
+        rk <- ifelse(stats::runif(sum(judged)) < p_r, 1L, 2L)
       }
+      pred_rk[judged] <- rk
     }
 
     if (summary) {
@@ -413,8 +391,8 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
         trial = seq_len(N),
         category = k,
         mean = colMeans(p_k),
-        lower = apply(p_k, 2, quantile, probs = probs_lower),
-        upper = apply(p_k, 2, quantile, probs = probs_upper)
+        lower = (q_k <- .col_quantiles(p_k, c(probs_lower, probs_upper)))[1, ],
+        upper = q_k[2, ]
       )
     }
     result <- do.call(rbind, result_list)
@@ -1542,6 +1520,394 @@ probs_detection_margin <- function(family_name, params, thresh, item_type, S, N,
   out
 }
 
+# =============================================================================
+# Source-response margin of a bivariate family, [S, N, K2], without forming the K1 x K2 table.
+# Every cell formula is the one the joint functions use (the same helpers on the same quantities);
+# the detection response is summed out analytically where the source criteria do not depend on
+# it (the margin of a bivariate normal is univariate; the bounded model has its own marginal
+# helper) and by accumulating the existing cells otherwise. options(bayesroc.source_margin_fast =
+# FALSE) restores the joint-then-sum path; .parity_source_margin() compares the two.
+# =============================================================================
+
+# Phi2 of a standard bivariate normal at (z1, z2) elementwise; edges may be infinite.
+.bvn_cdf_v <- function(z1, z2, rho) {
+  n <- length(rho)
+  out <- numeric(n)
+  lo <- (z1 == -Inf) | (z2 == -Inf)
+  i1 <- which(z1 == Inf & !lo); if (length(i1)) out[i1] <- .pnorm_v(z2[i1])
+  i2 <- which(z2 == Inf & z1 != Inf & !lo); if (length(i2)) out[i2] <- .pnorm_v(z1[i2])
+  fin <- which(!lo & z1 != Inf & z2 != Inf)
+  if (length(fin)) {
+    out[fin] <- if (.bvn_native_ready() && isTRUE(all(abs(rho[fin]) < 1))) .bvn_native_cdf(z1[fin], z2[fin], rho[fin])
+                else binormal_cdf_r(z1[fin], z2[fin], rho[fin])
+  }
+  out
+}
+
+# The trial-level quantities of the Gaussian bivariate families for the trials `cols`, as the joint
+# functions assemble them: means, SDs and correlation per (draw, trial) with the A/B sign
+# conventions and the bounded-model flips applied, plus the item-type index sets.
+.biv_trial_setup <- function(params, item_type, cols, S, md) {
+  nc <- length(cols); L <- S * nc
+  it <- rep(item_type[cols], each = S)
+  iA <- which(it == 2L); iB <- which(it == 3L); iold <- which(it != 1L); inew <- which(it == 1L)
+  sub <- function(m) as.vector(m[, cols, drop = FALSE])
+  opt <- function(nm, alt) if (!is.null(params[[nm]])) sub(params[[nm]]) else alt
+  by_type <- function(new, A, B) { v <- rep_len(new, L); v[iA] <- A[iA]; v[iB] <- B[iB]; v }
+  one <- rep(1, L)
+  dA <- sub(params$dprime)
+  mu1 <- by_type(0, dA, if (isTRUE(md$has_dprime_B)) sub(params$dprime_B) else dA)
+  qA <- sub(params$discrim)
+  # B items: discrim_B and rho_B are the signed source-axis position and correlation of B items whatever the
+  # model (as in the likelihood); omitted, they mirror the A values. The bounded model is written with A
+  # mirrored, so the old items are flipped below and the given B values are pre-flipped here.
+  bnd <- isTRUE(md$bounded)
+  sgn <- if (bnd) -1 else 1
+  mu2 <- by_type(0, qA, if (isTRUE(md$has_discrim_B)) sgn * sub(params$discrim_B) else -qA)
+  s1A <- opt("sigma", one); sig1 <- by_type(1, s1A, opt("sigma_B", s1A))
+  s2A <- opt("sigma2", one); sig2 <- by_type(1, s2A, opt("sigma2_B", s2A))
+  rA <- sub(params$rho)
+  rho <- by_type(opt("rho_N", 0), rA, if (!is.null(params$rho_B)) sgn * sub(params$rho_B) else -rA)
+  if (bnd) { mu2[iold] <- -mu2[iold]; rho[iold] <- -rho[iold] }
+  list(nc = nc, L = L, it = it, iA = iA, iB = iB, iold = iold, inew = inew, sub = sub,
+       mu1 = mu1, mu2 = mu2, sig1 = sig1, sig2 = sig2, rho = rho)
+}
+
+# Source criterion k (0 = -Inf, K2 = +Inf) for detection response j, as a length-L vector, with
+# the shared-new-criteria and varying-criteria cases exactly as the joint functions read them.
+.source_edge <- function(thresh2, cols, j, k, K2, L, nc, varying, new_shared, is_new_response, thresh2_new) {
+  if (k < 1L) return(rep(-Inf, L))
+  if (k > K2 - 1L) return(rep(Inf, L))
+  if (new_shared && is_new_response[j] && !is.null(thresh2_new)) rep(thresh2_new[, k], nc)
+  else if (varying) as.vector(thresh2[, cols, j, k])
+  else as.vector(thresh2[, cols, k])
+}
+
+probs_source_margin <- function(family_name, params, thresh, thresh2, item_type, S, N, K1, K2, model) {
+  md <- model$model_data
+  varying <- isTRUE(md$varying_source_criteria)
+  bounded <- isTRUE(md$bounded)
+  new_shared <- identical(md$new_source_criteria, "shared")
+  thresh2_new <- attr(thresh2, "thresh2_new")
+  is_new_response <- if (new_shared) !(seq_len(K1) %in% md$old_levels) else rep(FALSE, K1)
+  j_dependent <- varying || (new_shared && !is.null(thresh2_new) && any(is_new_response))
+  nat <- .source_margin_native(family_name, params, thresh, thresh2, item_type, S, N, K1, K2, md)
+  if (!is.null(nat)) return(nat)
+  out <- array(0, dim = c(S, N, K2))
+  per <- max(1L, as.integer(2e6 %/% S))
+
+  if (family_name == "vrdp2d") {
+    one_cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+    for (b0 in seq(1L, N, by = per)) {
+      cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
+      it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
+      sub <- function(m) as.vector(m[, cols, drop = FALSE])
+      zero <- rep(0, L); one <- rep(1, L)
+      dF <- sub(params$dprime); dR <- dF + sub(params$dprime2); lam <- sub(params$lambda)
+      s1 <- if (!is.null(params$sigma)) sub(params$sigma) else one
+      s2 <- if (!is.null(params$sigma2)) sub(params$sigma2) else one
+      qA <- sub(params$discrim)
+      src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, sub(params$discrim_B), qA) else ifelse(isB, -qA, qA)
+      # new items: familiarity only, unit normal on both dimensions
+      muF1 <- ifelse(isnew, 0, dF); sF1 <- ifelse(isnew, 1, s1)
+      muR1 <- ifelse(isnew, 0, dR)
+      muR2 <- ifelse(isnew, 0, src); sR2 <- ifelse(isnew, 1, s2)
+      lam[isnew] <- 0
+      edge <- function(j, k) .source_edge(thresh2, cols, j, k, K2, L, nc, varying, FALSE, is_new_response, NULL)
+      if (!varying) {
+        for (k in seq_len(K2)) {
+          c_lo <- edge(1L, k - 1L); c_hi <- edge(1L, k)
+          out[, cols, k] <- (1 - lam) * one_cell(zero, one, c_lo, c_hi) + lam * one_cell(muR2, sR2, c_lo, c_hi)
+        }
+      } else {
+        acc <- vector("list", K2); for (k in seq_len(K2)) acc[[k]] <- numeric(L)
+        for (j in seq_len(K1)) {
+          y_lo <- if (j > 1L) as.vector(thresh[, cols, j - 1L]) else rep(-Inf, L)
+          y_hi <- if (j < K1) as.vector(thresh[, cols, j]) else rep(Inf, L)
+          p1F <- one_cell(muF1, sF1, y_lo, y_hi); p1R <- one_cell(muR1, sF1, y_lo, y_hi)
+          for (k in seq_len(K2)) {
+            c_lo <- edge(j, k - 1L); c_hi <- edge(j, k)
+            acc[[k]] <- acc[[k]] + (1 - lam) * p1F * one_cell(zero, one, c_lo, c_hi) + lam * p1R * one_cell(muR2, sR2, c_lo, c_hi)
+          }
+        }
+        for (k in seq_len(K2)) out[, cols, k] <- acc[[k]]
+      }
+    }
+    return(pmax(out, 1e-10))
+  }
+
+  if (family_name == "bivariate_cumulative") {
+    for (b0 in seq(1L, N, by = per)) {
+      cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
+      mu2 <- if (!is.null(params$discrim)) as.vector(params$discrim[, cols, drop = FALSE]) else rep(0, L)
+      for (k in seq_len(K2)) {
+        c_lo <- if (k > 1L) as.vector(thresh2[, cols, k - 1L]) else rep(-Inf, L)
+        c_hi <- if (k < K2) as.vector(thresh2[, cols, k]) else rep(Inf, L)
+        out[, cols, k] <- .pnorm_v(c_hi - mu2) - .pnorm_v(c_lo - mu2)
+      }
+    }
+    return(pmax(out, 1e-10))
+  }
+
+  dp <- family_name == "bivariate_dp"
+  for (b0 in seq(1L, N, by = per)) {
+    cols <- b0:min(N, b0 + per - 1L)
+    st <- .biv_trial_setup(params, item_type, cols, S, md)
+    L <- st$L; nc <- st$nc; iold <- st$iold; inew <- st$inew
+    mu1 <- st$mu1; mu2 <- st$mu2; sig1 <- st$sig1; sig2 <- st$sig2; rho <- st$rho
+    edge <- function(j, k) .source_edge(thresh2, cols, j, k, K2, L, nc, varying, new_shared, is_new_response, thresh2_new)
+    lam <- if (dp) st$sub(params$lambda) else NULL
+    lam2 <- if (dp) st$sub(params$lambda2) else NULL
+    fam <- vector("list", K2); for (k in seq_len(K2)) fam[[k]] <- numeric(L)
+    if (!j_dependent) {
+      # familiarity summed over the detection response = the source margin
+      for (k in seq_len(K2)) {
+        c_lo <- edge(1L, k - 1L); c_hi <- edge(1L, k)
+        v <- .pnorm_v((c_hi - mu2) / sig2) - .pnorm_v((c_lo - mu2) / sig2)
+        if (bounded && length(iold)) v[iold] <- .bounded_marginal_source_v(c_lo[iold], c_hi[iold], mu1[iold], mu2[iold], sig1[iold], sig2[iold], rho[iold])
+        fam[[k]] <- v
+      }
+    } else {
+      # criteria depend on the detection response: accumulate the cells over j, sharing the Phi2
+      # corners between neighbouring source cells for the unbounded trials
+      for (j in seq_len(K1)) {
+        y_lo <- if (j > 1L) as.vector(thresh[, cols, j - 1L]) else rep(-Inf, L)
+        y_hi <- if (j < K1) as.vector(thresh[, cols, j]) else rep(Inf, L)
+        iu <- if (bounded) inew else seq_len(L)
+        if (length(iu)) {
+          z1lo <- (y_lo[iu] - mu1[iu]) / sig1[iu]; z1hi <- (y_hi[iu] - mu1[iu]) / sig1[iu]; r <- rho[iu]
+          F_prev_hi <- numeric(length(iu)); F_prev_lo <- numeric(length(iu))
+          for (k in seq_len(K2)) {
+            c_hi <- edge(j, k)
+            z2 <- (c_hi[iu] - mu2[iu]) / sig2[iu]
+            F_hi <- .bvn_cdf_v(z1hi, z2, r); F_lo <- .bvn_cdf_v(z1lo, z2, r)
+            fam[[k]][iu] <- fam[[k]][iu] + (F_hi - F_prev_hi) - (F_lo - F_prev_lo)
+            F_prev_hi <- F_hi; F_prev_lo <- F_lo
+          }
+        }
+        if (bounded && length(iold)) {
+          for (k in seq_len(K2)) {
+            c_lo <- edge(j, k - 1L); c_hi <- edge(j, k)
+            fam[[k]][iold] <- fam[[k]][iold] + .bounded_cell_v(y_lo[iold], y_hi[iold], c_lo[iold], c_hi[iold], mu1[iold], mu2[iold], sig1[iold], sig2[iold], rho[iold])
+          }
+        }
+      }
+    }
+    for (k in seq_len(K2)) {
+      v <- fam[[k]]
+      if (dp && length(iold)) {
+        i <- iold
+        c_lo <- edge(K1, k - 1L); c_hi <- edge(K1, k)
+        src <- if (bounded) .bounded_marginal_source_v(c_lo[i], c_hi[i], mu1[i], mu2[i], sig1[i], sig2[i], rho[i])
+               else .pnorm_v((c_hi[i] - mu2[i]) / sig2[i]) - .pnorm_v((c_lo[i] - mu2[i]) / sig2[i])
+        corner <- (st$it[i] == 2L & k == 1L) | (st$it[i] == 3L & k == K2)
+        v[i] <- (1 - lam[i]) * v[i] + lam[i] * (1 - lam2[i]) * src + corner * lam[i] * lam2[i]
+      }
+      out[, cols, k] <- v
+    }
+  }
+  pmax(out, 1e-10)
+}
+
+# P(source response above the criterion path) for a bivariate family, [S, N, U], directly: for each grid
+# point u the detection response is summed out with the path's source criterion c_j(u) as the lower edge
+# and +Inf as the upper edge, so nothing is formed per bin and no tail sums are needed. `path` is
+# [S, N, K1, U] when the source criteria vary with the detection response, else [S, N, U]. The cell
+# formulas are those of probs_source_margin / the joint functions. .parity_source_survival() checks it
+# against the margin on a (U + 1)-bin grid followed by .tail_by_rows().
+probs_source_survival <- function(family_name, params, thresh, path, item_type, S, N, K1, U, model, thresh2_new = NULL) {
+  md <- model$model_data
+  bounded <- isTRUE(md$bounded)
+  new_shared <- identical(md$new_source_criteria, "shared")
+  is_new_response <- if (new_shared) !(seq_len(K1) %in% md$old_levels) else rep(FALSE, K1)
+  by_j <- length(dim(path)) == 4L
+  out <- array(0, dim = c(S, N, U))
+  per <- max(1L, as.integer(2e6 %/% S))
+  cpath <- function(cols, j, u, L, nc) {
+    if (new_shared && is_new_response[j] && !is.null(thresh2_new)) rep(thresh2_new[, u], nc)
+    else if (by_j) as.vector(path[, cols, j, u]) else as.vector(path[, cols, u])
+  }
+
+  if (family_name == "vrdp2d") {
+    cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+    for (b0 in seq(1L, N, by = per)) {
+      cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
+      it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
+      sub <- function(m) as.vector(m[, cols, drop = FALSE])
+      one <- rep(1, L)
+      dF <- sub(params$dprime); dR <- dF + sub(params$dprime2); lam <- sub(params$lambda)
+      s1 <- if (!is.null(params$sigma)) sub(params$sigma) else one
+      s2 <- if (!is.null(params$sigma2)) sub(params$sigma2) else one
+      qA <- sub(params$discrim)
+      src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, sub(params$discrim_B), qA) else ifelse(isB, -qA, qA)
+      muF1 <- ifelse(isnew, 0, dF); sF1 <- ifelse(isnew, 1, s1); muR1 <- ifelse(isnew, 0, dR)
+      muR2 <- ifelse(isnew, 0, src); sR2 <- ifelse(isnew, 1, s2); lam[isnew] <- 0
+      wF <- vector("list", K1); wR <- vector("list", K1)
+      for (j in seq_len(K1)) {
+        y_lo <- if (j > 1L) as.vector(thresh[, cols, j - 1L]) else rep(-Inf, L)
+        y_hi <- if (j < K1) as.vector(thresh[, cols, j]) else rep(Inf, L)
+        wF[[j]] <- (1 - lam) * cell(muF1, sF1, y_lo, y_hi); wR[[j]] <- lam * cell(muR1, sF1, y_lo, y_hi)
+      }
+      if (!by_j) {
+        pF <- Reduce(`+`, wF); pR <- Reduce(`+`, wR)
+        for (u in seq_len(U)) { cu <- cpath(cols, 1L, u, L, nc); out[, cols, u] <- pF * (1 - .pnorm_v(cu)) + pR * (1 - .pnorm_v((cu - muR2) / sR2)) }
+      } else {
+        for (u in seq_len(U)) {
+          acc <- numeric(L)
+          for (j in seq_len(K1)) { cu <- cpath(cols, j, u, L, nc); acc <- acc + wF[[j]] * (1 - .pnorm_v(cu)) + wR[[j]] * (1 - .pnorm_v((cu - muR2) / sR2)) }
+          out[, cols, u] <- acc
+        }
+      }
+    }
+    return(pmin(pmax(out, 0), 1))
+  }
+
+  if (family_name == "bivariate_cumulative") {
+    for (b0 in seq(1L, N, by = per)) {
+      cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
+      mu2 <- if (!is.null(params$discrim)) as.vector(params$discrim[, cols, drop = FALSE]) else rep(0, L)
+      for (u in seq_len(U)) out[, cols, u] <- 1 - .pnorm_v(cpath(cols, 1L, u, L, nc) - mu2)
+    }
+    return(pmin(pmax(out, 0), 1))
+  }
+
+  dp <- family_name == "bivariate_dp"
+  for (b0 in seq(1L, N, by = per)) {
+    cols <- b0:min(N, b0 + per - 1L)
+    st <- .biv_trial_setup(params, item_type, cols, S, md)
+    L <- st$L; nc <- st$nc; iold <- st$iold; inew <- st$inew
+    mu1 <- st$mu1; mu2 <- st$mu2; sig1 <- st$sig1; sig2 <- st$sig2; rho <- st$rho
+    lam <- if (dp) st$sub(params$lambda) else NULL
+    lam2 <- if (dp) st$sub(params$lambda2) else NULL
+    iu <- if (bounded) inew else seq_len(L)
+    z1 <- lapply(seq_len(K1), function(j) list(
+      lo = if (j > 1L) as.vector(thresh[, cols, j - 1L]) else rep(-Inf, L),
+      hi = if (j < K1) as.vector(thresh[, cols, j]) else rep(Inf, L)))
+    for (u in seq_len(U)) {
+      fam <- numeric(L)
+      if (!by_j && !(new_shared && !is.null(thresh2_new))) {
+        cu <- cpath(cols, 1L, u, L, nc)
+        fam <- 1 - .pnorm_v((cu - mu2) / sig2)
+        if (bounded && length(iold)) fam[iold] <- .bounded_marginal_source_v(cu[iold], rep(Inf, length(iold)), mu1[iold], mu2[iold], sig1[iold], sig2[iold], rho[iold])
+      } else {
+        for (j in seq_len(K1)) {
+          cu <- cpath(cols, j, u, L, nc)
+          if (length(iu)) {
+            z2 <- (cu[iu] - mu2[iu]) / sig2[iu]
+            a <- (z1[[j]]$lo[iu] - mu1[iu]) / sig1[iu]; b <- (z1[[j]]$hi[iu] - mu1[iu]) / sig1[iu]
+            # P(y in bin j, src > c) = P(y in bin j) - P(y in bin j, src <= c)
+            fam[iu] <- fam[iu] + (.pnorm_v(b) - .pnorm_v(a)) - (.bvn_cdf_v(b, z2, rho[iu]) - .bvn_cdf_v(a, z2, rho[iu]))
+          }
+          if (bounded && length(iold))
+            fam[iold] <- fam[iold] + .bounded_cell_v(z1[[j]]$lo[iold], z1[[j]]$hi[iold], cu[iold], rep(Inf, length(iold)), mu1[iold], mu2[iold], sig1[iold], sig2[iold], rho[iold])
+        }
+      }
+      v <- fam
+      if (dp && length(iold)) {
+        i <- iold
+        cu <- cpath(cols, K1, u, L, nc)
+        srcs <- if (bounded) .bounded_marginal_source_v(cu[i], rep(Inf, length(i)), mu1[i], mu2[i], sig1[i], sig2[i], rho[i])
+                else 1 - .pnorm_v((cu[i] - mu2[i]) / sig2[i])
+        cornerB <- st$it[i] == 3L
+        v[i] <- (1 - lam[i]) * v[i] + lam[i] * (1 - lam2[i]) * srcs + cornerB * lam[i] * lam2[i]
+      }
+      out[, cols, u] <- v
+    }
+  }
+  pmin(pmax(out, 0), 1)
+}
+
+# The direct source survival against the margin on a (U + 1)-bin grid followed by the tail sums, for a
+# set of rows of a plot setup (same inputs .roc_survival_rows builds).
+.parity_source_survival <- function(model, setup, rows, u) {
+  fam <- model$family$family; S <- setup$S; r <- length(rows)
+  tps <- lapply(setup$tp, function(m) m[, rows, drop = FALSE])
+  ds <- list(N = r, is_old = setup$data_src$is_old[rows], source = setup$data_src$source[rows], item_type = setup$data_src$item_type[rows])
+  crit <- function(th) .criterion_path(th, u)
+  t2 <- .subset_thresh2(setup$th2, rows)
+  t2g <- if (length(dim(t2)) == 4L) { a <- array(0, c(S, r, dim(t2)[3], length(u))); for (b in seq_len(dim(t2)[3])) a[, , b, ] <- crit(array(t2[, , b, ], c(S, r, dim(t2)[4]))); a } else crit(t2)
+  nw <- attr(t2, "thresh2_new"); nwg <- if (!is.null(nw)) crit(array(nw, c(S, 1L, ncol(nw))))[, 1, ] else NULL
+  if (!is.null(nwg)) attr(t2g, "thresh2_new") <- nwg
+  m2 <- model; m2$model_data$K2 <- length(u) + 1L
+  pr <- compute_category_probs(tps, setup$th[, rows, , drop = FALSE], ds, m2, model$family$link$name, S, r, model$model_data$K, thresh2 = t2g, margin = 2L)
+  ref <- .tail_by_rows(pr, rep(1, r))
+  sv <- probs_source_survival(fam, tps, setup$th[, rows, , drop = FALSE], t2g, ds$item_type, S, r, model$model_data$K, length(u), model, thresh2_new = nwg)
+  new <- apply(sv, c(1, 3), sum)
+  c(max_abs_diff = max(abs(new - ref) / r), cells = length(ref))
+}
+
+# The fast source margin against the joint summed over the detection response, on one fit.
+.parity_source_margin <- function(fit, ndraws = 5, seed = 1) {
+  old <- getOption("bayesroc.source_margin_fast", TRUE)
+  on.exit(options(bayesroc.source_margin_fast = old), add = TRUE)
+  options(bayesroc.source_margin_fast = TRUE)
+  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
+  options(bayesroc.source_margin_fast = FALSE)
+  b <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
+  c(max_abs_diff = max(abs(a - b)), max_rel_diff = max(abs(a - b) / pmax(b, 1e-8)), cells = length(a))
+}
+
+
+# The source margin through the native source-survival kernels (vrdp2d; bivariate_sdt and bivariate_dp,
+# bounded or not): the marginal survival of every trial at each of its source criteria, differenced into the
+# K2 categories. NULL (R path) without the library or the kernel, or when the new items carry shared criteria
+# of their own. options(bayesroc.source_margin_native = FALSE) forces the R path.
+.source_margin_native <- function(family_name, params, thresh, thresh2, item_type, S, N, K1, K2, md) {
+  if (!isTRUE(getOption("bayesroc.source_margin_native", TRUE)) || !.bvn_native_ready()) return(NULL)
+  if (!is.null(attr(thresh2, "thresh2_new"))) return(NULL)
+  J1 <- K1 - 1L; J2 <- K2 - 1L
+  varying <- length(dim(thresh2)) == 4L
+  u <- as.double(seq_len(J2)); w <- rep(1, N)
+  dims <- c(S, N, J1, J2, J2, varying, 1L, .native_threads())
+  if (family_name == "vrdp2d") {
+    if (is.null(.bvn_native$sym_srcsurv)) return(NULL)
+    pt <- .vrdp2d_source_parts(params, item_type, S, N, md)
+    sv <- .C(.bvn_native$sym_srcsurv, as.double(thresh), as.double(thresh2), as.double(pt$muF), as.double(pt$sig1),
+             as.double(pt$muR), as.double(pt$lam), as.double(pt$mu2), as.double(pt$sig2), u, w,
+             as.integer(c(dims, 1L)), 8.0, acc = double(S * N * J2), NAOK = TRUE)$acc
+  } else if (family_name %in% c("bivariate_sdt", "bivariate_dp")) {
+    if (is.null(.bvn_native$sym_srcsurv_g)) return(NULL)
+    dp <- family_name == "bivariate_dp"
+    st <- .biv_trial_setup(params, item_type, seq_len(N), S, md)
+    oldv <- as.double(st$it != 1L) + as.double(st$it == 3L)
+    lam <- if (dp) st$sub(params$lambda) else double(S * N)
+    lam2 <- if (dp) st$sub(params$lambda2) else double(S * N)
+    sv <- .C(.bvn_native$sym_srcsurv_g, as.double(thresh), as.double(thresh2), as.double(st$mu1), as.double(st$mu2),
+             as.double(st$sig1), as.double(st$sig2), as.double(st$rho), oldv, as.double(lam), as.double(lam2), u, w,
+             as.integer(c(dims, isTRUE(md$bounded), dp, 1L)), 8.0, acc = double(S * N * J2), NAOK = TRUE)$acc
+  } else {
+    return(NULL)
+  }
+  sv <- array(sv, c(S, N, J2))
+  out <- array(0, c(S, N, K2))
+  out[, , 1L] <- 1 - sv[, , 1L]
+  if (J2 > 1L) for (k in 2:J2) out[, , k] <- sv[, , k - 1L] - sv[, , k]
+  out[, , K2] <- sv[, , J2]
+  pmax(out, 1e-10)
+}
+
+# Native source margin against the R source margin.
+.parity_source_margin_native <- function(fit, ndraws = 5, seed = 1) {
+  old <- getOption("bayesroc.source_margin_native", TRUE)
+  on.exit(options(bayesroc.source_margin_native = old), add = TRUE)
+  options(bayesroc.source_margin_native = TRUE)
+  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
+  options(bayesroc.source_margin_native = FALSE)
+  b <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
+  c(max_abs_diff = max(abs(a - b)), cells = length(a))
+}
+
+# Type-7 quantiles of every column of m at `probs`, as a length(probs) x ncol(m) matrix: one sort per
+# column instead of one quantile() call (with its label formatting) per column.
+.col_quantiles <- function(m, probs) {
+  m <- as.matrix(m); S <- nrow(m)
+  srt <- matrix(apply(m, 2, sort), nrow = S)
+  h <- (S - 1) * probs + 1; j <- pmin(pmax(floor(h), 1), S); g <- h - j; jp <- pmin(j + 1, S)
+  out <- matrix(0, length(probs), ncol(m))
+  for (i in seq_along(probs)) out[i, ] <- (1 - g[i]) * srt[j[i], ] + g[i] * srt[jp[i], ]
+  out
+}
+
 #' Compute category probabilities (dispatcher)
 #' @return S x N x K array (or S x N x K1 x K2 for bivariate families)
 #' @noRd
@@ -1570,7 +1936,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
   family_name <- model$family$family
   K2 <- model$model_data$K2
   is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
-  native <- is_bivariate && .bvn_native_ready()
+  native <- .bvn_native_ready() && (is_bivariate || (family_name == "cdp" && !is.null(.bvn_native$sym_cdp) &&
+                                                     isTRUE(getOption("bayesroc.cdp_native", TRUE))))
   if (native && cores > 1) {
     # the native kernels thread the integrals themselves
     old_threads <- .bvn_native$threads
@@ -1579,6 +1946,9 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
   }
   if (is_bivariate && identical(as.integer(margin), 1L)) {
     return(probs_detection_margin(family_name, trial_params, thresh, data_src$item_type, S, N, K, model))
+  }
+  if (is_bivariate && identical(as.integer(margin), 2L) && isTRUE(getOption("bayesroc.source_margin_fast", TRUE))) {
+    return(probs_source_margin(family_name, trial_params, thresh, thresh2, data_src$item_type, S, N, K, K2, model))
   }
 
   compute_chunk <- function(idx) {
@@ -1966,7 +2336,9 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
 #' Since rho=0 for all VRDP2D distributions, bivariate normal factors into
 #' products of univariates, making this the simplest bivariate family.
 #' @noRd
-probs_vrdp2d <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
+# The per-trial loop version, kept as the reference for .probs_vrdp2d_vec (options(bayesroc.vrdp2d_joint_loop = TRUE)
+# selects it).
+.probs_vrdp2d_loop <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
   md <- model$model_data
   dprime <- params$dprime
   dprime2 <- params$dprime2
@@ -2122,13 +2494,14 @@ probs_bivariate_sdt <- function(params, thresh, thresh2, item_type, S, N, K1, K2
     dA <- sub(dprime)
     mu1 <- by_type(0, dA, if (has_dprime_B) sub(params$dprime_B) else dA)
     qA <- sub(discrim)
-    mu2 <- by_type(0, qA, if (has_discrim_B) -sub(params$discrim_B) else -qA)
+    sgn <- if (isTRUE(md$bounded)) -1 else 1
+    mu2 <- by_type(0, qA, if (has_discrim_B) sgn * sub(params$discrim_B) else -qA)
     s1A <- opt("sigma", one)
     sig1 <- by_type(1, s1A, opt("sigma_B", s1A))
     s2A <- opt("sigma2", one)
     sig2 <- by_type(1, s2A, opt("sigma2_B", s2A))
     rA <- sub(rho_A)
-    rho <- by_type(opt("rho_N", 0), rA, if (!is.null(params$rho_B)) -sub(params$rho_B) else -rA)
+    rho <- by_type(opt("rho_N", 0), rA, if (!is.null(params$rho_B)) sgn * sub(params$rho_B) else -rA)
     if (bounded) {
       mu2[iold] <- -mu2[iold]
       rho[iold] <- -rho[iold]
@@ -2204,13 +2577,14 @@ probs_bivariate_dp <- function(params, thresh, thresh2, item_type, S, N, K1, K2,
     dA <- sub(dprime)
     mu1 <- by_type(0, dA, if (has_dprime_B) sub(params$dprime_B) else dA)
     qA <- sub(discrim)
-    mu2 <- by_type(0, qA, if (has_discrim_B) -sub(params$discrim_B) else -qA)
+    sgn <- if (isTRUE(md$bounded)) -1 else 1
+    mu2 <- by_type(0, qA, if (has_discrim_B) sgn * sub(params$discrim_B) else -qA)
     s1A <- opt("sigma", one)
     sig1 <- by_type(1, s1A, opt("sigma_B", s1A))
     s2A <- opt("sigma2", one)
     sig2 <- by_type(1, s2A, opt("sigma2_B", s2A))
     rA <- sub(rho_A)
-    rho <- by_type(opt("rho_N", 0), rA, if (!is.null(params$rho_B)) -sub(params$rho_B) else -rA)
+    rho <- by_type(opt("rho_N", 0), rA, if (!is.null(params$rho_B)) sgn * sub(params$rho_B) else -rA)
     if (bounded) {
       mu2[iold] <- -mu2[iold]
       rho[iold] <- -rho[iold]
@@ -2264,140 +2638,137 @@ probs_bivariate_dp <- function(params, thresh, thresh2, item_type, S, N, K1, K2,
   pmax(probs, 1e-10)
 }
 
+
+probs_vrdp2d <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
+  if (isTRUE(getOption("bayesroc.vrdp2d_joint_loop", FALSE)))
+    return(.probs_vrdp2d_loop(params, thresh, thresh2, item_type, S, N, K1, K2, model))
+  md <- model$model_data
+  varying <- isTRUE(md$varying_source_criteria)
+  probs <- array(0, dim = c(S, N, K1, K2))
+  per <- max(1L, as.integer(2e6 %/% S))
+  cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+  for (b0 in seq(1L, N, by = per)) {
+    cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
+    it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
+    sub <- function(m) as.vector(m[, cols, drop = FALSE])
+    zero <- rep(0, L); one <- rep(1, L)
+    dF <- sub(params$dprime); dR <- dF + sub(params$dprime2); lam <- sub(params$lambda)
+    s1 <- if (!is.null(params$sigma)) sub(params$sigma) else one
+    s2 <- if (!is.null(params$sigma2)) sub(params$sigma2) else one
+    qA <- sub(params$discrim)
+    src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, sub(params$discrim_B), qA) else ifelse(isB, -qA, qA)
+    muF1 <- ifelse(isnew, 0, dF); sF1 <- ifelse(isnew, 1, s1)
+    muR1 <- ifelse(isnew, 0, dR)
+    muR2 <- ifelse(isnew, 0, src); sR2 <- ifelse(isnew, 1, s2)
+    lam[isnew] <- 0
+    edge <- function(j, k) {
+      if (k < 1L) return(rep(-Inf, L))
+      if (k > K2 - 1L) return(rep(Inf, L))
+      if (varying) as.vector(thresh2[, cols, j, k]) else as.vector(thresh2[, cols, k])
+    }
+    for (j in seq_len(K1)) {
+      y_lo <- if (j > 1L) as.vector(thresh[, cols, j - 1L]) else rep(-Inf, L)
+      y_hi <- if (j < K1) as.vector(thresh[, cols, j]) else rep(Inf, L)
+      p1F <- cell(muF1, sF1, y_lo, y_hi); p1R <- cell(muR1, sF1, y_lo, y_hi)
+      for (k in seq_len(K2)) {
+        c_lo <- edge(j, k - 1L); c_hi <- edge(j, k)
+        probs[, cols, j, k] <- (1 - lam) * p1F * cell(zero, one, c_lo, c_hi) + lam * p1R * cell(muR2, sR2, c_lo, c_hi)
+      }
+    }
+  }
+  pmax(probs, 1e-10)
+}
+
 #' CDP (Continuous Dual-Process) probabilities
 #'
 #' Returns S x N x K array of marginal confidence probabilities (marginalizing over R/K or R/K/G).
 #' Also stores R/K(/G) conditional probabilities as attributes for prediction sampling.
 #' @noRd
 probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
-  md <- model$model_data
   family <- model$family
-
   old_levels <- family$old_levels
   J <- family$J
-  old_level_map <- old_levels
-  new_levels <- setdiff(1:K, old_levels)
+  new_levels <- setdiff(seq_len(K), old_levels)
   n_rkg <- if (!is.null(family$n_rkg)) family$n_rkg else 2L
 
+  nat <- .probs_cdp_native(params, thresh, is_old, S, N, K, J, old_levels, new_levels, n_rkg)
+  if (!is.null(nat)) return(nat)
   probs <- array(0, dim = c(S, N, K))
   p_remember <- array(0, dim = c(S, N, K))
   p_know <- if (n_rkg == 3) array(0, dim = c(S, N, K)) else NULL
 
+  band <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
+    if (n_rkg == 3) return(compute_rkg_probs_r(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi))
+    sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
+    z_cR <- (c_R - mu_R) / sigma_R
+    z_lo <- (tau_lo - mu_R - mu_F) / sigma_M
+    z_hi <- (tau_hi - mu_R - mu_F) / sigma_M
+    c(binormal_strip_upper_r(z_cR, z_lo, z_hi, sigma_R / sigma_M),
+      binormal_strip_lower_r(z_cR, z_lo, z_hi, sigma_R / sigma_M))
+  }
+
   for (n in seq_len(N)) {
+    target <- is_old[n] == 1
     for (s in seq_len(S)) {
-      mu_R <- params$dprime[s, n]
-      mu_F <- if (!is.null(params$dprime2)) params$dprime2[s, n] else 0
-      sigma_R <- if (!is.null(params$sigma)) params$sigma[s, n] else 1
-      sigma_F <- if (!is.null(params$sigma2)) params$sigma2[s, n] else 1
+      mu_R <- if (target) params$dprime[s, n] else 0
+      mu_F <- if (target && !is.null(params$dprime2)) params$dprime2[s, n] else 0
+      sigma_R <- if (target && !is.null(params$sigma)) params$sigma[s, n] else 1
+      sigma_F <- if (target && !is.null(params$sigma2)) params$sigma2[s, n] else 1
       c_R <- if (!is.null(params$rec_crit)) params$rec_crit[s, n] else 1.5
       c_K <- if (!is.null(params$know_crit)) params$know_crit[s, n] else 1.0
-
-      mu_M <- mu_R + mu_F
-      sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
-      rho <- sigma_R / sigma_M
-
-      sigma_M_l <- sqrt(2)
-      rho_l <- 1 / sqrt(2)
-
-      tau <- thresh[s, n, ]
-
-      if (is_old[n] == 1) {
-        z_cR <- (c_R - mu_R) / sigma_R
-
-        for (k in seq_len(K)) {
-          old_idx <- match(k, old_level_map)
-
-          if (!is.na(old_idx)) {
-            tau_lo <- tau[old_idx]
-            tau_hi <- if (old_idx == J) Inf else tau[old_idx + 1]
-
-            if (n_rkg == 3) {
-              rkg <- compute_rkg_probs_r(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi)
-              probs[s, n, k] <- sum(rkg)
-              total <- sum(rkg)
-              p_remember[s, n, k] <- rkg[1] / total
-              p_know[s, n, k] <- rkg[2] / total
-            } else {
-              z_tau_lo <- (tau_lo - mu_M) / sigma_M
-              z_tau_hi <- (tau_hi - mu_M) / sigma_M
-              p_R <- binormal_strip_upper_r(z_cR, z_tau_lo, z_tau_hi, rho)
-              p_Kn <- binormal_strip_lower_r(z_cR, z_tau_lo, z_tau_hi, rho)
-              probs[s, n, k] <- p_R + p_Kn
-              p_remember[s, n, k] <- p_R / (p_R + p_Kn)
-            }
-          } else {
-            new_idx <- match(k, new_levels)
-            if (new_idx == 1) {
-              tau_hi <- tau[1]
-              z_tau_hi <- (tau_hi - mu_M) / sigma_M
-              probs[s, n, k] <- pnorm(z_tau_hi)
-            } else {
-              tau_hi <- tau[1]
-              z_tau_hi <- (tau_hi - mu_M) / sigma_M
-              if (k < old_level_map[1]) {
-                probs[s, n, k] <- pnorm(z_tau_hi) / length(new_levels[new_levels < old_level_map[1]])
-              }
-            }
-          }
-        }
-
-      } else {
-        z_cR_l <- c_R
-
-        for (k in seq_len(K)) {
-          old_idx <- match(k, old_level_map)
-
-          if (!is.na(old_idx)) {
-            tau_lo <- tau[old_idx]
-            tau_hi <- if (old_idx == J) Inf else tau[old_idx + 1]
-
-            if (n_rkg == 3) {
-              rkg <- compute_rkg_probs_r(0, 1, 0, 1, c_R, c_K, tau_lo, tau_hi)
-              probs[s, n, k] <- sum(rkg)
-              total <- sum(rkg)
-              p_remember[s, n, k] <- rkg[1] / total
-              p_know[s, n, k] <- rkg[2] / total
-            } else {
-              z_tau_lo_l <- tau_lo / sigma_M_l
-              z_tau_hi_l <- tau_hi / sigma_M_l
-              p_R <- binormal_strip_upper_r(z_cR_l, z_tau_lo_l, z_tau_hi_l, rho_l)
-              p_Kn <- binormal_strip_lower_r(z_cR_l, z_tau_lo_l, z_tau_hi_l, rho_l)
-              probs[s, n, k] <- p_R + p_Kn
-              p_remember[s, n, k] <- p_R / (p_R + p_Kn)
-            }
-          } else {
-            z_tau1_l <- tau[1] / sigma_M_l
-            if (k < old_level_map[1]) {
-              probs[s, n, k] <- pnorm(z_tau1_l)
-            }
-          }
-        }
-      }
-
-      new_below <- new_levels[new_levels < old_level_map[1]]
-      if (length(new_below) > 1) {
-        if (is_old[n] == 1) {
-          total_new <- pnorm((tau[1] - mu_M) / sigma_M)
-        } else {
-          total_new <- pnorm(tau[1] / sigma_M_l)
-        }
-        for (idx in seq_along(new_below)) {
-          probs[s, n, new_below[idx]] <- total_new / length(new_below)
-        }
+      tau <- c(-Inf, thresh[s, n, seq_len(J)], Inf)
+      for (b in 0:J) {
+        cell <- band(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau[b + 1L], tau[b + 2L])
+        total <- sum(cell)
+        ks <- if (b == 0L) new_levels else old_levels[b]
+        probs[s, n, ks] <- total / length(ks)
+        p_remember[s, n, ks] <- cell[1] / total
+        if (n_rkg == 3) p_know[s, n, ks] <- cell[2] / total
       }
     }
   }
 
   probs <- pmax(probs, 1e-10)
-  for (s in seq_len(S)) {
-    for (n in seq_len(N)) {
-      total <- sum(probs[s, n, ])
-      if (total > 0) probs[s, n, ] <- probs[s, n, ] / total
-    }
-  }
+  probs <- probs / as.vector(apply(probs, c(1, 2), sum))
   attr(probs, "p_remember") <- p_remember
   if (n_rkg == 3) attr(probs, "p_know") <- p_know
   probs
+}
+
+# probs_cdp through the native band cells (the likelihood's own one-dimensional integrals), all draws and
+# trials at once; NULL without the library. options(bayesroc.cdp_native = FALSE) forces the R loop.
+.probs_cdp_native <- function(params, thresh, is_old, S, N, K, J, old_levels, new_levels, n_rkg) {
+  if (!isTRUE(getOption("bayesroc.cdp_native", TRUE)) || !.bvn_native_ready() || is.null(.bvn_native$sym_cdp)) return(NULL)
+  target <- matrix(rep(is_old == 1, each = S), S, N)
+  pick <- function(nm, alt) if (!is.null(params[[nm]])) ifelse(target, params[[nm]], alt) else matrix(alt, S, N)
+  mu_R <- pick("dprime", 0); mu_F <- pick("dprime2", 0)
+  sigma_R <- pick("sigma", 1); sigma_F <- pick("sigma2", 1)
+  c_R <- if (!is.null(params$rec_crit)) params$rec_crit else matrix(1.5, S, N)
+  c_K <- if (!is.null(params$know_crit)) params$know_crit else matrix(1.0, S, N)
+  res <- .C(.bvn_native$sym_cdp, as.double(mu_R), as.double(sigma_R), as.double(mu_F), as.double(sigma_F),
+            as.double(c_R), as.double(c_K), as.double(thresh[, , seq_len(J), drop = FALSE]),
+            as.integer(c(S, N, J, K, n_rkg, .native_threads(), length(new_levels))),
+            as.integer(old_levels), as.integer(new_levels),
+            probs = double(S * N * K), prem = double(S * N * K), pknow = double(S * N * K), NAOK = TRUE)
+  probs <- array(res$probs, c(S, N, K))
+  probs <- pmax(probs, 1e-10)
+  probs <- probs / as.vector(rowSums(probs, dims = 2L))
+  attr(probs, "p_remember") <- array(res$prem, c(S, N, K))
+  if (n_rkg == 3) attr(probs, "p_know") <- array(res$pknow, c(S, N, K))
+  probs
+}
+
+# Native CDP cells against the R loop on a few draws.
+.parity_cdp_native <- function(fit, ndraws = 3, seed = 1) {
+  old <- getOption("bayesroc.cdp_native", TRUE)
+  on.exit(options(bayesroc.cdp_native = old), add = TRUE)
+  options(bayesroc.cdp_native = TRUE)
+  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed)
+  a2 <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed, response = 2)
+  options(bayesroc.cdp_native = FALSE)
+  b <- suppressWarnings(.predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed))
+  b2 <- suppressWarnings(.predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed, response = 2))
+  c(confidence = max(abs(a - b)), judgement = max(abs(a2 - b2)), cells = length(a))
 }
 
 # =============================================================================
@@ -2479,7 +2850,7 @@ rebuild_design_matrices <- function(model, newdata) {
     } else {
       rk_numeric <- as.integer(rk_values)
     }
-    rk_numeric[is.na(rk_numeric)] <- 1L
+    rk_numeric[is.na(rk_numeric)] <- 0L
     src$rk <- rk_numeric
   }
 

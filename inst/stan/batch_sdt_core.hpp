@@ -1035,147 +1035,73 @@ inline CdpResult cdp_rk_cell(
   double inv_sM = 1.0 / sigma_M;
   double z_cR = (c_R - mu_R_eff) * inv_sR;
 
-  if (!is_old_resp) {
-    // "New" response: P = Phi((tau[0] - mu_M) / sigma_M)
-    double z_tau1 = (tau[0] - mu_M) * inv_sM;
-    double p = Phi(z_tau1);
-    if (p < kPFloor) p = kPFloor;
-    res.lp = std::log(p);
-    double d_lp_dz = phi(z_tau1) / p;
+  bool judged = rk_n > 0;
+  bool is_lo_edge = !is_old_resp;
+  bool is_hi_edge = is_old_resp && (old_idx == J - 1);
+  const double inf = std::numeric_limits<double>::infinity();
+  int k_hi_idx = is_lo_edge ? 0 : old_idx + 1;
+  double z_lo = is_lo_edge ? -inf : (tau[old_idx] - mu_M) * inv_sM;
+  double z_hi = is_hi_edge ? inf : (tau[k_hi_idx] - mu_M) * inv_sM;
 
-    // d_logP / d_tau[0]:
-    res.k_hi = 0;
-    res.d_thresh_hi = d_lp_dz * inv_sM;
+  if (!is_lo_edge) res.k_lo = old_idx;
+  if (!is_hi_edge) res.k_hi = k_hi_idx;
 
-    if (is_old) {
-      // d_logP / d_mu_M = d_lp_dz * (-1/sigma_M)
-      double d_muM = d_lp_dz * (-inv_sM);
-      // mu_M = mu_R + mu_F, so d_dprime = d_muM, d_dprime2 = d_muM
-      res.d_dprime = d_muM;
-      res.d_dprime2 = d_muM;
-      // d_logP / d_sigma_M = d_lp_dz * (-(tau[0]-mu_M)/sigma_M^2)
-      double d_sigM = d_lp_dz * (-z_tau1 * inv_sM);
-      // sigma_M = sqrt(sR^2 + sF^2), dsigM/dsR = sR/sigM, dsigM/dsF = sF/sigM
-      // Chain through exp: d/d(log_sigma_n) = d_sigM * (dsigM/dsR) * sR
-      res.d_sigma = d_sigM * (sigma_R / sigma_M) * sigma_R;  // * sigma_R for exp chain
-      res.d_sigma2 = d_sigM * (sigma_F / sigma_M) * sigma_F;
-    }
-    return res;
-  }
-
-  // "Old" response: use R/K bivariate strip
-  double tau_lo_val = tau[old_idx];
-  double tau_hi_val = (old_idx < J - 1) ? tau[old_idx + 1] : 20.0;
-  double z_lo = (tau_lo_val - mu_M) * inv_sM;
-  double z_hi = (tau_hi_val - mu_M) * inv_sM;
-
-  // Set threshold indices
-  res.k_lo = old_idx;
-  if (old_idx < J - 1) res.k_hi = old_idx + 1;
-
-  // Compute strip probability and raw gradients
-  CdpStripResult strip;
-  bool is_lo_edge = false;  // old_idx == 0 means tau_lo is first threshold, not -inf
-  bool is_hi_edge = (old_idx == J - 1);  // last old level -> tau_hi = 20 (effectively +inf)
-
-  if (is_hi_edge) {
-    strip = cdp_strip_upper_hi_edge(z_cR, z_lo, rho);
-  } else {
-    strip = cdp_strip_upper(z_cR, z_lo, z_hi, rho);
-  }
+  double p_band = is_lo_edge ? Phi(z_hi) : (is_hi_edge ? Qn(z_lo) : Phi_diff(z_lo, z_hi));
+  double phi_lo = is_lo_edge ? 0.0 : phi(z_lo);
+  double phi_hi = is_hi_edge ? 0.0 : phi(z_hi);
 
   double prob;
-  double d_prob_dzcR, d_prob_dzlo, d_prob_dzhi, d_prob_drho;
+  double d_prob_dzcR = 0.0, d_prob_dzlo, d_prob_dzhi, d_prob_drho = 0.0;
 
-  if (rk_n == 1) {
-    // Remember: P = strip_upper
-    prob = strip.p;
-    d_prob_dzcR = strip.d_z_cR;
-    d_prob_dzlo = strip.d_z_lo;
-    d_prob_dzhi = strip.d_z_hi;
-    d_prob_drho = strip.d_rho;
+  if (!judged) {
+    prob = p_band;
+    d_prob_dzlo = -phi_lo;
+    d_prob_dzhi = phi_hi;
   } else {
-    // Know: P = band - strip_upper
-    double p_band = Phi_diff(z_lo, z_hi);
-    prob = p_band - strip.p;
-    if (prob < kPFloor) prob = kPFloor;
-    // d_prob/d_z_lo = -phi(z_lo) - strip.d_z_lo
-    d_prob_dzlo = -phi(z_lo) - strip.d_z_lo;
-    // d_prob/d_z_hi = phi(z_hi) - strip.d_z_hi
-    d_prob_dzhi = is_hi_edge ? 0.0 : (phi(z_hi) - strip.d_z_hi);
-    d_prob_dzcR = -strip.d_z_cR;
-    d_prob_drho = -strip.d_rho;
+    CdpStripResult strip = cdp_strip_upper(z_cR, z_lo, z_hi, rho);
+    if (rk_n == 1) {
+      prob = strip.p;
+      d_prob_dzcR = strip.d_z_cR;
+      d_prob_dzlo = strip.d_z_lo;
+      d_prob_dzhi = strip.d_z_hi;
+      d_prob_drho = strip.d_rho;
+    } else {
+      prob = p_band - strip.p;
+      d_prob_dzlo = -phi_lo - strip.d_z_lo;
+      d_prob_dzhi = phi_hi - strip.d_z_hi;
+      d_prob_dzcR = -strip.d_z_cR;
+      d_prob_drho = -strip.d_rho;
+    }
   }
+  if (is_lo_edge) d_prob_dzlo = 0.0;
+  if (is_hi_edge) d_prob_dzhi = 0.0;
+  if (prob < kPFloor) prob = kPFloor;
 
   res.lp = std::log(prob);
   double inv_prob = 1.0 / prob;
 
-  // d_logP / d_z_foo = (d_prob / d_z_foo) / prob
   double dlp_dzcR = d_prob_dzcR * inv_prob;
   double dlp_dzlo = d_prob_dzlo * inv_prob;
   double dlp_dzhi = d_prob_dzhi * inv_prob;
   double dlp_drho = d_prob_drho * inv_prob;
 
-  // Chain rule: z_cR = (c_R - mu_R) / sigma_R
-  // d_z_cR/d_c_R = 1/sigma_R
-  // d_z_cR/d_mu_R = -1/sigma_R
-  // d_z_cR/d_sigma_R = -(c_R - mu_R)/sigma_R^2 = -z_cR/sigma_R
   res.d_rec_crit = dlp_dzcR * inv_sR;
-
-  // Chain rule: z = (tau - mu_M) / sigma_M
-  // d_z/d_mu_M = -1/sigma_M
-  // d_z/d_sigma_M = -(tau - mu_M)/sigma_M^2 = -z/sigma_M
-  // d_z/d_tau = 1/sigma_M
-
-  // Threshold gradients: d_logP / d_tau[k]
   res.d_thresh_lo = dlp_dzlo * inv_sM;
-  res.d_thresh_hi = is_hi_edge ? 0.0 : dlp_dzhi * inv_sM;
+  res.d_thresh_hi = dlp_dzhi * inv_sM;
 
   if (is_old) {
-    // d_logP / d_mu_R:
-    // Through z_cR: dlp_dzcR * (-1/sigma_R)
-    // Through z_lo, z_hi (via mu_M): (dlp_dzlo + dlp_dzhi) * (-1/sigma_M)
-    // Through rho: dlp_drho * d_rho/d_sigma_R * d_sigma_R/d_mu_R = 0 (mu_R doesn't affect sigma_R directly)
-    // Wait — mu_R doesn't affect sigma_R or rho. So:
-    double d_muR = dlp_dzcR * (-inv_sR);
-    // mu_M = mu_R + mu_F, so d_mu_M/d_mu_R = 1
-    d_muR += (dlp_dzlo + (is_hi_edge ? 0.0 : dlp_dzhi)) * (-inv_sM);
-    res.d_dprime = d_muR;
+    double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
+    double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
+    res.d_dprime = dlp_dzcR * (-inv_sR) + (dlp_dzlo + dlp_dzhi) * (-inv_sM);
+    res.d_dprime2 = (dlp_dzlo + dlp_dzhi) * (-inv_sM);
 
-    // d_logP / d_mu_F:
-    // Only through mu_M: (dlp_dzlo + dlp_dzhi) * (-1/sigma_M)
-    res.d_dprime2 = (dlp_dzlo + (is_hi_edge ? 0.0 : dlp_dzhi)) * (-inv_sM);
-
-    // d_logP / d_sigma_R (on exp output scale):
-    // Through z_cR: dlp_dzcR * (-z_cR/sigma_R)
-    // Through z_lo, z_hi (via sigma_M): dlp_dz * (-z/sigma_M) * (sigma_R/sigma_M)
-    // Through rho: dlp_drho * d_rho/d_sigma_R
-    //   rho = sigma_R / sigma_M, d_rho/d_sigma_R = 1/sigma_M - sigma_R * (sigma_R/sigma_M) / sigma_M^2
-    //   = 1/sigma_M - sigma_R^2 / sigma_M^3 = (sigma_M^2 - sigma_R^2) / sigma_M^3
-    //   = sigma_F^2 / sigma_M^3
-    double dsR = dlp_dzcR * (-z_cR * inv_sR);
-    double sR_over_sM = sigma_R * inv_sM;
-    dsR += dlp_dzlo * (-z_lo * inv_sM) * sR_over_sM;
-    if (!is_hi_edge) dsR += dlp_dzhi * (-z_hi * inv_sM) * sR_over_sM;
     double drho_dsR = sigma_F * sigma_F / (sigma_M * sigma_M * sigma_M);
-    dsR += dlp_drho * drho_dsR;
-    // Chain through exp: d/d(sigma_n) = dsR * sigma_R
+    double dsR = dlp_dzcR * (-z_cR * inv_sR) + (zl_s + zh_s) * (sigma_R * inv_sM) + dlp_drho * drho_dsR;
     res.d_sigma = dsR * sigma_R;
 
-    // d_logP / d_sigma_F (on exp output scale):
-    // Through sigma_M: dlp_dz * (-z/sigma_M) * (sigma_F/sigma_M)
-    // Through rho: dlp_drho * d_rho/d_sigma_F
-    //   d_rho/d_sigma_F = -sigma_R * sigma_F / sigma_M^3
-    double dsF = 0.0;
-    double sF_over_sM = sigma_F * inv_sM;
-    dsF += dlp_dzlo * (-z_lo * inv_sM) * sF_over_sM;
-    if (!is_hi_edge) dsF += dlp_dzhi * (-z_hi * inv_sM) * sF_over_sM;
     double drho_dsF = -sigma_R * sigma_F / (sigma_M * sigma_M * sigma_M);
-    dsF += dlp_drho * drho_dsF;
+    double dsF = (zl_s + zh_s) * (sigma_F * inv_sM) + dlp_drho * drho_dsF;
     res.d_sigma2 = dsF * sigma_F;
-  } else {
-    // Lure: no gradients for dprime, dprime2, sigma, sigma2 (parameters are fixed)
-    // But d_rec_crit still propagates (c_R is shared)
   }
 
   return res;
@@ -1271,56 +1197,38 @@ inline CdpRkgResult cdp_rkg_cell(
   double inv_sM = 1.0 / sigma_M;
   double z_cR = (c_R - mu_R_eff) * inv_sR;
 
-  if (!is_old_resp) {
-    // "New" response: P = Phi((tau[0] - mu_M) / sigma_M). Unchanged from
-    // the previous implementation — this path was already correct.
-    double z_tau1 = (tau[0] - mu_M) * inv_sM;
-    double p = Phi(z_tau1);
-    if (p < kPFloor) p = kPFloor;
-    res.lp = std::log(p);
-    double d_lp_dz = phi(z_tau1) / p;
-    res.k_hi = 0;
-    res.d_thresh_hi = d_lp_dz * inv_sM;
-
-    if (is_old) {
-      double d_muM = d_lp_dz * (-inv_sM);
-      res.d_dprime = d_muM;
-      res.d_dprime2 = d_muM;
-      double d_sigM = d_lp_dz * (-z_tau1 * inv_sM);
-      res.d_sigma = d_sigM * (sigma_R / sigma_M) * sigma_R;
-      res.d_sigma2 = d_sigM * (sigma_F / sigma_M) * sigma_F;
-    }
-    return res;
-  }
-
-  // "Old" response: use the same Remember + G(c) decomposition.
-  double tau_lo_val = tau[old_idx];
-  bool is_hi_edge = (old_idx == J - 1);
-  double tau_hi_val = is_hi_edge ? bvn_tail::kInf : tau[old_idx + 1];
-  double z_lo = (tau_lo_val - mu_M) * inv_sM;
+  bool judged = rk_n > 0;
+  bool is_lo_edge = !is_old_resp;
+  bool is_hi_edge = is_old_resp && (old_idx == J - 1);
+  int k_hi_idx = is_lo_edge ? 0 : old_idx + 1;
+  double tau_lo_val = is_lo_edge ? -bvn_tail::kInf : tau[old_idx];
+  double tau_hi_val = is_hi_edge ? bvn_tail::kInf : tau[k_hi_idx];
+  double z_lo = is_lo_edge ? -bvn_tail::kInf : (tau_lo_val - mu_M) * inv_sM;
   double z_hi = is_hi_edge ? bvn_tail::kInf : (tau_hi_val - mu_M) * inv_sM;
 
-  res.k_lo = old_idx;
-  if (!is_hi_edge) res.k_hi = old_idx + 1;
+  if (!is_lo_edge) res.k_lo = old_idx;
+  if (!is_hi_edge) res.k_hi = k_hi_idx;
 
-  // REMEMBER: shared binormal CDF values (reused by G_cdp_grad_reuse)
-  BinormalCdfResult bv_hi = binormal_cdf_grad(z_cR, z_hi, rho_val);
-  BinormalCdfResult bv_lo = binormal_cdf_grad(z_cR, z_lo, rho_val);
-  double p_band = Phi_diff(z_lo, z_hi);
-  double p_R_raw = (Phi(z_hi) - bv_hi.val) - (Phi(z_lo) - bv_lo.val);
+  double p_band = is_lo_edge ? Phi(z_hi) : (is_hi_edge ? Qn(z_lo) : Phi_diff(z_lo, z_hi));
+  double phi_lo = is_lo_edge ? 0.0 : phi(z_lo);
+  double phi_hi = is_hi_edge ? 0.0 : phi(z_hi);
 
-  // GUESS: G(tau_hi) - G(tau_lo) with c_K acting on F (Wixted/Mickes)
-  GCdpResult Ghi = G_cdp_grad_reuse(tau_hi_val, mu_R_eff, sigma_R_eff,
-                                      mu_F_eff, sigma_F_eff, c_R, c_K, bv_hi);
-  GCdpResult Glo = G_cdp_grad_reuse(tau_lo_val, mu_R_eff, sigma_R_eff,
-                                      mu_F_eff, sigma_F_eff, c_R, c_K, bv_lo);
-  double p_G_raw = Ghi.val - Glo.val;
-
-  // KNOW: remainder
-  double p_K_raw = p_band - p_R_raw - p_G_raw;
-
-  double prob = rk_n == 1 ? p_R_raw : (rk_n == 2 ? p_K_raw : p_G_raw);
-  if (!(prob >= bvn_tail::kTailSwitch)) {
+  BinormalCdfResult bv_hi = {};
+  BinormalCdfResult bv_lo = {};
+  GCdpResult Ghi = {};
+  GCdpResult Glo = {};
+  double prob = p_band;
+  if (judged) {
+    bv_hi = binormal_cdf_grad(z_cR, z_hi, rho_val);
+    if (!is_lo_edge) bv_lo = binormal_cdf_grad(z_cR, z_lo, rho_val);
+    double p_R_raw = (is_hi_edge ? 1.0 : Phi(z_hi)) - bv_hi.val - ((is_lo_edge ? 0.0 : Phi(z_lo)) - bv_lo.val);
+    Ghi = G_cdp_grad_reuse(tau_hi_val, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff, c_R, c_K, bv_hi);
+    if (!is_lo_edge) Glo = G_cdp_grad_reuse(tau_lo_val, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff, c_R, c_K, bv_lo);
+    double p_G_raw = Ghi.val - Glo.val;
+    double p_K_raw = p_band - p_R_raw - p_G_raw;
+    prob = rk_n == 1 ? p_R_raw : (rk_n == 2 ? p_K_raw : p_G_raw);
+  }
+  if (judged && !(prob >= bvn_tail::kTailSwitch)) {
     bvn_tail::CdpCell t = bvn_tail::cdp_cell(rk_n, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff,
                                              c_R, c_K, tau_lo_val, tau_hi_val);
     double lfloor = std::log(kPFloor);
@@ -1337,31 +1245,29 @@ inline CdpRkgResult cdp_rkg_cell(
     }
     res.d_rec_crit = t.d[4];
     res.d_know_crit = t.d[5];
-    res.d_thresh_lo = t.d[6];
+    res.d_thresh_lo = is_lo_edge ? 0.0 : t.d[6];
     res.d_thresh_hi = is_hi_edge ? 0.0 : t.d[7];
     return res;
   }
+  if (prob < kPFloor) prob = kPFloor;
   res.lp = std::log(prob);
 
   double inv_prob = 1.0 / prob;
-  double dlp_dpR = 0.0, dlp_dpK = 0.0, dlp_dpG = 0.0;
-  if (rk_n == 1) dlp_dpR = inv_prob;
+  double dlp_dpR = 0.0, dlp_dpK = 0.0, dlp_dpG = 0.0, dlp_dpB = 0.0;
+  if (!judged) dlp_dpB = inv_prob;
+  else if (rk_n == 1) dlp_dpR = inv_prob;
   else if (rk_n == 2) dlp_dpK = inv_prob;
   else dlp_dpG = inv_prob;
 
-  // K = band - R - G, so every param's K-contribution is -(R + G) contribution,
-  // plus the band derivative where R/G don't reach (e.g. through phi(z_hi/lo)).
   double eff_dpR = dlp_dpR - dlp_dpK;
   double eff_dpG = dlp_dpG - dlp_dpK;
-  double eff_dpBand = dlp_dpK;
+  double eff_dpBand = dlp_dpK + dlp_dpB;
 
-  // Remember + band gradients (no c_K dependence through this path)
   double dlp_dzcR = eff_dpR * (-bv_hi.d_z1 + bv_lo.d_z1);
-  double dlp_dzhi = eff_dpR * (phi(z_hi) - bv_hi.d_z2) + eff_dpBand * phi(z_hi);
-  double dlp_dzlo = eff_dpR * (-(phi(z_lo) - bv_lo.d_z2)) + eff_dpBand * (-phi(z_lo));
+  double dlp_dzhi = is_hi_edge ? 0.0 : eff_dpR * (phi_hi - bv_hi.d_z2) + eff_dpBand * phi_hi;
+  double dlp_dzlo = is_lo_edge ? 0.0 : eff_dpR * (-(phi_lo - bv_lo.d_z2)) + eff_dpBand * (-phi_lo);
   double dlp_drho = eff_dpR * (-bv_hi.d_rho + bv_lo.d_rho);
 
-  // Guess gradients (c_K enters here, as a criterion on F)
   double dG_dmuR  = Ghi.d_mu_R  - Glo.d_mu_R;
   double dG_dsigR = Ghi.d_sigma_R - Glo.d_sigma_R;
   double dG_dmuF  = Ghi.d_mu_F  - Glo.d_mu_F;
@@ -1371,50 +1277,35 @@ inline CdpRkgResult cdp_rkg_cell(
   double dG_dtau_hi = Ghi.d_c;
   double dG_dtau_lo = Glo.d_c;
 
-  // Chain to primitive parameters. dprime/dprime2/sigma/sigma2 are only
-  // free params for old items; for lures mu/sigma are fixed constants so
-  // their gradients must be zero (guarded explicitly below).
   if (is_old) {
     double sR_over_sM = sigma_R_eff * inv_sM;
-
-    // dprime (mu_R): through z_cR, through mu_M (z_lo/z_hi), and through G
     res.d_dprime  = dlp_dzcR * (-inv_sR)
                   + (dlp_dzlo + dlp_dzhi) * (-inv_sM)
                   + eff_dpG * dG_dmuR;
-
-    // dprime2 (mu_F): through mu_M and through G
     res.d_dprime2 = (dlp_dzlo + dlp_dzhi) * (-inv_sM)
                   + eff_dpG * dG_dmuF;
 
-    // sigma_R: through z_cR, through sigma_M (z_lo/z_hi and rho), and G
     double drho_dsigR = (sigma_F_eff * sigma_F_eff) / (sigma_M * sigma_M * sigma_M);
     double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
+    double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
     double d_sigR_raw = dlp_dzcR * (-z_cR * inv_sR)
-                      + (zh_s + dlp_dzlo * (-z_lo * inv_sM))
-                        * sR_over_sM
+                      + (zh_s + zl_s) * sR_over_sM
                       + dlp_drho * drho_dsigR
                       + eff_dpG * dG_dsigR;
-    // Map to exp-link parameter (sigma = exp(beta_sigma))
     res.d_sigma = d_sigR_raw * sigma_R_eff;
 
-    // sigma_F: same shape, through sigma_M and G
     double sF_over_sM = sigma_F_eff * inv_sM;
     double drho_dsigF = -sigma_R_eff * sigma_F_eff / (sigma_M * sigma_M * sigma_M);
-    double d_sigF_raw = (zh_s + dlp_dzlo * (-z_lo * inv_sM))
-                          * sF_over_sM
+    double d_sigF_raw = (zh_s + zl_s) * sF_over_sM
                       + dlp_drho * drho_dsigF
                       + eff_dpG * dG_dsigF;
     res.d_sigma2 = d_sigF_raw * sigma_F_eff;
   }
-  // rec_crit and know_crit affect ALL items (both old and lure) because the
-  // criteria themselves don't depend on is_old.
   res.d_rec_crit  = dlp_dzcR * inv_sR + eff_dpG * dG_dcR;
   res.d_know_crit = eff_dpG * dG_dcK;
 
-  // Threshold gradients
-  res.d_thresh_lo = dlp_dzlo * inv_sM + eff_dpG * (-dG_dtau_lo);
-  res.d_thresh_hi = is_hi_edge ? 0.0 :
-                    (dlp_dzhi * inv_sM + eff_dpG * dG_dtau_hi);
+  res.d_thresh_lo = is_lo_edge ? 0.0 : (dlp_dzlo * inv_sM + eff_dpG * (-dG_dtau_lo));
+  res.d_thresh_hi = is_hi_edge ? 0.0 : (dlp_dzhi * inv_sM + eff_dpG * dG_dtau_hi);
 
   return res;
 }

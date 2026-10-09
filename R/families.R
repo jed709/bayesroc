@@ -1005,6 +1005,18 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #' \deqn{P(\mathrm{new}) = \Phi\left(\frac{\tau_1 - \mu_M}{\sigma_M}\right),}
 #' so graded new-side ratings are pooled rather than modelled separately.
 #'
+#' ## Judgements on "new" responses
+#' The remember/know rule is defined on R and F for every item, so it applies to
+#' any confidence band. When the data carry a judgement on responses outside
+#' `old_levels`, the model switches to the full confidence scale automatically:
+#' `criterion` then has K - 1 thresholds for K confidence levels, the lowest band
+#' is \eqn{M < \tau_1}, and every response with a judgement contributes the cell
+#' \eqn{P(\tau_j < M < \tau_{j+1}, \mathrm{judgement})} with the same criteria
+#' \eqn{c_R} and \eqn{c_K}. No parameters are added. A response with a missing
+#' judgement, at any confidence level, contributes its band probability
+#' \eqn{P(\tau_j < M < \tau_{j+1})} alone. Data with judgements on old responses
+#' only are fitted exactly as before.
+#'
 #' With two `rk` levels the joint cell is a strip of the \eqn{(R, M)} plane:
 #' \deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad
 #'       P(Y = j, \mathrm{K}) = P(R \le c_R,\; \tau_j < M < \tau_{j+1}).}

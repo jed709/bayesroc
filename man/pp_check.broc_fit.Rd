@@ -12,7 +12,7 @@
   prob = 0.95,
   stat_fun = mean,
   re_formula = NULL,
-  response = 1,
+  response = NULL,
   cores = 1,
   seed = NULL,
   ...
@@ -43,9 +43,10 @@ responses (default: mean).}
 \item{re_formula}{\code{NULL} (default) includes all random effects; \code{NA} excludes
 them.}
 
-\item{response}{For bivariate families, \code{1} (default) checks the first
-response and \code{2} the second. For the continuous dual-process model, \code{2}
-checks the remember/know/guess responses.}
+\item{response}{Which response to check. Bivariate families have the
+detection (\code{1}) and source (\code{2}) responses, the continuous dual-process
+model the confidence (\code{1}) and remember/know/guess (\code{2}) responses; by
+default both are shown, one row each. Other families have one response.}
 
 \item{cores}{Number of cores used for posterior prediction (default 1).}
 

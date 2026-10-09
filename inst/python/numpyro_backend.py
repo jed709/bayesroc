@@ -114,6 +114,94 @@ def _grid_get(config, key, i=None, j=None, default=None):
     return row[j] if j < len(row) else default
 
 
+# ---- centred designs -----------------------------------------------------------------------------
+# A design with an intercept and other columns is sampled in centred coordinates: the sampled
+# intercept is b0_c = b0 + sum_j m_j b_j (R: .centre_info), the model uses b0 and the original X,
+# the prior stays on b0, and b0 is emitted under "orig__<site>" so the draws come back in the
+# model's coordinates under the original names (_restore_centred).
+
+def _centre_of(obj):
+    """(intercept columns, means): one column, or the cell columns of a cell-means design."""
+    c = obj.get("centre") if isinstance(obj, dict) else None
+    if not c:
+        return None
+    cols = c["col"] if isinstance(c["col"], list) else [c["col"]]
+    return [int(j) for j in cols], jnp.asarray(np.asarray(c["means"][0], dtype=float), dtype=_FLOAT)
+
+
+def _uncentre(beta_c, centre):
+    cols, m = centre
+    shift = jnp.dot(m, beta_c)
+    beta = beta_c
+    for j in cols:
+        beta = beta.at[j].add(-shift)
+    return beta
+
+
+def _centre_factor(name, prior_of, centre, b_orig, b_c):
+    """the prior stays on the model's intercept(s): prior_of(col) -> distribution"""
+    lp = sum(prior_of(j).log_prob(b_orig[j]) - prior_of(j).log_prob(b_c[j]) for j in centre[0])
+    numpyro.factor(f"centre__{name}", lp)
+
+
+def _restore_centred(samples):
+    """orig__<site> -> <site>, replacing the sampled (centred) values."""
+    for k in [k for k in samples if k.startswith("orig__")]:
+        samples[k[6:]] = samples.pop(k)
+    return samples
+
+
+def _centre_init(vals, config):
+    """User inits are in the model's coordinates; move each centred intercept to the sampler's."""
+    def shift(base, centre, idx_of=None):
+        cols, m = centre[0], np.asarray(centre[1], dtype=float)
+        if base in vals:
+            arr = np.asarray(vals[base], dtype=float)
+            if idx_of is None:
+                if arr.ndim == 1 and arr.shape[0] == m.shape[0]:
+                    arr = arr.copy(); sh = float(m @ arr)
+                    for j in cols:
+                        arr[j] += sh
+                    vals[base] = arr
+            elif arr.ndim == 2 and arr.shape[1] == m.shape[0]:
+                arr = arr.copy(); sh = arr @ m
+                for j in cols:
+                    arr[:, j] += sh
+                vals[base] = arr
+            return
+        if idx_of is None:
+            keys = [f"{base}[{i + 1}]" for i in range(m.shape[0])]
+            if all(k in vals for k in keys):
+                b = np.array([float(np.asarray(vals[k]).reshape(-1)[0]) for k in keys])
+                for j in cols:
+                    vals[keys[j]] = b[j] + float(m @ b)
+        else:
+            for k in range(idx_of):
+                keys = [f"{base}[{k + 1},{i + 1}]" for i in range(m.shape[0])]
+                if all(kk in vals for kk in keys):
+                    b = np.array([float(np.asarray(vals[kk]).reshape(-1)[0]) for kk in keys])
+                    for j in cols:
+                        vals[keys[j]] = b[j] + float(m @ b)
+
+    for pname, pc in (config.get("params") or {}).items():
+        c = _centre_of(pc)
+        if c is None:
+            continue
+        if pname == "criterion2":
+            shift("beta_thresh_mid_2", c)
+            shift("beta_log_gaps_2", c, idx_of=max(0, int(config.get("K2", 2)) - 2))
+            shift("beta_raw_gaps_2", c, idx_of=max(0, int(config.get("K2", 2)) - 2))
+        else:
+            shift(f"beta_{pname}", c)
+    c = _centre_of({"centre": config.get("crit_centre")})
+    if c is not None:
+        shift("beta_thresh_mid", c)
+        n_gaps = int(config.get("n_thresh", int(config["K"]) - 1)) - 1
+        shift("beta_log_gaps", c, idx_of=n_gaps)
+        shift("beta_raw_gaps", c, idx_of=n_gaps)
+    return vals
+
+
 def parse_prior(prior_str, dim=None):
     """Parse a Stan prior string into a NumPyro distribution.
 
@@ -2504,24 +2592,25 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         sigma_M = jnp.sqrt(sigma_R**2 + sigma_F**2)
         rho = sigma_R / jnp.clip(sigma_M, 1e-10)
 
-        tau_lo = c[obs_idx, jnp.clip(old_idx, 0, J - 1)]
-        tau_hi = jnp.where(old_idx < J - 1, c[obs_idx, jnp.clip(old_idx + 1, 0, J - 1)], _OPEN)
-        tau_first = c[obs_idx, jnp.zeros(N, dtype=jnp.int32)]
+        has_lo = (is_old_resp_val == 1)
+        has_hi = ~has_lo | (old_idx < J - 1)
+        k_hi = jnp.where(has_lo, jnp.clip(old_idx + 1, 0, J - 1), 0)
+        tau_lo = jnp.where(has_lo, c[obs_idx, jnp.clip(old_idx, 0, J - 1)], -_OPEN)
+        tau_hi = jnp.where(has_hi, c[obs_idx, k_hi], _OPEN)
+        judged = rk > 0
 
         z_cR = (c_R - mu_R) / jnp.clip(sigma_R, 1e-10)
-        z_lo = (tau_lo - mu_M) / jnp.clip(sigma_M, 1e-10)
-        z_hi = (tau_hi - mu_M) / jnp.clip(sigma_M, 1e-10)
-        z_tau1 = (tau_first - mu_M) / jnp.clip(sigma_M, 1e-10)
+        z_lo = jnp.where(has_lo, (tau_lo - mu_M) / jnp.clip(sigma_M, 1e-10), -_OPEN)
+        z_hi = jnp.where(has_hi, (tau_hi - mu_M) / jnp.clip(sigma_M, 1e-10), _OPEN)
 
 
         if n_rkg == 2:
-            (c0, c1_), (e_tau,) = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_tau1], rho)
+            (c0, c1_), _ = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_cR], rho)
             bv_cR_hi, bv_cR_lo = c0[0], c1_[0]
             p_band = _band_from_q(z_lo, z_hi, c1_[6], c0[6])
-            p_new = _phi_from_q(z_tau1, e_tau[0])
             p_K_strip = bv_cR_hi - bv_cR_lo
             p_rk = jnp.where(rk == 1, p_band - p_K_strip, p_K_strip)
-            tail = (is_old_resp_val == 1) & (p_rk < _TAIL_SWITCH)
+            tail = judged & (p_rk < _TAIL_SWITCH)
             p_t = _rk_tail(tail, rk == 1, z_cR, z_lo, z_hi, rho)[0]
             p_rk = jnp.clip(jnp.where(tail, p_t, p_rk), _pfloor())
         else:
@@ -2533,11 +2622,10 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             z_s_hi = (s_hi - mu_R) / jnp.clip(sigma_R, 1e-10)
             z_s_lo = (s_lo - mu_R) / jnp.clip(sigma_R, 1e-10)
 
-            (c0, c1_, c2_, c3_), (e_ckf, e_tau) = _bvn_cdf_multi(
-                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_tau1], rho)
+            (c0, c1_, c2_, c3_), (e_ckf, _) = _bvn_cdf_multi(
+                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_cR], rho)
             bv_cR_hi, bv_cR_lo, bv_s_hi, bv_s_lo = c0[0], c1_[0], c2_[0], c3_[0]
             p_band = _band_from_q(z_lo, z_hi, c1_[6], c0[6])
-            p_new = _phi_from_q(z_tau1, e_tau[0])
 
             p_R_raw = p_band - (bv_cR_hi - bv_cR_lo)
 
@@ -2552,12 +2640,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_K_raw = p_band - p_R_raw - p_G_raw
 
             p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
-            tail = (is_old_resp_val == 1) & ~(p_sel >= _TAIL_SWITCH)
-            t_lp, _ = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo,
-                                jnp.where(old_idx < J - 1, tau_hi, jnp.inf))
+            tail = judged & ~(p_sel >= _TAIL_SWITCH)
+            t_lp, _ = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
+                                jnp.where(has_lo, tau_lo, -jnp.inf), jnp.where(has_hi, tau_hi, jnp.inf))
             p_rk = jnp.where(tail, jnp.exp(t_lp), p_sel)
 
-        prob = jnp.where(is_old_resp_val == 1, p_rk, p_new)
+        prob = jnp.where(judged, p_rk, p_band)
         return jnp.log(jnp.clip(prob, _pfloor()))
 
     @_batch_fused.defjvp
@@ -2588,39 +2676,34 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         rho2 = rho * rho
         denom_rho = jnp.sqrt(jnp.clip(1.0 - rho2, 1e-10))
 
+        has_tau_lo = (is_old_resp_val == 1)
+        has_tau_hi = ~has_tau_lo | (old_idx < J - 1)
         k_tau_lo = jnp.clip(old_idx, 0, n_thresh - 1)
-        k_tau_hi = jnp.clip(old_idx + 1, 0, n_thresh - 1)
-        has_tau_hi = (old_idx < J - 1)
+        k_tau_hi = jnp.where(has_tau_lo, jnp.clip(old_idx + 1, 0, n_thresh - 1), 0)
+        judged = rk > 0
 
-        tau_lo = c[obs_idx, k_tau_lo]
+        tau_lo = jnp.where(has_tau_lo, c[obs_idx, k_tau_lo], -_OPEN)
         tau_hi = jnp.where(has_tau_hi, c[obs_idx, k_tau_hi], _OPEN)
-        tau_first = c[obs_idx, jnp.zeros(N, dtype=jnp.int32)]
 
         z_cR = (c_R - mu_R) * inv_sR
-        z_hi = (tau_hi - mu_M) * inv_sM
-        z_lo = (tau_lo - mu_M) * inv_sM
-        z_tau1 = (tau_first - mu_M) * inv_sM
+        z_hi = jnp.where(has_tau_hi, (tau_hi - mu_M) * inv_sM, _OPEN)
+        z_lo = jnp.where(has_tau_lo, (tau_lo - mu_M) * inv_sM, -_OPEN)
 
 
         if n_rkg == 2:
-            cdfs, (e_tau,) = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_tau1], rho)
+            cdfs, _ = _bvn_cdf_multi([(z_cR, z_hi), (z_cR, z_lo)], [z_cR], rho)
         else:
             z_s_hi = (jnp.fmin(c_R, tau_hi - c_K) - mu_R) * inv_sR
             z_s_lo = (jnp.fmin(c_R, tau_lo - c_K) - mu_R) * inv_sR
             z_cK_F = (c_K - mu_F) * inv_sF
-            cdfs, (e_ckf, e_tau) = _bvn_cdf_multi(
-                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_tau1], rho)
+            cdfs, (e_ckf, _) = _bvn_cdf_multi(
+                [(z_cR, z_hi), (z_cR, z_lo), (z_s_hi, z_hi), (z_s_lo, z_lo)], [z_cK_F, z_cR], rho)
         bv_cR_hi, d_bvCRhi_z1, d_bvCRhi_z2, d_bvCRhi_rho = cdfs[0][:4]
         bv_cR_lo, d_bvCRlo_z1, d_bvCRlo_z2, d_bvCRlo_rho = cdfs[1][:4]
         p_band = _band_from_q(z_lo, z_hi, cdfs[1][6], cdfs[0][6])
 
-        phi_hi = cdfs[0][7]
-        phi_lo = cdfs[1][7]
-        phi_tau1 = e_tau[1]
-        p_new = _phi_from_q(z_tau1, e_tau[0])
-
-        is_old_resp = (is_old_resp_val == 1)
-        is_new_resp = ~is_old_resp
+        phi_hi = jnp.where(has_tau_hi, cdfs[0][7], 0.0)
+        phi_lo = jnp.where(has_tau_lo, cdfs[1][7], 0.0)
 
         sR_over_sM = sigma_R * inv_sM
         sF_over_sM = sigma_F * inv_sM
@@ -2632,12 +2715,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_K_strip = bv_cR_hi - bv_cR_lo
             is_R = (rk == 1)
             p_rk_raw = jnp.where(is_R, p_band - p_K_strip, p_K_strip)
-            tail = is_old_resp & (p_rk_raw < _TAIL_SWITCH)
+            tail = judged & (p_rk_raw < _TAIL_SWITCH)
             t_p, t_dzcR, t_dzlo, t_dzhi, t_drho = _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho)
             p_rk_raw = jnp.where(tail, t_p, p_rk_raw)
             p_rk = jnp.clip(p_rk_raw, _pfloor())
-            prob_raw = jnp.where(is_old_resp, p_rk_raw, p_new)
-            prob = jnp.where(is_old_resp, p_rk, p_new)
+            prob_raw = jnp.where(judged, p_rk_raw, p_band)
+            prob = jnp.where(judged, p_rk, p_band)
             val = jnp.log(jnp.clip(prob, _pfloor()))
             inv_prob = jnp.where(prob_raw > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
 
@@ -2647,28 +2730,24 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             g_zlo = jnp.where(tail, t_dzlo, jnp.where(is_R, -(phi_lo - d_bvCRlo_z2), -d_bvCRlo_z2))
             g_rho = jnp.where(tail, t_drho, jnp.where(is_R, -d_bvCRhi_rho + d_bvCRlo_rho,
                                                         d_bvCRhi_rho - d_bvCRlo_rho))
-            dlp_dzcR = jnp.where(is_old_resp, g_zcR * inv_prob, 0.0)
-            dlp_dzhi = jnp.where(is_old_resp, g_zhi * inv_prob, 0.0)
-            dlp_dzlo = jnp.where(is_old_resp, g_zlo * inv_prob, 0.0)
-            dlp_drho = jnp.where(is_old_resp, g_rho * inv_prob, 0.0)
-            dlp_dztau1 = jnp.where(is_new_resp, phi_tau1 * inv_prob, 0.0)
+            dlp_dzcR = jnp.where(judged, g_zcR * inv_prob, 0.0)
+            dlp_dzhi = jnp.where(has_tau_hi, jnp.where(judged, g_zhi, phi_hi) * inv_prob, 0.0)
+            dlp_dzlo = jnp.where(has_tau_lo, jnp.where(judged, g_zlo, -phi_lo) * inv_prob, 0.0)
+            dlp_drho = jnp.where(judged, g_rho * inv_prob, 0.0)
 
             d_val_dmuR = (dlp_dzcR * (-inv_sR) +
-                          (dlp_dzhi + dlp_dzlo + dlp_dztau1) * (-inv_sM))
-            d_val_dmuF = (dlp_dzhi + dlp_dzlo + dlp_dztau1) * (-inv_sM)
+                          (dlp_dzhi + dlp_dzlo) * (-inv_sM))
+            d_val_dmuF = (dlp_dzhi + dlp_dzlo) * (-inv_sM)
             d_val_dsigR = (dlp_dzcR * (-z_cR * inv_sR) +
-                           (dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo) +
-                            dlp_dztau1 * (-z_tau1)) * inv_sM * sR_over_sM +
+                           (dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo)) * inv_sM * sR_over_sM +
                            dlp_drho * drho_dsR)
-            d_val_dsigF = ((dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo) +
-                            dlp_dztau1 * (-z_tau1)) * inv_sM * sF_over_sM +
+            d_val_dsigF = ((dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo)) * inv_sM * sF_over_sM +
                            dlp_drho * drho_dsF)
             d_val_dcR = dlp_dzcR * inv_sR
             d_val_dcK = jnp.zeros_like(c_K)
 
-            d_val_dtau_hi = jnp.where(is_old_resp, dlp_dzhi * inv_sM, 0.0)
-            d_val_dtau_lo = jnp.where(is_old_resp, dlp_dzlo * inv_sM, 0.0)
-            d_val_dtau_first = jnp.where(is_new_resp, dlp_dztau1 * inv_sM, 0.0)
+            d_val_dtau_hi = dlp_dzhi * inv_sM
+            d_val_dtau_lo = dlp_dzlo * inv_sM
 
         else:
             z_cK_F = (c_K - mu_F) * inv_sF
@@ -2698,15 +2777,16 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_K_raw = p_band - p_R_raw - p_G_raw
 
             p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
-            tail = is_old_resp & ~(p_sel >= _TAIL_SWITCH)
-            t_lp, t_d = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo,
+            tail = judged & ~(p_sel >= _TAIL_SWITCH)
+            t_lp, t_d = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
+                                  jnp.where(has_tau_lo, tau_lo, -jnp.inf),
                                   jnp.where(has_tau_hi, tau_hi, jnp.inf))
             p_cell = jnp.where(tail, jnp.exp(t_lp), p_sel)
             p_rk = p_cell
-            prob = jnp.where(is_old_resp, p_rk, p_new)
+            prob = jnp.where(judged, p_rk, p_band)
             val = jnp.log(jnp.clip(prob, _pfloor()))
             inv_prob = jnp.where(prob > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
-            closed = is_old_resp & ~tail
+            closed = judged & ~tail
 
             dlp_dpR = jnp.where(closed & (rk == 1), inv_prob, 0.0)
             dlp_dpK = jnp.where(closed & (rk == 2), inv_prob, 0.0)
@@ -2714,7 +2794,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
 
             eff_dpR = dlp_dpR - dlp_dpK
             eff_dpG = dlp_dpG - dlp_dpK
-            eff_dpBand = dlp_dpK
+            eff_dpBand = dlp_dpK + jnp.where(judged, 0.0, inv_prob)
 
 
             phi_zcR = cdfs[0][5]
@@ -2786,7 +2866,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             dlp_dzhi = eff_dpR * (phi_hi - d_bvCRhi_z2) + eff_dpBand * phi_hi
             dlp_dzlo = eff_dpR * (-(phi_lo - d_bvCRlo_z2)) + eff_dpBand * (-phi_lo)
             dlp_drho = eff_dpR * (-d_bvCRhi_rho + d_bvCRlo_rho)
-            dlp_dztau1 = jnp.where(is_new_resp, phi_tau1 * inv_prob, 0.0)
 
             dG_dmuR = dGhi_dmuR - dGlo_dmuR
             dG_dsigR = dGhi_dsigR - dGlo_dsigR
@@ -2796,23 +2875,20 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             dG_dcK = dGhi_dcK - dGlo_dcK
 
             d_val_dmuR = (dlp_dzcR * (-inv_sR)
-                         + (dlp_dzhi + dlp_dzlo + dlp_dztau1) * (-inv_sM)
+                         + (dlp_dzhi + dlp_dzlo) * (-inv_sM)
                          + eff_dpG * dG_dmuR)
-            d_val_dmuF = ((dlp_dzhi + dlp_dzlo + dlp_dztau1) * (-inv_sM)
+            d_val_dmuF = ((dlp_dzhi + dlp_dzlo) * (-inv_sM)
                          + eff_dpG * dG_dmuF)
             d_val_dsigR = (dlp_dzcR * (-z_cR * inv_sR)
-                          + (dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo) +
-                             dlp_dztau1 * (-z_tau1)) * inv_sM * sR_over_sM
+                          + (dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo)) * inv_sM * sR_over_sM
                           + dlp_drho * drho_dsR + eff_dpG * dG_dsigR)
-            d_val_dsigF = ((dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo) +
-                            dlp_dztau1 * (-z_tau1)) * inv_sM * sF_over_sM
+            d_val_dsigF = ((dlp_dzhi * (-z_hi) + dlp_dzlo * (-z_lo)) * inv_sM * sF_over_sM
                           + dlp_drho * drho_dsF + eff_dpG * dG_dsigF)
             d_val_dcR = dlp_dzcR * inv_sR + eff_dpG * dG_dcR
             d_val_dcK = eff_dpG * dG_dcK
 
-            d_val_dtau_hi = jnp.where(is_old_resp, dlp_dzhi * inv_sM + eff_dpG * dGhi_dtau, 0.0)
-            d_val_dtau_lo = jnp.where(is_old_resp, dlp_dzlo * inv_sM + eff_dpG * (-dGlo_dtau), 0.0)
-            d_val_dtau_first = jnp.where(is_new_resp, dlp_dztau1 * inv_sM, 0.0)
+            d_val_dtau_hi = dlp_dzhi * inv_sM + eff_dpG * dGhi_dtau
+            d_val_dtau_lo = dlp_dzlo * inv_sM + eff_dpG * (-dGlo_dtau)
 
             t_w = jnp.where(tail & (prob > _pfloor()), p_cell * inv_prob, 0.0)
             td = [t_w * jnp.where(tail, t_d[..., j], 0.0) for j in range(8)]
@@ -2825,20 +2901,17 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             d_val_dtau_lo = d_val_dtau_lo + td[6]
             d_val_dtau_hi = d_val_dtau_hi + td[7]
 
-        d_t_k_lo = d_val_dtau_lo
+        d_t_k_lo = jnp.where(has_tau_lo, d_val_dtau_lo, 0.0)
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)
-        d_t_first = d_val_dtau_first
 
-        d_lp_d_thresh_mid = d_t_k_lo + d_t_k_hi + d_t_first
+        d_lp_d_thresh_mid = d_t_k_lo + d_t_k_hi
 
         gm = jnp.asarray(gap_mask_np)
         mask_tau_lo = gm[:, k_tau_lo]
         mask_tau_hi = gm[:, k_tau_hi]
-        mask_first = gm[:, jnp.zeros(N, dtype=jnp.int32)]
 
         d_lp_d_gap_val = (mask_tau_lo * d_t_k_lo[None, :] +
-                          mask_tau_hi * d_t_k_hi[None, :] +
-                          mask_first * d_t_first[None, :])
+                          mask_tau_hi * d_t_k_hi[None, :])
         d_lp_d_gaps = (d_lp_d_gap_val * gd.T).T
 
         tangent_out = (
@@ -3918,7 +3991,8 @@ def sdt_model(config):
             else:
                 prior_strs = [priors.get(col_names[j] if j < len(col_names) else f"V{j+1}", "normal(0, 2.5)")
                               for j in range(n_coef)]
-                if len(set(prior_strs)) == 1:
+                vector_site = len(set(prior_strs)) == 1
+                if vector_site:
                     beta = numpyro.sample(f"beta_{param_name}",
                                           parse_prior(prior_strs[0]).expand([n_coef]))
                 else:
@@ -3927,6 +4001,15 @@ def sdt_model(config):
                         beta_j = numpyro.sample(f"beta_{param_name}[{j+1}]",
                                                 parse_prior(prior_strs[j]))
                         beta = beta.at[j].set(beta_j)
+                centre = _centre_of(pconf)
+                if centre is not None:
+                    beta_c, beta = beta, _uncentre(beta, centre)
+                    _centre_factor(f"beta_{param_name}", lambda j: parse_prior(prior_strs[j]), centre, beta, beta_c)
+                    if vector_site:
+                        numpyro.deterministic(f"orig__beta_{param_name}", beta)
+                    else:
+                        for j in range(n_coef):
+                            numpyro.deterministic(f"orig__beta_{param_name}[{j+1}]", beta[j])
 
             eta = X @ beta
         else:
@@ -4293,6 +4376,12 @@ def sdt_model(config):
                                    parse_prior(_mid_prior(j)))
             beta_thresh_mid = beta_thresh_mid.at[j].set(mid_j)
 
+    crit_centre = _centre_of({"centre": config.get("crit_centre")}) if P_crit > 1 else None
+    if crit_centre is not None:
+        mid_c, beta_thresh_mid = beta_thresh_mid, _uncentre(beta_thresh_mid, crit_centre)
+        _centre_factor("beta_thresh_mid", lambda j: parse_prior(_mid_prior(j)), crit_centre, beta_thresh_mid, mid_c)
+        for j in range(P_crit):
+            numpyro.deterministic(f"orig__beta_thresh_mid[{j+1}]", beta_thresh_mid[j])
     thresh_mid_vec = X_crit @ beta_thresh_mid
 
     gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
@@ -4319,6 +4408,14 @@ def sdt_model(config):
                     lg_kj = numpyro.sample(f"{gap_param_prefix}[{k+1},{j+1}]",
                                            parse_prior(gap_pri[k][j]))
                     beta_log_gaps = beta_log_gaps.at[k, j].set(lg_kj)
+            if crit_centre is not None:
+                gaps_c = beta_log_gaps
+                beta_log_gaps = jnp.stack([_uncentre(gaps_c[k], crit_centre) for k in range(n_gaps)])
+                for k in range(n_gaps):
+                    _centre_factor(f"{gap_param_prefix}[{k+1}]", lambda j, k=k: parse_prior(gap_pri[k][j]), crit_centre,
+                                   beta_log_gaps[k], gaps_c[k])
+                    for j in range(P_crit):
+                        numpyro.deterministic(f"orig__{gap_param_prefix}[{k+1},{j+1}]", beta_log_gaps[k, j])
 
         log_gaps_obs = beta_log_gaps @ X_crit.T
     else:
@@ -4601,6 +4698,13 @@ def sdt_model(config):
                                        parse_prior(prior_str))
                 beta_thresh2_mid = beta_thresh2_mid.at[j].set(t2m_j)
 
+            c2_centre = _centre_of(c2_conf)
+            if c2_centre is not None:
+                mid2_c, beta_thresh2_mid = beta_thresh2_mid, _uncentre(beta_thresh2_mid, c2_centre)
+                _centre_factor("beta_thresh_mid_2", lambda j: parse_prior(_grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)),
+                               c2_centre, beta_thresh2_mid, mid2_c)
+                for j in range(c2_n_coef):
+                    numpyro.deterministic(f"orig__beta_thresh_mid_2[{j+1}]", beta_thresh2_mid[j])
             thresh2_mid_vec = X_c2 @ beta_thresh2_mid
 
             if n_gaps2 > 0:
@@ -4623,6 +4727,14 @@ def sdt_model(config):
                             lg2_kj = numpyro.sample(f"{gap2_name_ij}[{k+1},{j+1}]",
                                                     parse_prior(g2_pri[k][j]))
                             beta_log_gaps2 = beta_log_gaps2.at[k, j].set(lg2_kj)
+                    if c2_centre is not None:
+                        g2_c = beta_log_gaps2
+                        beta_log_gaps2 = jnp.stack([_uncentre(g2_c[k], c2_centre) for k in range(n_gaps2)])
+                        for k in range(n_gaps2):
+                            _centre_factor(f"{gap2_name_ij}[{k+1}]", lambda j, k=k: parse_prior(g2_pri[k][j]), c2_centre,
+                                           beta_log_gaps2[k], g2_c[k])
+                            for j in range(c2_n_coef):
+                                numpyro.deterministic(f"orig__{gap2_name_ij}[{k+1},{j+1}]", beta_log_gaps2[k, j])
                 log_gaps2_obs = beta_log_gaps2 @ X_c2.T
             else:
                 log_gaps2_obs = jnp.zeros((0, N))
@@ -4833,7 +4945,7 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
     base = random.PRNGKey(int(seed) + 7919)
     zs, used = [], set()
     for c, vals in enumerate(init_values):
-        vals = dict(vals or {})
+        vals = _centre_init(dict(vals or {}), config)
         fixed = {}
         for name, shape in sites.items():
             key, v = _init_site_value(name, shape, vals)
@@ -5008,6 +5120,7 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         if k == "log_lik" and not save_loglik:
             continue
         samples_np[k] = np.array(v)
+    _restore_centred(samples_np)
 
     out = {
         "samples": samples_np,

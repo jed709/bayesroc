@@ -10,6 +10,8 @@
   digits = 3,
   by = NULL,
   threshold_natural = FALSE,
+  sd = TRUE,
+  cor = TRUE,
   ...
 )
 }
@@ -26,6 +28,10 @@ natural-scale estimates; see \code{\link[=estimates]{estimates()}}.}
 \item{threshold_natural}{If \code{TRUE}, additionally report the criterion
 random-effect standard deviations and correlations on the natural threshold
 scale rather than the internal location and gap scale.}
+
+\item{sd, cor}{Whether to summarise the random effects' standard deviations and
+correlations (both default \code{TRUE}). Setting either to \code{FALSE} skips its computation and
+its section of the printout.}
 
 \item{...}{Unused.}
 }
