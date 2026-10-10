@@ -648,6 +648,23 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
         lr = (0.10 * 0.65 ** (w - mass_end)) if w >= mass_end else lr0
         keys = jax.random.split(jax.random.fold_in(_tagged(seed, 3), w), chains)
         th, rho, U, g, le, mn, m2, am = pws[nw](keys, th, rho, U, g, le, AX, imm, lr)
+        # a chain that accepts nothing while the others sample is parked somewhere the shared
+        # step cannot leave (a pilot start the full data rule out): restart it from the chain that
+        # is doing best; the draws it would have given are not draws of anything
+        am_np = np.asarray(am)
+        stuck = np.where((am_np < 0.02) & (np.median(am_np) > 0.2))[0]
+        if stuck.size and stuck.size < chains:
+            best = int(np.argmax(am_np))
+            th_np, rho_np, le_np = np.array(th), np.array(rho), np.array(le)
+            jit = np.random.default_rng(int(seed) + 101 + w).normal(size=(stuck.size, D)) * 1e-3
+            th_np[stuck] = th_np[best] + jit
+            rho_np[stuck] = rho_np[best]
+            le_np[stuck] = le_np[best]
+            th, rho, le = ident(jnp.asarray(th_np)), ident(jnp.asarray(rho_np)), ident(jnp.asarray(le_np))
+            U, g = (init(th, AX) if init is not None else (vg0(th) if aux is None else vg0(th, AX)))
+            if progress_bar:
+                print(f"[DR-G-HMC] chain(s) {', '.join(str(int(c) + 1) for c in stuck)} accepted nothing in a warmup "
+                      f"window; restarted from chain {best + 1}", flush=True)
         if return_mean and w >= H // 2:
             late_sum = late_sum + np.asarray(mn) * nw
             late_n += nw
