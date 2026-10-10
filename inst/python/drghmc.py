@@ -947,6 +947,7 @@ def _f32_spawn(config, chains, samples, thinning, seed, ctrl, parallel,
         json.dump(payload, fh)
     env = dict(os.environ)
     env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1}"
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     env["BAYESROC_ENABLE_X64"] = "0"
     proc = subprocess.Popen([sys.executable, os.path.abspath(__file__),
                              "_sample_f32", argfile], env=env)

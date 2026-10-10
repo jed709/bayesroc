@@ -747,6 +747,7 @@ read_npy <- function(path) {
   bvn_lib <- .bvn_ffi_lib(python)
   c("current",
     XLA_FLAGS = paste0("--xla_force_host_platform_device_count=", device_count),
+    TF_CPP_MIN_LOG_LEVEL = "2",   # XLA's C++ log lines (cache loads, slow-compile alarms) are noise to the user
     BAYESROC_XLA_CACHE = .xla_cache_dir(),
     BAYESROC_BVN_FFI = if (is.null(bvn_lib)) "" else bvn_lib,
     BAYESROC_ENABLE_X64 = if (f32) "0" else "1")

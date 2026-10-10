@@ -214,7 +214,7 @@ get_re_prior_variables <- function(model) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
     stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "dprime") "mu1" else
+      if (is_bivariate_cumulative && pname == "dprime") "mu" else
       if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
     vars <- add_re(vars, re_list, stan_pname)
   }
@@ -225,7 +225,7 @@ get_re_prior_variables <- function(model) {
   }
 
   crit_name <- if (is_cumulative) "cutpoints" else
-    if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+    if (is_bivariate_cumulative) "cutpoints" else "criterion"
   if (!is.null(md$criterion$random)) vars <- add_re(vars, md$criterion$random, crit_name)
   crit2_name <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
   if (!is.null(md$criterion2$random)) vars <- add_re(vars, md$criterion2$random, crit2_name)

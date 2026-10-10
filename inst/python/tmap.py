@@ -458,9 +458,11 @@ class _Super:
         self.D = sum(b.dim for b in blocks)
         self.starts = [int(r[0]) for b in blocks for r in b.z_idx]
         self.index = blocks[0].index
+        self.zcol = []
         self.slots, bd, bf, gp, o = [], [], [], [], 0
         for b in blocks:
             self.slots += b.slots
+            self.zcol += b.zcol
             bd += [o + d for d, _ in b.bpairs]
             bf += [f for _, f in b.bpairs]
             gp += [(o + d, flats, W) for d, flats, W in getattr(b, "gpairs", [])]
@@ -546,7 +548,7 @@ def _supers(config, off, split=False, thin_rule=True):
             continue
         members = cross[cid] if cid is not None else [conf]
         B.index = np.asarray(conf["index"], dtype=int).reshape(-1) - 1
-        B.slots, B.bpairs, B.gpairs, o = [None] * B.dim, [], [], 0
+        B.slots, B.zcol, B.bpairs, B.gpairs, o = [None] * B.dim, [None] * B.dim, [], [], 0
         for m in members:
             mp, nt = m.get("param"), int(m["n_terms"])
             Zc = _re_columns(m, N)
@@ -564,9 +566,11 @@ def _supers(config, off, split=False, thin_rule=True):
                 for k in range(n_comp):
                     for r in range(R):
                         B.slots[o + k * R + r] = (mp, k, Zc[:, r].tobytes())
+                        B.zcol[o + k * R + r] = Zc[:, r]
             elif nt == R:
                 for r in range(R):
                     B.slots[o + r] = (mp, 0, Zc[:, r].tobytes())
+                    B.zcol[o + r] = Zc[:, r]
             if mp in _RE_PARAMS:
                 if mp == "criterion2" and config.get("varying_source_criteria"):
                     B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
@@ -583,16 +587,47 @@ def _supers(config, off, split=False, thin_rule=True):
             continue
         by_group.setdefault((B.prefix if split else conf["group"], B.n), []).append(B)
     sbs = sorted([_Super(g, bl) for (g, _), bl in by_group.items()], key=lambda s: s.n)
+    # links: a later block's effects on (param, component) answer to an earlier block's effects on the
+    # same (param, component): within each later group, the earlier effects' per-row contributions are
+    # projected onto the later block's columns for that component (an intercept takes the mean over the
+    # group's rows, a slope the difference it explains), whatever the terms' columns. Without this a
+    # population coefficient both blocks absorb would be compensated twice.
     for k, sb in enumerate(sbs):
         for e in range(k):
             E = sbs[e]
-            cd = [i for i, s in enumerate(sb.slots) if s is not None and s in E.slots]
-            if not cd or sb.n * E.n > _MAX_LINK:
+            if sb.n * E.n > _MAX_LINK:
                 continue
-            ed = [E.slots.index(sb.slots[i]) for i in cd]
-            cnt = np.zeros((sb.n, E.n))
-            np.add.at(cnt, (sb.index, E.index), 1.0)
-            sb.links.append((e, cd, ed, cnt / np.maximum(cnt.sum(1, keepdims=True), 1.0)))
+            comps, pairs = {}, []
+            for i, si in enumerate(sb.slots):
+                if si is not None:
+                    comps.setdefault((si[0], si[1]), []).append(i)
+            order = np.argsort(sb.index, kind="stable")
+            bounds = np.searchsorted(sb.index[order], np.arange(sb.n + 1))
+            for key, cdims in comps.items():
+                edims = [j for j, tj in enumerate(E.slots) if tj is not None and (tj[0], tj[1]) == key]
+                if not edims:
+                    continue
+                Zc = np.stack([sb.zcol[c] for c in cdims], 1)
+                W = np.zeros((len(cdims), len(edims), sb.n, E.n))
+                for g in range(sb.n):
+                    rows = order[bounds[g]:bounds[g + 1]]
+                    if not len(rows):
+                        continue
+                    M = np.linalg.pinv(Zc[rows])                       # [R_c, rows]
+                    eg = E.index[rows]
+                    for b, d in enumerate(edims):
+                        contrib = M * E.zcol[d][rows][None, :]          # [R_c, rows]
+                        for a in range(len(cdims)):
+                            np.add.at(W[a, b, g], eg, contrib[a])
+                W[np.abs(W) < 1e-10] = 0.0
+                for a, c in enumerate(cdims):
+                    for b, d in enumerate(edims):
+                        if np.any(W[a, b] != 0.0):
+                            pairs.append((c, d, W[a, b]))
+            # one contraction per earlier block: W [P, n, n_e] over the pairs, scattered onto the dims
+            if pairs:
+                sb.links.append((e, np.array([c for c, _, _ in pairs], int), np.array([d for _, d, _ in pairs], int),
+                                 np.stack([w for _, _, w in pairs])))
     return sbs, skipped
 
 
@@ -738,9 +773,10 @@ class TMap:
                 for i, d in enumerate(sb.gdims):
                     rows[int(d)] = dg[i] if rows[int(d)] is None else rows[int(d)] + dg[i]
         for e, cd, ed, W in sb.links:
-            du = (us[e] - ans[e]["uref"]) @ jnp.asarray(W, dtype=v.dtype).T
-            for c, d in zip(cd, ed):
-                rows[c] = du[d] if rows[c] is None else rows[c] + du[d]
+            du = jnp.einsum("pge,pe->pg", jnp.asarray(W, dtype=v.dtype), (us[e] - ans[e]["uref"])[ed])
+            acc = jax.ops.segment_sum(du, jnp.asarray(cd), num_segments=sb.D)
+            for c in np.unique(cd):
+                rows[int(c)] = acc[c] if rows[int(c)] is None else rows[int(c)] + acc[c]
         if all(r is None for r in rows):
             return None
         zero = jnp.zeros((sb.n,), dtype=v.dtype)

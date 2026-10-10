@@ -217,6 +217,7 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   }
   for (p in names(setup$tp)) {
     if (!is.null(internal) && !p %in% internal) next
+    if (all(setup$tp[[p]] == 0)) next          # fixed at zero (a cumulative mu with no terms): not an estimate
     rows <- if (p %in% .lure_param_set && !is.null(roles)) roles$noise
             else if (p %in% .signal_param_set && !is.null(roles) && fam != "source_mixture") roles$signal
             else seq_len(setup$N)

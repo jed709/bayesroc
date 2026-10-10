@@ -480,8 +480,8 @@ get_predict_variables <- function(model, include_re = TRUE) {
   md <- model$model_data
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
-  dprime_name <- if (is_cumulative) "mu" else if (is_bivariate_cumulative) "mu1" else "dprime"
-  criterion_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+  dprime_name <- if (is_cumulative || is_bivariate_cumulative) "mu" else "dprime"
+  criterion_name <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
   K <- md$K
   is_cdp <- model$family$family == "cdp"
   gap_link <- if (!is.null(model$gap_link)) model$gap_link else "log"
@@ -583,7 +583,7 @@ get_re_variables <- function(model) {
   md <- model$model_data
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
-  criterion_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+  criterion_name <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
 
   all_re_params <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                       "dprime_B", "lambda_B",
@@ -594,7 +594,7 @@ get_re_variables <- function(model) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
     stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "dprime") "mu1" else
+      if (is_bivariate_cumulative && pname == "dprime") "mu" else
       if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
 
     for (group in names(re_list)) {
@@ -646,7 +646,7 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
   md <- model$model_data
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
-  dprime_stan <- if (is_cumulative) "mu" else if (is_bivariate_cumulative) "mu1" else "dprime"
+  dprime_stan <- if (is_cumulative || is_bivariate_cumulative) "mu" else "dprime"
   include_re <- !identical(re_formula, NA)
   params <- list()
 
@@ -1020,7 +1020,7 @@ compute_thresholds <- function(draws, model, data_src, re_formula, S, N, K) {
   md <- model$model_data
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
-  criterion_name <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+  criterion_name <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
   include_re <- !identical(re_formula, NA)
   gap_link <- if (!is.null(model$gap_link)) model$gap_link else "log"
   n_thresh <- K - 1
