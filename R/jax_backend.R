@@ -833,7 +833,7 @@ read_npy <- function(path) {
 # Stored as list(col, means = list(m)): the nested list keeps `_trim_config` from slicing it.
 .centre_info <- function(X, col_names, skip = FALSE) {
   X <- as.matrix(X)
-  if (skip || ncol(X) < 2L) return(NULL)
+  if (skip || ncol(X) < 2L || nzchar(Sys.getenv("BAYESROC_LEGACY_COORDS"))) return(NULL)   # env: benchmarking only
   nm <- colnames(X) %||% col_names
   j <- match("(Intercept)", nm)
   if (is.na(j)) {

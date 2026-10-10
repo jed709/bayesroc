@@ -19,6 +19,7 @@ earlier blocks that enter the same linear-predictor terms move by Delta_g, so po
 parent levels and crossed factors stay untied as well. For fixed (Lam, s) the map
 (x, beta, zeta) -> (x, beta, z) is a triangular bijection; sampling zeta with its log-Jacobian
 leaves the posterior of the model's own parameters unchanged."""
+import os
 import re
 import numpy as np
 import jax
@@ -571,7 +572,13 @@ def _supers(config, off, split=False, thin_rule=True):
                 for r in range(R):
                     B.slots[o + r] = (mp, 0, Zc[:, r].tobytes())
                     B.zcol[o + r] = Zc[:, r]
-            if mp in _RE_PARAMS:
+            if mp in _RE_PARAMS and os.environ.get("BAYESROC_LEGACY_COORDS"):    # benchmarking only: column-matching pairs
+                pairs = _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)
+                B.bpairs += [(o + d, f) for d, f in pairs]
+                B.gpairs += [(o + d, flats, W) for d, flats, W in
+                             _group_fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas,
+                                              B.index, B.n, {d for d, _ in pairs})]
+            elif mp in _RE_PARAMS:
                 if mp == "criterion2" and config.get("varying_source_criteria"):
                     B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
                 else:
@@ -592,10 +599,20 @@ def _supers(config, off, split=False, thin_rule=True):
     # projected onto the later block's columns for that component (an intercept takes the mean over the
     # group's rows, a slope the difference it explains), whatever the terms' columns. Without this a
     # population coefficient both blocks absorb would be compensated twice.
+    legacy = bool(os.environ.get("BAYESROC_LEGACY_COORDS"))
     for k, sb in enumerate(sbs):
         for e in range(k):
             E = sbs[e]
             if sb.n * E.n > _MAX_LINK:
+                continue
+            if legacy:                                            # benchmarking only: links between identical columns
+                cd = [i for i, si in enumerate(sb.slots) if si is not None and si in E.slots]
+                if cd:
+                    ed = [E.slots.index(sb.slots[i]) for i in cd]
+                    cnt = np.zeros((sb.n, E.n))
+                    np.add.at(cnt, (sb.index, E.index), 1.0)
+                    W = cnt / np.maximum(cnt.sum(1, keepdims=True), 1.0)
+                    sb.links.append((e, np.array(cd, int), np.array(ed, int), np.stack([W] * len(cd))))
                 continue
             comps, pairs = {}, []
             for i, si in enumerate(sb.slots):
