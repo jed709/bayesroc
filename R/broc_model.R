@@ -573,8 +573,11 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       stop("criterion2 formula is required for vrdp2d family (source dimension thresholds)")
     }
     
+    if (is.null(sigma)) {
+      message("Note: sigma not specified - fixing sigma = 1")
+    }
     if (is.null(sigma2)) {
-      message("Note: sigma2 not specified - fixing sigma_S = 1")
+      message("Note: sigma2 not specified - fixing sigma2 = 1")
     }
   }
 

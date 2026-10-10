@@ -74,6 +74,21 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
   vars[vapply(vars, function(v) is.factor(model$data[[v]]) || is.character(model$data[[v]]), logical(1))]
 }
 
+# the fixed-effect predictors that are not factors: their effects are averaged over the observed
+# values in natural-scale estimates, and the summary says so
+.continuous_predictors <- function(model) {
+  md <- model$model_data
+  fx <- grep("_fixed$", names(md), value = TRUE)
+  vars <- unique(unlist(lapply(fx, function(n) {
+    fe <- md[[n]]
+    if (is.list(fe) && !is.null(fe$formula)) all.vars(fe$formula) else character(0)
+  })))
+  vars <- c(vars, if (!is.null(md$criterion$fixed_formula)) all.vars(md$criterion$fixed_formula),
+            if (!is.null(md$criterion2$fixed_formula)) all.vars(md$criterion2$fixed_formula))
+  vars <- intersect(unique(vars), names(model$data))
+  vars[vapply(vars, function(v) is.numeric(model$data[[v]]), logical(1))]
+}
+
 .natural_draws <- function(fit, model, pars, by, re_formula, ndraws) {
   ed <- .estimate_draws(fit, model, pars, by, re_formula, ndraws)
   if (!ncol(ed$draws)) return(data.frame())
