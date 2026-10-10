@@ -10,6 +10,10 @@
 #'   away from zero. `"stat"`: predictive distribution of a summary statistic
 #'   (`stat_fun`) with its observed value. `"lines"`: replicated response
 #'   proportions as thin lines with the observed proportions.
+#'   For the bivariate families `"joint"` checks the K1 x K2 table of the two responses together:
+#'   one tile per cell, coloured by the standardized residual of the observed count against the
+#'   replicated counts and labelled with the observed count. A misfit confined to the joint cells
+#'   (both margins fine) is visible only here.
 #' @param by Optional character vector of data columns defining the cells.
 #'   `NULL` (default) splits by item type (lures and targets, sources, or new,
 #'   source A and source B items). Cells that mix item types are also split by
@@ -38,7 +42,7 @@
 #' @importFrom bayesplot pp_check
 #' @method pp_check broc_fit
 #' @export
-pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lines"), by = NULL,
+pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lines", "joint"), by = NULL,
                               ndraws = 200, prob = 0.95, stat_fun = mean, re_formula = NULL,
                               response = NULL, cores = 1, seed = NULL, ...) {
   .need_ggplot2()
@@ -56,6 +60,11 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     stop("response = 2 is only available for bivariate families and the continuous dual-process model.", call. = FALSE)
   }
   if (!all(responses %in% c(1L, 2L))) stop("response must be 1, 2 or c(1, 2).", call. = FALSE)
+  if (type == "joint") {
+    if (!bivariate) stop("type = \"joint\" needs a bivariate family: it checks the joint table of the two responses.",
+                         call. = FALSE)
+    return(.ppc_joint_plot(.ppc_joint_block(fit, model, by, ndraws, re_formula, cores, fam), by, re_formula))
+  }
   blocks <- lapply(responses, function(resp) .ppc_block(fit, model, by, ndraws, re_formula, resp, cores, fam, bivariate))
   switch(type,
     bars = .ppc_bars(blocks, prob),
@@ -257,4 +266,53 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     ggplot2::labs(x = "Response", y = "Proportion of responses", title = "Posterior predictive check",
                   subtitle = "Thin lines: replicated data sets. Black: observed") +
     theme_broc() + ggplot2::theme(panel.grid.major.x = ggplot2::element_blank())
+}
+
+
+# ---- joint table of the two responses (bivariate families) ----------------------------------------
+
+.ppc_joint_block <- function(fit, model, by, ndraws, re_formula, cores, fam) {
+  probs <- .predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula, cores = cores)
+  d <- dim(probs)
+  if (length(d) != 4L) stop("joint probabilities are not available for this fit.", call. = FALSE)
+  S <- d[1]; N <- d[2]; K1 <- d[3]; K2 <- d[4]
+  flat <- array(probs, c(S, N, K1 * K2))                       # category (j, k) -> (k - 1) * K1 + j
+  y <- (model$stan_data$y2 - 1L) * K1 + model$stan_data$y
+  counts <- .row_weights(model)
+  cells <- droplevels(.ppc_cells(model, by))
+  levs <- levels(cells)
+  obs <- t(vapply(levs, function(l) {
+    i <- which(cells == l)
+    vapply(seq_len(K1 * K2), function(k) sum(counts[i][y[i] == k]), numeric(1))
+  }, numeric(K1 * K2)))
+  obs <- matrix(obs, nrow = length(levs))
+  pred <- .ppc_replicate(flat, counts, as.integer(cells), length(levs), K1 * K2)
+  mu <- apply(pred, c(2, 3), mean); sd <- apply(pred, c(2, 3), stats::sd)
+  z <- (obs - mu) / pmax(sd, 1)
+  df <- data.frame(cell = rep(levs, times = K1 * K2), y1 = rep(rep(seq_len(K1), times = K2), each = length(levs)),
+                   y2 = rep(seq_len(K2), each = length(levs) * K1), observed = as.vector(obs),
+                   predicted = as.vector(mu), z = as.vector(z))
+  df$cell <- factor(df$cell, levels = levs)
+  labs <- if (fam == "cdp") c("Confidence", "Judgement") else if (fam == "bivariate_cumulative") c("Response 1", "Response 2")
+          else c("Detection confidence", "Source confidence")
+  list(df = df, labs = labs, n_cells = length(levs))
+}
+
+.ppc_joint_plot <- function(block, by, re_formula) {
+  df <- block$df
+  df$z <- pmin(pmax(df$z, -3), 3)
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = .data$y1, y = .data$y2)) +
+    ggplot2::geom_tile(ggplot2::aes(fill = .data$z), colour = "white") +
+    ggplot2::geom_text(ggplot2::aes(label = .data$observed), size = 2.8) +
+    ggplot2::scale_fill_gradient2(low = "#1d4ed8", mid = "white", high = "#c2410c", limits = c(-3, 3),
+                                  name = "(observed - replicated) / sd") +
+    ggplot2::scale_x_continuous(breaks = seq_len(max(df$y1))) +
+    ggplot2::scale_y_continuous(breaks = seq_len(max(df$y2)))
+  if (block$n_cells > 1L) p <- p + ggplot2::facet_wrap(~ cell)
+  level <- if (identical(re_formula, NA)) "Replicated for a typical participant (random effects at zero)."
+           else "Replicated from the observed rows (random effects included)."
+  p + ggplot2::coord_equal() +
+    ggplot2::labs(x = block$labs[1], y = block$labs[2], title = "Posterior predictive check: joint responses",
+                  subtitle = "Tile: standardized residual of the observed count; label: observed count", caption = level) +
+    theme_broc() + ggplot2::theme(panel.grid = ggplot2::element_blank())
 }

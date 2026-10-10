@@ -79,3 +79,22 @@ test_that("the CDP latent plane draws and other families refuse the joint displa
   expect_error(plot_roc(fit, type = "conditional"), "bivariate_sdt, bivariate_dp and vrdp2d")
   expect_error(plot_roc(fit, type = "joint"), "bivariate_sdt, bivariate_dp and vrdp2d")
 })
+
+test_that("the joint pp_check draws for a bivariate family and the latent plane for bivariate_cumulative", {
+  skip_if_no_cmdstan()
+  d <- .fixture_bivariate_sdt()
+  m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
+                family = bivariate_gaussian()), d)
+  fit <- fit_broc(m, backend = "stan", refresh = 50, parallel_chains = 4, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
+  .jp_renders(pp_check(fit, type = "joint", ndraws = 20))
+  blk <- .ppc_joint_block(fit, .plot_model(fit), NULL, 20, NULL, 1, "bivariate_sdt")
+  expect_equal(sum(blk$df$observed), nrow(d))
+  expect_equal(nrow(blk$df), 3L * 4L * 4L)
+  d2 <- .fixture_bivariate_cumulative()
+  m2 <- broc(brf(resp(y1, y2) ~ 1, mu2 ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()), d2)
+  fit2 <- fit_broc(m2, backend = "stan", refresh = 50, parallel_chains = 4, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
+  .jp_renders(pp_check(fit2, type = "joint", ndraws = 20))
+  .jp_renders(plot_distributions(fit2, type = "joint", ndraws = 20))
+  expect_error(plot_roc(fit2), "plot_distributions")
+  expect_error(pp_check(fit, type = "joint", response = 2), NA)
+})

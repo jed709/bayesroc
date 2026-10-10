@@ -291,6 +291,11 @@ Points: the rules of the rating grid, labelled with P(say B | B)" else ""),
                       s_x = ifelse(old, g("sigma2", 1), 1), s_y = ifelse(old, g("sigma", 1), 1), rho = 0,
                       type = ifelse(old, "Targets", "Lures"), component = ""))
   }
+  if (fam == "bivariate_cumulative") {
+    bs <- .biv_trial_setup(params, it, seq_len(n), 1L, md)
+    return(data.frame(row = seq_len(n), w_row = w_rows, weight = w_rows, mu_x = bs$mu1, mu_y = bs$mu2, s_x = bs$sig1,
+                      s_y = bs$sig2, rho = bs$rho, type = "Responses", component = ""))
+  }
   type_lab <- c("New", "Source A", "Source B")[it]
   if (fam == "vrdp2d") {
     g <- function(nm, alt) if (!is.null(params[[nm]])) as.vector(params[[nm]]) else rep(alt, n)
@@ -380,7 +385,8 @@ Points: the rules of the rating grid, labelled with P(say B | B)" else ""),
   dens <- merge(dens, cf, by = ".cell", sort = FALSE)
   crit <- merge(do.call(rbind, crit), cf, by = ".cell", sort = FALSE)
   for (nm in c("dens", "crit")) { x <- get(nm); x$.cell <- factor(x$.cell, levels = levels(cf$.cell)); assign(nm, x) }
-  dens$type <- factor(dens$type, levels = if (cdp) c("Lures", "Targets") else c("New", "Source A", "Source B"))
+  dens$type <- factor(dens$type, levels = if (cdp) c("Lures", "Targets") else if (fam == "bivariate_cumulative") "Responses"
+                                           else c("New", "Source A", "Source B"))
   dens$component <- factor(dens$component, levels = c("", "Familiarity", "Recollection"))
   list(dens = dens, crit = crit, cdp = cdp, n_cells = nlevels(cf$.cell), mixture = any(dens$component != ""))
 }
@@ -417,9 +423,14 @@ dotted diagonals: confidence criteria on R + F",
     p <- p + ggplot2::geom_vline(data = det, ggplot2::aes(xintercept = .data$value), colour = "grey30", linetype = "22") +
       ggplot2::geom_segment(data = src, ggplot2::aes(x = .data$x0, xend = .data$x1, y = .data$value, yend = .data$value),
                             colour = "grey30", linetype = "22")
-    labs <- ggplot2::labs(x = "Detection evidence", y = "Source evidence (A to B)", title = "Latent detection and source evidence",
-                          subtitle = "Dashed: detection criteria (vertical) and source criteria (horizontal, per detection response when they vary)",
-                          colour = NULL)
+    labs <- if (fam == "bivariate_cumulative") {
+      ggplot2::labs(x = "Latent dimension 1", y = "Latent dimension 2", title = "Latent bivariate distribution",
+                    subtitle = "Dashed: cutpoints of each dimension", colour = NULL)
+    } else {
+      ggplot2::labs(x = "Detection evidence", y = "Source evidence (A to B)", title = "Latent detection and source evidence",
+                    subtitle = "Dashed: detection criteria (vertical) and source criteria (horizontal, per detection response when they vary)",
+                    colour = NULL)
+    }
   }
   if (parts$n_cells > 1L) p <- p + ggplot2::facet_wrap(~ .cell)
   level <- if (identical(re_formula, NA)) "Typical participant (random effects at zero)." else "Averaged over the observed data."

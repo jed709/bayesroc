@@ -73,7 +73,9 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   }
   if (fam %in% c("cumulative", "bivariate_cumulative")) {
     stop("ROC curves are not defined for the ", family_display_name(fam), " family: ordinal ",
-         "models without signal and noise items have no ROC.", call. = FALSE)
+         "models without signal and noise items have no ROC. Use plot_distributions() for the latent ",
+         "distribution and cutpoints", if (fam == "bivariate_cumulative") " (type = \"joint\" for the plane)" else "",
+         ", and pp_check() for the fit.", call. = FALSE)
   }
   bivariate <- .is_bivariate_family(fam)
   responses <- .plot_responses(response, bivariate)
