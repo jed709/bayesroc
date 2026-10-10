@@ -160,15 +160,17 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   cat(.tbl_lines(df, digits, indent), sep = "\n")
 }
 
-# A correlation block as a table of effect pairs. When the two label columns would run past
-# the console width, the effects are listed once with numbers and the rows refer to those.
+# A correlation block as a table of effect pairs. Small blocks (up to four effects) name the pair
+# on each row; larger ones, or any whose labels would run past the console width, list the
+# effects once with numbers and the rows refer to those, so the layout follows the block, not
+# the length of a family's labels.
 .print_cor_tbl <- function(rows, digits, indent = "  ") {
+  effects <- unique(c(rows$effect_1, rows$effect_2))
   lines <- .tbl_lines(rows, digits, indent)
-  if (max(nchar(lines)) <= getOption("width", 80L)) {
+  if (length(effects) <= 4L && max(nchar(lines)) <= getOption("width", 80L)) {
     cat(lines, sep = "\n")
     return(invisible())
   }
-  effects <- unique(c(rows$effect_1, rows$effect_2))
   w <- nchar(length(effects))
   cat(paste0(indent, "[", formatC(seq_along(effects), width = w), "] ", effects), sep = "\n")
   cat("\n")
