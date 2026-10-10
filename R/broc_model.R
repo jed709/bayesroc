@@ -688,9 +688,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   stan_data
 }
 
-.check_criterion_designs <- function(stan_data) {
-  labels <- c(X_criterion = "criterion", X_criterion2 = "criterion2",
-              X_rec_crit = "rec_crit", X_know_crit = "know_crit")
+.check_criterion_designs <- function(stan_data, family_name = "evsdt", parsed = NULL) {
+  cum <- family_name %in% c("cumulative", "bivariate_cumulative")
+  labels <- if (cum) c(X_criterion = "cutpoints", X_criterion2 = "cutpoints2")
+            else c(X_criterion = "criterion", X_criterion2 = "criterion2", X_rec_crit = "rec_crit", X_know_crit = "know_crit")
   for (nm in names(labels)) {
     X <- stan_data[[nm]]
     if (is.null(X) || !length(X)) next
@@ -698,10 +699,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     v <- qr.coef(qr(X), rep(1, nrow(X)))
     v[is.na(v)] <- 0
     if (max(abs(X %*% v - 1)) > 1e-8) {
-      stop("The ", labels[[nm]], " formula has no intercept and no full factor coding, so it forces ",
-           "the criterion to 0 wherever its predictors are 0. Criteria live on a latent axis whose ",
-           "zero is only the lure mean, so this is not a meaningful model; include an intercept ",
-           "or code a factor in full (e.g. 0 + condition).", call. = FALSE)
+      cols <- colnames(X)
+      stop("`", labels[[nm]], "` has no intercept: with ", paste(cols, collapse = ", "),
+           " the ", if (cum) "cutpoints are" else "criteria are", " fixed at 0 wherever the covariate is 0. ",
+           "Add the factor's own term for per-level intercepts (e.g. `f + f:x - 1`) or use `f * x`.", call. = FALSE)
     }
   }
   invisible(NULL)
@@ -1538,7 +1539,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_dprime_fixed <- dprime_fixed$n_coef > 0
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
   
-  .check_criterion_designs(stan_data)
+  .check_criterion_designs(stan_data, family$family)
   if (isTRUE(has_know_crit)) {
     re_in_bound <- any(lengths(list(criterion$random, rec_crit_random, know_crit_random)) > 0)
     stan_data <- .rkg_knob_data(stan_data, re_in_bound)
