@@ -62,7 +62,7 @@ test_that("JAX output names match the Stan program's declared variables", {
   d <- .np_data()
   specs <- list(
     brf(item_resp | is_old ~ 1 + (1 + x | sub), criterion ~ 1 + (1 | sub), sigma ~ 1 + (1 | sub), family = uvsd()),
-    brf(item_resp ~ 1 + (1 | sub), cutpoints ~ 1 + (1 | sub), family = cumulative())
+    brf(item_resp ~ 1, cutpoints ~ 1 + (1 | sub), family = cumulative())
   )
   for (f in specs) {
     r <- .np_jax(f, d)

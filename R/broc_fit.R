@@ -640,8 +640,8 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
     out$beta_dprime_ordered <- ord
   }
   if (inherits(model, "bivariate_cumulative_model")) {
-    names(out) <- gsub("criterion", "cutpoints1", gsub("criterion2", "cutpoints2",
-                  gsub("discrim", "mu2", gsub("dprime", "mu1", names(out)))))
+    names(out) <- gsub("criterion", "cutpoints", gsub("criterion2", "cutpoints2",
+                  gsub("discrim", "mu2", gsub("dprime", "mu", names(out)))))
   } else if (inherits(model, "cumulative_model")) {
     names(out) <- gsub("criterion", "cutpoints", gsub("dprime", "mu", names(out)))
   }

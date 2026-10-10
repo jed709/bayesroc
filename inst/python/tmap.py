@@ -369,19 +369,41 @@ def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
             comps.append((k * R, flats))
     else:
         pc = (config.get("params") or {}).get(param)
-        if not pc or int(pc.get("n_coef", 0)) < 1 or nt != R:
+        cum_loc = config.get("family") in ("cumulative", "bivariate_cumulative") and param in ("dprime", "discrim")
+        if nt != R or (not cum_loc and (not pc or int(pc.get("n_coef", 0)) < 1)):
             return None
-        X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
-        centre = pc.get("centre")
-        P = X.shape[1]
-        flats = [_beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))]) for j in range(P)]
-        if P == 1 and flats[0] is None and batched:
-            flats = [batched.get(param)]
+        if pc and int(pc.get("n_coef", 0)) >= 1:
+            X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
+            centre = pc.get("centre")
+            P = X.shape[1]
+            flats = [_beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))]) for j in range(P)]
+            if P == 1 and flats[0] is None and batched:
+                flats = [batched.get(param)]
+        else:
+            X, centre, flats = np.zeros((N, 0)), None, []       # mu with no coefficients of its own
         comps.append((0, flats))
     if centre:
         cols = centre["col"] if isinstance(centre["col"], list) else [centre["col"]]
         m = np.asarray(centre["means"][0], dtype=float)
         X = X - np.outer(X[:, [int(j) for j in cols]].sum(1), m)
+    # cumulative families: only cutpoint - mu is identified, so a shift of the cutpoints'
+    # midpoint is a shift of mu with the opposite sign; the mu effects answer to it too
+    fam = config.get("family")
+    if fam in ("cumulative", "bivariate_cumulative") and param in ("dprime", "discrim"):
+        if param == "dprime":
+            Xm = np.asarray(config["X_crit"], dtype=float).reshape(N, -1)
+            cm, mid_name = config.get("crit_centre"), "beta_thresh_mid"
+        else:
+            pc2 = (config.get("params") or {}).get("criterion2")
+            Xm = np.asarray(pc2["X"], dtype=float).reshape(N, -1) if pc2 and pc2.get("X") is not None else np.ones((N, 1))
+            cm, mid_name = (pc2.get("centre") if pc2 else None), "beta_thresh_mid_2"
+        if cm:
+            cols = cm["col"] if isinstance(cm["col"], list) else [cm["col"]]
+            mm = np.asarray(cm["means"][0], dtype=float)
+            Xm = Xm - np.outer(Xm[:, [int(j) for j in cols]].sum(1), mm)
+        mid_flats = [_beta_site(off, None, [(f"{mid_name}[{j + 1}]", None)]) for j in range(Xm.shape[1])]
+        X = np.concatenate([X, -Xm], 1)
+        comps = [(d0, flats + mid_flats) for d0, flats in comps]
     return X, comps
 
 

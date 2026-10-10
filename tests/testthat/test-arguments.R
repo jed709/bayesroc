@@ -1,10 +1,17 @@
-test_that("cumulative random-intercept suppression keeps ||, correlation ids and gr() intact", {
-  s <- function(r) suppressMessages(.suppress_random_intercepts(r, "mu1"))
-  expect_identical(s("1 + (1 + x || sub)"), "0 + (0 + x || sub)")
-  expect_identical(s("1 + (1 + x | id | sub)"), "0 + (0 + x | id | sub)")
-  expect_identical(s("1 + (1 + x | gr(sub, cor_thresholds = FALSE)) + (0 + z | item)"),
-                   "0 + (0 + x | gr(sub, cor_thresholds = FALSE)) + (0 + z | item)")
-  expect_identical(s("x"), "x")
+test_that("the location formula keeps its random effects, drops its intercept and refuses overlap", {
+  m <- function(r, cut = ~ 1) suppressMessages(.mu_rhs(r, "mu", cut, "cutpoints"))
+  expect_identical(m("1 + (1 + x || sub)"), "0 + (1 + x || sub)")
+  expect_identical(m("1 + (1 + x | id | sub)"), "0 + (1 + x | id | sub)")
+  expect_identical(m("1 + (1 + x | gr(sub, cor_thresholds = FALSE)) + (0 + z | item)"),
+                   "0 + (1 + x | gr(sub, cor_thresholds = FALSE)) + (0 + z | item)")
+  expect_identical(m("x"), "x")
+  expect_identical(m("1"), "0")
+  expect_message(r <- .mu_rhs("0 + f + (1 | sub)", "mu", ~ 1, "cutpoints"), "cell-means")
+  expect_identical(r, "f + (1 | sub)")
+  expect_identical(suppressMessages(.mu_rhs("f - 1", "mu", ~ 1, "cutpoints")), "f")
+  expect_error(.mu_rhs("x + (1 | sub)", "mu", ~ x, "cutpoints"), "predictor\\(s\\) x")
+  expect_error(.mu_rhs("x + (1 | sub)", "mu", ~ z + (1 | sub), "cutpoints"), "grouping factor\\(s\\) sub")
+  expect_identical(m("x + (1 | sub)", ~ z + (1 | item)), "x + (1 | sub)")
 })
 
 test_that("model options set in brf() reach broc(), and broc() takes precedence", {

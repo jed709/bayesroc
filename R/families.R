@@ -11,8 +11,8 @@
     cdp                  = list(dprime = "rec", dprime2 = "fam",
                                 sigma  = "sigma_R", sigma2 = "sigma_F"),
     cumulative           = list(dprime = "mu", criterion = "cutpoints"),
-    bivariate_cumulative = list(dprime = "mu1", discrim = "mu2",
-                                criterion = "cutpoints1",
+    bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
+                                criterion = "cutpoints",
                                 criterion2 = "cutpoints2"),
     list()
   )
@@ -394,19 +394,30 @@ mixture <- function(link = link_probit()) {
 #'
 #' ## Parameters
 #' \describe{
-#'   \item{mu}{(required) Linear predictor of covariate effects; the intercept is
-#'     absorbed by the cutpoints, so `rating ~ 1` has no `mu` coefficients.
-#'     Identity link.}
-#'   \item{cutpoints}{(required) K-1 ordered cutpoints (mid-anchor + K-2 ordered
-#'     gaps). Identity link. Set priors via `thresh_mid` and `log_gaps`.}
+#'   \item{mu}{(the primary formula) A shift of the latent distribution common to all
+#'     cutpoints, the proportional-odds part. Its intercept is 0 (the cutpoints hold the
+#'     location), a factor is treatment-coded (`~ 0 + f` is fitted as `~ f`, since there is no
+#'     identified cell-means form), and a random effect is one shift per group: `rating ~ 1 +
+#'     (1 | rater) + (1 | item)` is the random-intercept ordinal model. Identity link.}
+#'   \item{cutpoints}{K-1 ordered cutpoints (mid-anchor + K-2 ordered gaps; default `~ 1`).
+#'     An effect here is category-specific: one coefficient per cutpoint, so the response
+#'     scale changes shape between levels; a random effect is K-1 correlated shifts per
+#'     group. Identity link. Set priors via `thresh_mid` and `log_gaps`.}
 #' }
+#'
+#' Only the differences cutpoint - mu are identified, so a variable (a predictor or a
+#' grouping factor) goes on one of the two formulas: on `mu` for a common shift, on
+#' `cutpoints` for category-specific effects. A variable on both is refused.
 #'
 #' ## Formula syntax
 #' ```
-#' broc(brf(rating ~ condition + (condition | subj),
-#'          cutpoints ~ 1 + (1 | subj),
-#'          family = cumulative()),
-#'     data = dat)
+#' # random-intercept ordinal model with a condition effect common to all cutpoints
+#' broc(brf(rating ~ condition + (1 | subj) + (1 | item),
+#'          family = cumulative()), data = dat)
+#' # category-specific condition and subject effects instead
+#' broc(brf(rating ~ 1 + (1 | item),
+#'          cutpoints ~ condition + (1 | subj),
+#'          family = cumulative()), data = dat)
 #' ```
 #'
 #' @references
@@ -459,13 +470,15 @@ cumulative <- function(link = link_probit()) {
 #'
 #' ## Parameters
 #' \describe{
-#'   \item{mu1}{(required) Linear predictor for dimension 1; the intercept is
-#'     absorbed by the cutpoints. Identity link.}
-#'   \item{mu2}{(required) Linear predictor for dimension 2. Identity link.}
-#'   \item{cutpoints1}{(required) K1-1 ordered cutpoints for dimension 1
-#'     (mid-anchor + ordered gaps). Identity link. Set priors via `thresh_mid`
-#'     and `log_gaps`.}
-#'   \item{cutpoints2}{(required) K2-1 ordered cutpoints for dimension 2.
+#'   \item{mu}{(the primary formula) Location of dimension 1: a shift common to all
+#'     of its cutpoints. Its intercept is 0 (the cutpoints hold the location), factors are
+#'     treatment-coded, and a random effect is one shift per group. Identity link.}
+#'   \item{mu2}{Location of dimension 2, likewise (default `~ 1`). Identity link.}
+#'   \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (mid-anchor + ordered
+#'     gaps; default `~ 1`): category-specific effects, one per cutpoint. Identity link.
+#'     Set priors via `thresh_mid` and `log_gaps`. `cutpoints1` is accepted as an older
+#'     spelling.}
+#'   \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default `~ 1`).
 #'     Identity link. Set priors via `thresh_mid2` and `log_gaps2`.}
 #'   \item{rho}{(required) Correlation between dimensions; effective
 #'     \eqn{\rho = \tanh(\rho_{\text{param}})}. Fisher z link.}
@@ -473,14 +486,18 @@ cumulative <- function(link = link_probit()) {
 #'
 #' ## Formula syntax
 #' ```
-#' broc(brf(resp(y1, y2) ~ x1,
-#'          mu2 ~ x2,
-#'          cutpoints1 ~ 1,
+#' broc(brf(resp(y1, y2) ~ x1 + (1 | subj),
+#'          mu2 ~ x2 + (1 | subj),
+#'          cutpoints ~ 1,
 #'          cutpoints2 ~ 1,
 #'          rho ~ 1,
 #'          family = bivariate_cumulative()),
 #'     data = dat)
 #' ```
+#'
+#' Only (cutpoint - mu) is identified on each dimension, so a variable goes on the location
+#' formula (common shift) or on that dimension's cutpoints formula (category-specific), not
+#' both; the model refuses the overlap. See [cumulative()].
 #'
 #' @return A `broc_family` object.
 #' @seealso [cumulative()] for univariate ordinal,

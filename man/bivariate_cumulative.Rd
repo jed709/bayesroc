@@ -32,13 +32,15 @@ differencing:
 \subsection{Parameters}{
 
 \describe{
-\item{mu1}{(required) Linear predictor for dimension 1; the intercept is
-absorbed by the cutpoints. Identity link.}
-\item{mu2}{(required) Linear predictor for dimension 2. Identity link.}
-\item{cutpoints1}{(required) K1-1 ordered cutpoints for dimension 1
-(mid-anchor + ordered gaps). Identity link. Set priors via \code{thresh_mid}
-and \code{log_gaps}.}
-\item{cutpoints2}{(required) K2-1 ordered cutpoints for dimension 2.
+\item{mu}{(the primary formula) Location of dimension 1: a shift common to all
+of its cutpoints. Its intercept is 0 (the cutpoints hold the location), factors are
+treatment-coded, and a random effect is one shift per group. Identity link.}
+\item{mu2}{Location of dimension 2, likewise (default \code{~ 1}). Identity link.}
+\item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (mid-anchor + ordered
+gaps; default \code{~ 1}): category-specific effects, one per cutpoint. Identity link.
+Set priors via \code{thresh_mid} and \code{log_gaps}. \code{cutpoints1} is accepted as an older
+spelling.}
+\item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default \code{~ 1}).
 Identity link. Set priors via \code{thresh_mid2} and \code{log_gaps2}.}
 \item{rho}{(required) Correlation between dimensions; effective
 \eqn{\rho = \tanh(\rho_{\text{param}})}. Fisher z link.}
@@ -47,14 +49,18 @@ Identity link. Set priors via \code{thresh_mid2} and \code{log_gaps2}.}
 
 \subsection{Formula syntax}{
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{broc(brf(resp(y1, y2) ~ x1,
-         mu2 ~ x2,
-         cutpoints1 ~ 1,
+\if{html}{\out{<div class="sourceCode">}}\preformatted{broc(brf(resp(y1, y2) ~ x1 + (1 | subj),
+         mu2 ~ x2 + (1 | subj),
+         cutpoints ~ 1,
          cutpoints2 ~ 1,
          rho ~ 1,
          family = bivariate_cumulative()),
     data = dat)
 }\if{html}{\out{</div>}}
+
+Only (cutpoint - mu) is identified on each dimension, so a variable goes on the location
+formula (common shift) or on that dimension's cutpoints formula (category-specific), not
+both; the model refuses the overlap. See \code{\link[=cumulative]{cumulative()}}.
 }
 }
 \seealso{

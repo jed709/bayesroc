@@ -260,6 +260,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     valid_names <- c(valid_names,
                      unlist(family$external_aliases, use.names = FALSE))
   }
+  if (family$family == "bivariate_cumulative") valid_names <- c(valid_names, "cutpoints1")   # older spelling
   bad <- setdiff(names(params), valid_names)
   if (length(bad) > 0) {
     stop(sprintf("Parameter%s '%s' not valid for family '%s'. Valid: %s.",
@@ -299,7 +300,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 
   if (family$family == "bivariate_cumulative") {
     if (!is.null(params[["mu2"]])) discrim <- params[["mu2"]]
-    if (!is.null(params[["cutpoints1"]])) criterion <- params[["cutpoints1"]]
+    if (!is.null(params[["cutpoints1"]])) criterion <- params[["cutpoints1"]]   # old spelling of cutpoints
     if (!is.null(params[["cutpoints2"]])) criterion2 <- params[["cutpoints2"]]
   }
 
@@ -2532,9 +2533,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   if (is.null(mu)) {
     stop("mu formula is required for cumulative() family")
   }
-  if (is.null(cutpoints)) {
-    stop("cutpoints formula is required for cumulative() family")
-  }
+  if (is.null(cutpoints)) cutpoints <- ~ 1
   
   mu_str <- paste(deparse(mu, width.cutoff = 500), collapse = " ")
   if (!grepl("~", mu_str)) {
@@ -2550,13 +2549,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   }
   
   
-  has_explicit_no_intercept <- grepl("\\b0\\s*\\+|\\-\\s*1\\b", mu_rhs)
-  if (has_explicit_no_intercept) {
-    message("Note: For cumulative models, ~ 0 + factor uses cell-means coding. ",
-            "Consider using ~ factor for treatment coding (reference level = 0).")
-  }
-  
-  mu_rhs_final <- .suppress_random_intercepts(mu_rhs, "mu", "cumulative")
+  mu_rhs_final <- .mu_rhs(mu_rhs, "mu", cutpoints, "cutpoints")
 
   data$.cumulative_is_old <- 1L
   
@@ -2733,14 +2726,10 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      gap_link = "log", smooth_info = FALSE) {
 
   if (is.null(mu1)) {
-    stop("mu1 (primary) formula is required for bivariate_cumulative() family")
+    stop("The primary formula resp(y1, y2) ~ ... is required for bivariate_cumulative() family")
   }
-  if (is.null(cutpoints1)) {
-    stop("cutpoints1 formula is required for bivariate_cumulative() family")
-  }
-  if (is.null(cutpoints2)) {
-    stop("cutpoints2 formula is required for bivariate_cumulative() family")
-  }
+  if (is.null(cutpoints1)) cutpoints1 <- ~ 1
+  if (is.null(cutpoints2)) cutpoints2 <- ~ 1
 
   if (is.null(rho)) {
     message("Note: rho formula not specified. Using rho ~ 1.")
@@ -2754,7 +2743,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
   mu1_str <- paste(deparse(mu1, width.cutoff = 500), collapse = " ")
   if (!grepl("~", mu1_str)) {
-    stop("mu1 formula must be two-sided: resp(y1, y2) ~ predictors")
+    stop("The primary formula must be two-sided: resp(y1, y2) ~ predictors")
   }
 
   parts <- strsplit(mu1_str, "~")[[1]]
@@ -2776,17 +2765,15 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     stop("Response variable '", response2_var, "' not found in data")
   }
 
-  # --- Apply identifiability constraints to mu1 ---
-  mu1_rhs <- .suppress_random_intercepts(mu1_rhs, "mu1")
+  mu1_rhs <- .mu_rhs(mu1_rhs, "mu", cutpoints1, "cutpoints")
 
-  # --- Apply identifiability constraints to mu2 ---
   mu2_str <- paste(deparse(mu2, width.cutoff = 500), collapse = " ")
   if (grepl("~", mu2_str)) {
     mu2_rhs <- trimws(strsplit(mu2_str, "~")[[1]][2])
   } else {
     mu2_rhs <- mu2_str
   }
-  mu2_rhs <- .suppress_random_intercepts(mu2_rhs, "mu2")
+  mu2_rhs <- .mu_rhs(mu2_rhs, "mu2", cutpoints2, "cutpoints2")
 
   data$.bivar_cum_item_type <- factor(rep("A", nrow(data)), levels = c("new", "A"))
 
@@ -2862,87 +2849,64 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
 #' Suppress random intercepts for identifiability in cumulative-type models
 #' @noRd
-.suppress_random_intercepts <- function(rhs, param_name, model_label = "bivariate cumulative") {
-  re_inner_all <- extract_random_effects(rhs)
-  re_terms <- if (length(re_inner_all)) paste0("(", re_inner_all, ")") else character(0)
-
-  suppressed_re <- character(0)
-  retained_re <- character(0)
-
-  for (i in seq_along(re_terms)) {
-    re <- re_terms[i]
-    bar <- regexpr("|", re_inner_all[i], fixed = TRUE)
-    re_lhs <- trimws(substr(re_inner_all[i], 1L, bar - 1L))
-    re_rest <- substring(re_inner_all[i], bar + 1L)
-
-    has_explicit_no_intercept <- grepl("^0\\s*\\+", re_lhs) || grepl("-\\s*1", re_lhs)
-    has_random_intercept <- !has_explicit_no_intercept
-
-    if (has_random_intercept) {
-      stripped <- gsub("^1\\s*\\+\\s*", "", re_lhs)
-      stripped <- gsub("\\s*\\+\\s*1\\s*$", "", stripped)
-      stripped <- gsub("\\s*\\+\\s*1\\s*\\+\\s*", " + ", stripped)
-      has_slopes <- stripped != "1" && stripped != "" && stripped != re_lhs ||
-        (stripped == re_lhs && re_lhs != "1" && re_lhs != "")
-
-      if (has_slopes) {
-        new_lhs <- stripped
-        if (new_lhs == "" || new_lhs == "1") {
-          suppressed_re <- c(suppressed_re, re)
-        } else {
-          new_re <- paste0("(0 + ", new_lhs, " |", re_rest, ")")
-          retained_re <- c(retained_re, new_re)
-          suppressed_re <- c(suppressed_re, re)
-        }
-      } else {
-        suppressed_re <- c(suppressed_re, re)
-      }
-    } else {
-      retained_re <- c(retained_re, re)
-    }
-  }
-
-  if (length(suppressed_re) > 0) {
-    message("Note: Random intercepts on ", param_name, " suppressed for identifiability. ",
-            "In ", model_label, " models, only (cutpoint - mu) is identified, so random ",
-            "intercepts on ", param_name, " are confounded with random intercepts on cutpoints.")
-  }
-
+# The location formula of the cumulative families (`mu`, or `mu`/`mu2` of the bivariate one) carries
+# effects common to all cutpoints: its intercept is 0 (the cutpoints hold the location), a factor
+# is treatment-coded, and its random effects are one shift per group. Category-specific effects
+# live on the cutpoints formula. Only (cutpoint - mu) is identified, so a variable may appear in
+# one of the two formulas, not both; `0 + f` has no identified cell-means form under a fixed
+# location and is rewritten to treatment coding.
+.mu_rhs <- function(rhs, param_name, cut_formula, cut_name) {
+  re_inner <- extract_random_effects(rhs)
+  re_terms <- if (length(re_inner)) paste0("(", re_inner, ")") else character(0)
   fixed_rhs <- rhs
-  for (re in re_terms) {
-    fixed_rhs <- gsub(re, "", fixed_rhs, fixed = TRUE)
-  }
+  for (re in re_terms) fixed_rhs <- gsub(re, "", fixed_rhs, fixed = TRUE)
   fixed_rhs <- gsub("\\+\\s*\\+", "+", fixed_rhs)
-  fixed_rhs <- gsub("^\\s*\\+|\\+\\s*$", "", fixed_rhs)
-  fixed_rhs <- trimws(fixed_rhs)
-
-  if (fixed_rhs == "" || fixed_rhs == "1") {
-    if (length(retained_re) > 0) {
-      rhs_final <- paste(c("0", retained_re), collapse = " + ")
-    } else {
-      rhs_final <- "0"
-    }
-  } else {
-    if (length(retained_re) > 0) {
-      rhs_final <- paste(c(fixed_rhs, retained_re), collapse = " + ")
-    } else {
-      rhs_final <- fixed_rhs
-    }
+  fixed_rhs <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", fixed_rhs))
+  if (grepl("(^|\\+)\\s*0\\s*(\\+|$)", fixed_rhs) || grepl("-\\s*1", fixed_rhs)) {
+    fixed_rhs <- gsub("(^|\\+)\\s*0\\s*(\\+|$)", "\\1\\2", fixed_rhs)
+    fixed_rhs <- gsub("-\\s*1", "", fixed_rhs)
+    fixed_rhs <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", gsub("\\+\\s*\\+", "+", fixed_rhs)))
+    message("Note: `", param_name, "` is a common shift of all cutpoints and has no intercept of its own, ",
+            "so it has no cell-means coding: `", param_name, " ~ 0 + f` is fitted as `", param_name,
+            " ~ f` (coefficients are differences from the first level).")
   }
+  .check_mu_cutpoints(fixed_rhs, re_inner, cut_formula, param_name, cut_name)
+  fixed_rhs <- if (fixed_rhs == "" || fixed_rhs == "1") "0" else fixed_rhs
+  paste(c(fixed_rhs, re_terms), collapse = " + ")
+}
 
-  rhs_final
+.check_mu_cutpoints <- function(mu_fixed, mu_re, cut_formula, mu_name, cut_name) {
+  if (!inherits(cut_formula, "formula")) return(invisible())
+  cut_rhs <- paste(deparse(cut_formula[[length(cut_formula)]], width.cutoff = 500), collapse = " ")
+  cut_re <- extract_random_effects(cut_rhs)
+  cut_fixed <- cut_rhs
+  for (re in cut_re) cut_fixed <- gsub(paste0("(", re, ")"), "", cut_fixed, fixed = TRUE)
+  cut_fixed <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", gsub("\\+\\s*\\+", "+", cut_fixed)))
+  vars <- function(x) if (!nzchar(trimws(x))) character(0) else all.vars(stats::as.formula(paste("~", x)))
+  group_of <- function(re) trimws(sub("^.*\\|", "", re))
+  both_fixed <- intersect(setdiff(vars(mu_fixed), "1"), vars(cut_fixed))
+  both_re <- intersect(vapply(mu_re, group_of, character(1)), vapply(cut_re, group_of, character(1)))
+  if (length(both_fixed) || length(both_re)) {
+    what <- c(if (length(both_fixed)) paste0("predictor(s) ", paste(both_fixed, collapse = ", ")),
+              if (length(both_re)) paste0("grouping factor(s) ", paste(both_re, collapse = ", ")))
+    stop("`", mu_name, "` and `", cut_name, "` both have ", paste(what, collapse = " and "),
+         ". Only (cutpoint - ", mu_name, ") is identified, so a variable goes on one formula: on `", mu_name,
+         "` for a shift common to all cutpoints, on `", cut_name, "` for category-specific effects (one per cutpoint).",
+         call. = FALSE)
+  }
+  invisible()
 }
 
 #' Rename parameters in Stan code for bivariate cumulative models
 #' @noRd
 rename_bivariate_cumulative_params <- function(stan_code) {
-  stan_code <- gsub("dprime", "mu1", stan_code)
-  stan_code <- gsub("d'", "mu1", stan_code)
+  stan_code <- gsub("dprime", "mu", stan_code)
+  stan_code <- gsub("d'", "mu", stan_code)
   stan_code <- gsub("discrim", "mu2", stan_code)
   stan_code <- gsub("criterion2", "cutpoints2", stan_code)
   stan_code <- gsub("Criterion2", "Cutpoints2", stan_code)
-  stan_code <- gsub("criterion", "cutpoints1", stan_code)
-  stan_code <- gsub("Criterion", "Cutpoints1", stan_code)
+  stan_code <- gsub("criterion", "cutpoints", stan_code)
+  stan_code <- gsub("Criterion", "Cutpoints", stan_code)
   stan_code
 }
 
@@ -2950,10 +2914,10 @@ rename_bivariate_cumulative_params <- function(stan_code) {
 #' @noRd
 rename_stan_data_bivariate_cumulative <- function(stan_data) {
   old_names <- names(stan_data)
-  new_names <- gsub("dprime", "mu1", old_names)
+  new_names <- gsub("dprime", "mu", old_names)
   new_names <- gsub("discrim", "mu2", new_names)
   new_names <- gsub("criterion2", "cutpoints2", new_names)
-  new_names <- gsub("criterion", "cutpoints1", new_names)
+  new_names <- gsub("criterion", "cutpoints", new_names)
   names(stan_data) <- new_names
   stan_data
 }

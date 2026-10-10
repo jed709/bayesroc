@@ -728,14 +728,14 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   }
 
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
-  dprime_dpar <- if (is_cumulative) "mu" else if (is_bivariate_cumulative) "mu1" else "dprime"
+  dprime_dpar <- if (is_cumulative || is_bivariate_cumulative) "mu" else "dprime"
   has_dprime_fixed <- isTRUE(model$model_data$has_dprime_fixed)
 
   if (has_dprime_fixed && model$model_data$dprime_fixed$n_coef > 0) {
     add_fixed_priors("dprime", dprime_dpar, model$model_data$dprime_fixed$coef_names)
   }
 
-  crit_dpar <- if (is_cumulative) "cutpoints" else if (is_bivariate_cumulative) "cutpoints1" else "criterion"
+  crit_dpar <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
   crit2_dpar <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
   add_thresh_priors <- function(mid_key, gap_key, coefs, n_gaps) {
     tg <- .thresh_prior_grid(pl, mid_key, gap_key, coefs, n_gaps)

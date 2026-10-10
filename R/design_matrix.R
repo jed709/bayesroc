@@ -12,6 +12,7 @@
 
 build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_old_var = NULL,
                                        conditional_terms = NULL, parsed_fixed = NULL) {
+  .check_factor_levels(formula, data)
 
   if (!is.null(conditional_terms) && length(conditional_terms) > 0 && !is.null(parsed_fixed)) {
     return(build_conditional_fixed_matrix(parsed_fixed, formula, data,
@@ -592,4 +593,17 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     st$n_re_terms <- R
   }
   st
+}
+
+
+# model.matrix fails on a factor with one level with a message that names no variable
+.check_factor_levels <- function(formula, data) {
+  vars <- tryCatch(all.vars(formula), error = function(e) character(0))
+  for (v in intersect(vars, names(data))) {
+    x <- data[[v]]
+    if ((is.factor(x) && nlevels(droplevels(x)) < 2L) || (is.character(x) && length(unique(x)) < 2L)) {
+      stop("Variable '", v, "' has a single level in the data, so it cannot be a predictor.", call. = FALSE)
+    }
+  }
+  invisible()
 }

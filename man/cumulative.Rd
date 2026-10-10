@@ -32,20 +32,30 @@ probabilities by differencing:
 \subsection{Parameters}{
 
 \describe{
-\item{mu}{(required) Linear predictor of covariate effects; the intercept is
-absorbed by the cutpoints, so \code{rating ~ 1} has no \code{mu} coefficients.
-Identity link.}
-\item{cutpoints}{(required) K-1 ordered cutpoints (mid-anchor + K-2 ordered
-gaps). Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
+\item{mu}{(the primary formula) A shift of the latent distribution common to all
+cutpoints, the proportional-odds part. Its intercept is 0 (the cutpoints hold the
+location), a factor is treatment-coded (\code{~ 0 + f} is fitted as \code{~ f}, since there is no
+identified cell-means form), and a random effect is one shift per group: \code{rating ~ 1 + (1 | rater) + (1 | item)} is the random-intercept ordinal model. Identity link.}
+\item{cutpoints}{K-1 ordered cutpoints (mid-anchor + K-2 ordered gaps; default \code{~ 1}).
+An effect here is category-specific: one coefficient per cutpoint, so the response
+scale changes shape between levels; a random effect is K-1 correlated shifts per
+group. Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
 }
+
+Only the differences cutpoint - mu are identified, so a variable (a predictor or a
+grouping factor) goes on one of the two formulas: on \code{mu} for a common shift, on
+\code{cutpoints} for category-specific effects. A variable on both is refused.
 }
 
 \subsection{Formula syntax}{
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{broc(brf(rating ~ condition + (condition | subj),
-         cutpoints ~ 1 + (1 | subj),
-         family = cumulative()),
-    data = dat)
+\if{html}{\out{<div class="sourceCode">}}\preformatted{# random-intercept ordinal model with a condition effect common to all cutpoints
+broc(brf(rating ~ condition + (1 | subj) + (1 | item),
+         family = cumulative()), data = dat)
+# category-specific condition and subject effects instead
+broc(brf(rating ~ 1 + (1 | item),
+         cutpoints ~ condition + (1 | subj),
+         family = cumulative()), data = dat)
 }\if{html}{\out{</div>}}
 }
 }
