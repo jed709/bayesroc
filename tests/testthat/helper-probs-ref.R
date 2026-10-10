@@ -44,14 +44,14 @@
       rho_s <- rho_A[, n]
     } else {
       mu1_s <- if (has_dprime_B) params$dprime_B[, n] else dprime[, n]
-      mu2_s <- if (has_discrim_B) -params$discrim_B[, n] else -discrim[, n]
+      mu2_s <- if (has_discrim_B) (if (bounded) -1 else 1) * params$discrim_B[, n] else -discrim[, n]   # given B values are signed; the bounded kernel mirrors inside
       sig1_s <- if (has_sigma_B) params$sigma_B[, n] else {
         if (has_sigma) params$sigma[, n] else rep(1, S)
       }
       sig2_s <- if (has_sigma2_B) params$sigma2_B[, n] else {
         if (has_sigma2) params$sigma2[, n] else rep(1, S)
       }
-      rho_s <- if (has_rho_B) -params$rho_B[, n] else -rho_A[, n]
+      rho_s <- if (has_rho_B) (if (bounded) -1 else 1) * params$rho_B[, n] else -rho_A[, n]
     }
 
     use_bounded <- bounded && it != 1
@@ -150,14 +150,14 @@
       rho_s <- rho_A[, n]
     } else {
       mu1_s <- if (has_dprime_B) params$dprime_B[, n] else dprime[, n]
-      mu2_s <- if (has_discrim_B) -params$discrim_B[, n] else -discrim[, n]
+      mu2_s <- if (has_discrim_B) (if (bounded) -1 else 1) * params$discrim_B[, n] else -discrim[, n]   # given B values are signed; the bounded kernel mirrors inside
       sig1_s <- if (has_sigma_B) params$sigma_B[, n] else {
         if (has_sigma) params$sigma[, n] else rep(1, S)
       }
       sig2_s <- if (has_sigma2_B) params$sigma2_B[, n] else {
         if (has_sigma2) params$sigma2[, n] else rep(1, S)
       }
-      rho_s <- if (has_rho_B) -params$rho_B[, n] else -rho_A[, n]
+      rho_s <- if (has_rho_B) (if (bounded) -1 else 1) * params$rho_B[, n] else -rho_A[, n]
     }
 
     if (bounded && it != 1) {

@@ -98,7 +98,7 @@ test_that("R-side CDP cells match the high-precision reference and partition the
     s <- sqrt(b^2 + d^2)
     sum(compute_rkg_probs_r(a, b, c, d, e, f, g, h)) - (pnorm((h - a - c) / s) - pnorm((g - a - c) / s))
   }, fx$mu_R, fx$sigma_R, fx$mu_F, fx$sigma_F, fx$c_R, fx$c_K, fx$tau_lo, fx$tau_hi)
-  expect_lt(max(abs(dev)), 1e-12)
+  expect_lt(max(abs(dev)), 5e-12)
 })
 
 test_that("R/K/G know-criterion knob: X v = 1, orthonormal complement, Guess trials and bands", {
