@@ -108,7 +108,8 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   shared <- length(noise_sets) == 1L
   noise_name <- switch(roles$what, source = "Source A", detection = "Lures", ordinal = NULL)
   signal_name <- switch(roles$what, source = "Source B", detection = "Targets", ordinal = "Responses")
-  dim_label <- switch(roles$what, source = "Source strength (A to B)", ordinal = "Latent strength", "Memory strength")
+  dim_label <- switch(roles$what, source = "Source strength (A to B)",
+                      ordinal = if (bivariate) paste("Latent dimension", response) else "Latent strength", "Memory strength")
   curves <- list()
   for (lev in names(pairs)) {
     pr <- pairs[[lev]]

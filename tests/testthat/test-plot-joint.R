@@ -95,6 +95,7 @@ test_that("the joint pp_check draws for a bivariate family and the latent plane 
   fit2 <- fit_broc(m2, backend = "stan", refresh = 50, parallel_chains = 4, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
   .jp_renders(pp_check(fit2, type = "joint", ndraws = 20))
   .jp_renders(plot_distributions(fit2, type = "joint", ndraws = 20))
+  .jp_renders(plot_distributions(fit2, ndraws = 20))            # both ordinal dimensions in one figure
   expect_error(plot_roc(fit2), "plot_distributions")
   expect_error(pp_check(fit, type = "joint", response = 2), NA)
 })
