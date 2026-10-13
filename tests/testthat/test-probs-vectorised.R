@@ -97,3 +97,40 @@ test_that("native detection survival equals the R path along the criterion path 
     }
   }
 })
+
+test_that("native survival of the univariate families equals the R path along the criterion path and on a grid", {
+  .bvn_native$ok <- NULL
+  skip_if_not(.bvn_native_ready())
+  on.exit(.bvn_native$ok <- NULL)
+  set.seed(500)
+  S <- 6; N <- 11; K <- 6
+  mat <- function(lo, hi) matrix(runif(S * N, lo, hi), S, N)
+  is_old <- rep_len(c(0, 1, 1), N)
+  th <- array(t(apply(matrix(rnorm(S * N * (K - 1), 0, 1.2), S * N), 1, sort)), c(S, N, K - 1))
+  rows <- c(1L, 2L, 3L, 5L, 7L, 8L, 11L); w <- runif(length(rows), 0.5, 2)
+  source <- rep_len(c(0, 1), N)
+  for (fam in c("evsdt", "uvsdt", "dpsdt", "dpsdt_sigma", "cumulative", "cdp", "mixture", "mixture_plain", "mixture_lure",
+                "source_mixture", "source_mixture_B")) {
+    base <- sub("_(sigma|plain|lure|B)$", "", fam)
+    tp <- list(dprime = mat(0.2, 2))
+    if (fam %in% c("uvsdt", "dpsdt_sigma", "cdp", "mixture", "mixture_lure")) tp$sigma <- mat(0.7, 1.6)
+    if (startsWith(fam, "dpsdt") || base %in% c("mixture", "source_mixture")) tp$lambda <- mat(0.05, 0.6)
+    if (fam %in% c("cdp", "mixture", "mixture_lure")) { tp$dprime2 <- mat(0.2, 2); tp$sigma2 <- mat(0.7, 1.6) }
+    if (fam == "mixture_lure") { tp$dprime_L <- mat(0.2, 1.5); tp$sigma_L <- mat(0.7, 1.6); tp$lambda_L <- mat(0.05, 0.6) }
+    if (fam == "source_mixture_B") { tp$dprime_B <- mat(-2, -0.2); tp$lambda_B <- mat(0.05, 0.6) }
+    model <- list(family = list(family = base, link = list(name = "probit")),
+                  model_data = list(has_sigma = fam == "dpsdt_sigma", K = K, has_lure_mixture = fam == "mixture_lure",
+                                    has_dprime_B = fam == "source_mixture_B", has_lambda_B = fam == "source_mixture_B"),
+                  stan_data = list(is_old = is_old))
+    setup <- list(S = S, tp = tp, th = th, th2 = NULL, data_src = list(is_old = is_old, source = source))
+    for (mode in c("path", "grid")) {
+      g <- if (mode == "path") .roc_u_grid(K - 1L) else seq(-4, 4, length.out = 25)
+      crit <- if (mode == "path") function(th) .criterion_path(th, g)
+              else function(th) array(rep(g, each = dim(th)[1] * dim(th)[2]), c(dim(th)[1:2], length(g)))
+      ref <- .roc_survival_rows(model, setup, rows, w, 1, length(g), crit)
+      attr(crit, "u") <- g; attr(crit, "mode") <- mode
+      nat <- .roc_survival_rows(model, setup, rows, w, 1, length(g), crit)
+      expect_lt(max(abs(nat - ref)), 1e-7, label = paste(fam, mode))
+    }
+  }
+})

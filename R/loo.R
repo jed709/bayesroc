@@ -246,11 +246,10 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
          " worker chunk(s):\n", paste(msgs, collapse = "\n"),
          "\n\nRerun with cores = 1 for a clearer trace.", call. = FALSE)
   }
-  for (r in res) {
-    for (w in r$warnings) {
-      if (!grepl("Pareto", w)) message("[loo chunk ", r$cols[1], "-", r$cols[2],
-                                       "] ", w)
-    }
+  warned <- unlist(lapply(res, function(r) unique(as.character(r$warnings))))
+  warned <- warned[!grepl("Pareto|ESS has been capped", warned)]
+  for (w in unique(warned)) {
+    message("[loo] ", w, " (", sum(warned == w), " of ", length(res), " chunks)")
   }
   sub <- lapply(res, `[[`, "loo")
   pointwise <- do.call(rbind, lapply(sub, function(z) z$pointwise))

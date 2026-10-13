@@ -187,6 +187,7 @@ binormal_cdf_r <- function(z1, z2, rho) {
       st$sym_srcsurv_g <- sym("bayesroc_r_src_survival_gauss")
       st$sym_exp <- sym("bayesroc_r_exp")
       st$sym_cdp <- sym("bayesroc_r_cdp_probs")
+      st$sym_mixsurv <- sym("bayesroc_r_mix_survival")
       TRUE
     }, error = function(e) FALSE)
   }

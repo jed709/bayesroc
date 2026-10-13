@@ -160,24 +160,21 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   cat(.tbl_lines(df, digits, indent), sep = "\n")
 }
 
-# A correlation block as a table of effect pairs. Small blocks (up to four effects) name the pair
-# on each row; larger ones, or any whose labels would run past the console width, list the
-# effects once with numbers and the rows refer to those, so the layout follows the block, not
-# the length of a family's labels.
+# A correlation block as a table of effect pairs, each row naming its two effects. The labels are
+# shortened where nothing is lost within the block: the scale note of a criterion component
+# (given in the standard-deviation table) and an ": Intercept" every effect carries.
 .print_cor_tbl <- function(rows, digits, indent = "  ") {
-  effects <- unique(c(rows$effect_1, rows$effect_2))
-  lines <- .tbl_lines(rows, digits, indent)
-  if (length(effects) <= 4L && max(nchar(lines)) <= getOption("width", 80L)) {
-    cat(lines, sep = "\n")
-    return(invisible())
-  }
-  w <- nchar(length(effects))
-  cat(paste0(indent, "[", formatC(seq_along(effects), width = w), "] ", effects), sep = "\n")
-  cat("\n")
-  num <- function(v) formatC(match(v, effects), width = w)
-  short <- cbind(pair = paste0(num(rows$effect_1), " - ", num(rows$effect_2)),
-                 rows[setdiff(names(rows), c("effect_1", "effect_2"))], stringsAsFactors = FALSE)
-  cat(.tbl_lines(short, digits, indent), sep = "\n")
+  rows[c("effect_1", "effect_2")] <- .cor_short_labels(rows$effect_1, rows$effect_2)
+  cat(.tbl_lines(rows, digits, indent), sep = "\n")
+}
+
+.cor_short_labels <- function(e1, e2) {
+  n <- length(e1)
+  short <- sub("(c[0-9]+( to c[0-9]+)?) \\([^)]*\\)", "\\1", c(e1, e2))
+  int <- sub(": Intercept$", "", short)
+  if (all(int != short) && length(unique(int)) == length(unique(short))) short <- int
+  if (length(unique(short)) != length(unique(c(e1, e2)))) short <- c(e1, e2)
+  list(short[seq_len(n)], short[n + seq_len(n)])
 }
 
 .print_section <- function(title, note = NULL) {

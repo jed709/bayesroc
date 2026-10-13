@@ -278,12 +278,27 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   S <- setup$S
   link <- model$family$link$name
   u <- attr(crit, "u")
-  if (.is_bivariate_family(fam) && response == 1 && !is.null(u) && .bvn_native_ready()) {
-    # the detection response's survival along the criterion path, accumulated natively
+  pt <- NULL
+  if (!is.null(u) && .bvn_native_ready()) {
     r <- length(rows)
-    pt <- .detection_margin_parts(fam, lapply(setup$tp, function(m) m[, rows, drop = FALSE]),
-                                  setup$data_src$item_type[rows], S, r, model)
+    tps_all <- lapply(setup$tp, function(m) m[, rows, drop = FALSE])
+    pt <- if (.is_bivariate_family(fam)) {
+      if (response == 1) .detection_margin_parts(fam, tps_all, setup$data_src$item_type[rows], S, r, model)
+    } else {
+      .univariate_margin_parts(fam, link, tps_all, if (fam == "cdp") model$stan_data$is_old[rows] else setup$data_src$is_old[rows],
+                               setup$data_src$source[rows], S, r, model)
+    }
+  }
+  if (!is.null(pt)) {
+    # a normal (or recollection-mixed normal) response's survival along the criterion path, accumulated natively
     th <- setup$th[, rows, , drop = FALSE]
+    if (pt$kind == 3L) {
+      acc <- .C(.bvn_native$sym_mixsurv, as.double(th), as.double(pt$mu), as.double(pt$sig), as.double(pt$lam),
+                as.double(pt$mu_rec), as.double(pt$sig2), as.double(u), as.double(w_rows),
+                as.integer(c(S, r, dim(th)[3], length(u), identical(attr(crit, "mode"), "path"), .native_threads())),
+                8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
+      return(matrix(acc, S, length(u)) / sum(w_rows))
+    }
     acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(pt$mu), as.double(pt$sig),
               as.double(pt$lam %||% 0), as.double(pt$mu_rec %||% 0), as.double(u), as.double(w_rows),
               as.integer(c(S, r, dim(th)[3], length(u), pt$kind, identical(attr(crit, "mode"), "path"),
@@ -378,6 +393,49 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     acc <- acc + .tail_by_rows(pr, w[idx])
   }
   acc / sum(w[rows])
+}
+
+# Per-(draw, trial) parts of the univariate probit families' response distribution in the layout of
+# .detection_margin_parts: a normal (kind 0), a normal with a recollected mass in the top category (kind 1), or
+# two normals with their own means and SDs, the second with weight lam (kind 3); NULL for the others.
+.univariate_margin_parts <- function(fam, link, tps, is_old, source, S, r, model) {
+  if (!fam %in% c("evsdt", "uvsdt", "dpsdt", "cumulative", "cdp", "mixture", "source_mixture") || (fam != "cdp" && link != "probit")) return(NULL)
+  one <- rep(1, S * r)
+  md <- model$model_data
+  vec <- function(nm, alt) if (!is.null(tps[[nm]])) as.vector(tps[[nm]]) else alt
+  if (fam == "cdp") {
+    old <- rep(is_old == 1, each = S)
+    mu <- as.vector(tps$dprime + (tps$dprime2 %||% 0))
+    sig <- as.vector(sqrt((tps$sigma %||% 1)^2 + (tps$sigma2 %||% 1)^2)) * one
+    return(list(mu = ifelse(old, mu, 0), sig = ifelse(old, sig, sqrt(2)), lam = NULL, mu_rec = NULL, kind = 0L))
+  }
+  if (fam == "cumulative") return(list(mu = as.vector(tps$dprime), sig = one, lam = NULL, mu_rec = NULL, kind = 0L))
+  if (fam == "source_mixture") {
+    if (is.null(.bvn_native$sym_mixsurv)) return(NULL)
+    B <- rep(source != 0, each = S)
+    d <- as.vector(tps$dprime)
+    dB <- if (isTRUE(md$has_dprime_B)) as.vector(tps$dprime_B) else -d
+    lam <- as.vector(tps$lambda)
+    lamB <- if (isTRUE(md$has_lambda_B)) as.vector(tps$lambda_B) else lam
+    return(list(mu = 0 * one, sig = one, lam = ifelse(B, lamB, lam), mu_rec = ifelse(B, dB, d), sig2 = one, kind = 3L))
+  }
+  io <- rep(is_old, each = S)
+  old <- io > 0
+  mu <- io * as.vector(tps$dprime)
+  if (fam == "mixture") {
+    if (is.null(.bvn_native$sym_mixsurv)) return(NULL)
+    lure <- isTRUE(md$has_lure_mixture) && !is.null(tps$dprime_L) && !is.null(tps$lambda_L)
+    mu2 <- vec("dprime2", 0 * one) - (1 - io) * as.vector(tps$dprime)
+    out <- list(mu = ifelse(old, mu2, if (lure) 0 else mu), sig = ifelse(old, vec("sigma2", one), 1),
+                lam = ifelse(old, as.vector(tps$lambda), if (lure) as.vector(tps$lambda_L) else 0),
+                mu_rec = ifelse(old, mu, if (lure) -as.vector(tps$dprime_L) else 0),
+                sig2 = ifelse(old, vec("sigma", one), if (lure) vec("sigma_L", one) else 1), kind = 3L)
+    return(out)
+  }
+  sig <- one
+  if (fam == "uvsdt" || (fam == "dpsdt" && isTRUE(md$has_sigma))) sig <- ifelse(old, as.vector(tps$sigma), 1)
+  lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps$lambda), 0) else NULL
+  list(mu = mu, sig = sig, lam = lam, mu_rec = NULL, kind = if (fam == "dpsdt") 1L else 0L)
 }
 
 .subset_thresh2 <- function(t2, idx) {

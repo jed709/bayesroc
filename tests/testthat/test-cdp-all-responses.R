@@ -29,7 +29,7 @@ test_that("judgements on every response switch cdp to the full confidence scale"
   expect_identical(m$family$rk_levels, 1:4)
   expect_true(all(m$stan_data$rk %in% 1:3))
 
-  expect_message(m2 <- broc(cdp_all_formula(3L, cdp(old_levels = 3:4)), data = d), "outside old_levels")
+  expect_message(m2 <- broc(cdp_all_formula(3L, cdp(old_levels = 3:4)), data = d), "beyond old_levels")
   expect_identical(m2$family$old_levels, 2:4)
 
   d_old <- d

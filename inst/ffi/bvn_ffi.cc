@@ -750,6 +750,65 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
     for (int64_t k = 0; k < S * U; ++k) acc[k] += part[t][k];
 }
 
+// Plain C entry for R's .C(): weighted survival curves of a two-normal mixture with its own mean and SD
+// per component (the mixture and source-mixture families). th [S, R, J]; mu, sig, lam, mu2, sig2 [S, R];
+// u [U]; w [R]; dims = {S, R, J, U, path, threads}; ext as for the detection kernel.
+// acc [S, U] += w_r * (1 - (1 - lam) Phi((c(u) - mu) / sig) - lam Phi((c(u) - mu2) / sig2)).
+extern "C" void bayesroc_r_mix_survival(const double* th, const double* mu, const double* sig,
+                                        const double* lam, const double* mu2, const double* sig2, const double* u,
+                                        const double* w, const int* dims, const double* ext,
+                                        double* acc) {
+  const int64_t S = dims[0], R = dims[1], J = dims[2], U = dims[3];
+  const int path = dims[4], threads = dims[5];
+  const double e = *ext, rs2 = 0.7071067811865476;
+  std::vector<int> lo(U);
+  std::vector<double> fr(U);
+  for (int64_t j = 0; j < U; ++j) {
+    double f = std::floor(u[j]);
+    int l = static_cast<int>(f < J ? f : J);
+    lo[j] = l;
+    fr[j] = u[j] - l;
+  }
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, R));
+  std::vector<std::vector<double>> part(T, std::vector<double>(size_t(S) * size_t(U), 0.0));
+  auto work = [&](int64_t t, int64_t r0, int64_t r1) {
+    double* out = part[t].data();
+    std::vector<double> knots(J + 2);
+    for (int64_t r = r0; r < r1; ++r) {
+      const double wr = w[r];
+      if (wr == 0.0) continue;
+      for (int64_t s = 0; s < S; ++s) {
+        const int64_t sr = s + S * r;
+        const double m = mu[sr], is = 1.0 / sig[sr];
+        const double l = lam[sr], m2 = mu2[sr], is2 = 1.0 / sig2[sr];
+        if (path) {
+          for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
+          knots[0] = knots[1] - e;
+          knots[J + 1] = knots[J] + e;
+        }
+        for (int64_t j = 0; j < U; ++j) {
+          const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
+          const double F = (1.0 - l) * 0.5 * std::erfc(-(c - m) * is * rs2) + l * 0.5 * std::erfc(-(c - m2) * is2 * rs2);
+          const double sv = 1.0 - F;
+          if (sv > 0.0) out[s + S * j] += wr * sv;
+        }
+      }
+    }
+  };
+  if (T == 1) {
+    work(0, 0, R);
+  } else {
+    const int64_t per = (R + T - 1) / T;
+    std::vector<std::thread> pool;
+    for (int64_t t = 1; t < T; ++t)
+      if (t * per < R) pool.emplace_back(work, t, t * per, std::min(R, (t + 1) * per));
+    work(0, 0, std::min(R, per));
+    for (auto& th_ : pool) th_.join();
+  }
+  for (int64_t t = 0; t < T; ++t)
+    for (int64_t k = 0; k < S * U; ++k) acc[k] += part[t][k];
+}
+
 // Plain C entry for R's .C(): weighted survival curves of the SOURCE response of the vrdp2d
 // family (both components univariate given the recollection state). th1 [S, R, J1] detection
 // thresholds; th2 [S, R, K1, J2] source thresholds per detection response when `varying`, else

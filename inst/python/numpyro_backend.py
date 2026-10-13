@@ -295,6 +295,17 @@ def _pfloor():
     return 1e-300 if jax.config.jax_enable_x64 else 1e-37
 
 
+_EMPTY_SLOPE = 10.0
+
+
+def _empty_cell_lp(violation):
+    """Log-likelihood assigned to an observed cell the model gives probability zero: the floor,
+    falling linearly in how far the parameters are from making the cell possible, so a chain
+    started there is driven back into the support rather than left on a flat floor."""
+    return jnp.log(_pfloor()) - _EMPTY_SLOPE * violation
+
+
+
 def _link_cell_fn(link_name):
     """(P(lo < Z < hi), pdf(lo), pdf(hi)) for the link's latent distribution, with each pdf
     the exact derivative of the CDF used for the probability. Probit uses the native kernel
@@ -2646,7 +2657,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             p_rk = jnp.where(tail, jnp.exp(t_lp), p_sel)
 
         prob = jnp.where(judged, p_rk, p_band)
-        return jnp.log(jnp.clip(prob, _pfloor()))
+        val = jnp.log(jnp.clip(prob, _pfloor()))
+        if n_rkg == 3:
+            empty = judged & (rk == 3) & has_lo & (c_R + c_K <= tau_lo)
+            val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
+        return val
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -2900,6 +2915,17 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
             d_val_dcK = d_val_dcK + td[5]
             d_val_dtau_lo = d_val_dtau_lo + td[6]
             d_val_dtau_hi = d_val_dtau_hi + td[7]
+
+            empty = judged & (rk == 3) & has_tau_lo & (c_R + c_K <= tau_lo)
+            val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
+            d_val_dmuR = jnp.where(empty, 0.0, d_val_dmuR)
+            d_val_dsigR = jnp.where(empty, 0.0, d_val_dsigR)
+            d_val_dmuF = jnp.where(empty, 0.0, d_val_dmuF)
+            d_val_dsigF = jnp.where(empty, 0.0, d_val_dsigF)
+            d_val_dcR = jnp.where(empty, _EMPTY_SLOPE, d_val_dcR)
+            d_val_dcK = jnp.where(empty, _EMPTY_SLOPE, d_val_dcK)
+            d_val_dtau_lo = jnp.where(empty, -_EMPTY_SLOPE, d_val_dtau_lo)
+            d_val_dtau_hi = jnp.where(empty, 0.0, d_val_dtau_hi)
 
         d_t_k_lo = jnp.where(has_tau_lo, d_val_dtau_lo, 0.0)
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)

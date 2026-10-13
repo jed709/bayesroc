@@ -578,7 +578,7 @@ def _supers(config, off, split=False, thin_rule=True):
                 B.gpairs += [(o + d, flats, W) for d, flats, W in
                              _group_fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas,
                                               B.index, B.n, {d for d, _ in pairs})]
-            elif mp in _RE_PARAMS:
+            else:
                 if mp == "criterion2" and config.get("varying_source_criteria"):
                     B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
                 else:

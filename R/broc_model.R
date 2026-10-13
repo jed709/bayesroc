@@ -847,8 +847,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
               if (min(judged) == 1L) "modelling every confidence level."
               else paste0("responses below ", rc$labels[min(thr_levels)], " are treated as one \"new\" category."))
     } else if (!identical(as.integer(thr_levels), as.integer(family$old_levels))) {
-      message("cdp(): remember/know judgements are present outside old_levels; modelling confidence levels ",
-              paste(rc$labels[range(thr_levels)], collapse = " to "), " separately.")
+      message("cdp(): remember/know judgements were given on responses ",
+              paste(rc$labels[range(judged)], collapse = " to "), ", beyond old_levels (",
+              paste(rc$labels[range(family$old_levels)], collapse = " to "), "); fitting judgements on all of them, ",
+              if (min(thr_levels) == 2L) "with every confidence level modelled."
+              else paste0("with responses below ", rc$labels[min(thr_levels)], " treated as one \"new\" category."))
     }
     family$old_levels <- as.integer(thr_levels)
     family$J <- length(thr_levels)

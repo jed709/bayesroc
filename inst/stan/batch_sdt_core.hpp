@@ -13,6 +13,7 @@
 namespace batch_sdt {
 
 constexpr double kPFloor = 1e-300;
+constexpr double kEmptySlope = 10.0;
 
 // ============================================================
 // Normal PDF / CDF (probit link)
@@ -1212,6 +1213,14 @@ inline CdpRkgResult cdp_rkg_cell(
   double p_band = is_lo_edge ? Phi(z_hi) : (is_hi_edge ? Qn(z_lo) : Phi_diff(z_lo, z_hi));
   double phi_lo = is_lo_edge ? 0.0 : phi(z_lo);
   double phi_hi = is_hi_edge ? 0.0 : phi(z_hi);
+
+  if (judged && rk_n == 3 && !is_lo_edge && c_R + c_K <= tau_lo_val) {
+    res.lp = std::log(kPFloor) - kEmptySlope * (tau_lo_val - c_R - c_K);
+    res.d_rec_crit = kEmptySlope;
+    res.d_know_crit = kEmptySlope;
+    res.d_thresh_lo = -kEmptySlope;
+    return res;
+  }
 
   BinormalCdfResult bv_hi = {};
   BinormalCdfResult bv_lo = {};
