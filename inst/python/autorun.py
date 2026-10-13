@@ -221,7 +221,7 @@ def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=
                 None if tm is None else np.asarray(resume["aux"]))
     th0 = dr._initial_positions(model, config, s.keys, s.off, s.D, s.chains, seed,
                                 a.get("init_strategy", "numeric"), a.get("init_radius", 0.0),
-                                s.init_z)
+                                s.init_z, s.unflatten.to_sampled)
     imm, eps, th, aux, _ = dr._adapt(model, config, s.keys, s.off, s.vg, vg_s, tm, s.D, s.chains,
                                      int(a["warmup"]), seed, ctrl, s.parallel, s.progress, th0,
                                      user_init=s.init_z is not None, init=init)

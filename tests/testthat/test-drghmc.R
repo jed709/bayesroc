@@ -139,3 +139,25 @@ test_that("f32 fits (NUTS and DR-G-HMC) sum the likelihood relative to a warmed-
     expect_true(all(abs(mf - mr) < 0.5 * sr), label = paste(smp, "f32 means vs f64"))
   }
 })
+
+test_that("drghmc samples weakly identified standard deviations from the NUTS posterior", {
+  skip_if_no_jax()
+  d <- .fixture_crossed()
+  m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub) + (1 | item), family = evsd()), d)
+  ref <- fit_broc(m, backend = "jax", chains = 4, iter_warmup = 1000, iter_sampling = 6000,
+                  seed = 3, progress_bar = FALSE, control = list(adapt_delta = 0.99))
+  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 4, iter_warmup = 1500,
+                iter_sampling = 12000, seed = 4, progress_bar = FALSE)
+  vars <- grep("^sigma_", posterior::variables(ref$.draws_array), value = TRUE)
+  expect_gt(length(vars), 1L)
+  lg <- function(fit) log(posterior::subset_draws(fit$.draws_array, variable = vars))
+  sm <- function(fit) posterior::summarise_draws(lg(fit), "mean", "sd", "mcse_mean",
+                                                 q05 = function(x) stats::quantile(x, 0.05, names = FALSE),
+                                                 lo_se = function(x) posterior::mcse_quantile(x, 0.05, names = FALSE))
+  rs <- sm(ref)
+  fs <- sm(f)
+  expect_true(all(is.finite(c(rs$lo_se, fs$lo_se))))
+  expect_true(all(abs(fs$mean - rs$mean) < 5 * sqrt(rs$mcse_mean^2 + fs$mcse_mean^2)), label = "log-SD means")
+  expect_true(all(abs(fs$sd / rs$sd - 1) < 0.15), label = "log-SD spreads")
+  expect_true(all(abs(fs$q05 - rs$q05) < 5 * sqrt(rs$lo_se^2 + fs$lo_se^2)), label = "log-SD lower tails")
+})

@@ -166,6 +166,60 @@ def _fast_constrain_fn(model, config, full_pp, unflatten, ths):
         return None
 
 
+_SQ2PI = 2.5066282746310002
+
+
+@jax.custom_jvp
+def _sd_logq(t):
+    """log q(t), q the half-normal quantile at the normal probability of t: q = Phi^-1((1 + Phi(t)) / 2).
+    A standard deviation sampled as scale * q(t) has a standard normal prior on t under a
+    half-normal(scale) prior, and where the data say nothing about it its lower tail is the
+    normal's instead of the exponential one it has on the log scale."""
+    from jax.scipy.special import ndtr, ndtri, log_ndtr
+    d = 0.5 * ndtr(jnp.minimum(t, -3.0))
+    a = _SQ2PI * d
+    low = jnp.log(0.5 * _SQ2PI) + log_ndtr(jnp.minimum(t, -3.0)) + jnp.log1p(a * a / 6.0 + 7.0 * a ** 4 / 120.0)
+    high = jnp.log(-ndtri(0.5 * ndtr(-jnp.maximum(t, -3.0))))
+    return jnp.where(t < -3.0, low, high)
+
+
+@_sd_logq.defjvp
+def _sd_logq_jvp(primals, tangents):
+    t, = primals
+    lq = _sd_logq(t)
+    return lq, tangents[0] * jnp.exp(_sd_logslope(t, lq))
+
+
+def _sd_logslope(t, lq):
+    """log d log q / dt."""
+    return 0.5 * (jnp.exp(2.0 * lq) - t * t) - jnp.log(2.0) - lq
+
+
+def _sd_t(q):
+    """The inverse of q(t), in numpy."""
+    from scipy.special import ndtr, ndtri, erf
+    q = np.asarray(q, dtype=np.float64)
+    return np.where(q < 1.0, ndtri(np.clip(erf(q / np.sqrt(2.0)), 1e-300, 1.0)),
+                    -ndtri(np.clip(2.0 * ndtr(-q), 1e-300, 1.0)))
+
+
+def _sd_prior_scale(fn):
+    """The scale of a standard deviation's prior when it has positive density at zero, else None."""
+    import numpyro.distributions as dist
+    while True:
+        if isinstance(fn, (dist.HalfNormal, dist.HalfCauchy)):
+            return fn.scale
+        if isinstance(fn, dist.Exponential):
+            return 1.0 / fn.rate
+        low = getattr(fn, "low", None)
+        base = getattr(fn, "base_dist", None)
+        if low is not None and base is not None and hasattr(base, "scale"):
+            return base.scale if bool(np.all(np.asarray(low) == 0.0)) else None
+        if base is None:
+            return None
+        fn = base
+
+
 def _model_info(model, config):
     """Unconstrained site shapes, potential and postprocess (constrained sites plus
     deterministics) from one abstract trace. numpyro's initialize_model gives the same
@@ -174,7 +228,7 @@ def _model_info(model, config):
     from numpyro.distributions.transforms import biject_to
     from numpyro.infer.util import potential_energy, constrain_fn
 
-    supports = {}
+    supports, sd_scale = {}, {}
 
     def run():
         init = handlers.substitute(handlers.seed(model, rng_seed=0),
@@ -185,11 +239,15 @@ def _model_info(model, config):
             if site["type"] == "sample" and not site["is_observed"]:
                 supports[name] = site["fn"].support
                 out[name] = site["value"]
+                sc = _sd_prior_scale(site["fn"]) if name.startswith("sigma_") else None
+                if sc is not None and not isinstance(sc, jax.core.Tracer):
+                    sd_scale[name] = np.broadcast_to(np.asarray(sc, dtype=np.float64), np.shape(site["value"]))
         return out
 
     vals = jax.eval_shape(run)
     shapes = {k: tuple(biject_to(supports[k]).inv.forward_shape(vals[k].shape)) for k in vals}
     pot = lambda z: potential_energy(model, (config,), {}, z)
+    pot.sd_scale = sd_scale
     post = lambda z: constrain_fn(model, (config,), {}, z, return_deterministic=True)
     return shapes, pot, post
 
@@ -210,19 +268,42 @@ def _build(model, config):
     # per site, which costs more than the likelihood gradient itself whenever v is not
     # the program's own input (any reparameterisation in front of the model).
     @jax.custom_vjp
-    def unflatten(v):
+    def split(v):
         return {k: v[off[k][0]].reshape(off[k][1]) for k in keys}
 
-    def unflatten_fwd(v):
-        return unflatten(v), None
+    def split_fwd(v):
+        return split(v), None
 
-    def unflatten_bwd(_, ct):
+    def split_bwd(_, ct):
         return (jnp.concatenate([jnp.reshape(ct[k], (-1,)) for k in keys]),)
 
-    unflatten.defvjp(unflatten_fwd, unflatten_bwd)
+    split.defvjp(split_fwd, split_bwd)
+    sd_keys = [k for k in keys if k in potential_fn.sd_scale]
+    sd_idx = np.concatenate([np.arange(off[k][0].start, off[k][0].stop) for k in sd_keys]).astype(int) \
+        if sd_keys else np.zeros(0, int)
+    sd_log = np.log(np.concatenate([potential_fn.sd_scale[k].reshape(-1) for k in sd_keys])) if sd_keys else np.zeros(0)
+
+    def unflatten(v):
+        if not sd_idx.size:
+            return split(v)
+        return split(v.at[sd_idx].set(_sd_logq(v[sd_idx]) + jnp.asarray(sd_log, dtype=v.dtype)))
+
+    def log_jac(v):
+        if not sd_idx.size:
+            return 0.0
+        t = v[sd_idx]
+        return jnp.sum(_sd_logslope(t, _sd_logq(t)))
+
+    def to_sampled(th):
+        th = np.array(th, dtype=np.float64)
+        if sd_idx.size:
+            th[..., sd_idx] = _sd_t(np.exp(th[..., sd_idx] - sd_log))
+        return th
+
+    unflatten.log_jac, unflatten.to_sampled = log_jac, to_sampled
     # jitted: every program that embeds the potential then reuses one traced jaxpr instead
     # of re-tracing the model (XLA inlines the call, so the compiled code is unchanged)
-    pot = jax.jit(lambda v: potential_fn(unflatten(v)))
+    pot = jax.jit(lambda v: potential_fn(unflatten(v)) - log_jac(v))
     return jax.value_and_grad(pot), unflatten, keys, off, D, postprocess_fn
 
 
@@ -238,7 +319,7 @@ def _pot_offset(model, config, unflatten):
 
     @jax.jit
     def pot(v, offset):
-        return potential_energy(model, ({**config, "_ll_offset": offset},), {}, unflatten(v))
+        return potential_energy(model, ({**config, "_ll_offset": offset},), {}, unflatten(v)) - unflatten.log_jac(v)
     return pot
 
 
@@ -403,11 +484,12 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
     plain_ready()
     if cold:
         w0, wf, w1 = max(H, warmup // 5), max(H, warmup // 10), max(H, warmup // 5)
-        _, _, th, _ = _self_adapt(vg_plain, D, chains, w0, seed, ctrl, parallel, progress_bar, th0=th,
-                                  cache=c_plain, aux=np.zeros((chains, D + 1)))
+        ci, ce, th, _ = _self_adapt(vg_plain, D, chains, w0, seed, ctrl, parallel, progress_bar, th0=th,
+                                    cache=c_plain, aux=np.zeros((chains, D + 1)))
         th, aux = build(th, wf, seed + 1)
-        _, _, tht, _ = _self_adapt(vg_m, D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
-                                   th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, init=init)
+        ci, ce, tht, _ = _self_adapt(vg_m, D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
+                                     th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, init=init,
+                                     imm0=ci, eps0=ce)
         th = tm.forward_chains(tht, aux)
         th, aux = build(th, wf, seed + 3)
         rest = warmup - w0 - 2 * wf - w1
@@ -415,9 +497,11 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
         wf = max(H, warmup // 4)
         th, aux = build(th, wf, seed + 1)
         rest = warmup - wf
+        ci = ce = None
     imm, eps, tht, _, (between, within) = _self_adapt(
         vg_m, D, chains, rest, seed + 4, ctrl, parallel, progress_bar,
-        th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, spread=True, init=init)
+        th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, spread=True, init=init,
+        imm0=ci, eps0=ce)
     slow = mask_np & (between > _DISAGREE * within)
     if slow.any():
         if progress_bar:
@@ -503,6 +587,9 @@ def _leap_flip(vg, integ, th, rho, g_th, eps, imm):
     return th, -(rho - B[n] * eps * g), U, g
 
 
+_KEEP = 64
+
+
 def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
     """One adaptation window of run-time length n (pmap over chains): a fori_loop of
     single-proposal steps with per-chain Robbins-Monro on log(eps) and Welford moments."""
@@ -514,7 +601,7 @@ def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
         msq = jnp.sqrt(1.0 / imm)
 
         def body(i, c):
-            th, rho, U, g, le, mean, m2, cnt, asum = c
+            th, rho, U, g, le, mean, m2, cnt, asum, gs, buf = c
             k1, k2 = jax.random.split(jax.random.fold_in(key, i))
             xi = msq * jax.random.normal(k1, (D,))
             rho = jnp.sqrt(1.0 - gamma) * rho + jnp.sqrt(gamma) * xi
@@ -532,11 +619,12 @@ def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
             d = th - mean
             mean = mean + d / cnt
             m2 = m2 + d * (th - mean)
-            return (th, rho, U, g, le, mean, m2, cnt, asum + a)
+            return (th, rho, U, g, le, mean, m2, cnt, asum + a, gs + g * g, buf.at[(i * jnp.minimum(_KEEP, n)) // n].set(th))
 
-        thf, rhof, Uf, gf, lef, mean, m2, cnt, asum = jax.lax.fori_loop(
-            0, n, body, (th0, rho0, U0, g0, le0, jnp.zeros(D), jnp.zeros(D), 0.0, 0.0))
-        return thf, rhof, Uf, gf, lef, mean, m2, asum / cnt
+        thf, rhof, Uf, gf, lef, mean, m2, cnt, asum, gs, buf = jax.lax.fori_loop(
+            0, n, body, (th0, rho0, U0, g0, le0, jnp.zeros(D), jnp.zeros(D), 0.0, 0.0, jnp.zeros(D),
+                         jnp.zeros((_KEEP, D))))
+        return thf, rhof, Uf, gf, lef, mean, m2, asum / cnt, gs, buf
 
     return _map(window, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None, None))
 
@@ -583,7 +671,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
             msq = jnp.sqrt(1.0 / imm)
 
             def step(c, k):
-                th, rho, U, g, le, mean, m2, cnt = c
+                th, rho, U, g, le, mean, m2, cnt, gs, buf = c
                 k1, k2 = jax.random.split(k)
                 xi = msq * jax.random.normal(k1, (D,))
                 rho = jnp.sqrt(1.0 - gamma) * rho + jnp.sqrt(gamma) * xi
@@ -602,12 +690,14 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
                 d = th - mean
                 mean = mean + d / cnt
                 m2 = m2 + d * (th - mean)
-                return (th, rho, U, g, le, mean, m2, cnt), a
+                slot = jnp.floor((cnt - 1.0) * min(_KEEP, nw) / nw + 1e-6).astype(jnp.int32)
+                return (th, rho, U, g, le, mean, m2, cnt, gs + g * g, buf.at[slot].set(th)), a
 
-            (thf, rhof, Uf, gf, lef, mean, m2, _), accs = jax.lax.scan(
-                step, (th0, rho0, U0, g0, le0, jnp.zeros(D), jnp.zeros(D), 0.0),
+            (thf, rhof, Uf, gf, lef, mean, m2, _, gs, buf), accs = jax.lax.scan(
+                step, (th0, rho0, U0, g0, le0, jnp.zeros(D), jnp.zeros(D), 0.0, jnp.zeros(D),
+                       jnp.zeros((_KEEP, D))),
                 jax.random.split(key, nw))
-            return thf, rhof, Uf, gf, lef, mean, m2, jnp.mean(accs)
+            return thf, rhof, Uf, gf, lef, mean, m2, jnp.mean(accs), gs, buf
 
         return _map(window, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None))
 
@@ -638,6 +728,8 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     le = ident(jnp.asarray(np.full(chains, np.log(0.02 if eps0 is None else eps0))))
     acc_mean = np.zeros((chains, D)); acc_m2 = np.zeros((chains, D))
     acc_n = np.zeros(chains)
+    acc_g2 = np.zeros((chains, D))
+    kept = []
     burn = max(1, int(round(ctrl["mass_burn_frac"] * H)))
     mass_end = max(burn + 1, int(round(ctrl["mass_end_frac"] * H)))
     late_sum, late_n = 0.0, 0
@@ -647,7 +739,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
         nw = lengths[w]
         lr = (0.10 * 0.65 ** (w - mass_end)) if w >= mass_end else lr0
         keys = jax.random.split(jax.random.fold_in(_tagged(seed, 3), w), chains)
-        th, rho, U, g, le, mn, m2, am = pws[nw](keys, th, rho, U, g, le, AX, imm, lr)
+        th, rho, U, g, le, mn, m2, am, gsq, buf = pws[nw](keys, th, rho, U, g, le, AX, imm, lr)
         # a chain that accepts nothing while the others sample is parked somewhere the shared
         # step cannot leave (a pilot start the full data rule out): restart it from the chain that
         # is doing best; the draws it would have given are not draws of anything
@@ -682,8 +774,13 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
             within = acc_m2.sum(0) / acc_n.sum()
             grand = (acc_mean * acc_n[:, None]).sum(0) / acc_n.sum()
             spread_out = ((acc_n[:, None] * (acc_mean - grand) ** 2).sum(0) / acc_n.sum(), within)
+            acc_g2 = acc_g2 + np.asarray(gsq)
+            kept.append(np.asarray(buf)[:, :min(_KEEP, nw)].reshape(-1, D))
             if pooled:
                 within = within + spread_out[0]
+            else:
+                q = np.quantile(np.concatenate(kept), [0.25, 0.75], axis=0)
+                within = np.sqrt(((q[1] - q[0]) / 1.3489795) ** 2 * (acc_n.sum() / np.maximum(acc_g2.sum(0), 1e-300)))
             ne = float(acc_n.sum())
             imm = jnp.asarray((ne / (ne + 5.0)) * within + 1e-3 * (5.0 / (ne + 5.0)))
         if w < H - 1 and float(np.asarray(am).mean()) > 0.97:
@@ -994,7 +1091,7 @@ def _f32_send_donor_and_collect(proc, tmp, donor, out, imm, eps, state):
 
 
 def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
-                       init_radius, init_z=None):
+                       init_radius, init_z=None, to_sampled=None):
     """Per-chain starting points on the unconstrained scale, matching the NUTS
     init strategies: user values (`init_z`), 'prior' draws from the prior,
     otherwise uniform(-r, r)."""
@@ -1003,7 +1100,7 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
         th = np.zeros((chains, D))
         for k in keys:
             th[:, off[k][0]] = np.asarray(init_z[k]).reshape(chains, -1)
-        return th
+        return th if to_sampled is None else to_sampled(th)
     if init_strategy == "prior":
         from numpyro.infer import init_to_sample
         th = np.zeros((chains, D))
@@ -1013,7 +1110,7 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
             z = st.param_info.z
             for k in keys:
                 th[c, off[k][0]] = np.asarray(z[k]).reshape(-1)
-        return th
+        return th if to_sampled is None else to_sampled(th)
     r = float(init_radius)
     if r == 0.0:
         return np.zeros((chains, D))
@@ -1084,7 +1181,7 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
             init = _setup_init(setup_ready, _res, _th0, _off0)
 
         th_init = _initial_positions(model, config, keys, off, D, chains, seed,
-                                     init_strategy, init_radius, init_z)
+                                     init_strategy, init_radius, init_z, unflatten.to_sampled)
         imm, eps, th_adapted, aux_adapted, wall_warm = _adapt(
             model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
             progress_bar, th_init, user_init=init_z is not None, init=init)
