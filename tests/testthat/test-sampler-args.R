@@ -53,3 +53,16 @@ test_that("JAX warns that `...` is cmdstanr-only", {
     "forwarded to cmdstanr"
   )
 })
+
+test_that("one chain, or chains run one at a time, compile and sample on both JAX samplers", {
+  skip_if_no_jax()
+  m <- suppressMessages(broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = uvsd()),
+                             .fixture_crossed(n_sub = 8, n_item = 16)))
+  for (s in c("drghmc", "nuts")) for (it in list(300, "auto")) for (ch in 1:2) {
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = s, chains = ch, parallel_chains = 1,
+                                   iter_warmup = 200, iter_sampling = it, seed = 1, progress_bar = FALSE,
+                                   control = if (identical(it, "auto")) list(check_every = 200, max_draws = 400)))
+    expect_true(all(is.finite(posterior::as_draws_matrix(f$draws(variables = "beta_dprime")))),
+                label = paste(s, it, ch, "chains"))
+  }
+})

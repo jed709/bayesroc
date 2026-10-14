@@ -136,10 +136,10 @@ test_that("criterion formulas that force the criterion through zero are rejected
   d$x <- seq(-1, 1, length.out = nrow(d))
   f <- brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1, know_crit ~ 0 + x, sigma_R ~ 1,
            family = cdp(old_levels = 2:4))
-  expect_error(broc(f, data = d), "no intercept and no full factor coding")
+  expect_error(broc(f, data = d), "`know_crit` has no intercept")
   f2 <- brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 0 + x, know_crit ~ 1, sigma_R ~ 1,
             family = cdp(old_levels = 2:4))
-  expect_error(broc(f2, data = d), "rec_crit formula")
+  expect_error(broc(f2, data = d), "`rec_crit` has no intercept")
 })
 
 test_that("JAX honours a user init for the reparameterised know criterion", {

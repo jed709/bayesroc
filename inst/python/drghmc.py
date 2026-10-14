@@ -411,7 +411,7 @@ def _compile_ahead(vg_plain, vg_m, tm, D, chains, ctrl, parallel, c_plain, c_map
     re-raises a compile error."""
     import threading
     low_plain = _lower_window(vg_plain, True, D, chains, ctrl, parallel, jnp.zeros((chains, D + 1)))
-    _map = (lambda f: jax.pmap(f, axis_name="chain")) if parallel else jax.vmap
+    _map = lambda f: _chain_map(f, None, parallel)
     low_vg0 = _map(vg_plain).lower(jnp.zeros((chains, D)), jnp.zeros((chains, D + 1)))
     res, plain_done, done = {}, threading.Event(), threading.Event()
     rest = []
@@ -590,7 +590,7 @@ def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
     """One adaptation window of run-time length n (pmap over chains): a fori_loop of
     single-proposal steps with per-chain Robbins-Monro on log(eps) and Welford moments."""
     acc_t, gamma, integ = ctrl["acc_target"], ctrl["gamma"], ctrl["integrator"]
-    _map = (lambda f, **kw: jax.pmap(f, axis_name="chain", **kw)) if parallel else jax.vmap
+    _map = lambda f, in_axes=None: _chain_map(f, in_axes, parallel)
 
     def window(key, th0, rho0, U0, g0, le0, ax, imm, lr, n):
         vg = (lambda v: vg_in(v, ax)) if with_aux else vg_in
@@ -658,7 +658,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     if warmup < H:
         raise ValueError(f"DR-G-HMC needs warmup >= adapt_windows ({H}); got {warmup}")
     lengths = [warmup // H + (1 if w < warmup % H else 0) for w in range(H)]
-    _map = (lambda f, **kw: jax.pmap(f, axis_name="chain", **kw)) if parallel else jax.vmap
+    _map = lambda f, in_axes=None: _chain_map(f, in_axes, parallel)
     vg_in = vg
 
     def make_window(nw):
@@ -879,14 +879,15 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
             _chain_map(scanner, (0, None, 0, None, None, None, None, ax), parallel))
 
 
-def _chain_map(f, in_axes, parallel):
+def _chain_map(f, in_axes=None, parallel=True):
     """pmap across devices, or one chain at a time under jit: lax.map keeps each chain's
-    delayed-rejection lax.cond a real branch, where vmap would run every stage for all."""
+    delayed-rejection lax.cond a real branch, where vmap would run every stage for all, and
+    the native kernels have no batching rule. in_axes None maps every argument."""
     if parallel:
-        return jax.pmap(f, axis_name="chain", in_axes=in_axes)
-    mapped = [i for i, ax in enumerate(in_axes) if ax == 0]
+        return jax.pmap(f, axis_name="chain", in_axes=0 if in_axes is None else in_axes)
 
     def run(*args):
+        mapped = range(len(args)) if in_axes is None else [i for i, ax in enumerate(in_axes) if ax == 0]
         def one(xs):
             full = list(args)
             for i, x in zip(mapped, xs):
