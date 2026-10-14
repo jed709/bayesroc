@@ -164,13 +164,21 @@ class _Nuts(_InProcess):
         from numpyro.infer import MCMC
         import numpyro_backend as nb
         C = s.chains
-        kernel = nb.FastNUTS(model, target_accept_prob=float(a.get("target_accept_prob", 0.8)),
+        st = None
+        if resume is not None:
+            st = resume["hmc"] if isinstance(resume, dict) and "hmc" in resume else resume
+        aux = resume.get("aux") if isinstance(resume, dict) else None
+        transport = aux is not None if resume is not None else bool((a.get("control") or {}).get("transport", True))
+        self.coords = coords = nb.NutsCoords(config, C, int(a["seed"]), s.parallel, s.progress,
+                                             a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)),
+                                             s.init_z, transport=transport, aux=aux,
+                                             build=(s.vg, s.unflatten, s.keys, s.off, s.D, s.pp))
+        kernel = nb.FastNUTS(model, coords=coords, target_accept_prob=float(a.get("target_accept_prob", 0.8)),
                              max_tree_depth=int(a.get("max_tree_depth", 10)),
                              step_size=float(a.get("step_size", 1.0)))
         self.max_steps = 2 ** int(a.get("max_tree_depth", 10))
         offset = None
         if resume is not None:
-            st = resume["hmc"] if isinstance(resume, dict) and "hmc" in resume else resume
             offset = resume.get("offset") if isinstance(resume, dict) else None
             state = _batched(st, C)
             z0 = jax.tree.map(lambda x: x[0], state.z)
@@ -179,30 +187,26 @@ class _Nuts(_InProcess):
             mcmc = MCMC(kernel, num_warmup=int(a["warmup"]), num_samples=1, num_chains=C,
                         chain_method="parallel" if s.parallel else "sequential",
                         progress_bar=s.progress)
-            init = nb.nuts_init_params(config, C, int(a["seed"]), a.get("init_strategy", "numeric"),
-                                       float(a.get("init_radius", 0.0)), s.init_z)
-            mcmc.warmup(jax.random.PRNGKey(int(a["seed"])), config, init_params=init,
+            mcmc.warmup(jax.random.PRNGKey(int(a["seed"])), config, init_params=coords.init_params(C),
                         collect_warmup=False)
             state = _batched(mcmc.post_warmup_state, C)
         cfg = config
         if not jax.config.jax_enable_x64:
             if offset is None:
-                offset = nb._nuts_ll_offset(config, state)
+                offset = nb._nuts_ll_offset(config, state, coords)
             cfg = {**config, "_ll_offset": jnp.asarray(offset)}
-            state = nb._refresh_potential(cfg, state)
+            state = nb._refresh_potential(cfg, state, coords)
         state = jax.tree.map(np.asarray, state)
         self.offset = offset
-        keys = s.keys
-        flat = lambda z: jnp.concatenate([jnp.reshape(z[k], (-1,)) for k in keys])
 
         def body(st, _):
             st = kernel.sample(st, (cfg,), {})
-            return st, (flat(st.z), st.num_steps, st.energy, st.accept_prob, st.diverging)
+            return st, (coords.model_v(st.z), st.num_steps, st.energy, st.accept_prob, st.diverging)
 
         run = lambda st: jax.lax.scan(body, st, None, length=s.b)
         self.fn = jax.pmap(run, axis_name="chain") if s.parallel else jax.jit(lambda st: jax.lax.map(run, st))
         self.carry0 = state
-        self.positions = np.asarray(jax.vmap(flat)(state.z))
+        self.positions = coords.positions(state.z)
 
     def block(self, carry, t):
         carry, (z, ns, en, ap, dv) = self.fn(carry)
@@ -210,7 +214,8 @@ class _Nuts(_InProcess):
 
     def state(self, carry, T):
         return {"hmc": jax.tree.map(np.asarray, carry),
-                "offset": None if self.offset is None else np.asarray(self.offset)}
+                "offset": None if self.offset is None else np.asarray(self.offset),
+                "aux": self.coords.aux_flat}
 
 
 def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None):
@@ -389,6 +394,16 @@ class _DrF32:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
+def _nuts_anchors_server(argfile):
+    with open(argfile, "rb") as fh:
+        p = pickle.load(fh)
+    sys.path.insert(0, p["backend_dir"])
+    import numpyro_backend as nb
+    c = nb.NutsCoords(p["config"], p["chains"], p["seed"], p["parallel"], p["progress_bar"], p["init_strategy"],
+                      p["init_radius"], p["init_z"], transport=True, announce=False)
+    np.savez(p["out"], aux=c.aux_flat, start=np.asarray(c.start))
+
+
 def _dr_f32_server(argfile):
     with open(argfile) as fh:
         p = json.load(fh)
@@ -481,7 +496,7 @@ class AutoSession:
         self.stride = int(a.get("stride") or 1)
         self.burn = int(a.get("burnin") or 0)
         self.config = config
-        self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config, self.sampler != "nuts")
+        self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config)
         itemsize = 8 if jax.config.jax_enable_x64 else 4
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
                                            25 if self.sampler == "nuts" else 500)
@@ -820,3 +835,5 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "_dr_f32_server":
         jax.config.update("jax_enable_x64", False)
         _dr_f32_server(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "_nuts_anchors":
+        _nuts_anchors_server(sys.argv[2])

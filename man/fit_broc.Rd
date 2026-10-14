@@ -61,7 +61,8 @@ delayed-rejection generalized HMC sampler (JAX backend only).}
 parentheses; an unknown key is an error):
 \itemize{
 \item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
-\code{precision} ("f64" or "f32"; JAX backend only).
+\code{precision} ("f64" or "f32"; JAX backend only), \code{transport} (\code{TRUE}; JAX backend
+only; see \emph{Group transport map}).
 \item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
@@ -202,7 +203,10 @@ together, and they follow the population coefficients and any enclosing or cross
 factor they share predictor terms with. The map is a one-to-one change of variables
 with its Jacobian, so the posterior of every model parameter is unchanged; draws are
 returned in the model's own parameters. Each gradient costs more, by an amount that
-grows with the number of groups relative to the number of observations. Set
+grows with the number of groups relative to the number of observations. NUTS on the
+JAX backend samples in the same coordinates, its map built by a DR-G-HMC warmup that
+runs before its own (in float32 a float64 process builds it). Both samplers draw each
+random-effect standard deviation on the quantile scale of its prior. Set
 \code{control = list(transport = FALSE)} to sample the standardised effects directly.
 }
 

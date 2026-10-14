@@ -1999,7 +1999,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param control Named list of sampler tuning parameters (defaults in
 #'   parentheses; an unknown key is an error):
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
-#'     `precision` ("f64" or "f32"; JAX backend only).
+#'     `precision` ("f64" or "f32"; JAX backend only), `transport` (`TRUE`; JAX backend
+#'     only; see *Group transport map*).
 #'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
@@ -2121,7 +2122,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' factor they share predictor terms with. The map is a one-to-one change of variables
 #' with its Jacobian, so the posterior of every model parameter is unchanged; draws are
 #' returned in the model's own parameters. Each gradient costs more, by an amount that
-#' grows with the number of groups relative to the number of observations. Set
+#' grows with the number of groups relative to the number of observations. NUTS on the
+#' JAX backend samples in the same coordinates, its map built by a DR-G-HMC warmup that
+#' runs before its own (in float32 a float64 process builds it). Both samplers draw each
+#' random-effect standard deviation on the quantile scale of its prior. Set
 #' `control = list(transport = FALSE)` to sample the standardised effects directly.
 #' @references Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
 #'   (2021). Rank-normalization, folding, and localization: An improved R-hat for
@@ -2223,7 +2227,7 @@ fit_broc <- function(model,
   }
   .auto <- if (auto) .auto_settings(.ctrl, sampler, chains, as.integer(thin)) else NULL
   .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
-  .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
+  .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision", "transport")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
                     "precision", "transport", "transport_links")
@@ -2247,6 +2251,10 @@ fit_broc <- function(model,
   }
   if (sampler == "nuts" && !is.null(.ctrl$precision) && backend != "jax") {
     warning("control$precision is JAX-only; ignored for the Stan backend.",
+            call. = FALSE)
+  }
+  if (sampler == "nuts" && !is.null(.ctrl$transport) && backend != "jax") {
+    warning("control$transport is JAX-only; ignored for the Stan backend.",
             call. = FALSE)
   }
   adapt_delta   <- .ctrl$adapt_delta   %||% 0.8

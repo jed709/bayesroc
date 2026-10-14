@@ -6,7 +6,7 @@
 \usage{
 \method{pp_check}{broc_fit}(
   object,
-  type = c("bars", "rootogram", "stat", "lines"),
+  type = c("bars", "rootogram", "stat", "lines", "joint"),
   by = NULL,
   ndraws = 200,
   prob = 0.95,
@@ -26,7 +26,11 @@ predictive mean and interval. \code{"rootogram"}: a hanging rootogram, where
 observed bars hang from the expected counts and misfit shows as bar bottoms
 away from zero. \code{"stat"}: predictive distribution of a summary statistic
 (\code{stat_fun}) with its observed value. \code{"lines"}: replicated response
-proportions as thin lines with the observed proportions.}
+proportions as thin lines with the observed proportions.
+For the bivariate families \code{"joint"} checks the K1 x K2 table of the two responses together:
+one tile per cell, coloured by the standardized residual of the observed count against the
+replicated counts and labelled with the observed count. A misfit confined to the joint cells
+(both margins fine) is visible only here.}
 
 \item{by}{Optional character vector of data columns defining the cells.
 \code{NULL} (default) splits by item type (lures and targets, sources, or new,

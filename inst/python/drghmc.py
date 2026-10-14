@@ -251,10 +251,9 @@ def _model_info(model, config):
     return shapes, pot, post
 
 
-def _build(model, config, sd_quantile=True):
-    """(vg, unflatten, keys, offsets, D, postprocess_fn) for flat unconstrained vectors: the sampler's
-    own, with the standard deviations on their prior-quantile scale, or with sd_quantile False the model's
-    (the coordinates NUTS draws in)."""
+def _build(model, config):
+    """(vg, unflatten, keys, offsets, D, postprocess_fn) for flat unconstrained vectors, the standard
+    deviations on their prior-quantile scale (the coordinates both samplers draw in)."""
     shapes, potential_fn, postprocess_fn = _model_info(model, config)
     keys = sorted(shapes)
     off, o = {}, 0
@@ -279,7 +278,7 @@ def _build(model, config, sd_quantile=True):
         return (jnp.concatenate([jnp.reshape(ct[k], (-1,)) for k in keys]),)
 
     split.defvjp(split_fwd, split_bwd)
-    sd_keys = [k for k in keys if k in potential_fn.sd_scale] if sd_quantile else []
+    sd_keys = [k for k in keys if k in potential_fn.sd_scale]
     sd_idx = np.concatenate([np.arange(off[k][0].start, off[k][0].stop) for k in sd_keys]).astype(int) \
         if sd_keys else np.zeros(0, int)
     sd_log = np.log(np.concatenate([potential_fn.sd_scale[k].reshape(-1) for k in sd_keys])) if sd_keys else np.zeros(0)

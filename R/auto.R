@@ -247,7 +247,7 @@
     sampler = sampler, chains = as.integer(chains), warmup = as.integer(iter_warmup),
     seed = as.integer(seed), chain_method = chain_method, progress_bar = isTRUE(progress_bar),
     max_kept = auto$max_kept, check_every = auto$check_every,
-    control = if (sampler == "drghmc" && length(sampler_ctrl)) sampler_ctrl else NULL,
+    control = if (length(sampler_ctrl)) sampler_ctrl else NULL,
     target_accept_prob = as.numeric(adapt_delta), max_tree_depth = as.integer(max_treedepth),
     step_size = if (is.null(step_size)) 1.0 else as.numeric(step_size),
     init_strategy = init_strategy %||% "numeric",

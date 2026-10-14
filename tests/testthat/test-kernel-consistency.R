@@ -81,3 +81,12 @@ test_that("the transport-map kernel matches a reference solve and its gradients 
   expect_true(res$ffi_loaded)
   for (D in widths) expect_lt(res[[paste0("D", D)]], 1e-10, label = paste("width", D, "kernel vs reference"))
 })
+
+test_that("NUTS checks U-turns across subtree boundaries, so resonant step sizes do not run to the depth limit", {
+  skip_if_no_jax()
+  res <- .run_py_check("nuts_turn_check.py")
+  expect_gt(res$stock_resonant, 200)
+  expect_lt(res$checked_resonant, 80)
+  expect_equal(res$max_draw_diff_off_resonance, 0)
+  expect_equal(res$steps_off_resonance[1], res$steps_off_resonance[2])
+})

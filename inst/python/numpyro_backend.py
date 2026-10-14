@@ -5011,16 +5011,26 @@ class FastNUTS(NUTS):
     of numpyro's initialize_model, which runs the model eagerly and compiles every
     primitive separately (tens of seconds for large models). The potential is still
     generated from the model arguments at each call, so a float32 offset swap works as
-    with NUTS. Starting points are always passed as init_params."""
+    with NUTS. Starting points are always passed as init_params. With `coords` (NutsCoords)
+    it samples in those coordinates. Trees use Stan's U-turn checks across subtree boundaries
+    (nuts_turn)."""
+
+    def __init__(self, model=None, coords=None, **kwargs):
+        super().__init__(model, **kwargs)
+        self._coords = coords
 
     def _init_state(self, rng_key, model_args, model_kwargs, init_params):
         if self._model is None:
             return super()._init_state(rng_key, model_args, model_kwargs, init_params)
         from numpyro.infer.util import potential_energy, constrain_fn
-        from numpyro.infer.hmc import hmc
-        model = self._model
-        pot_gen = lambda *a, **k: (lambda z: potential_energy(model, a, k, z))
-        post_gen = lambda *a, **k: (lambda z: constrain_fn(model, a, k, z, return_deterministic=True))
+        from nuts_turn import hmc
+        model, c = self._model, self._coords
+        if c is None:
+            pot_gen = lambda *a, **k: (lambda z: potential_energy(model, a, k, z))
+            post_gen = lambda *a, **k: (lambda z: constrain_fn(model, a, k, z, return_deterministic=True))
+        else:
+            pot_gen = lambda *a, **k: (lambda z: c.potential(a[0], z))
+            post_gen = lambda *a, **k: (lambda z: constrain_fn(model, a, k, c.model_z(z), return_deterministic=True))
         if self._init_fn is None:
             self._init_fn, self._sample_fn = hmc(potential_fn_gen=pot_gen, kinetic_fn=self._kinetic_fn,
                                                  algo=self._algo)
@@ -5029,6 +5039,98 @@ class FastNUTS(NUTS):
         if init_params is None:
             raise ValueError("FastNUTS needs init_params.")
         return init_params
+
+
+_MAP_WARMUP = 2500
+
+
+class NutsCoords:
+    """The coordinates JAX NUTS samples in, DR-G-HMC's: every random-effect standard deviation on
+    its prior-quantile scale and, with `transport`, the random-effect blocks through the per-group
+    transport map, its anchors built by a DR-G-HMC warmup and shared by every chain (the map is
+    exact whatever its anchors). NUTS positions keep the model's site names and shapes; model_v
+    turns one into DR-G-HMC's flat model-side vector, model_z into the model's own sites. A
+    float32 process has the anchors built by a float64 child. `aux` [1, A]: the anchors of a fit
+    being resumed; `build`: drghmc._build's result when already at hand."""
+
+    def __init__(self, config, chains, seed, parallel, progress_bar, init_strategy, init_radius,
+                 init_z=None, transport=True, aux=None, build=None, announce=True):
+        import drghmc as dr
+        self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = build or dr._build(sdt_model, config)
+        self.tm, self.aux, self.aux_flat = None, None, None
+        th0 = dr._initial_positions(sdt_model, config, self.keys, self.off, self.D, chains, seed,
+                                    init_strategy, init_radius, init_z, self.unflatten.to_sampled)
+        self.start = th0
+        tm = None
+        if transport:
+            ctrl = dr._merge_control(None)
+            tm = dr._transport(sdt_model, config, ctrl, self.off, self.unflatten)
+        if tm is not None:
+            if progress_bar and announce:
+                print(f"[NUTS] group transport map on {', '.join(tm.specs)}"
+                      f"{'' if aux is not None else '; anchors from a DR-G-HMC warmup'}", flush=True)
+            if aux is None and not jax.config.jax_enable_x64:
+                aux, self.start = _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy,
+                                               init_radius, init_z)
+            elif aux is None:
+                vg_s = dr._sampler_vg(sdt_model, config, self.unflatten, tm)
+                _, _, tht, aux_c, _ = dr._adapt(sdt_model, config, self.keys, self.off, self.vg, vg_s, tm,
+                                                self.D, chains, _MAP_WARMUP, seed, ctrl, parallel, progress_bar,
+                                                th0, user_init=init_z is not None)
+                aux = np.asarray(aux_c)[:1]
+                self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c), np.repeat(aux, chains, 0))
+            self.tm, self.aux_flat = tm, np.asarray(aux)[:1]
+            self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
+
+    def flat(self, z):
+        return jnp.concatenate([jnp.reshape(z[k], (-1,)) for k in self.keys])
+
+    def model_v(self, z):
+        v = self.flat(z)
+        return v if self.tm is None else self.tm.forward(v, self.aux)[0]
+
+    def model_z(self, z):
+        return self.unflatten(self.model_v(z))
+
+    def potential(self, cfg, z):
+        from numpyro.infer.util import potential_energy
+        v = self.flat(z)
+        th, ld = (v, 0.0) if self.tm is None else self.tm.forward(v, self.aux)
+        return potential_energy(sdt_model, (cfg,), {}, self.unflatten(th)) - self.unflatten.log_jac(th) + ld
+
+    def init_params(self, chains):
+        z = {k: jnp.asarray(np.asarray(self.start)[:, self.off[k][0]].reshape((chains,) + tuple(self.off[k][1])))
+             for k in self.keys}
+        return z if chains > 1 else {k: v[0] for k, v in z.items()}
+
+    def positions(self, zs):
+        """DR-G-HMC model-side positions [chains, D] from NUTS positions with a chain axis."""
+        f = jax.jit(self.model_v)
+        C = int(np.shape(zs[self.keys[0]])[0])
+        return np.stack([np.asarray(f({k: jnp.asarray(zs[k][c]) for k in self.keys})) for c in range(C)])
+
+
+def _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy, init_radius, init_z):
+    """NutsCoords' anchors [1, A] and starting positions, built in a float64 child process."""
+    import pickle, subprocess, sys, tempfile, shutil
+    tmp = tempfile.mkdtemp(prefix="bayesroc_nuts_anchors_")
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        argfile, out = os.path.join(tmp, "args.pkl"), os.path.join(tmp, "anchors.npz")
+        with open(argfile, "wb") as fh:
+            pickle.dump(dict(config=config, chains=chains, seed=seed, parallel=parallel, progress_bar=progress_bar,
+                             init_strategy=init_strategy, init_radius=init_radius, backend_dir=here, out=out,
+                             init_z=None if init_z is None else {k: np.asarray(v) for k, v in init_z.items()}), fh)
+        env = dict(os.environ)
+        env["BAYESROC_ENABLE_X64"] = "1"
+        env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1}"
+        code = subprocess.call([sys.executable, os.path.join(here, "autorun.py"), "_nuts_anchors", argfile], env=env)
+        if code != 0 or not os.path.exists(out):
+            raise RuntimeError(f"bayesroc: the float64 process building the transport map's anchors failed (exit code {code})")
+        with np.load(out) as d:
+            return d["aux"], d["start"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
@@ -5098,9 +5200,12 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     numpyro.set_host_device_count(chains if chain_method == "parallel" else 1)
     rng_key = random.PRNGKey(seed)
 
-    init_params = nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z)
+    coords = NutsCoords(config, chains, seed, chain_method == "parallel" and chains > 1, progress_bar,
+                        init_strategy, init_radius, init_z, transport=bool((control or {}).get("transport", True)))
+    init_params = coords.init_params(chains)
     kernel = FastNUTS(
         sdt_model,
+        coords=coords,
         target_accept_prob=target_accept_prob,
         max_tree_depth=max_tree_depth,
         step_size=float(step_size),
@@ -5123,9 +5228,9 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
         rng_key = mcmc.post_warmup_state.rng_key
     if f32:
-        offset = _nuts_ll_offset(config, mcmc.post_warmup_state)
+        offset = _nuts_ll_offset(config, mcmc.post_warmup_state, coords)
         config = {**config, "_ll_offset": jnp.asarray(offset)}
-        mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state)
+        mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state, coords)
 
     mcmc.run(rng_key, config, init_params=None if f32 else init_params,
              extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
@@ -5154,8 +5259,8 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         "elapsed": float(elapsed),
     }
     if save_state:
-        out["state"] = (mcmc.last_state if offset is None
-                        else {"hmc": mcmc.last_state, "offset": np.asarray(offset)})
+        out["state"] = {"hmc": mcmc.last_state, "offset": None if offset is None else np.asarray(offset),
+                        "aux": coords.aux_flat}
     return out
 
 
@@ -5164,20 +5269,19 @@ def _chain0(state):
     return jax.tree_util.tree_map(lambda x: x[0], state.z) if batched else state.z
 
 
-def _nuts_ll_offset(config, state):
+def _nuts_ll_offset(config, state, coords):
     """Per-observation weighted log-likelihood at chain 0's warmed-up position (see
     drghmc.ll_offset): in float32 the potential is summed relative to it."""
     from numpyro.infer.util import constrain_fn
-    ll = constrain_fn(sdt_model, (config,), {}, _chain0(state), return_deterministic=True)["log_lik"]
+    ll = constrain_fn(sdt_model, (config,), {}, coords.model_z(_chain0(state)), return_deterministic=True)["log_lik"]
     counts = config.get("counts")
     return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
 
 
-def _refresh_potential(config, state):
+def _refresh_potential(config, state, coords):
     """The warmed-up state caches a potential computed without the offset; recompute it
     so the first transition compares like with like."""
-    from numpyro.infer.util import potential_energy
-    pe_fn = jax.jit(lambda z: potential_energy(sdt_model, (config,), {}, z))
+    pe_fn = jax.jit(lambda z: coords.potential(config, z))
     if jnp.ndim(state.potential_energy) > 0:
         pe = jax.lax.map(pe_fn, state.z)
     else:

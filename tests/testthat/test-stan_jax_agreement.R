@@ -116,3 +116,30 @@ test_that("crossed REs: predict + plot_roc work on both backends", {
                 label = paste(backend, "criterion RE 2D name"))
   }
 })
+
+test_that("JAX NUTS through the transport map and on the SD quantile scale recovers Stan's posterior (f64 and f32)", {
+  skip_if_no_cmdstan(); skip_if_no_jax()
+  d <- .fixture_crossed(n_sub = 12, n_item = 24)
+  m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub) + (1 | item), sigma ~ 1 + (1 | sub), family = uvsd()), d)
+  sm <- function(f) {
+    da <- f$draws(format = "draws_array")
+    v <- grep("^(beta|sigma|u_)", posterior::variables(da), value = TRUE)
+    s <- posterior::summarise_draws(posterior::subset_draws(da, variable = v), "mean", "sd", "mcse_mean")
+    s[order(s$variable), ]
+  }
+  rs <- sm(fit_broc(m, backend = "stan", chains = 4, parallel_chains = 4, iter_warmup = 1000,
+                    iter_sampling = 5000, seed = 1, refresh = 0))
+  for (run in list(list(TRUE, "f64"), list(FALSE, "f64"), list(TRUE, "f32"))) {
+    tr <- run[[1]]
+    out <- utils::capture.output(
+      fj <- fit_broc(m, backend = "jax", chains = 4, iter_warmup = 1000, iter_sampling = 5000, seed = 3,
+                     progress_bar = TRUE, control = list(transport = tr, precision = run[[2]])))
+    expect_identical(sum(grepl("[NUTS] group transport map", out, fixed = TRUE)), as.integer(tr))
+    js <- sm(fj)
+    expect_identical(js$variable, rs$variable)
+    z <- abs(js$mean - rs$mean) / sqrt(js$mcse_mean^2 + rs$mcse_mean^2)
+    expect_lt(max(z), 4)
+    expect_true(all(abs(js$sd / rs$sd - 1) < 0.1), label = paste("posterior spreads, transport", tr))
+    expect_equal(sum(fj$diagnostic_summary()$num_divergent), 0)
+  }
+})
