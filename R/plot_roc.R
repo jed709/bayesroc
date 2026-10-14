@@ -295,14 +295,15 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     if (pt$kind == 3L) {
       acc <- .C(.bvn_native$sym_mixsurv, as.double(th), as.double(pt$mu), as.double(pt$sig), as.double(pt$lam),
                 as.double(pt$mu_rec), as.double(pt$sig2), as.double(u), as.double(w_rows),
-                as.integer(c(S, r, dim(th)[3], length(u), identical(attr(crit, "mode"), "path"), .native_threads())),
+                as.integer(c(S, r, dim(th)[3], length(u), identical(attr(crit, "mode"), "path"), .native_threads(),
+                             .native_link_code(link, fam))),
                 8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
       return(matrix(acc, S, length(u)) / sum(w_rows))
     }
     acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(pt$mu), as.double(pt$sig),
               as.double(pt$lam %||% 0), as.double(pt$mu_rec %||% 0), as.double(u), as.double(w_rows),
               as.integer(c(S, r, dim(th)[3], length(u), pt$kind, identical(attr(crit, "mode"), "path"),
-                           .native_threads())),
+                           .native_threads(), .native_link_code(link, fam))),
               8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
     return(matrix(acc, S, length(u)) / sum(w_rows))
   }
@@ -398,8 +399,14 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
 # Per-(draw, trial) parts of the univariate probit families' response distribution in the layout of
 # .detection_margin_parts: a normal (kind 0), a normal with a recollected mass in the top category (kind 1), or
 # two normals with their own means and SDs, the second with weight lam (kind 3); NULL for the others.
+# the native survival kernels' link code; cdp is always normal
+.native_link_code <- function(link, fam = "") {
+  if (fam == "cdp") return(0L)
+  c(probit = 0L, logit = 1L, cloglog = 2L)[link][[1]]
+}
+
 .univariate_margin_parts <- function(fam, link, tps, is_old, source, S, r, model) {
-  if (!fam %in% c("evsdt", "uvsdt", "dpsdt", "cumulative", "cdp", "mixture", "source_mixture") || (fam != "cdp" && link != "probit")) return(NULL)
+  if (!fam %in% c("evsdt", "uvsdt", "dpsdt", "cumulative", "cdp", "mixture", "source_mixture") || is.na(.native_link_code(link))) return(NULL)
   one <- rep(1, S * r)
   md <- model$model_data
   vec <- function(nm, alt) if (!is.null(tps[[nm]])) as.vector(tps[[nm]]) else alt

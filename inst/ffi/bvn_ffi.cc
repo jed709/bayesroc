@@ -693,13 +693,20 @@ extern "C" void bayesroc_r_bvn_rect(const double* a1, const double* b1, const do
 // 2: (1 - lam) normal(mu, sig) + lam normal(mu2, sig). path 1: criterion j lies at u[j] along
 // the row's own thresholds (extended by ext at both ends, linear between knots); path 0: at
 // u[j] itself. acc [S, U] receives sum over rows of w * max(1 - F(criterion), 0).
+// the link's CDF at z: 0 probit, 1 logit, 2 cloglog (Gumbel-min)
+static inline double link_cdf(double z, int link) {
+  if (link == 1) return 1.0 / (1.0 + std::exp(-z));
+  if (link == 2) return -std::expm1(-std::exp(std::min(z, 700.0)));
+  return 0.5 * std::erfc(-z * 0.7071067811865476);
+}
+
 extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, const double* sig,
                                         const double* lam, const double* mu2, const double* u,
                                         const double* w, const int* dims, const double* ext,
                                         double* acc) {
   const int64_t S = dims[0], R = dims[1], J = dims[2], U = dims[3];
-  const int kind = dims[4], path = dims[5], threads = dims[6];
-  const double e = *ext, rs2 = 0.7071067811865476;
+  const int kind = dims[4], path = dims[5], threads = dims[6], link = dims[7];
+  const double e = *ext;
   std::vector<int> lo(U);
   std::vector<double> fr(U);
   for (int64_t j = 0; j < U; ++j) {
@@ -727,9 +734,9 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
         }
         for (int64_t j = 0; j < U; ++j) {
           const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
-          double F = 0.5 * std::erfc(-(c - m) * is * rs2);
+          double F = link_cdf((c - m) * is, link);
           if (kind == 1) F = (1.0 - l) * F;
-          else if (kind == 2) F = (1.0 - l) * F + l * 0.5 * std::erfc(-(c - m2) * is * rs2);
+          else if (kind == 2) F = (1.0 - l) * F + l * link_cdf((c - m2) * is, link);
           const double sv = 1.0 - F;
           if (sv > 0.0) out[s + S * j] += wr * sv;
         }
@@ -752,15 +759,15 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
 
 // Plain C entry for R's .C(): weighted survival curves of a two-normal mixture with its own mean and SD
 // per component (the mixture and source-mixture families). th [S, R, J]; mu, sig, lam, mu2, sig2 [S, R];
-// u [U]; w [R]; dims = {S, R, J, U, path, threads}; ext as for the detection kernel.
+// u [U]; w [R]; dims = {S, R, J, U, path, threads, link}; ext as for the detection kernel.
 // acc [S, U] += w_r * (1 - (1 - lam) Phi((c(u) - mu) / sig) - lam Phi((c(u) - mu2) / sig2)).
 extern "C" void bayesroc_r_mix_survival(const double* th, const double* mu, const double* sig,
                                         const double* lam, const double* mu2, const double* sig2, const double* u,
                                         const double* w, const int* dims, const double* ext,
                                         double* acc) {
   const int64_t S = dims[0], R = dims[1], J = dims[2], U = dims[3];
-  const int path = dims[4], threads = dims[5];
-  const double e = *ext, rs2 = 0.7071067811865476;
+  const int path = dims[4], threads = dims[5], link = dims[6];
+  const double e = *ext;
   std::vector<int> lo(U);
   std::vector<double> fr(U);
   for (int64_t j = 0; j < U; ++j) {
@@ -788,7 +795,7 @@ extern "C" void bayesroc_r_mix_survival(const double* th, const double* mu, cons
         }
         for (int64_t j = 0; j < U; ++j) {
           const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
-          const double F = (1.0 - l) * 0.5 * std::erfc(-(c - m) * is * rs2) + l * 0.5 * std::erfc(-(c - m2) * is2 * rs2);
+          const double F = (1.0 - l) * link_cdf((c - m) * is, link) + l * link_cdf((c - m2) * is2, link);
           const double sv = 1.0 - F;
           if (sv > 0.0) out[s + S * j] += wr * sv;
         }
