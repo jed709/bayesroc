@@ -109,7 +109,7 @@ test_that("numeric predictors get natural-scale slope rows per standard deviatio
   d <- .fixture_univariate(sigma = 1.3, n_per = 60)
   d$x <- rnorm(nrow(d), 2, 3)
   d$cond <- factor(sample(c("a", "b"), nrow(d), TRUE))
-  m <- suppressMessages(broc(brf(item_resp | is_old ~ cond * x, sigma ~ x, criterion ~ 1, family = uvsd()), d))
+  m <- suppressMessages(broc(brf(item_resp | is_old ~ cond * x, sigma ~ x, criterion ~ x, family = uvsd()), d))
   f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 200, iter_sampling = 100, seed = 1,
                                  refresh = 50, show_messages = FALSE))
   e <- estimates(f)
@@ -120,15 +120,18 @@ test_that("numeric predictors get natural-scale slope rows per standard deviatio
   expect_identical(as.character(dp$cond), c("a", "b"))
   expect_equal(dp$estimate, c(mean(b[, "beta_dprime[3]"]), mean(b[, "beta_dprime[3]"] + b[, "beta_dprime[4]"])) * s,
                tolerance = 1e-10)
-  for (lev in c("a", "b")) {
-    r <- which(d$is_old == 1 & d$cond == lev)
-    hand <- mean(vapply(seq_len(nrow(b)), function(i) {
-      a0 <- b[i, "beta_sigma[1]"]; a1 <- b[i, "beta_sigma[2]"]
-      mean(exp(a0 + a1 * (d$x[r] + s / 2)) - exp(a0 + a1 * (d$x[r] - s / 2)))
-    }, numeric(1)))
-    expect_equal(e$estimate[e$name == "sigma" & e$per_sd_of %in% "x" & e$cond %in% lev], hand, tolerance = 1e-10)
-  }
-  expect_false(any(e$name == "criteria" & !is.na(e$per_sd_of)))
+  r <- which(d$is_old == 1)
+  hand <- mean(vapply(seq_len(nrow(b)), function(i) {
+    a0 <- c(b[i, "beta_sigma[1]"]); a1 <- c(b[i, "beta_sigma[2]"])
+    mean(exp(a0 + a1 * (d$x[r] + s / 2)) - exp(a0 + a1 * (d$x[r] - s / 2)))
+  }, numeric(1)))
+  sg <- e[e$name == "sigma", ]
+  expect_true(all(is.na(sg$cond)))
+  expect_equal(sg$estimate[sg$per_sd_of %in% "x"], hand, tolerance = 1e-10)
+  cr <- e[e$name == "criteria", ]
+  expect_true(all(is.na(cr$cond)))
+  expect_equal(sum(is.na(cr$per_sd_of)), length(unique(cr$criterion)))
+  expect_equal(sum(cr$per_sd_of %in% "x"), length(unique(cr$criterion)))
   expect_false("per_sd_of" %in% names(estimates(f, slopes = FALSE)))
   expect_false("per_sd_of" %in% names(compare_estimates(f, pars = "dprime")))
   expect_output(print(summary(f, sd = FALSE, cor = FALSE)), "per SD of x")

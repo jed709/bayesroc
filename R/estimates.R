@@ -187,9 +187,25 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   internal <- .pars_internal(pars, fam)
   ext <- function(p) if (p %in% c("criterion", "criterion2")) sub("criterion", "criteria", p)
                      else .smooth_display_pname(model, p)
-  cell_mean <- function(mat, rows) {
+  pooled <- function(keep) {
+    if (is.null(by) || setequal(keep, by)) return(cells)
+    key <- if (length(keep)) as.character(interaction(cf[keep], drop = TRUE)) else rep("", nrow(cf))
+    lead <- levels(cells)[match(key, key)]
+    factor(lead[as.integer(cells)], levels = levels(cells))
+  }
+  keep_of <- function(p) {
+    if (is.null(by)) return(by)
+    fo <- .param_formula(model, p)
+    if (is.null(fo)) return(by)
+    rhs <- paste(deparse(fo[[length(fo)]], width.cutoff = 500L), collapse = " ")
+    if (identical(re_formula, NA)) rhs <- remove_random_effects(rhs)
+    v <- tryCatch(all.vars(str2lang(if (nzchar(trimws(rhs))) rhs else "1")), error = function(e) NULL)
+    if (is.null(v)) by else intersect(by, v)
+  }
+  cell_mean <- function(mat, rows, keep = by) {
+    grp <- pooled(keep)
     vals <- vapply(levels(cells), function(lev) {
-      r <- intersect(rows, which(cells == lev))
+      r <- intersect(rows, which(grp == lev))
       if (!length(r)) return(rep(NA_real_, nrow(mat)))
       as.vector(mat[, r, drop = FALSE] %*% w[r]) / sum(w[r])
     }, numeric(nrow(mat)))
@@ -198,9 +214,9 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   # a parameter is reported over the `by` variables it actually varies with: variables
   # along which every cell agrees are dropped one at a time (a criterion with `exp` in
   # its formula is one row per experiment, not one per condition x experiment)
-  reduce <- function(vals) {
+  reduce <- function(vals, keep = by) {
     vals <- vals[, colSums(is.na(vals)) == 0, drop = FALSE]
-    active <- by
+    active <- keep
     while (ncol(vals) > 1L && length(active)) {
       dropped <- FALSE
       for (v in active) {
@@ -237,15 +253,17 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
       rows <- if (p %in% .lure_param_set && !is.null(roles)) roles$noise
               else if (p %in% .signal_param_set && !is.null(roles) && fam != "source_mixture") roles$signal
               else seq_len(setup$N)
-      push(p, reduce(cell_mean(val$tp[[p]], rows)), slope = slope)
+      k <- keep_of(p)
+      push(p, reduce(cell_mean(val$tp[[p]], rows, k), k), slope = slope)
     }
     crit_sets <- list(criterion = val$th, criterion2 = if (length(dim(val$th2)) == 3L) val$th2)
     for (cn in names(crit_sets)) {
       th <- crit_sets[[cn]]
       if (is.null(th) || (!is.null(internal) && !cn %in% internal)) next
       J <- dim(th)[3]
+      kp <- keep_of(cn)
       for (k in seq_len(J)) {
-        push(cn, reduce(cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N))), paste0("c", k), slope)
+        push(cn, reduce(cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N), kp), kp), paste0("c", k), slope)
       }
     }
     # source criteria that vary with the detection response: one set per set of the model (the
@@ -254,12 +272,13 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
     if (length(dim(th2)) == 4L && (is.null(internal) || "criterion2" %in% internal)) {
       vbin <- .vbin_of(model$model_data)
       labs <- .vbin_labels(model$model_data)
+      kp <- keep_of("criterion2")
       for (v in seq_along(labs)) {
         b <- match(v, vbin)
         if (is.na(b)) next
         lab <- if (labs[v] == "new") "new" else paste0("bin ", labs[v])
         for (k in seq_len(dim(th2)[4])) {
-          push("criterion2", reduce(cell_mean(matrix(th2[, , b, k], nrow = setup$S), seq_len(setup$N))),
+          push("criterion2", reduce(cell_mean(matrix(th2[, , b, k], nrow = setup$S), seq_len(setup$N), kp), kp),
                paste0(lab, ", c", k), slope)
         }
       }
@@ -312,6 +331,16 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   out_info$per_sd_of <- if (all(is.na(info$.slope))) NULL else info$.slope
   list(draws = draws, info = out_info[setdiff(names(out_info), c(".cell", ".slope"))], chain = chain,
        cells = info$.cell, slope_sd = slope_sd)
+}
+
+.param_formula <- function(model, p) {
+  f <- model$formula
+  if (is.null(f)) return(NULL)
+  if (p == "dprime") return(f$primary)
+  alias <- model$family$external_aliases[[p]]
+  cand <- c(p, alias, switch(p, criterion = c("cutpoints", "cutpoints1"), criterion2 = "cutpoints2"))
+  for (n in cand) if (!is.null(f$params[[n]])) return(f$params[[n]])
+  NULL
 }
 
 .draw_chains <- function(draws) {
