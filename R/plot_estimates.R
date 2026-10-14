@@ -74,8 +74,8 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
   vars[vapply(vars, function(v) is.factor(model$data[[v]]) || is.character(model$data[[v]]), logical(1))]
 }
 
-# the fixed-effect predictors that are not factors: their effects are averaged over the observed
-# values in natural-scale estimates, and the summary says so
+# the fixed-effect and smooth predictors that are numeric: natural-scale estimates average over
+# their observed values, and estimates() adds their average change per standard deviation
 .continuous_predictors <- function(model) {
   md <- model$model_data
   fx <- grep("_fixed$", names(md), value = TRUE)
@@ -84,7 +84,9 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
     if (is.list(fe) && !is.null(fe$formula)) all.vars(fe$formula) else character(0)
   })))
   vars <- c(vars, if (!is.null(md$criterion$fixed_formula)) all.vars(md$criterion$fixed_formula),
-            if (!is.null(md$criterion2$fixed_formula)) all.vars(md$criterion2$fixed_formula))
+            if (!is.null(md$criterion2$fixed_formula)) all.vars(md$criterion2$fixed_formula),
+            unlist(lapply(md$smooth_data, function(l) lapply(l, function(sm)
+              tryCatch(all.vars(str2lang(sm$sm_obj$term %||% sm$term)), error = function(e) character(0))))))
   vars <- intersect(unique(vars), names(model$data))
   vars[vapply(vars, function(v) is.numeric(model$data[[v]]), logical(1))]
 }

@@ -12,7 +12,8 @@ estimates(
   summary = TRUE,
   prob = 0.95,
   ndraws = NULL,
-  seed = NULL
+  seed = NULL,
+  slopes = TRUE
 )
 }
 \arguments{
@@ -38,19 +39,30 @@ posterior draws in long format.}
 reported when all draws are used).}
 
 \item{seed}{Optional seed for the draw subset.}
+
+\item{slopes}{If \code{TRUE} (default), add for each numeric predictor the average
+natural-scale change per standard deviation of that predictor: each evaluated
+row's parameter at the row's value plus half a standard deviation minus its
+value at minus half, averaged within the cell like the estimates. This needs
+no reference value, works through any link and through smooths and
+interactions, and equals coefficient times standard deviation for an
+identity-link linear term.}
 }
 \value{
 A data frame. Columns: \code{parameter} (label), \code{name} (the \code{pars} name),
-the \code{by} columns, \code{criterion} (for criteria), then either \code{estimate}, \code{sd},
-\code{lower}, \code{upper}, \code{rhat}, \code{ess_bulk}, \code{ess_tail}, or \code{.draw} and \code{value}.
-Quantities that do not differ between cells are reported once, with the
-\code{by} columns set to \code{NA}.
+the \code{by} columns, \code{criterion} (for criteria), \code{per_sd_of} (when there are
+slope rows: the predictor, \code{NA} on the estimates themselves), then either
+\code{estimate}, \code{sd}, \code{lower}, \code{upper}, \code{rhat}, \code{ess_bulk}, \code{ess_tail}, or
+\code{.draw} and \code{value}. Quantities that do not differ between cells are
+reported once, with the \code{by} columns set to \code{NA}. The standard deviations
+used are in the attribute \code{"predictor_sd"}.
 }
 \description{
 Computes each parameter on its natural scale (d', standard deviations,
 probabilities, criterion locations) for every design cell. A cell's value is
 the average over its observed rows, so continuous covariates need no reference
-value. Signal parameters are averaged over target items and lure parameters
+value; their effects are reported as the average change per standard deviation
+(see \code{slopes}). Signal parameters are averaged over target items and lure parameters
 over lures. These are the quantities shown by \code{\link[=plot_estimates]{plot_estimates()}} and in the
 first section of \link[=summary.broc_fit]{summary()}.
 }

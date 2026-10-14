@@ -205,16 +205,27 @@ print.broc_summary <- function(x, ...) {
   e <- x$estimates
   if (!is.null(e) && nrow(e)) {
     .print_section("ESTIMATES", paste0("natural scale, population level; ", pct))
-    by_cols <- setdiff(names(e), c("parameter", "name", "criterion", "estimate", "sd", "lower", "upper",
-                                   "rhat", "ess_bulk", "ess_tail"))
+    psd <- attr(e, "predictor_sd")
+    if (length(psd)) {
+      cat("\"per SD of\" rows: average change for a one-SD increase in the predictor (SD: ",
+          paste0(names(psd), " = ", formatC(psd, format = "fg", digits = 3), collapse = ", "), ")\n", sep = "")
+    }
+    by_cols <- setdiff(names(e), c("parameter", "name", "criterion", "per_sd_of", "estimate", "sd", "lower",
+                                   "upper", "rhat", "ess_bulk", "ess_tail"))
     for (p in unique(e$parameter)) {
       d <- e[e$parameter == p, , drop = FALSE]
       cat("\n", p, "\n", sep = "")
       keep_by <- by_cols[vapply(by_cols, function(v) any(!is.na(d[[v]])), logical(1))]
       lab_cols <- c(keep_by, if ("criterion" %in% names(d) && any(!is.na(d$criterion))) "criterion")
+      slope <- if ("per_sd_of" %in% names(d) && any(!is.na(d$per_sd_of))) d$per_sd_of
       tbl <- d[c(lab_cols, intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(d)))]
       if (!length(lab_cols)) tbl <- cbind(cell = "all", tbl)
       for (v in lab_cols) tbl[[v]] <- ifelse(is.na(tbl[[v]]), "all", as.character(tbl[[v]]))
+      if (!is.null(slope)) {
+        tbl <- cbind(tbl[setdiff(names(tbl), c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"))],
+                     effect = ifelse(is.na(slope), "", paste("per SD of", slope)),
+                     tbl[intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(tbl))])
+      }
       .print_tbl(tbl, digits)
     }
   }

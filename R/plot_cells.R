@@ -15,13 +15,16 @@
 }
 
 .plot_setup <- function(fit, model, ndraws, re_formula, thresholds = TRUE, rows = NULL, draw_idx = NULL,
-                        thresholds2 = TRUE) {
-  data_src <- if (is.null(rows)) build_data_source_from_model(model)
+                        thresholds2 = TRUE, data = NULL, draws = NULL) {
+  data_src <- if (!is.null(data)) rebuild_design_matrices(model, data)
+              else if (is.null(rows)) build_data_source_from_model(model)
               else rebuild_design_matrices(model, model$data[rows, , drop = FALSE])
-  vars <- get_predict_variables(model, include_re = !identical(re_formula, NA))
-  draws <- fit$draws(variables = vars, format = "matrix")
-  if (!is.null(draw_idx)) draws <- draws[draw_idx, , drop = FALSE]
-  else if (!is.null(ndraws) && ndraws < nrow(draws)) draws <- draws[sample.int(nrow(draws), ndraws), , drop = FALSE]
+  if (is.null(draws)) {
+    vars <- get_predict_variables(model, include_re = !identical(re_formula, NA))
+    draws <- fit$draws(variables = vars, format = "matrix")
+    if (!is.null(draw_idx)) draws <- draws[draw_idx, , drop = FALSE]
+    else if (!is.null(ndraws) && ndraws < nrow(draws)) draws <- draws[sample.int(nrow(draws), ndraws), , drop = FALSE]
+  }
   S <- nrow(draws)
   N <- data_src$N
   fam <- model$family
