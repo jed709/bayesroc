@@ -74,3 +74,15 @@ test_that("fit_broc(file=) works on the JAX backend", {
                          seed = 2, progress_bar = FALSE, file = path)
   expect_equal(.draws_mean(fit_loaded), ref, tolerance = 1e-8)
 })
+
+test_that("draws in centred coordinates are replaced by the model's coordinates", {
+  a <- array(c(1, 2, 3, 4, 10, 20), c(2, 1, 3),
+             dimnames = list(NULL, NULL, c("beta_dprime[1]", "beta_dprime[2]", "orig__beta_dprime[1]")))
+  a <- posterior::as_draws_array(a)
+  r <- .restore_centred_draws(a)
+  expect_identical(posterior::variables(r), c("beta_dprime[1]", "beta_dprime[2]"))
+  expect_equal(as.vector(r[, , "beta_dprime[1]"]), c(10, 20))
+  expect_equal(as.vector(r[, , "beta_dprime[2]"]), c(3, 4))
+  expect_s3_class(r, "draws_array")
+  expect_identical(.restore_centred_draws(r), r)
+})

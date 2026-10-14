@@ -775,6 +775,7 @@ class AutoSession:
         n_old = 0 if old_sel is None else len(old_sel)
 
         out, files = {}, {}
+        centred = {k[6:] for k in shapes if k.startswith("orig__")}
         bar = dr._pbar(-(-self.n // chunk), "constrain") if self.progress and self.n else None
         for i, m, blk in _padded_chains(fn, rows, chunk):
             for k, v in blk.items():
@@ -782,6 +783,10 @@ class AutoSession:
                     continue
                 if k == "log_lik" and not save_loglik:
                     continue
+                if k in centred:
+                    continue
+                if k.startswith("orig__"):
+                    k = k[6:]
                 if k not in out:
                     fname = "sample_" + re.sub(r"[^A-Za-z0-9_\[\]]", "_", k) + ".npy"
                     lead = n_old if k == "log_lik" else 0
