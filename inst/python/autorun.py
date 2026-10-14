@@ -292,9 +292,9 @@ class _Dr(_InProcess):
         else:
             self.aux = np.zeros(1)
         self.transport = tm is not None
-        self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0, jnp.asarray(self.aux))
+        self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0, dr.aux_in(tm, self.aux))
         self.carry0 = jax.tree.map(np.asarray, comp["setup"](jnp.asarray(th), jnp.asarray(rho), off0,
-                                                             jnp.asarray(self.aux)))
+                                                             dr.aux_in(tm, self.aux)))
         self.positions = _model_positions(tm, th, self.aux)
 
     def block(self, carry, t):
@@ -419,7 +419,7 @@ def _dr_f32_server(argfile):
     with open(donor, "rb") as fh:
         don = pickle.load(fh)
     th = np.asarray(don["th"])
-    AUX = jnp.asarray(don["aux"] if don.get("aux") is not None else np.zeros(1))
+    AUX = dr.aux_in(tm, don["aux"] if don.get("aux") is not None else np.zeros(1))
     OFF = (jnp.asarray(don["offset"]) if don.get("offset") is not None
            else dr.ll_offset(pp, unflatten, config,
                              (th[:1] if tm is None else tm.forward_chains(th[:1], np.asarray(don["aux"])[:1]))[0]))
@@ -481,7 +481,7 @@ class AutoSession:
         self.stride = int(a.get("stride") or 1)
         self.burn = int(a.get("burnin") or 0)
         self.config = config
-        self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config)
+        self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config, self.sampler != "nuts")
         itemsize = 8 if jax.config.jax_enable_x64 else 4
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
                                            25 if self.sampler == "nuts" else 500)

@@ -8,10 +8,11 @@
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
+#include <vector>
 
 namespace tmap {
 
-constexpr int kMaxD = 64;  // widest block instantiated; tmap.py _NATIVE_MAX_DIM must match
+constexpr int kMaxD = 64;  // widest block with its own unrolled instance; wider ones run Wide
 typedef double v4d __attribute__((vector_size(32)));
 
 inline v4d splat(double x) { return v4d{x, x, x, x}; }
@@ -128,6 +129,105 @@ struct Core {
   }
 };
 
+// The same recurrences for any width, the dimension read at run time; l, lb, qb are [D * D].
+struct Wide {
+  static void chol(int D, const double* lam, const double* Q, v4d* l, v4d* inv, v4d& prod) {
+    prod = splat(1.0);
+    for (int j = 0; j < D; ++j) {
+      const v4d* lj = l + j * D;
+      v4d d = ld(lam + (j * D + j) * 4) + splat(Q[j * D + j]);
+      for (int k = 0; k < j; ++k) d -= lj[k] * lj[k];
+      v4d ljj = vsqrt(d);
+      l[j * D + j] = ljj;
+      prod *= ljj;
+      inv[j] = splat(1.0) / ljj;
+      for (int i = j + 1; i < D; ++i) {
+        v4d* li = l + i * D;
+        v4d v = ld(lam + (i * D + j) * 4) + splat(Q[i * D + j]);
+        for (int k = 0; k < j; ++k) v -= li[k] * lj[k];
+        li[j] = v * inv[j];
+      }
+    }
+  }
+
+  static void forward(int D, int64_t g0, int64_t g1, int64_t n, const double* Lam, const double* Q,
+                      const double* r, const double* zeta, double* u, double* ldet) {
+    std::vector<v4d> buf(size_t(D) * D + 2 * size_t(D));
+    v4d *l = buf.data(), *y = l + size_t(D) * D, *inv = y + D, prod;
+    for (int64_t g = g0; g < g1; g += 4) {
+      chol(D, Lam + g * D * D, Q, l, inv, prod);
+      for (int i = 0; i < D; ++i) {
+        v4d v = ldn(r + i * n, n, g, 0.0);
+        for (int k = 0; k < i; ++k) v -= l[i * D + k] * y[k];
+        y[i] = v * inv[i];
+      }
+      for (int i = D - 1; i >= 0; --i) {
+        v4d v = y[i] + ldn(zeta + i * n, n, g, 0.0);
+        for (int k = i + 1; k < D; ++k) v -= l[k * D + i] * y[k];
+        y[i] = v * inv[i];
+      }
+      for (int i = 0; i < D; ++i) stn(u + i * n, n, g, y[i]);
+      stn(ldet, n, g, vlog(prod));
+    }
+  }
+
+  static void backward(int D, int64_t g0, int64_t g1, int64_t n, const double* Lam, const double* Q,
+                       const double* r, const double* zeta, const double* ubar, const double* ldbar,
+                       double* zetabar, double* rbar, double* qsum) {
+    const size_t DD = size_t(D) * D;
+    std::vector<v4d> buf(3 * DD + 5 * size_t(D));
+    v4d *qb = buf.data(), *l = qb + DD, *lb = l + DD, *y = lb + DD, *yb = y + D, *ug = yb + D,
+        *ub = ug + D, *inv = ub + D, prod;
+    for (size_t i = 0; i < DD; ++i) qb[i] = splat(0.0);
+    for (int64_t g = g0; g < g1; g += 4) {
+      chol(D, Lam + g * D * D, Q, l, inv, prod);
+      for (int i = 0; i < D; ++i) {
+        for (int j = 0; j <= i; ++j) lb[i * D + j] = splat(0.0);
+        v4d v = ldn(r + i * n, n, g, 0.0);
+        for (int k = 0; k < i; ++k) v -= l[i * D + k] * y[k];
+        y[i] = v * inv[i];
+        ub[i] = ldn(ubar + i * n, n, g, 0.0);
+      }
+      for (int i = D - 1; i >= 0; --i) {
+        v4d v = y[i] + ldn(zeta + i * n, n, g, 0.0);
+        for (int k = i + 1; k < D; ++k) v -= l[k * D + i] * ug[k];
+        ug[i] = v * inv[i];
+      }
+      for (int i = 0; i < D; ++i) {
+        v4d t = ub[i] * inv[i];
+        lb[i * D + i] -= t * ug[i];
+        stn(zetabar + i * n, n, g, t);
+        yb[i] = t;
+        for (int k = i + 1; k < D; ++k) { lb[k * D + i] -= t * ug[k]; ub[k] -= t * l[k * D + i]; }
+      }
+      for (int i = D - 1; i >= 0; --i) {
+        v4d t = yb[i] * inv[i];
+        lb[i * D + i] -= t * y[i];
+        stn(rbar + i * n, n, g, t);
+        for (int k = 0; k < i; ++k) { lb[i * D + k] -= t * y[k]; yb[k] -= t * l[i * D + k]; }
+      }
+      v4d lbar = ldn(ldbar, n, g, 0.0);
+      for (int j = 0; j < D; ++j) lb[j * D + j] += lbar * inv[j];
+      for (int j = D - 1; j >= 0; --j) {
+        v4d* lbj = lb + j * D;
+        const v4d* lj = l + j * D;
+        for (int i = D - 1; i > j; --i) {
+          v4d* lbi = lb + i * D;
+          const v4d* li = l + i * D;
+          v4d t = lbi[j] * inv[j];
+          lbj[j] -= t * li[j];
+          qb[i * D + j] += t;
+          for (int k = 0; k < j; ++k) { lbi[k] -= t * lj[k]; lbj[k] -= t * li[k]; }
+        }
+        v4d db = lbj[j] * inv[j] * splat(0.5);
+        qb[j * D + j] += db;
+        for (int k = 0; k < j; ++k) lbj[k] -= splat(2.0) * db * lj[k];
+      }
+    }
+    for (size_t i = 0; i < DD; ++i) qsum[i] = qb[i][0] + qb[i][1] + qb[i][2] + qb[i][3];
+  }
+};
+
 using FwdFn = void (*)(int64_t, int64_t, int64_t, const double*, const double*, const double*,
                        const double*, double*, double*);
 using BwdFn = void (*)(int64_t, int64_t, int64_t, const double*, const double*, const double*,
@@ -168,7 +268,8 @@ inline void coupling(int D, int64_t n, int64_t g0, int64_t g1, const double* Lam
 
 // deltabar = -Lam rbar, in place (buffer holds rbar on entry)
 inline void coupling_adjoint(int D, int64_t n, int64_t g0, int64_t g1, const double* Lam, double* rb) {
-  v4d t[kMaxD];
+  std::vector<v4d> tb(D);
+  v4d* t = tb.data();
   for (int64_t g = g0; g < g1; g += 4) {
     const double* lam = Lam + g * D * D;
     for (int b = 0; b < D; ++b) t[b] = ldn(rb + b * n, n, g, 0.0);

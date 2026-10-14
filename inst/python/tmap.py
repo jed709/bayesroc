@@ -32,8 +32,6 @@ _FD_STEP = 1e-3
 _NEWTON = 3
 _NEWTON_CAP = 0.5
 _UNINFORMED = 0.1
-_MIN_TRIALS_PER_DIM = 2.0
-_THIN_MAX_DIM = 10
 _MAX_LINK = 4_000_000
 
 
@@ -517,10 +515,8 @@ def _batched_sites(res, off):
     return out
 
 
-def _supers(config, off, split=False, thin_rule=True):
-    """Super-blocks and the blocks left unmapped: wider than _THIN_MAX_DIM with fewer than _MIN_TRIALS_PER_DIM
-    trials per group per dimension, where the per-group expansion is poorly determined and costs D^3 per group
-    (HANDOFF_bayesroc_tmap_wide_blocks, REPORT_tmap_wide_blocks_resolution)."""
+def _supers(config, off, split=False):
+    """Super-blocks: the random-effect blocks of each grouping factor, mapped together."""
     res = config.get("random_effects") or []
     batched = _batched_sites(res, off)
     batched_betas = _batched_betas(config, off)
@@ -532,7 +528,7 @@ def _supers(config, off, split=False, thin_rule=True):
     for r in res:
         if r.get("cor_id") is not None:
             cross.setdefault(r["cor_id"], []).append(r)
-    by_group, seen, skipped = {}, set(), []
+    by_group, seen = {}, set()
     for conf in res:
         cid = conf.get("cor_id")
         key = ("cross", cid, conf["group"]) if cid is not None else ("re", conf.get("param"), conf["group"])
@@ -588,12 +584,8 @@ def _supers(config, off, split=False, thin_rule=True):
             o += nt
         if o != B.dim:
             continue
-        per_dim = N / (B.n * B.dim)
-        if thin_rule and B.dim > _THIN_MAX_DIM and per_dim < _MIN_TRIALS_PER_DIM:
-            skipped.append(f"{B.prefix} ({B.dim} x {B.n}, {per_dim:.1f} trials per group per dimension)")
-            continue
         by_group.setdefault((B.prefix if split else conf["group"], B.n), []).append(B)
-    sbs = sorted([_Super(g, bl) for (g, _), bl in by_group.items()], key=lambda s: s.n)
+    sbs = sorted((_Super(key[0], bl) for key, bl in by_group.items()), key=lambda s: s.n)
     # links: a later block's effects on (param, component) answer to an earlier block's effects on the
     # same (param, component): within each later group, the earlier effects' per-row contributions are
     # projected onto the later block's columns for that component (an intercept takes the mean over the
@@ -645,7 +637,7 @@ def _supers(config, off, split=False, thin_rule=True):
             if pairs:
                 sb.links.append((e, np.array([c for c, _, _ in pairs], int), np.array([d for _, d, _ in pairs], int),
                                  np.stack([w for _, _, w in pairs])))
-    return sbs, skipped
+    return sbs
 
 
 def _chol(Lam, Q):
@@ -710,7 +702,6 @@ def _native():
 
 
 _CHUNKS = 8
-_NATIVE_MAX_DIM = 64  # the kernel's kMaxD; wider blocks take the batched path
 _UNROLL_MAX = 20  # without the kernel: unrolled up to here, batched linear algebra above
 
 
@@ -763,17 +754,27 @@ class TMap:
                 m[b.x_idx] = True
         return m
 
-    def _unpack(self, aux):
-        out, o = [], 0
+    def parts(self, aux):
+        """Flat anchors [chains, A] -> per block (Lam tiles, s, bref, uref, perm), each [chains, ...]:
+        the form the compiled programs take, so that none of them slices the anchors per gradient."""
+        aux = np.asarray(aux)
+        C, out, o = aux.shape[0], [], 0
         for sb, (a, b, c, d, e) in zip(self.sbs, self.sizes):
-            perm = aux[o + a + b + c + d:o + a + b + c + d + e].astype(jnp.int32)
-            tiled = aux[o:o + a].reshape(_n4(sb.n), sb.D, sb.D, 4)
-            out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1],
-                            s=aux[o + a:o + a + b].reshape(sb.D, sb.n),
-                            bref=aux[o + a + b:o + a + b + c],
-                            uref=aux[o + a + b + c:o + a + b + c + d].reshape(sb.D, sb.n),
-                            perm=perm, inv=jnp.argsort(perm)))
+            out += [aux[:, o:o + a].reshape(C, _n4(sb.n), sb.D, sb.D, 4),
+                    aux[:, o + a:o + a + b].reshape(C, sb.D, sb.n),
+                    aux[:, o + a + b:o + a + b + c],
+                    aux[:, o + a + b + c:o + a + b + c + d].reshape(C, sb.D, sb.n),
+                    aux[:, o + a + b + c + d:o + a + b + c + d + e].astype(np.int32)]
             o += a + b + c + d + e
+        return tuple(jnp.asarray(x) for x in out)
+
+    def _unpack(self, parts, dtype):
+        out = []
+        for k, sb in enumerate(self.sbs):
+            tiled, s, bref, uref = (x.astype(dtype) for x in parts[5 * k:5 * k + 4])
+            perm = parts[5 * k + 4]
+            out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1], s=s, bref=bref, uref=uref,
+                            perm=perm, inv=jnp.argsort(perm)))
         return out
 
     def _delta(self, k, v, an, us, ans):
@@ -839,15 +840,16 @@ class TMap:
         return A, Ainv, L, solve_triangular(L, r[..., None], lower=True)[..., 0]
 
     def forward(self, tht, aux):
-        """Sampler coordinates -> the model's unconstrained coordinates, and log|dz/dzeta|^-1."""
-        ans = self._unpack(aux.astype(tht.dtype))
+        """Sampler coordinates -> the model's unconstrained coordinates, and log|dz/dzeta|^-1.
+        `aux`: one chain's anchors as parts() gives them."""
+        ans = self._unpack(aux, tht.dtype)
         post = self.post(tht)
         th, ld, us = tht, 0.0, {}
         native = _native()
         for k, sb in enumerate(self.sbs):
             an = ans[k]
             zeta = jnp.take(sb.get(tht), an["perm"], axis=0)[::-1]
-            if native and sb.D <= _NATIVE_MAX_DIM:
+            if native:
                 A, Ainv, Q = self._prior(k, tht, post, an)
                 delta = self._delta(k, tht, an, us, ans)
                 delta = jnp.zeros_like(zeta) if delta is None else delta[::-1]
@@ -870,7 +872,7 @@ class TMap:
         return th, ld
 
     def inverse(self, th, aux):
-        ans = self._unpack(aux.astype(th.dtype))
+        ans = self._unpack(aux, th.dtype)
         post = self.post(th)
         tht, us = th, {}
         for k, sb in enumerate(self.sbs):
@@ -897,14 +899,16 @@ class TMap:
         """Sampler -> model coordinates for positions [chains, D] with anchors [chains, A]."""
         if self._fwd is None:
             self._fwd = jax.jit(lambda v, a: self.forward(v, a)[0])
-        return np.stack([np.asarray(self._fwd(jnp.asarray(x), jnp.asarray(a)))
-                         for x, a in zip(np.asarray(tht), np.asarray(aux))])
+        P = self.parts(aux)
+        return np.stack([np.asarray(self._fwd(jnp.asarray(x), tuple(p[c] for p in P)))
+                         for c, x in enumerate(np.asarray(tht))])
 
     def inverse_chains(self, th, aux):
         if self._inv is None:
             self._inv = jax.jit(self.inverse)
-        return np.stack([np.asarray(self._inv(jnp.asarray(x), jnp.asarray(a)))
-                         for x, a in zip(np.asarray(th), np.asarray(aux))])
+        P = self.parts(aux)
+        return np.stack([np.asarray(self._inv(jnp.asarray(x), tuple(p[c] for p in P)))
+                         for c, x in enumerate(np.asarray(th))])
 
     def lower_anchors(self, vg, chains, D, parallel=True):
         """The anchors program over the chains (pmap, or lax.map under jit when not parallel),
@@ -989,19 +993,15 @@ class TMap:
         return out
 
 
-def build(model, config, off, unflatten, split=False, thin_rule=True, links=None):
-    """A TMap over every random-effect block it can represent, or None when there is none. Thin wide blocks are left
-    unmapped by the design rule unless thin_rule is False. `links`: True keeps the links between super-blocks, False
-    cuts them, None cuts them only when a block was left unmapped (measured on vrdp2d: 1.6-2.5x on the mapped classes)."""
+def build(model, config, off, unflatten, split=False, links=True):
+    """A TMap over every random-effect block it can represent, or None when there is none. `links` False cuts
+    the links between super-blocks."""
     import drghmc as dr
-    sbs, skipped = _supers(config, off, split, thin_rule)
+    sbs = _supers(config, off, split)
     if not sbs:
         return None
-    keep_links = (not skipped) if links is None else bool(links)
-    if not keep_links:
+    if not links:
         for sb in sbs:
             sb.links = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
-    tm = TMap(sbs, lambda th: post_trim(unflatten(th)))
-    tm.skipped, tm.links_kept = skipped, keep_links
-    return tm
+    return TMap(sbs, lambda th: post_trim(unflatten(th)))

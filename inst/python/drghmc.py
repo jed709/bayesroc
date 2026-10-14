@@ -21,7 +21,7 @@ _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 _DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
                  mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64",
-                 transport=True, transport_thin=True, transport_links=None)
+                 transport=True, transport_links=True)
 _INTEGRATORS = ("bcss3", "bcss2", "leapfrog")
 
 
@@ -46,8 +46,7 @@ def _merge_control(control):
          "need 0 <= mass_burn_frac < mass_end_frac <= 1"),
         (c["precision"] in ("f64", "f32"), "precision must be 'f64' or 'f32'"),
         (isinstance(c["transport"], (bool, np.bool_)), "transport must be TRUE or FALSE"),
-        (isinstance(c["transport_thin"], (bool, np.bool_)), "transport_thin must be TRUE or FALSE"),
-        (c["transport_links"] is None or isinstance(c["transport_links"], (bool, np.bool_)), "transport_links must be TRUE, FALSE or NULL (auto: cut when a block is left unmapped)"),
+        (isinstance(c["transport_links"], (bool, np.bool_)), "transport_links must be TRUE or FALSE"),
     ]
     for ok, msg in checks:
         if not ok:
@@ -252,8 +251,10 @@ def _model_info(model, config):
     return shapes, pot, post
 
 
-def _build(model, config):
-    """(vg, unflatten, keys, offsets, D, postprocess_fn) for flat unconstrained vectors."""
+def _build(model, config, sd_quantile=True):
+    """(vg, unflatten, keys, offsets, D, postprocess_fn) for flat unconstrained vectors: the sampler's
+    own, with the standard deviations on their prior-quantile scale, or with sd_quantile False the model's
+    (the coordinates NUTS draws in)."""
     shapes, potential_fn, postprocess_fn = _model_info(model, config)
     keys = sorted(shapes)
     off, o = {}, 0
@@ -278,7 +279,7 @@ def _build(model, config):
         return (jnp.concatenate([jnp.reshape(ct[k], (-1,)) for k in keys]),)
 
     split.defvjp(split_fwd, split_bwd)
-    sd_keys = [k for k in keys if k in potential_fn.sd_scale]
+    sd_keys = [k for k in keys if k in potential_fn.sd_scale] if sd_quantile else []
     sd_idx = np.concatenate([np.arange(off[k][0].start, off[k][0].stop) for k in sd_keys]).astype(int) \
         if sd_keys else np.zeros(0, int)
     sd_log = np.log(np.concatenate([potential_fn.sd_scale[k].reshape(-1) for k in sd_keys])) if sd_keys else np.zeros(0)
@@ -328,13 +329,9 @@ def _transport(model, config, ctrl, off, unflatten, progress_bar=False):
     if not ctrl.get("transport", True):
         return None
     import tmap
-    tm = tmap.build(model, config, off, unflatten, thin_rule=bool(ctrl.get("transport_thin", True)),
-                    links=ctrl.get("transport_links", None))
+    tm = tmap.build(model, config, off, unflatten, links=bool(ctrl.get("transport_links", True)))
     if tm is not None and progress_bar:
         print(f"[DR-G-HMC] group transport map on {', '.join(tm.specs)}", flush=True)
-        if tm.skipped:
-            print(f"[DR-G-HMC] left to the non-centred transform (thin wide blocks): {'; '.join(tm.skipped)}"
-                  f"{'; links between super-blocks cut' if not tm.links_kept else ''}", flush=True)
     return tm
 
 
@@ -414,7 +411,7 @@ def _compile_ahead(vg_plain, vg_m, tm, D, chains, ctrl, parallel, c_plain, c_map
     window's compile. Returns (wait for the plain window, wait for the rest); either
     re-raises a compile error."""
     import threading
-    low_plain = _lower_window(vg_plain, True, D, chains, ctrl, parallel, D + 1)
+    low_plain = _lower_window(vg_plain, True, D, chains, ctrl, parallel, jnp.zeros((chains, D + 1)))
     _map = (lambda f: jax.pmap(f, axis_name="chain")) if parallel else jax.vmap
     low_vg0 = _map(vg_plain).lower(jnp.zeros((chains, D)), jnp.zeros((chains, D + 1)))
     res, plain_done, done = {}, threading.Event(), threading.Event()
@@ -436,7 +433,7 @@ def _compile_ahead(vg_plain, vg_m, tm, D, chains, ctrl, parallel, c_plain, c_map
 
     threading.Thread(target=work, daemon=True).start()
     rest += [tm.lower_anchors(vg_plain_base(vg_plain, D), chains, D, parallel),
-             _lower_window(vg_m, True, D, chains, ctrl, parallel, tm.aux_size)]
+             _lower_window(vg_m, True, D, chains, ctrl, parallel, aux_zeros(tm, chains))]
 
     def waiter(evt):
         def wait():
@@ -488,7 +485,7 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
                                     cache=c_plain, aux=np.zeros((chains, D + 1)))
         th, aux = build(th, wf, seed + 1)
         ci, ce, tht, _ = _self_adapt(vg_m, D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
-                                     th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, init=init,
+                                     th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=c_mapped, init=init,
                                      imm0=ci, eps0=ce)
         th = tm.forward_chains(tht, aux)
         th, aux = build(th, wf, seed + 3)
@@ -500,7 +497,7 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
         ci = ce = None
     imm, eps, tht, _, (between, within) = _self_adapt(
         vg_m, D, chains, rest, seed + 4, ctrl, parallel, progress_bar,
-        th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped, spread=True, init=init,
+        th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=c_mapped, spread=True, init=init,
         imm0=ci, eps0=ce)
     slow = mask_np & (between > _DISAGREE * within)
     if slow.any():
@@ -508,10 +505,10 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
             print(f"[DR-G-HMC] chains still disagree on {int(slow.sum())} scale parameter(s); "
                   f"extending warmup by {rest // 2 + wf + rest} iterations", flush=True)
         imm, eps, tht, _ = _self_adapt(vg_m, D, chains, rest // 2, seed + 5, ctrl, parallel, progress_bar,
-                                       th0=tht, aux=aux, cache=c_mapped, pooled=True, init=init)
+                                       th0=tht, aux=tm.parts(aux), cache=c_mapped, pooled=True, init=init)
         th, aux = build(tm.forward_chains(tht, aux), wf, seed + 6)
         imm, eps, tht, _ = _self_adapt(vg_m, D, chains, rest, seed + 7, ctrl, parallel, progress_bar,
-                                       th0=tm.inverse_chains(th, aux), aux=aux, cache=c_mapped,
+                                       th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=c_mapped,
                                        imm0=imm, eps0=eps, init=init)
     return imm, eps, tht, aux, None
 
@@ -629,12 +626,12 @@ def _dynamic_window(vg_in, with_aux, D, ctrl, parallel):
     return _map(window, in_axes=(0, 0, 0, 0, 0, 0, 0, None, None, None))
 
 
-def _lower_window(vg_in, with_aux, D, chains, ctrl, parallel, aux_width):
+def _lower_window(vg_in, with_aux, D, chains, ctrl, parallel, aux0):
     """The dynamic window lowered on representative arguments; its compiled executable takes
     any input placement, so it serves every later call of any length."""
     z = jnp.zeros((chains, D))
     args = (jax.random.split(_tagged(0, 4), chains), z, z, jnp.zeros(chains), z, jnp.zeros(chains),
-            jnp.zeros((chains, aux_width)), jnp.ones(D), 0.1, jnp.asarray(1))
+            aux0, jnp.ones(D), 0.1, jnp.asarray(1))
     return _dynamic_window(vg_in, with_aux, D, ctrl, parallel).lower(*args)
 
 
@@ -717,7 +714,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     # the same placement
     ident = _map(lambda x: x)
     th = ident(jnp.zeros((chains, D)) if th0 is None else jnp.asarray(th0))
-    AX = jnp.zeros((chains, 1)) if aux is None else jnp.asarray(aux)
+    AX = jnp.zeros((chains, 1)) if aux is None else jax.tree.map(jnp.asarray, aux)
     if init is not None:
         U, g = init(th, AX)
     else:
@@ -901,9 +898,14 @@ def _chain_map(f, in_axes, parallel):
 
 
 def aux_zeros(tm, chains):
-    """A placeholder with the shape of the sampler's AUX input: one row per chain for a
-    transport map's anchors, a single zero otherwise."""
-    return jnp.zeros((chains, tm.aux_size)) if tm is not None else jnp.zeros(1)
+    """A placeholder with the shape of the sampler's AUX input: a transport map's anchors in
+    parts, one row per chain, a single zero otherwise."""
+    return aux_in(tm, np.zeros((chains, tm.aux_size))) if tm is not None else jnp.zeros(1)
+
+
+def aux_in(tm, aux):
+    """Stored anchors [chains, A] as the compiled programs take them."""
+    return jnp.asarray(aux) if tm is None else tm.parts(aux)
 
 
 def _chunk_len(samples):
@@ -958,7 +960,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     t0 = int(state.get("t0", 0))
     if state.get("aux") is None:
         state["aux"] = np.zeros(1)
-    AUX = jnp.asarray(state["aux"])
+    AUX = aux_in(tm, state["aux"])
     carry = jax.tree.map(np.asarray, setup_p(th0, jnp.asarray(rho0), OFF, AUX))
 
     bar = _pbar(samples, "DR-G-HMC sample") if progress_bar else None
@@ -976,7 +978,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
         bar.close()
     sl = slice(None)
     end = dict(th=np.asarray(carry[0]), rho=np.asarray(carry[1]), t0=t0 + samples,
-               offset=None if offset_fn is None else np.asarray(OFF), aux=np.asarray(AUX))
+               offset=None if offset_fn is None else np.asarray(OFF), aux=np.asarray(state["aux"]))
     return (np.concatenate(tp, 1)[:, sl], np.concatenate(sp, 1)[:, sl],
             np.concatenate(ep, 1)[:, sl], end)
 

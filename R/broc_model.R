@@ -2226,7 +2226,7 @@ fit_broc <- function(model,
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
-                    "precision", "transport", "transport_thin", "transport_links")
+                    "precision", "transport", "transport_links")
   if (!is.null(.ctrl$transport) && !(is.logical(.ctrl$transport) && length(.ctrl$transport) == 1L &&
                                      !is.na(.ctrl$transport))) {
     stop("`control$transport` must be TRUE or FALSE.", call. = FALSE)

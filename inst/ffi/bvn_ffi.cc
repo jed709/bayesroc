@@ -167,7 +167,6 @@ ffi::Error TmapFwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer 
   const int D = static_cast<int>(Lam.dimensions()[1]);
   const int64_t n = s.dimensions()[1];
   tmap::FwdFn f = tmap::forward_for(D);
-  if (!f) return ffi::Error::InvalidArgument("bayesroc: transport block too wide for the native kernel");
   DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta);
   DOut<T> uo(u), ldo(ld);
   std::vector<double> r(size_t(D) * n);
@@ -176,7 +175,8 @@ ffi::Error TmapFwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer 
   double *pr = r.data(), *pu = uo.ptr, *pld = ldo.ptr;
   tmap_for(pool, n, [=](int64_t, int64_t g0, int64_t g1) {
     tmap::coupling(D, n, g0, g1, pl, pd, pr);
-    f(g0, g1, n, pl, pq, pr, pz, pu, pld);
+    if (f) f(g0, g1, n, pl, pq, pr, pz, pu, pld);
+    else tmap::Wide::forward(D, g0, g1, n, pl, pq, pr, pz, pu, pld);
   });
   return ffi::Error::Success();
 }
@@ -191,7 +191,6 @@ ffi::Error TmapBwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer 
   const int D = static_cast<int>(Lam.dimensions()[1]);
   const int64_t n = s.dimensions()[1];
   tmap::BwdFn f = tmap::backward_for(D);
-  if (!f) return ffi::Error::InvalidArgument("bayesroc: transport block too wide for the native kernel");
   DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta), ub(ubar), lb(ldbar);
   DOut<T> zo(zetabar), dob(deltabar), qo(Qbar);
   std::vector<double> r(size_t(D) * n);
@@ -201,7 +200,8 @@ ffi::Error TmapBwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer 
   double *pr = r.data(), *pzb = zo.ptr, *pdb = dob.ptr, *pqb = qo.ptr;
   tmap_for(pool, n, [=](int64_t c, int64_t g0, int64_t g1) {
     tmap::coupling(D, n, g0, g1, pl, pd, pr);
-    f(g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
+    if (f) f(g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
+    else tmap::Wide::backward(D, g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
     tmap::coupling_adjoint(D, n, g0, g1, pl, pdb);
   });
   return ffi::Error::Success();

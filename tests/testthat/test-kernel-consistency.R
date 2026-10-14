@@ -73,3 +73,11 @@ test_that("bivariate normal rectangle and CDF are accurate, native and JAX paths
   expect_lt(res$cdp_cell_jax_rel_err, 1e-10)
   expect_true(res$cdp_cell_empty_ok)
 })
+
+test_that("the transport-map kernel matches a reference solve and its gradients at every width", {
+  skip_if_no_jax()
+  widths <- c(1, 5, 31, 64, 65, 84, 130)
+  res <- .run_py_check("tmap_kernel_check.py", c(.bvn_ffi_lib(), paste(widths, collapse = ",")))
+  expect_true(res$ffi_loaded)
+  for (D in widths) expect_lt(res[[paste0("D", D)]], 1e-10, label = paste("width", D, "kernel vs reference"))
+})
