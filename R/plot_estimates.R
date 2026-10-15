@@ -135,7 +135,7 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
     J <- .n_thresh_of(model, cn)
     mids <- grep(paste0("^beta_thresh_mid", sfx, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
     if (length(mids)) {
-      add(paste0(lab, ": ", .crit_mid_label(J)), mids,
+      add(paste0(lab, ": ", if (isTRUE(crit$location_scale)) "location (mean)" else .crit_mid_label(J)), mids,
           if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids), "identity")
     }
     gp <- .gap_param(gl, sfx)

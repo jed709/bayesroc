@@ -227,13 +227,13 @@ build_numpyro_config <- function(model) {
                   "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                   "criterion2", "lambda2", "lambda2_B",
                   "rec_crit", "know_crit",
-                  "dprime_L", "sigma_L", "lambda_L")
+                  "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
 
   # the sampler centres each design's non-intercept columns (the intercept absorbs them; see
   # .centre_info); not for an ordered d' pair or a know criterion under the slack transform,
   # whose intercepts carry constraints of their own
   skip_centre <- c(if (isTRUE(md$needs_ordered_dprime)) c("dprime", "dprime2"),
-                   if (isTRUE(md$stan_data$kc_knob == 1L)) "know_crit")
+                   if (isTRUE(md$stan_data$kc_knob == 1L)) "know_crit", "criterion_scale", "criterion2_scale")
   for (param in all_params) {
     fe_key <- paste0(param, "_fixed")
     fe <- md[[fe_key]]
@@ -351,7 +351,7 @@ build_numpyro_config <- function(model) {
                  "dprime_B", "lambda_B", "discrim", "discrim_B",
                  "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                  "criterion2", "lambda2", "lambda2_B", "rec_crit", "know_crit",
-                 "dprime_L", "sigma_L", "lambda_L")
+                 "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
 
   for (param in re_params) {
     re_key <- paste0(param, "_random")
@@ -414,6 +414,9 @@ build_numpyro_config <- function(model) {
           if (length(unique(per)) == 1L) re_conf$prior_sd <- per[1]
         }
 
+        if (param == "criterion" && isTRUE(md$has_criterion_scale)) re_conf$location_only <- TRUE
+        if (param == "criterion2" && isTRUE(md$has_criterion2_scale) && !isTRUE(md$varying_source_criteria))
+          re_conf$location_only <- TRUE
         config$random_effects[[length(config$random_effects) + 1]] <- re_conf
       }
     }
@@ -465,6 +468,11 @@ build_numpyro_config <- function(model) {
     config$n_vbin <- as.integer(md$stan_data$n_vbin)
   }
   if (!is.null(md$gap_link)) config$gap_link <- md$gap_link
+  if (isTRUE(md$has_criterion_scale)) config$crit_ls <- TRUE
+  if (isTRUE(md$has_criterion2_scale)) {
+    config$crit2_ls <- TRUE
+    if (isTRUE(md$varying_source_criteria)) config$crit2_re_mode <- "per_bin"
+  }
   cs <- getOption("bayesroc.crit_scalar")
   if (isTRUE(cs)) config$crit_scalar <- TRUE
   if (is.character(cs)) config$crit_scalar_groups <- as.list(cs)

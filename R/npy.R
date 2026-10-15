@@ -142,7 +142,7 @@
 
 .emit_loglik_side <- function(src, side, precision = "f32") {
   if (.loglik_meta(src)$isz == .npy_dtype(precision)$size) {
-    if (!isTRUE(file.copy(src, side, overwrite = TRUE)))
+    if (!isTRUE(suppressWarnings(file.rename(src, side))) && !isTRUE(file.copy(src, side, overwrite = TRUE)))
       stop("Could not write the log-likelihood file '", side, "'.", call. = FALSE)
   } else {
     .recode_loglik_npy(src, side, precision)

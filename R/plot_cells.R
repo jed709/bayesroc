@@ -32,7 +32,7 @@
   th <- th2 <- NULL
   if (thresholds) {
     n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else model$model_data$K
-    th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
+    th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = tp$criterion_scale)
     if (thresholds2 && .is_bivariate_family(fam$family)) {
       th2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
     }

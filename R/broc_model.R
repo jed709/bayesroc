@@ -293,6 +293,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   lambda_L   <- params[["lambda_L"]]
   lambda2    <- params[["lambda2"]]
   lambda2_B  <- params[["lambda2_B"]]
+  criterion_scale <- params[["criterion_scale"]] %||% params[["cutpoints_scale"]]
+  criterion2_scale <- params[["criterion2_scale"]] %||% params[["cutpoints2_scale"]]
 
   if (!is.null(params[["cutpoints"]]) && is.null(criterion)) {
     criterion <- params[["cutpoints"]]
@@ -333,7 +335,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (family$family == "cumulative") {
     res <- fit_cumulative(mu = dprime, cutpoints = criterion, data = data,
                           family = family, priors = priors, counts = counts,
-                          gap_link = gap_link, smooth_info = smooth_info)
+                          gap_link = gap_link, smooth_info = smooth_info,
+                          cutpoints_scale = criterion_scale)
     res$dropped_rows <- dropped_rows
     return(res)
   }
@@ -345,7 +348,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       cutpoints1 = criterion, cutpoints2 = criterion2,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
-      gap_link = gap_link, smooth_info = smooth_info)
+      gap_link = gap_link, smooth_info = smooth_info,
+      cutpoints_scale = criterion_scale, cutpoints2_scale = criterion2_scale)
     res$dropped_rows <- dropped_rows
     return(res)
   }
@@ -422,7 +426,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     discrim    = discrim,    discrim_B  = discrim_B,
     sigma_B    = sigma_B,    sigma2_B   = sigma2_B,
     rho        = rho,        rho_B      = rho_B,
-    rho_N      = rho_N
+    rho_N      = rho_N,
+    criterion_scale = criterion_scale,
+    criterion2_scale = criterion2_scale
   )
   provided_params <- list()
   for (pname in names(family$params)) {
@@ -605,6 +611,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     lambda_L = lambda_L,
     lambda2 = lambda2,
     lambda2_B = lambda2_B,
+    criterion_scale = criterion_scale,
+    criterion2_scale = criterion2_scale,
     data = data,
     family_name = family$family
   )
@@ -786,6 +794,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_criterion2 <- !is.null(parsed[["criterion2"]]) && (is_bivariate || is_vrdp2d)
   has_lambda2 <- !is.null(parsed[["lambda2"]]) && is_bivariate_dp
   has_lambda2_B <- !is.null(parsed[["lambda2_B"]]) && is_bivariate_dp
+  has_criterion_scale <- !is.null(parsed[["criterion_scale"]])
+  has_criterion2_scale <- !is.null(parsed[["criterion2_scale"]]) && has_criterion2
   
   has_rec_crit <- !is.null(parsed$rec_crit) && is_cdp
   has_know_crit <- !is.null(parsed$know_crit) && is_cdp
@@ -804,7 +814,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   
   needs_ordered_dprime <- has_dprime2 && family$family == "mixture"
   
-  stan_data <- list(N = N, K = K)
+  stan_data <- list(N = N, N_ll = N, K = K)
   stan_data$y <- as.integer(data[[parsed$response$response]])
 
   if (K == 2 && family$family != "evsdt") {
@@ -1012,16 +1022,22 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   smooth_data <- list()
 
   n_thresh <- if (is_cdp) family$J else K - 1
+  if (has_criterion_scale && n_thresh < 2L) {
+    stop("A criterion_scale formula needs at least two criteria (three response categories): ",
+         "with one criterion there are no gaps to scale.", call. = FALSE)
+  }
+  n_thresh_comp <- if (has_criterion_scale) 1L else n_thresh
   criterion_fixed_formula <- build_formula_from_parsed(parsed$criterion$fixed)
   criterion_cond <- extract_conditional_from_parsed(parsed$criterion)
-  criterion <- build_criterion_structure(criterion_fixed_formula, parsed$criterion$random, data, n_thresh,
+  criterion <- build_criterion_structure(criterion_fixed_formula, parsed$criterion$random, data, n_thresh_comp,
                                          conditional_terms = criterion_cond,
                                          parsed_fixed = parsed$criterion$fixed)
+  if (has_criterion_scale) criterion$location_scale <- TRUE
   
   crit_smooth_info <- build_param_smooth_info(parsed$criterion, data, encoding_vars, is_old_var)
   if (!is.null(crit_smooth_info)) {
     for (si in seq_along(crit_smooth_info)) {
-      crit_smooth_info[[si]]$n_thresh <- n_thresh
+      crit_smooth_info[[si]]$n_thresh <- n_thresh_comp
     }
     smooth_data[["criterion"]] <- crit_smooth_info
     criterion <- append_smooth_null_space(criterion, crit_smooth_info)
@@ -1045,6 +1061,29 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stan_data$X_sigma <- sigma_fixed$X
   }
   
+  criterion2_scale_fixed <- NULL
+  criterion2_scale_random <- NULL
+  if (has_criterion2_scale) {
+    if (isTRUE(family$varying_source_criteria)) {
+      vb2 <- .varying_bins(family, K)
+      data$.c2bin <- factor(vb2$labels[vb2$of[stan_data$y]], levels = vb2$labels)
+      parsed$criterion2_scale <- parse_broc_parameter_formula(.per_bin_formula(parsed$criterion2_scale, ".c2bin"))
+    }
+    criterion2_scale_fixed <- .criterion_scale_design(parsed$criterion2_scale, data, encoding_vars, is_old_var, N)
+    criterion2_scale_random <- build_random_effects_structure(parsed$criterion2_scale$random, data, encoding_vars, is_old_var)
+    stan_data$P_criterion2_scale <- criterion2_scale_fixed$n_coef
+    stan_data$X_criterion2_scale <- criterion2_scale_fixed$X
+  }
+
+  criterion_scale_fixed <- NULL
+  criterion_scale_random <- NULL
+  if (has_criterion_scale) {
+    criterion_scale_fixed <- .criterion_scale_design(parsed$criterion_scale, data, encoding_vars, is_old_var, N)
+    criterion_scale_random <- build_random_effects_structure(parsed$criterion_scale$random, data, encoding_vars, is_old_var)
+    stan_data$P_criterion_scale <- criterion_scale_fixed$n_coef
+    stan_data$X_criterion_scale <- criterion_scale_fixed$X
+  }
+
   lambda_fixed <- NULL
   lambda_random <- NULL
   if (has_lambda) {
@@ -1342,13 +1381,20 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       parsed$criterion2$fixed$intercept <- TRUE
       criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
     }
-    criterion2 <- build_criterion_structure(criterion2_fixed_formula, parsed$criterion2$random, data, K2 - 1L,
+    if (has_criterion2_scale && K2 - 1L < 2L) {
+      stop("A criterion2_scale formula needs at least two source criteria (three source response ",
+           "categories): with one criterion there are no gaps to scale.", call. = FALSE)
+    }
+    varying2 <- isTRUE(family$varying_source_criteria)
+    n2_comp <- if (has_criterion2_scale && !varying2) 1L else K2 - 1L
+    criterion2 <- build_criterion_structure(criterion2_fixed_formula, parsed$criterion2$random, data, n2_comp,
                                             conditional_terms = criterion2_cond,
                                             parsed_fixed = parsed$criterion2$fixed)
+    if (has_criterion2_scale) criterion2$location_scale <- TRUE
 
     crit2_smooth_info <- build_param_smooth_info(parsed$criterion2, data, encoding_vars, is_old_var)
     if (!is.null(crit2_smooth_info)) {
-      n_thresh2 <- K2 - 1
+      n_thresh2 <- if (has_criterion2_scale) 1L else K2 - 1
       for (si in seq_along(crit2_smooth_info)) {
         crit2_smooth_info[[si]]$n_thresh <- n_thresh2
       }
@@ -1371,7 +1417,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     if (isTRUE(family$varying_source_criteria) && !is.null(criterion2$random)) {
       vb <- .varying_bins(family, K)
       for (group in names(criterion2$random)) {
-        criterion2$random[[group]] <- .varying_crit2_re(criterion2$random[[group]], "full", vb$n, K2)
+        criterion2$random[[group]] <- .varying_crit2_re(criterion2$random[[group]],
+                                                        if (has_criterion2_scale) "per_bin" else "full", vb$n, K2)
         criterion2$random[[group]]$bin_levels <- vb$labels
       }
     }
@@ -1410,7 +1457,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     if (has_sigma_L) names(sigma_L_random) else NULL,
     if (has_lambda_L) names(lambda_L_random) else NULL,
     if (has_lambda2) names(lambda2_random) else NULL,
-    if (has_lambda2_B) names(lambda2_B_random) else NULL
+    if (has_lambda2_B) names(lambda2_B_random) else NULL,
+    if (has_criterion_scale) names(criterion_scale_random) else NULL,
+    if (has_criterion2_scale) names(criterion2_scale_random) else NULL
   ))
 
   for (group in all_groups) {
@@ -1424,7 +1473,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                     rec_crit_random, know_crit_random,
                                     if (has_criterion2) criterion2$random else NULL,
                                     dprime_L_random, sigma_L_random, lambda_L_random,
-                                    lambda2_random, lambda2_B_random)
+                                    lambda2_random, lambda2_B_random, criterion_scale_random,
+                                    criterion2_scale_random)
     if (!is.null(re_info)) {
       stan_data[[paste0("N_", group)]] <- re_info$n_groups
       stan_data[[group]] <- re_info$group_idx
@@ -1452,6 +1502,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   if (has_lambda_L) stan_data <- add_term_indices(stan_data, "lambda_L", lambda_L_random)
   if (has_lambda2) stan_data <- add_term_indices(stan_data, "lambda2", lambda2_random)
   if (has_lambda2_B) stan_data <- add_term_indices(stan_data, "lambda2_B", lambda2_B_random)
+  if (has_criterion_scale) stan_data <- add_term_indices(stan_data, "criterion_scale", criterion_scale_random)
+  if (has_criterion2_scale) stan_data <- add_term_indices(stan_data, "criterion2_scale", criterion2_scale_random)
 
   for (group in names(criterion$random)) {
     re <- criterion$random[[group]]
@@ -1503,7 +1555,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     know_crit = if (has_know_crit) know_crit_fixed else NULL,
     dprime_L = if (has_dprime_L) dprime_L_fixed else NULL,
     sigma_L = if (has_sigma_L) sigma_L_fixed else NULL,
-    lambda_L = if (has_lambda_L) lambda_L_fixed else NULL
+    lambda_L = if (has_lambda_L) lambda_L_fixed else NULL,
+    criterion_scale = if (has_criterion_scale) criterion_scale_fixed else NULL,
+    criterion2_scale = if (has_criterion2_scale) criterion2_scale_fixed else NULL
   )
 
   for (pname in names(all_param_fixed)) {
@@ -1514,6 +1568,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     smooth_data[[pname]] <- sm_info
 
     fixed_ref <- get(paste0(pname, "_fixed"))
+    if (fixed_ref$n_coef == 0) {
+      fixed_ref$X <- matrix(0, nrow = N, ncol = 0)
+      fixed_ref$coef_names <- character(0)
+    }
     for (sm in sm_info) {
       for (comp in sm$components) {
         if (NCOL(comp$Xs) > 0) {
@@ -1540,7 +1598,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                        if (has_criterion2) criterion2$random else NULL,
                                        dprime_L_random, sigma_L_random, lambda_L_random,
                                        rec_crit_random, know_crit_random,
-                                       lambda2_random, lambda2_B_random)
+                                       lambda2_random, lambda2_B_random,
+                                       criterion_scale_random, criterion2_scale_random)
 
   has_dprime_fixed <- dprime_fixed$n_coef > 0
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
@@ -1632,6 +1691,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     sigma_L_random = sigma_L_random,
     lambda_L_fixed = lambda_L_fixed,
     lambda_L_random = lambda_L_random,
+    has_criterion_scale = has_criterion_scale,
+    criterion_scale_fixed = criterion_scale_fixed,
+    criterion_scale_random = criterion_scale_random,
+    has_criterion2_scale = has_criterion2_scale,
+    criterion2_scale_fixed = criterion2_scale_fixed,
+    criterion2_scale_random = criterion2_scale_random,
     centered_coding = if (exists("centered_coding")) centered_coding else FALSE,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
@@ -1657,7 +1722,8 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
                                  rec_crit_re = NULL, know_crit_re = NULL,
                                  criterion2_re = NULL,
                                  dprime_L_re = NULL, sigma_L_re = NULL, lambda_L_re = NULL,
-                                 lambda2_re = NULL, lambda2_B_re = NULL) {
+                                 lambda2_re = NULL, lambda2_B_re = NULL,
+                                 criterion_scale_re = NULL, criterion2_scale_re = NULL) {
   if (!is.null(dprime_re) && group %in% names(dprime_re)) return(dprime_re[[group]])
   if (!is.null(criterion_re) && group %in% names(criterion_re)) return(criterion_re[[group]])
   if (!is.null(sigma_re) && group %in% names(sigma_re)) return(sigma_re[[group]])
@@ -1681,11 +1747,47 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
   if (!is.null(lambda_L_re) && group %in% names(lambda_L_re)) return(lambda_L_re[[group]])
   if (!is.null(lambda2_re) && group %in% names(lambda2_re)) return(lambda2_re[[group]])
   if (!is.null(lambda2_B_re) && group %in% names(lambda2_B_re)) return(lambda2_B_re[[group]])
+  if (!is.null(criterion_scale_re) && group %in% names(criterion_scale_re)) return(criterion_scale_re[[group]])
+  if (!is.null(criterion2_scale_re) && group %in% names(criterion2_scale_re)) return(criterion2_scale_re[[group]])
   NULL
 }
 
 #' Add term indices for a parameter's random effects
 #' @noRd
+.criterion_scale_design <- function(parsed_param, data, encoding_vars, is_old_var, N) {
+  fx <- parsed_param$fixed
+  if (!isTRUE(fx$intercept) && length(fx$terms)) {
+    message("criterion_scale: the gaps carry the scale's intercept, so its formula is coded ",
+            "with contrasts and no intercept.")
+  }
+  fx$intercept <- TRUE
+  if (!length(fx$terms)) {
+    return(list(X = matrix(0, nrow = N, ncol = 0), n_coef = 0, coef_names = character(0),
+                has_encoding = FALSE, formula = ~ 1))
+  }
+  fe <- build_fixed_effects_matrix(build_formula_from_parsed(fx), data, encoding_vars, is_old_var,
+                                   conditional_terms = extract_conditional_from_parsed(parsed_param),
+                                   parsed_fixed = fx)
+  keep <- colnames(fe$X) != "(Intercept)"
+  fe$X <- fe$X[, keep, drop = FALSE]
+  fe$coef_names <- fe$coef_names[keep]
+  fe$n_coef <- sum(keep)
+  fe
+}
+
+.per_bin_formula <- function(parsed_param, bin) {
+  fx <- parsed_param$fixed
+  fixed <- if (length(fx$terms)) paste0(bin, ":", fx$terms)
+  sm <- vapply(fx$smooth_terms %||% character(0), function(x) sub("\\)$", paste0(", by = ", bin, ")"), x), "")
+  re <- vapply(parsed_param$random, function(r) {
+    lhs <- c("0", if (isTRUE(r$intercept)) bin, if (length(r$terms)) paste0(bin, ":", r$terms))
+    grp <- if (!is.null(r$cor_id)) paste0(r$cor_id, " | ", r$group) else r$group
+    sprintf("(%s %s %s)", paste(lhs, collapse = " + "), if (isFALSE(r$correlated) && is.null(r$cor_id)) "||" else "|", grp)
+  }, "")
+  rhs <- c(fixed, sm, re)
+  stats::as.formula(paste("~", if (length(rhs)) paste(rhs, collapse = " + ") else "1"))
+}
+
 add_term_indices <- function(stan_data, param_name, random_effects) {
   if (is.null(random_effects)) return(stan_data)
   
@@ -1787,7 +1889,9 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
                                     dprime_L_random = NULL, sigma_L_random = NULL, lambda_L_random = NULL,
                                     rec_crit_random = NULL, know_crit_random = NULL,
                                     lambda2_random = NULL,
-                                    lambda2_B_random = NULL) {
+                                    lambda2_B_random = NULL,
+                                    criterion_scale_random = NULL,
+                                    criterion2_scale_random = NULL) {
   if (length(parsed$cross_cor_ids) == 0) return(list())
   
   cross_cor <- list()
@@ -1819,7 +1923,9 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
       rec_crit = rec_crit_random,
       know_crit = know_crit_random,
       lambda2 = lambda2_random,
-      lambda2_B = lambda2_B_random
+      lambda2_B = lambda2_B_random,
+      criterion_scale = criterion_scale_random,
+      criterion2_scale = criterion2_scale_random
     )
     
     for (param_name in names(param_re_pairs)) {
@@ -1876,7 +1982,7 @@ print.broc_model <- function(x, ...) {
                    "rho", "rho_B", "rho_N", "lambda2",
                    "criterion", "criterion2",
                    "rec_crit", "know_crit",
-                   "dprime_L", "sigma_L", "lambda_L")
+                   "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
   for (pname in param_order) {
     fe <- x$model_data[[paste0(pname, "_fixed")]]
     has_flag <- if (pname == "dprime") isTRUE(x$model_data$has_dprime_fixed)
@@ -2393,6 +2499,7 @@ fit_broc <- function(model,
   t0 <- proc.time()["elapsed"]
 
   stan_refresh <- if (isTRUE(progress_bar)) refresh else 0
+  model$stan_data$N_ll <- if (isTRUE(save_loglik) || isTRUE(loo)) as.integer(model$stan_data$N) else 0L
 
   if (!is.null(threads_per_chain) && threads_per_chain > 1) {
     model <- .with_threads(model)
@@ -2538,12 +2645,11 @@ apply_encoding_vars <- function(formula, encoding_vars) {
 
 #' Fit Cumulative Ordinal Model
 #'
-#' Routed through the EVSDT path with all observations treated as "old".
-#' mu uses treatment coding; random intercepts on mu are suppressed, random
-#' slopes retained.
+#' Routed through the EVSDT path with all observations treated as "old" and the
+#' latent mean fixed at 0; every effect is on the cutpoints.
 #' @noRd
 fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
-                           gap_link = "log", smooth_info = FALSE) {
+                           gap_link = "log", smooth_info = FALSE, cutpoints_scale = NULL) {
   
   if (is.null(mu)) {
     stop("mu formula is required for cumulative() family")
@@ -2564,7 +2670,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   }
   
   
-  mu_rhs_final <- .mu_rhs(mu_rhs, "mu", cutpoints, "cutpoints")
+  mu_rhs_final <- .cumulative_rhs(mu_rhs, "cutpoints")
 
   data$.cumulative_is_old <- 1L
   
@@ -2582,6 +2688,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
     lambda = NULL,
     dprime2 = NULL,
     sigma2 = NULL,
+    criterion_scale = cutpoints_scale,
     data = data,
     family_name = "cumulative"
   )
@@ -2591,9 +2698,6 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   
   prior_lookup <- build_prior_lookup(priors, family = family)
   
-  if (is.null(prior_lookup$b_dpar[["dprime"]]) && identical(prior_lookup$b[["dprime"]], "normal(1, 1)")) {
-    prior_lookup$b[["dprime"]] <- "normal(0, 1)"
-  }
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = NULL)
@@ -2738,7 +2842,8 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 #' @noRd
 fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
-                                     gap_link = "log", smooth_info = FALSE) {
+                                     gap_link = "log", smooth_info = FALSE, cutpoints_scale = NULL,
+                                     cutpoints2_scale = NULL) {
 
   if (is.null(mu1)) {
     stop("The primary formula resp(y1, y2) ~ ... is required for bivariate_cumulative() family")
@@ -2751,10 +2856,6 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     rho <- ~ 1
   }
 
-  if (is.null(mu2)) {
-    message("Note: mu2 formula not specified. Using mu2 ~ 1.")
-    mu2 <- ~ 1
-  }
 
   mu1_str <- paste(deparse(mu1, width.cutoff = 500), collapse = " ")
   if (!grepl("~", mu1_str)) {
@@ -2780,15 +2881,15 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     stop("Response variable '", response2_var, "' not found in data")
   }
 
-  mu1_rhs <- .mu_rhs(mu1_rhs, "mu", cutpoints1, "cutpoints")
+  mu1_rhs <- .cumulative_rhs(mu1_rhs, "cutpoints")
 
-  mu2_str <- paste(deparse(mu2, width.cutoff = 500), collapse = " ")
+  mu2_str <- if (is.null(mu2)) "~ 0" else paste(deparse(mu2, width.cutoff = 500), collapse = " ")
   if (grepl("~", mu2_str)) {
     mu2_rhs <- trimws(strsplit(mu2_str, "~")[[1]][2])
   } else {
     mu2_rhs <- mu2_str
   }
-  mu2_rhs <- .mu_rhs(mu2_rhs, "mu2", cutpoints2, "cutpoints2")
+  mu2_rhs <- .cumulative_rhs(mu2_rhs, "cutpoints2", "The mu2 formula")
 
   data$.bivar_cum_item_type <- factor(rep("A", nrow(data)), levels = c("new", "A"))
 
@@ -2819,6 +2920,8 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
     rho_N = NULL,
     criterion2 = criterion2_formula,
     lambda2 = NULL,
+    criterion_scale = cutpoints_scale,
+    criterion2_scale = cutpoints2_scale,
     data = data,
     family_name = "bivariate_cumulative"
   )
@@ -2828,12 +2931,6 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
   prior_lookup <- build_prior_lookup(priors, family = family)
 
-  if (is.null(prior_lookup$b_dpar[["dprime"]]) && identical(prior_lookup$b[["dprime"]], "normal(1, 1)")) {
-    prior_lookup$b[["dprime"]] <- "normal(0, 1)"
-  }
-  if (is.null(prior_lookup$b_dpar[["discrim"]]) && identical(prior_lookup$b[["discrim"]], "normal(1, 1)")) {
-    prior_lookup$b[["discrim"]] <- "normal(0, 1)"
-  }
 
   model_data <- build_model_data(parsed, data, family, counts = counts)
   model_data$prior_lookup <- prior_lookup
@@ -2862,59 +2959,20 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
   result
 }
 
-#' Suppress random intercepts for identifiability in cumulative-type models
-#' @noRd
-# The location formula of the cumulative families (`mu`, or `mu`/`mu2` of the bivariate one) carries
-# effects common to all cutpoints: its intercept is 0 (the cutpoints hold the location), a factor
-# is treatment-coded, and its random effects are one shift per group. Category-specific effects
-# live on the cutpoints formula. Only (cutpoint - mu) is identified, so a variable may appear in
-# one of the two formulas, not both; `0 + f` has no identified cell-means form under a fixed
-# location and is rewritten to treatment coding.
-.mu_rhs <- function(rhs, param_name, cut_formula, cut_name) {
-  re_inner <- extract_random_effects(rhs)
-  re_terms <- if (length(re_inner)) paste0("(", re_inner, ")") else character(0)
-  fixed_rhs <- rhs
-  for (re in re_terms) fixed_rhs <- gsub(re, "", fixed_rhs, fixed = TRUE)
-  fixed_rhs <- gsub("\\+\\s*\\+", "+", fixed_rhs)
-  fixed_rhs <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", fixed_rhs))
-  if (grepl("(^|\\+)\\s*0\\s*(\\+|$)", fixed_rhs) || grepl("-\\s*1", fixed_rhs)) {
-    fixed_rhs <- gsub("(^|\\+)\\s*0\\s*(\\+|$)", "\\1\\2", fixed_rhs)
-    fixed_rhs <- gsub("-\\s*1", "", fixed_rhs)
-    fixed_rhs <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", gsub("\\+\\s*\\+", "+", fixed_rhs)))
-    message("Note: `", param_name, "` is a common shift of all cutpoints and has no intercept of its own, ",
-            "so it has no cell-means coding: `", param_name, " ~ 0 + f` is fitted as `", param_name,
-            " ~ f` (coefficients are differences from the first level).")
-  }
-  .check_mu_cutpoints(fixed_rhs, re_inner, cut_formula, param_name, cut_name)
-  fixed_rhs <- if (fixed_rhs == "" || fixed_rhs == "1") "0" else fixed_rhs
-  paste(c(fixed_rhs, re_terms), collapse = " + ")
-}
-
-.check_mu_cutpoints <- function(mu_fixed, mu_re, cut_formula, mu_name, cut_name) {
-  if (!inherits(cut_formula, "formula")) return(invisible())
-  cut_rhs <- paste(deparse(cut_formula[[length(cut_formula)]], width.cutoff = 500), collapse = " ")
-  cut_re <- extract_random_effects(cut_rhs)
-  cut_fixed <- cut_rhs
-  for (re in cut_re) cut_fixed <- gsub(paste0("(", re, ")"), "", cut_fixed, fixed = TRUE)
-  cut_fixed <- trimws(gsub("^\\s*\\+|\\+\\s*$", "", gsub("\\+\\s*\\+", "+", cut_fixed)))
-  vars <- function(x) if (!nzchar(trimws(x))) character(0) else all.vars(stats::as.formula(paste("~", x)))
-  group_of <- function(re) trimws(sub("^.*\\|", "", re))
-  both_fixed <- intersect(setdiff(vars(mu_fixed), "1"), vars(cut_fixed))
-  both_re <- intersect(vapply(mu_re, group_of, character(1)), vapply(cut_re, group_of, character(1)))
-  if (length(both_fixed) || length(both_re)) {
-    what <- c(if (length(both_fixed)) paste0("predictor(s) ", paste(both_fixed, collapse = ", ")),
-              if (length(both_re)) paste0("grouping factor(s) ", paste(both_re, collapse = ", ")))
-    stop("`", mu_name, "` and `", cut_name, "` both have ", paste(what, collapse = " and "),
-         ". Only (cutpoint - ", mu_name, ") is identified, so a variable goes on one formula: on `", mu_name,
-         "` for a shift common to all cutpoints, on `", cut_name, "` for category-specific effects (one per cutpoint).",
-         call. = FALSE)
-  }
-  invisible()
+.cumulative_rhs <- function(rhs, cut_name, what = "The response formula") {
+  if (!length(attr(stats::terms(stats::as.formula(paste("~", rhs))), "term.labels"))) return("0")
+  stop(what, " of a cumulative model takes no predictors; they go on the cutpoints. `", cut_name, " ~ ", rhs,
+       "` gives each cutpoint its own effects, and adding a `", cut_name, "_scale` formula makes `", cut_name,
+       " ~ ", rhs, "` move all cutpoints together (a positive coefficient moves responses down).", call. = FALSE)
 }
 
 #' Rename parameters in Stan code for bivariate cumulative models
 #' @noRd
 rename_bivariate_cumulative_params <- function(stan_code) {
+  cut <- regexpr("\ndata {", stan_code, fixed = TRUE)
+  if (cut > 0 && startsWith(stan_code, "functions")) {
+    return(paste0(substr(stan_code, 1, cut), rename_bivariate_cumulative_params(substring(stan_code, cut + 1))))
+  }
   stan_code <- gsub("dprime", "mu", stan_code)
   stan_code <- gsub("d'", "mu", stan_code)
   stan_code <- gsub("discrim", "mu2", stan_code)
@@ -2937,6 +2995,56 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   stan_data
 }
 
+.ls_kernel_view <- function(model_data, family) {
+  fam <- if (is.list(family)) family$family else family
+  N <- model_data$N
+  md <- model_data
+  row_re <- function(group, J) {
+    list(X = matrix(1, N, 1), n_coef = 1L, coef_names = "(Intercept)", is_intercept_only = TRUE, n_thresh = J,
+         random = stats::setNames(list(list(group = group, group_idx = seq_len(N), n_groups = N, dim = J,
+                                            n_re_terms = 1L, type = "intercept", correlated = FALSE,
+                                            level_names = "(Intercept)")), group))
+  }
+  drop <- character(0)
+  if (isTRUE(md$has_criterion_scale)) {
+    md$criterion <- row_re("lsrow", if (fam == "cdp") md$stan_data$J else md$K - 1L)
+    md$has_criterion_scale <- FALSE
+    md$criterion_scale_fixed <- NULL
+    md$criterion_scale_random <- NULL
+    drop <- c(drop, "criterion", "criterion_scale")
+  }
+  if (isTRUE(md$has_criterion2_scale)) {
+    md$criterion2 <- row_re("lsrow2", md$K2 - 1L)
+    md$varying_source_criteria <- FALSE
+    md$new_source_criteria <- NULL
+    md$has_criterion2_scale <- FALSE
+    md$criterion2_scale_fixed <- NULL
+    md$criterion2_scale_random <- NULL
+    drop <- c(drop, "criterion2", "criterion2_scale")
+  }
+  for (p in drop) md$smooth_data[[p]] <- NULL
+  if (!length(md$smooth_data)) md$smooth_data <- NULL
+  md$cross_cor <- lapply(md$cross_cor, function(cc) {
+    cc$members <- Filter(function(m) !m$param %in% drop, cc$members)
+    cc
+  })
+  md
+}
+
+.ls_kernel_args <- function(batch_cpp, ls1, ls2) {
+  ren <- c(if (ls1) c(X_criterion = "X_ls_one", beta_thresh_mid = "ls_zero_mid", beta_log_gaps = "ls_zero_gaps",
+                      u_criterion_lsrow = "u_ls_rows", lsrow = "ls_row_idx"),
+           if (ls2) c(X_criterion2 = "X_ls_one", beta_thresh_mid_2 = "ls_zero_mid", beta_log_gaps_2 = "ls_zero_gaps2",
+                      u_criterion2_lsrow2 = "u_ls_rows2", lsrow2 = "ls_row_idx"))
+  for (k in c("stan_call", "stan_call_vec", "stan_call_threaded")) {
+    if (is.null(batch_cpp[[k]])) next
+    for (nm in names(ren)) {
+      batch_cpp[[k]] <- gsub(paste0("(?<![A-Za-z0-9_])", nm, "(?![A-Za-z0-9_])"), ren[[nm]], batch_cpp[[k]], perl = TRUE)
+    }
+  }
+  batch_cpp
+}
+
 .model_kind <- function(model) {
   if (inherits(model, "bivariate_cumulative_model")) "bivariate_cumulative"
   else if (inherits(model, "cumulative_model")) "cumulative"
@@ -2947,8 +3055,11 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   use_batch <- is.null(.plain_stan_env())
   batch_cpp <- NULL
   if (use_batch) {
-    batch_cpp <- generate_batch_cpp(model_data, family)
+    ls <- isTRUE(model_data$has_criterion_scale) || isTRUE(model_data$has_criterion2_scale)
+    batch_cpp <- generate_batch_cpp(if (ls) .ls_kernel_view(model_data, family) else model_data, family)
     if (is.null(batch_cpp)) stop("internal: no batch likelihood for this model", call. = FALSE)
+    if (ls) batch_cpp <- .ls_kernel_args(batch_cpp, isTRUE(model_data$has_criterion_scale),
+                                         isTRUE(model_data$has_criterion2_scale))
   }
   stan_code <- generate_stan_code_v2(model_data, family, batch_info = batch_cpp)
   stan_data <- model_data$stan_data
@@ -2988,11 +3099,10 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
 }
 
 .compile_broc_stan <- function(model, threads = FALSE) {
-  stan_file <- tempfile(fileext = ".stan")
-  writeLines(model$stan_code, stan_file)
-  args <- list(stan_file)
-  if (isTRUE(threads)) args$cpp_options <- list(stan_threads = TRUE)
-  if (isTRUE(model$batch_likelihood) && !is.null(model$batch_cpp)) {
+  batch <- isTRUE(model$batch_likelihood) && !is.null(model$batch_cpp)
+  hdr <- NULL
+  deps <- character(0)
+  if (batch) {
     core_hpp <- system.file("stan/batch_sdt_core.hpp", package = "bayesroc")
     if (core_hpp == "") {
       core_hpp <- file.path(find.package("bayesroc", quiet = TRUE), "stan", "batch_sdt_core.hpp")
@@ -3000,8 +3110,23 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
         core_hpp <- file.path(system.file(package = "bayesroc"), "stan", "batch_sdt_core.hpp")
       }
     }
-    batch_hpp <- tempfile(fileext = ".hpp")
-    writeLines(c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code), batch_hpp)
+    hdr <- c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code)
+    deps <- c(core_hpp, file.path(dirname(core_hpp), "..", "include", "bayesroc", "bvn_tail.h"))
+    deps <- deps[file.exists(deps)]
+  }
+  key <- digest_string(c(model$stan_code, hdr, unname(tools::md5sum(deps)), isTRUE(threads),
+                         tryCatch(as.character(cmdstanr::cmdstan_version()), error = function(e) ""),
+                         tryCatch(cmdstanr::cmdstan_path(), error = function(e) ""), R.version$platform))
+  dir <- file.path(tools::R_user_dir("bayesroc", "cache"), "stan")
+  if (!dir.exists(dir) && !dir.create(dir, recursive = TRUE, showWarnings = FALSE)) dir <- tempdir()
+  base <- file.path(dir, paste0("m_", substr(key, 1, 16)))
+  stan_file <- paste0(base, ".stan")
+  if (!file.exists(stan_file)) writeLines(model$stan_code, stan_file)
+  args <- list(stan_file)
+  if (isTRUE(threads)) args$cpp_options <- list(stan_threads = TRUE)
+  if (batch) {
+    batch_hpp <- paste0(base, "_batch.hpp")
+    if (!file.exists(batch_hpp)) writeLines(hdr, batch_hpp)
     args$user_header <- batch_hpp
     args$stanc_options <- list("allow-undefined" = TRUE)
   }

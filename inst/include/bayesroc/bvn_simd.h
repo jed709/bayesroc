@@ -499,8 +499,22 @@ inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* o
   CornerV c[NP];
   v4d r, dAdr;
   corners<NP>(H, K, rho, r, dAdr, c);
+  constexpr int NV = 2 * NP + NM;
+  v4d in[NV];
+  for (int q = 0; q < NP; ++q) { in[q] = H[q]; in[NP + q] = K[q]; }
+  for (int m = 0; m < NM; ++m) in[2 * NP + m] = X[m];
+  PhiV P[NV];
+  for (int a = 0; a < NV; ++a) {
+    int b = 0;
+    for (; b < a; ++b) {
+      v4i eq = in[a] == in[b];
+      if (eq[0] && eq[1] && eq[2] && eq[3]) break;
+    }
+    P[a] = b < a ? P[b] : vacc_phi(in[a]);
+  }
   for (int q = 0; q < NP; ++q) {
-    PhiV Ph = vacc_phi(H[q]), Pk = vacc_phi(K[q]);
+    const PhiV& Ph = P[q];
+    const PhiV& Pk = P[NP + q];
     v4d* o = out + 8 * q;
     o[0] = Ph.P * Pk.P + c[q].I;
     o[1] = Ph.dP * Pk.P + c[q].dh;
@@ -512,7 +526,7 @@ inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* o
     o[7] = Pk.dP;
   }
   for (int m = 0; m < NM; ++m) {
-    PhiV Px = vacc_phi(X[m]);
+    const PhiV& Px = P[2 * NP + m];
     out[8 * NP + 2 * m] = Px.Q;
     out[8 * NP + 2 * m + 1] = Px.dP;
   }

@@ -33,8 +33,8 @@
 #' @param dpar Distributional parameter the prior applies to, e.g. `"dprime"`,
 #'   `"sigma"`, `"lambda"`. For criterion priors use `"thresh_mid"` / `"log_gaps"`
 #'   (`"thresh_mid2"` / `"log_gaps2"` for the second response axis in bivariate
-#'   and CDP families). Family-specific aliases (`mu`, `mu1`, `mu2`, `cutpoints`,
-#'   `cutpoints1`, `cutpoints2`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
+#'   and CDP families). Family-specific aliases (`cutpoints`, `cutpoints1`,
+#'   `cutpoints2`, `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
 #'   accepted. The correlation prior of a cross-parameter group `(... | id | g)` is
 #'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
 #'   `class`. [get_broc_prior()] lists every settable prior with its `dpar` and
@@ -83,7 +83,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
-                     "mu", "mu1", "mu2", "cutpoints", "cutpoints1", "cutpoints2")
+                     "mu", "mu1", "mu2", "cutpoints", "cutpoints1", "cutpoints2",
+                     "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
     if (!dpar %in% valid_dpars && !grepl("^cross_[A-Za-z0-9_.]+$", dpar)) {
       stop("Invalid dpar '", dpar, "'. Valid dpars: ",
            paste(valid_dpars, collapse = ", "))
@@ -93,6 +94,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "mu2") dpar <- "discrim"
     if (dpar == "cutpoints" || dpar == "cutpoints1") dpar <- "criterion"
     if (dpar == "cutpoints2") dpar <- "criterion2"
+    if (dpar == "cutpoints_scale") dpar <- "criterion_scale"
+    if (dpar == "cutpoints2_scale") dpar <- "criterion2_scale"
 
     if (dpar == "rec") dpar <- "dprime"
     if (dpar == "fam") dpar <- "dprime2"
@@ -295,7 +298,9 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       thresh_mid = "normal(0, 1.5)",
       log_gaps = "normal(0, 1)",
       thresh_mid2 = "normal(0, 1.5)",
-      log_gaps2 = "normal(0, 1)"
+      log_gaps2 = "normal(0, 1)",
+      criterion_scale = "normal(0, 0.5)",
+      criterion2_scale = "normal(0, 0.5)"
     ),
     b_coef = list(),
     
@@ -327,7 +332,9 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       sigma_L = "normal(0, 0.3)",
       lambda_L = "normal(0, 0.5)",
       criterion = "normal(0, 0.5)",
-      criterion2 = "normal(0, 0.5)"
+      criterion2 = "normal(0, 0.5)",
+      criterion_scale = "normal(0, 0.3)",
+      criterion2_scale = "normal(0, 0.3)"
     ),
     sd_group = list(),
     sd_dpar_group = list(),
@@ -795,6 +802,10 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("lambda2", "lambda2", model$model_data$lambda2_fixed$coef_names)
   if (isTRUE(model$model_data$has_lambda2_B))
     add_fixed_priors("lambda2_B", "lambda2_B", model$model_data$lambda2_B_fixed$coef_names)
+  if (isTRUE(model$model_data$has_criterion_scale) && model$model_data$criterion_scale_fixed$n_coef > 0)
+    add_fixed_priors("criterion_scale", "criterion_scale", model$model_data$criterion_scale_fixed$coef_names)
+  if (isTRUE(model$model_data$has_criterion2_scale) && model$model_data$criterion2_scale_fixed$n_coef > 0)
+    add_fixed_priors("criterion2_scale", "criterion2_scale", model$model_data$criterion2_scale_fixed$coef_names)
 
   if (isTRUE(model$model_data$has_criterion2)) {
     add_thresh_priors("thresh_mid2", "log_gaps2", model$model_data$criterion2$coef_names,
@@ -998,7 +1009,8 @@ print.broc_prior_table <- function(x, ...) {
 .re_param_names <- function() {
   c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
     "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
-    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B")
+    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale",
+    "criterion2_scale")
 }
 
 .re_list_of <- function(model_data, p) {

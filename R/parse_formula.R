@@ -485,6 +485,7 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
                               know_crit = NULL,
                               dprime_L = NULL, sigma_L = NULL, lambda_L = NULL,
                               lambda2 = NULL, lambda2_B = NULL,
+                              criterion_scale = NULL, criterion2_scale = NULL,
                               data = NULL, family_name = NULL) {
   dprime_str <- as.character(dprime)
   if (length(dprime_str) != 3) {
@@ -587,6 +588,14 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
     parsed$lambda2_B <- parse_broc_parameter_formula(lambda2_B)
   }
 
+  if (!is.null(criterion_scale)) {
+    parsed$criterion_scale <- parse_broc_parameter_formula(criterion_scale)
+  }
+
+  if (!is.null(criterion2_scale)) {
+    parsed$criterion2_scale <- parse_broc_parameter_formula(criterion2_scale)
+  }
+
   if (!is.null(family_name) && family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")) {
     if (!is.null(response_info$response2)) {
       parsed$response2 <- response_info$response2
@@ -607,7 +616,7 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                        "rec_crit", "know_crit", "lambda2", "lambda2_B",
-                       "dprime_L", "sigma_L", "lambda_L")
+                       "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
   
   encoding_vars <- character(0)
   for (pname in all_param_names) {
@@ -681,7 +690,7 @@ extract_data_info <- function(parsed, data) {
                    "dprime_B", "lambda_B", "discrim", "discrim_B",
                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
                    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L",
-                   "lambda2", "lambda2_B")
+                   "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   
   for (param in param_names) {
     if (!is.null(parsed[[param]])) {
@@ -860,6 +869,14 @@ print.broc_formula <- function(x, ...) {
   if (!is.null(x[["lambda_L"]])) {
     cat("\nLambda_L (lure mixture weight):\n")
     print_parameter_formula(x[["lambda_L"]])
+  }
+  if (!is.null(x[["criterion_scale"]])) {
+    cat("\n", section_label("criterion_scale", "Criterion scale"), " (log link):\n", sep = "")
+    print_parameter_formula(x[["criterion_scale"]])
+  }
+  if (!is.null(x[["criterion2_scale"]])) {
+    cat("\n", section_label("criterion2_scale", "Criterion2 scale"), " (log link):\n", sep = "")
+    print_parameter_formula(x[["criterion2_scale"]])
   }
 
   if (!is.null(x[["rec_crit"]])) {

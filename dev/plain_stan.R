@@ -2136,6 +2136,7 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
 #' Generate threshold code for vrdp2d with varying source criteria
 #' @noRd
 generate_thresh_code_vrdp2d_varying <- function(model_data) {
+  if (isTRUE(model_data$has_criterion2_scale)) return(.ls2_thresh_lines(model_data))
 
   varying_re_mode <- if (!is.null(model_data$varying_re)) model_data$varying_re else "shared"
   re_list <- if (!is.null(model_data$criterion2)) model_data$criterion2$random else NULL
@@ -2213,6 +2214,10 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
 #' Generate threshold code for bivariate SDT (two sets of thresholds)
 #' @noRd
 generate_thresh_code_bivariate <- function(model_data, dimension) {
+  if (dimension == 1 && isTRUE(model_data$has_criterion_scale)) {
+    return(.ls_thresh_lines(model_data, "thresh1", model_data$K - 1L))
+  }
+  if (dimension == 2 && isTRUE(model_data$has_criterion2_scale)) return(.ls2_thresh_lines(model_data))
   if (dimension == 1) {
     crit <- model_data$criterion
     K <- model_data$K
@@ -2597,6 +2602,7 @@ generate_likelihood_call <- function(model_data, family_name) {
 }
 
 generate_thresh_code <- function(model_data) {
+  if (isTRUE(model_data$has_criterion_scale)) return(.ls_thresh_lines(model_data, "thresh", model_data$K - 1L))
   crit <- model_data$criterion
   K <- model_data$K
 

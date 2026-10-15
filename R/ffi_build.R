@@ -9,7 +9,26 @@
   list(cc = cc, include = inc)
 }
 
+.probe_cache <- function(key, valid, probe) {
+  path <- file.path(tools::R_user_dir("bayesroc", "cache"), "ffi", "probes.rds")
+  memo <- if (file.exists(path)) tryCatch(readRDS(path), error = function(e) list()) else list()
+  hit <- memo[[key]]
+  if (!is.null(hit) && isTRUE(tryCatch(valid(hit), error = function(e) FALSE))) return(hit)
+  val <- probe()
+  if (!is.null(val)) {
+    memo[[key]] <- val
+    dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+    tryCatch(saveRDS(memo, path), error = function(e) NULL)
+  }
+  val
+}
+
 .cxx17_command <- function() {
+  .probe_cache(paste("cxx17", R.home(), R.version.string),
+               function(v) file.exists(v$prog), .cxx17_probe)
+}
+
+.cxx17_probe <- function() {
   r <- file.path(R.home("bin"), "R")
   cxx <- tryCatch(system2(r, c("CMD", "config", "CXX17"), stdout = TRUE, stderr = FALSE),
                   error = function(e) character(0), warning = function(w) character(0))
@@ -34,12 +53,20 @@
 }
 
 .jaxlib_ffi_include <- function(python) {
+  .probe_cache(paste("jaxlib", normalizePath(python, winslash = "/", mustWork = FALSE),
+                     format(file.mtime(python), "%Y%m%d%H%M%OS3")),
+               function(v) dir.exists(v$include) &&
+                 identical(v$stamp, format(file.mtime(v$include), "%Y%m%d%H%M%OS3")),
+               function() .jaxlib_ffi_probe(python))
+}
+
+.jaxlib_ffi_probe <- function(python) {
   out <- tryCatch(
     system2(python, c("-c", shQuote("import jax, jax.ffi; print(jax.__version__); print(jax.ffi.include_dir())")),
             stdout = TRUE, stderr = FALSE),
     error = function(e) character(0), warning = function(w) character(0))
   if (length(out) < 2 || !dir.exists(out[2])) return(NULL)
-  list(jax_version = out[1], include = out[2])
+  list(jax_version = out[1], include = out[2], stamp = format(file.mtime(out[2]), "%Y%m%d%H%M%OS3"))
 }
 
 .bvn_ffi_lib <- function(python = jax_python(), rebuild = FALSE, quiet = TRUE) {

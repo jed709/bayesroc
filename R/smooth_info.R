@@ -55,7 +55,7 @@
   K <- md$K
   n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else K
   tp <- compute_trial_params(draws, model, data_src, re_formula, S, N)
-  th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
+  th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = tp$criterion_scale)
   bivariate <- fam$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
   th2 <- if (bivariate) compute_thresholds_2(draws, model, data_src, re_formula, S, N)
   pr <- compute_category_probs(tp, th, data_src, model, fam$link$name, S, N, K, thresh2 = th2)

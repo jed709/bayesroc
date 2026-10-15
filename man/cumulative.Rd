@@ -21,39 +21,39 @@ Ordinal regression with cumulative-link cutpoints and no SDT structure
 \subsection{Likelihood}{
 
 For an ordinal response Y on a K-point scale with cutpoints
-c_1 < ... < c_{K-1}:
-\deqn{P(Y \le k \mid x) = F(c_k - \mu(x))}
-with \eqn{c_0 = -\infty} and \eqn{c_K = +\infty}, where F is the link CDF
-(probit or logit) and \eqn{\mu(x)} is the linear predictor. Cell
-probabilities by differencing:
-\eqn{P(Y = k \mid x) = F(c_k - \mu(x)) - F(c_{k-1} - \mu(x))}.
+c_1(x) < ... < c_{K-1}(x):
+\deqn{P(Y \le k \mid x) = F(c_k(x))}
+with \eqn{c_0 = -\infty} and \eqn{c_K = +\infty}, where F is the link CDF.
+Cell probabilities by differencing:
+\eqn{P(Y = k \mid x) = F(c_k(x)) - F(c_{k-1}(x))}. The latent distribution is fixed
+(mean 0, SD 1), so every effect is an effect on the cutpoints and the response formula
+takes no predictors (\code{rating ~ 1}).
 }
 
 \subsection{Parameters}{
 
 \describe{
-\item{mu}{(the primary formula) A shift of the latent distribution common to all
-cutpoints, the proportional-odds part. Its intercept is 0 (the cutpoints hold the
-location), a factor is treatment-coded (\code{~ 0 + f} is fitted as \code{~ f}, since there is no
-identified cell-means form), and a random effect is one shift per group: \code{rating ~ 1 + (1 | rater) + (1 | item)} is the random-intercept ordinal model. Identity link.}
-\item{cutpoints}{K-1 ordered cutpoints (mid-anchor + K-2 ordered gaps; default \code{~ 1}).
-An effect here is category-specific: one coefficient per cutpoint, so the response
-scale changes shape between levels; a random effect is K-1 correlated shifts per
-group. Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
+\item{cutpoints}{K-1 ordered cutpoints (a midpoint and K-2 ordered gaps; default \code{~ 1}).
+Without \code{cutpoints_scale}, every term has one coefficient per cutpoint (the midpoint
+and each log gap) and a random effect is K-1 correlated shifts per group. Identity link.
+Set priors via \code{thresh_mid} and \code{log_gaps}.}
+\item{cutpoints_scale}{(optional) Makes the cutpoints location-scale:
+\eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t} set by the gap
+intercepts. \code{cutpoints} then gives the location \eqn{L} (the mean cutpoint), one
+coefficient per term, and \code{cutpoints_scale} gives the log scale \eqn{s}, which has no
+intercept of its own. A positive location coefficient moves responses down.}
 }
-
-Only the differences cutpoint - mu are identified, so a variable (a predictor or a
-grouping factor) goes on one of the two formulas: on \code{mu} for a common shift, on
-\code{cutpoints} for category-specific effects. A variable on both is refused.
 }
 
 \subsection{Formula syntax}{
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{# random-intercept ordinal model with a condition effect common to all cutpoints
-broc(brf(rating ~ condition + (1 | subj) + (1 | item),
+\if{html}{\out{<div class="sourceCode">}}\preformatted{# random-intercept ordinal model with a condition shift
+broc(brf(rating ~ 1,
+         cutpoints ~ condition + (1 | subj) + (1 | item),
+         cutpoints_scale ~ 1,
          family = cumulative()), data = dat)
-# category-specific condition and subject effects instead
-broc(brf(rating ~ 1 + (1 | item),
+# per-cutpoint condition and subject effects
+broc(brf(rating ~ 1,
          cutpoints ~ condition + (1 | subj),
          family = cumulative()), data = dat)
 }\if{html}{\out{</div>}}

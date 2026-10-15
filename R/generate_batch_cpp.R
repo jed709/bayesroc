@@ -3248,20 +3248,20 @@ emit_likelihood_dpsdt <- function(L, params) {
   L$add("    } else {")
   L$add("      batch_sdt::CellResult res;")
   L$add("      if (yn == 1) {")
-  L$add(sprintf("        res = batch_sdt::edge_lo%s(thresh_n(0));", lsuf))
+  L$add(sprintf("        res = batch_sdt::edge_lo%s(thresh_n(0) - mu);", lsuf))
   L$add("        k_hi = 0;")
   L$add("      } else if (yn == K) {")
-  L$add(sprintf("        res = batch_sdt::edge_hi%s(thresh_n(n_thresh - 1));", lsuf))
+  L$add(sprintf("        res = batch_sdt::edge_hi%s(thresh_n(n_thresh - 1) - mu);", lsuf))
   L$add("        k_lo = n_thresh - 1;")
   L$add("      } else {")
-  L$add(sprintf("        res = batch_sdt::cell_log_prob%s(thresh_n(yn - 2), thresh_n(yn - 1));", lsuf))
+  L$add(sprintf("        res = batch_sdt::cell_log_prob%s(thresh_n(yn - 2) - mu, thresh_n(yn - 1) - mu);", lsuf))
   L$add("        k_lo = yn - 2;")
   L$add("        k_hi = yn - 1;")
   L$add("      }")
   L$add("      obs_lp = res.lp;")
   L$add("      d_thresh_lo = res.d_z_lo;")
   L$add("      d_thresh_hi = res.d_z_hi;")
-  L$add("      d_mu_raw = 0.0;")
+  L$add("      d_mu_raw = -(d_thresh_lo + d_thresh_hi);")
   L$add("      d_lambda_raw = 0.0;")
   L$add("    }")
 
@@ -3315,9 +3315,9 @@ emit_likelihood_mixture <- function(L, params) {
 
   if (has_lambda) {
     if (has_dprime2) {
-      L$add("      double mu2 = dprime2_n;")
+      L$add("      double mu2 = dprime2_n - (1.0 - is_old_n) * dprime_n;")
     } else {
-      L$add("      double mu2 = 0.0;")
+      L$add("      double mu2 = -(1.0 - is_old_n) * dprime_n;")
     }
 
     L$add("      double z1_lo = 0.0, z1_hi = 0.0, z2_lo = 0.0, z2_hi = 0.0;")
@@ -3432,20 +3432,20 @@ emit_likelihood_mixture <- function(L, params) {
   } else {
     L$add("      batch_sdt::CellResult res;")
     L$add("      if (yn == 1) {")
-    L$add(sprintf("        res = batch_sdt::edge_lo%s(thresh_n(0));", lsuf))
+    L$add(sprintf("        res = batch_sdt::edge_lo%s(thresh_n(0) - mu);", lsuf))
     L$add("        k_hi = 0;")
     L$add("      } else if (yn == K) {")
-    L$add(sprintf("        res = batch_sdt::edge_hi%s(thresh_n(n_thresh - 1));", lsuf))
+    L$add(sprintf("        res = batch_sdt::edge_hi%s(thresh_n(n_thresh - 1) - mu);", lsuf))
     L$add("        k_lo = n_thresh - 1;")
     L$add("      } else {")
-    L$add(sprintf("        res = batch_sdt::cell_log_prob%s(thresh_n(yn - 2), thresh_n(yn - 1));", lsuf))
+    L$add(sprintf("        res = batch_sdt::cell_log_prob%s(thresh_n(yn - 2) - mu, thresh_n(yn - 1) - mu);", lsuf))
     L$add("        k_lo = yn - 2;")
     L$add("        k_hi = yn - 1;")
     L$add("      }")
     L$add("      obs_lp = res.lp;")
     L$add("      d_thresh_lo = res.d_z_lo;")
     L$add("      d_thresh_hi = res.d_z_hi;")
-    L$add("      d_mu1_raw = 0.0;")
+    L$add("      d_mu1_raw = -(d_thresh_lo + d_thresh_hi);")
     L$add("      d_mu2_raw = 0.0;")
     L$add("      d_lambda_raw = 0.0;")
   }
@@ -4275,7 +4275,7 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   # ---- dprime (component 1) gradient ----
   has_dp_fixed <- isTRUE(params$.has_dp_fixed)
   has_encoding_dp <- isTRUE(params$dprime$fixed$has_encoding)
-  L$add(sprintf("    double d_dprime_n = d_mu1_raw * is_old_n%s;", count_mult))
+  L$add(sprintf("    double d_dprime_n = (d_mu1_raw * is_old_n - d_mu2_raw * (1.0 - is_old_n))%s;", count_mult))
 
   if (has_dp_fixed) {
     if (has_encoding_dp) {
@@ -4337,7 +4337,7 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   if (has_dprime2) {
     L$add("")
     has_encoding_dp2 <- isTRUE(params$dprime2$fixed$has_encoding)
-    L$add(sprintf("    double d_dprime2_n = d_mu2_raw * is_old_n%s;", count_mult))
+    L$add(sprintf("    double d_dprime2_n = d_mu2_raw%s;", count_mult))
 
     if (has_encoding_dp2) {
       L$add("    if (is_old_n > 0) {")

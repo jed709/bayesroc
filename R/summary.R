@@ -32,9 +32,11 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   vars <- posterior::variables(fit$draws())
   summ <- function(v) {
     if (!length(v)) return(NULL)
-    s <- posterior::summarise_draws(fit$draws(variables = v), "mean", "sd",
-                                    ~ stats::quantile(.x, probs = c(lo, 1 - lo), names = FALSE),
-                                    "rhat", "ess_bulk", "ess_tail")
+    s <- withCallingHandlers(
+      posterior::summarise_draws(fit$draws(variables = v), "mean", "sd",
+                                 ~ stats::quantile(.x, probs = c(lo, 1 - lo), names = FALSE),
+                                 "rhat", "ess_bulk", "ess_tail"),
+      warning = function(w) if (grepl("ESS has been capped", conditionMessage(w))) invokeRestart("muffleWarning"))
     s <- as.data.frame(s)
     data.frame(variable = s$variable, estimate = s$mean, sd = s$sd, lower = s[[4]], upper = s[[5]],
                rhat = s$rhat, ess_bulk = s$ess_bulk, ess_tail = s$ess_tail)
@@ -354,6 +356,7 @@ compute_natural_threshold_stats <- function(fit, model, probs, digits) {
 
     crit_random <- crit_data$random
     if (is.null(crit_random) || length(crit_random) == 0) next
+    if (isTRUE(crit_data$location_scale)) next
 
     P_crit <- crit_data$n_coef
     X_crit <- crit_data$X

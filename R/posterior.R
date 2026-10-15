@@ -70,7 +70,7 @@ posterior_linpred.broc_fit <- function(object, transform = FALSE, newdata = NULL
                    "discrim", "discrim_B", "sigma_B", "sigma2_B",
                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B",
                    "rec_crit", "know_crit",
-                   "dprime_L", "sigma_L", "lambda_L")
+                   "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
   if (!dpar %in% valid_dpars) {
     stop("Unknown dpar '", dpar, "'. Valid: ",
          paste(valid_dpars, collapse = ", "), call. = FALSE)
@@ -209,13 +209,11 @@ get_re_prior_variables <- function(model) {
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                        "lambda2", "lambda2_B", "rec_crit", "know_crit",
-                       "dprime_L", "sigma_L", "lambda_L")
+                       "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
   for (pname in re_param_names) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
-    stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
+    stan_pname <- .smooth_stan_pname(model, pname)
     vars <- add_re(vars, re_list, stan_pname)
   }
 

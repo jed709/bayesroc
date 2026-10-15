@@ -20,10 +20,10 @@ resp <- function(response1, response2) {
 #' Compose a Multi-Parameter SDT Model Formula
 #'
 #' Formula specification for bayesroc models. The first argument is the formula
-#' for the primary parameter (d' / mu); each additional formula's left-hand side
+#' for the primary parameter (d'; the response alone in cumulative models); each additional formula's left-hand side
 #' names the parameter it applies to (e.g. `criterion`, `sigma`, `lambda`).
 #'
-#' @param formula Two-sided formula for the primary parameter (d' / mu),
+#' @param formula Two-sided formula for the primary parameter (d'),
 #'   `response | is_old ~ predictors`. `is_old` may be coded 0/1 (new/old) or
 #'   centered (-0.5/0.5); centered coding is not supported with lure mixtures or
 #'   multi-response families. For multi-response families, use [resp()] on the
@@ -55,6 +55,24 @@ resp <- function(response1, response2) {
 #' intercept with its own slope only, and
 #' `(1 + x || gr(g, cor_thresholds = FALSE))` makes every effect independent.
 #'
+#' @section Location-scale criteria:
+#' A `criterion_scale` formula (`cutpoints_scale` in the cumulative families) gives the
+#' criteria a location and a scale, \eqn{c_j = L + e^{s} (t_j - \bar t)}, where the shape
+#' \eqn{t} comes from the gap intercepts. The `criterion` formula then sets the location
+#' \eqn{L}, the mean criterion: each fixed effect, random effect or smooth has one
+#' coefficient and moves every criterion together. The `criterion_scale` formula sets the
+#' log scale \eqn{s}: each term stretches or shrinks every gap by the same factor. Its
+#' intercept is fixed at 0, because the gap intercepts already set the spread, and it takes
+#' fixed effects, random effects (including `|id|` correlations with other parameters) and
+#' smooths. `criterion_scale ~ 1` gives criteria that only shift. `cor_thresholds` has no
+#' effect here, since each criterion term has a single component.
+#'
+#' `criterion2_scale` (`cutpoints2_scale` in [bivariate_cumulative()]) does the same for the
+#' source criteria of the bivariate families. With varying source criteria, each set of source
+#' criteria (one per detection response bin) has its own location and shape intercepts, its
+#' own random effects on the location, and its own scale coefficients: every term of the
+#' `criterion2_scale` formula is estimated separately for each bin.
+#'
 #' @examples
 #' # Standard SDT
 #' brf(conf | old ~ cond + (1|subj),
@@ -69,8 +87,12 @@ resp <- function(response1, response2) {
 #' brf(resp(conf, rk_var) | old ~ 1 + (1|subj),
 #'      fam ~ 1, criterion ~ 1, rec_crit ~ 1)
 #'
+#' # Location-scale criteria
+#' brf(conf | old ~ cond + (1|subj),
+#'      criterion ~ cond + (1|subj), criterion_scale ~ cond + (1|subj))
+#'
 #' # Cumulative
-#' brf(rating ~ cond, cutpoints ~ 1 + (1|subj))
+#' brf(rating ~ 1, cutpoints ~ cond + (1|subj), cutpoints_scale ~ 1)
 #' @export
 brf <- function(formula, ..., family = NULL, priors = NULL, encoding_vars = NULL,
                 counts = NULL, gap_link = NULL, smooth_info = NULL) {

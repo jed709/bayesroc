@@ -138,6 +138,11 @@ def _watch_stop(control_dir):
 def serve(control_dir):
     held = {}
     _watch_stop(control_dir)
+    try:
+        import autorun
+        import numpyro_backend
+    except Exception:
+        pass
     print("[bayesroc worker] ready", flush=True)
     while True:
         if os.path.exists(os.path.join(control_dir, "stop")):

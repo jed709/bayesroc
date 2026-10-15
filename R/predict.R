@@ -193,7 +193,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
 
   # ---- Compute thresholds ----
   n_thresh_K <- if (is_cdp) family$J + 1 else K
-  thresh <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K)
+  thresh <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = trial_params$criterion_scale)
 
   # one response's probabilities of a bivariate family, [S, N, K]: margin = 1 detection,
   # 2 source
@@ -436,7 +436,8 @@ build_data_source_from_model <- function(model) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit")
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     if (isTRUE(md[[paste0("has_", pname)]])) {
       src[[paste0("X_", pname)]] <- md[[paste0(pname, "_fixed")]]$X
@@ -447,7 +448,7 @@ build_data_source_from_model <- function(model) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (!is.null(re_list)) {
@@ -465,6 +466,7 @@ build_data_source_from_model <- function(model) {
   src$cross_cor <- md$cross_cor
 
   src$smooth_data <- md$smooth_data
+  src$.frame <- model$data
 
   src
 }
@@ -503,7 +505,8 @@ get_predict_variables <- function(model, include_re = TRUE) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit")
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     has_flag <- if (pname %in% c("dprime2")) {
       md$has_dprime2 || isTRUE(md$needs_ordered_dprime)
@@ -513,7 +516,7 @@ get_predict_variables <- function(model, include_re = TRUE) {
     if (has_flag) {
       P <- md[[paste0(pname, "_fixed")]]$n_coef
       if (P > 0) {
-        stan_pname <- if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
+        stan_pname <- .smooth_stan_pname(model, pname)
         vars <- c(vars, paste0("beta_", stan_pname, "[", seq_len(P), "]"))
       }
     }
@@ -530,7 +533,7 @@ get_predict_variables <- function(model, include_re = TRUE) {
       P_cov <- md$stan_data$P_criterion2_cov %||% 0L
       if (P_cov > 0) {
         vars <- c(vars, paste0("beta_thresh_mid_2_cov[", seq_len(P_cov), "]"))
-        if (K2 > 2) vars <- c(vars, .gap_param(gap_link, "_2_cov"))
+        if (K2 > 2 && !isTRUE(md$has_criterion2_scale)) vars <- c(vars, .gap_param(gap_link, "_2_cov"))
       }
       if (identical(md$new_source_criteria, "shared")) {
         vars <- c(vars, "beta_thresh_mid_2_new")
@@ -589,13 +592,11 @@ get_re_variables <- function(model) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
-    stan_pname <- if (is_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "dprime") "mu" else
-      if (is_bivariate_cumulative && pname == "discrim") "mu2" else pname
+    stan_pname <- .smooth_stan_pname(model, pname)
 
     for (group in names(re_list)) {
       re <- re_list[[group]]
@@ -716,7 +717,11 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
     rho_N      = list(has = isTRUE(md$has_rho_N),      link = "tanh"),
     lambda2    = list(has = isTRUE(md$has_lambda2),    link = "logis"),
     rec_crit   = list(has = isTRUE(md$has_rec_crit),   link = "identity"),
-    know_crit  = list(has = isTRUE(md$has_know_crit),  link = "identity")
+    know_crit  = list(has = isTRUE(md$has_know_crit),  link = "identity"),
+    criterion_scale = list(has = isTRUE(md$has_criterion_scale), link = "exp",
+                           stan_name = .smooth_stan_pname(model, "criterion_scale")),
+    criterion2_scale = list(has = isTRUE(md$has_criterion2_scale), link = "exp",
+                            stan_name = .smooth_stan_pname(model, "criterion2_scale"))
   )
 
   for (pname in names(param_specs)) {
@@ -744,7 +749,7 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
 
     param_raw <- param_raw + compute_smooth_contribution(
       draws, data_src$smooth_data, pname, S, N,
-      allow_new = isTRUE(data_src$.allow_new_levels)
+      allow_new = isTRUE(data_src$.allow_new_levels), stan_pname = stan_pname
     )
 
     if (spec$link == "exp") {
@@ -781,7 +786,7 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
 #' @return N x S matrix of smooth contributions (zeros if no smooths)
 #' @noRd
 compute_smooth_contribution <- function(draws, smooth_data, pname, S, N,
-                                         allow_new = FALSE) {
+                                         allow_new = FALSE, stan_pname = pname) {
   if (is.null(smooth_data) || is.null(smooth_data[[pname]])) {
     return(matrix(0, nrow = N, ncol = S))
   }
@@ -795,14 +800,14 @@ compute_smooth_contribution <- function(draws, smooth_data, pname, S, N,
         nbasis <- ncol(Zs)
         if (isTRUE(comp$new_level)) {
           if (!allow_new || nbasis == 0) next
-          sds_name <- paste0("sds_", pname, "_", comp$san_label, "_", k)
+          sds_name <- paste0("sds_", stan_pname, "_", comp$san_label, "_", k)
           sds_col <- intersect(c(sds_name, paste0(sds_name, "[1]")), colnames(draws))
           if (length(sds_col) == 0) next
           sds_draws <- as.numeric(draws[, sds_col[1]])
           s_draws <- matrix(rnorm(S * nbasis), nrow = S, ncol = nbasis) * sds_draws
           contrib <- contrib + Zs %*% t(s_draws)
         } else {
-          s_name <- paste0("s_", pname, "_", comp$san_label, "_", k)
+          s_name <- paste0("s_", stan_pname, "_", comp$san_label, "_", k)
           s_vars <- paste0(s_name, "[", 1:nbasis, "]")
           s_draws <- draws[, s_vars, drop = FALSE]
           contrib <- contrib + Zs %*% t(s_draws)
@@ -1016,8 +1021,12 @@ sample_new_u_correlated <- function(draws, stan_pname, group, dim, n_new, S,
 
 #' Compute thresholds: S x N x (K-1) array
 #' @noRd
-compute_thresholds <- function(draws, model, data_src, re_formula, S, N, K) {
+compute_thresholds <- function(draws, model, data_src, re_formula, S, N, K, crit_scale = NULL) {
   md <- model$model_data
+  if (isTRUE(md$has_criterion_scale)) {
+    if (is.null(crit_scale)) crit_scale <- compute_trial_params(draws, model, data_src, re_formula, S, N)$criterion_scale
+    return(.location_scale_thresholds(draws, model, data_src, re_formula, S, N, K, crit_scale))
+  }
   is_cumulative <- model$family$family == "cumulative"
   is_bivariate_cumulative <- model$family$family == "bivariate_cumulative"
   criterion_name <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
@@ -1105,6 +1114,133 @@ compute_thresholds <- function(draws, model, data_src, re_formula, S, N, K) {
   thresh
 }
 
+.ls_shape <- function(gap_draws, n_thresh, gap_link) {
+  S <- nrow(gap_draws)
+  mid <- ceiling(n_thresh / 2)
+  n_up <- n_thresh - mid
+  shape <- matrix(0, S, n_thresh)
+  for (k in seq_len(n_thresh - 1L)) {
+    j <- if (k <= n_up) mid + k else mid - (k - n_up)
+    shape[, j] <- .gap_transform(gap_draws[, k], gap_link)
+  }
+  if (mid < n_thresh) shape[, (mid + 1):n_thresh] <- t(apply(shape[, (mid + 1):n_thresh, drop = FALSE], 1, cumsum))
+  if (mid > 1) shape[, (mid - 1):1] <- -t(apply(shape[, (mid - 1):1, drop = FALSE], 1, cumsum))
+  shape - rowMeans(shape)
+}
+
+.location_scale_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
+  md <- model$model_data
+  K1 <- md$K
+  n_thresh2 <- md$K2 - 1L
+  gap_link <- model$gap_link %||% "log"
+  include_re <- !identical(re_formula, NA)
+  c2_name <- if (model$family$family == "bivariate_cumulative") "cutpoints2" else "criterion2"
+  crit2_random <- data_src$criterion2_random
+  new_u <- if (include_re && !is.null(crit2_random) && isTRUE(data_src$.allow_new_levels)) {
+    sample_criterion_new_u(draws, crit2_random, c2_name, S, md, data_src, "criterion2")
+  }
+  sm_mid <- t(compute_criterion_smooth_contribution(draws, data_src$smooth_data, S, N, 1L, pname = "criterion2")$mid)
+  if (!isTRUE(md$varying_source_criteria)) {
+    P2 <- md$criterion2$n_coef
+    loc <- t(data_src$X_criterion2 %*% t(draws[, paste0("beta_thresh_mid_2[", seq_len(P2), "]"), drop = FALSE]))
+    if (include_re && !is.null(crit2_random)) {
+      loc <- loc + t(compute_criterion_re(draws, crit2_random, data_src, c2_name, S, N, thresh_k = 1L, md = md,
+                                          new_u_cache = new_u))
+    }
+    loc <- loc + sm_mid
+    gp <- .gap_param(gap_link, "_2")
+    use_1d <- .gap_names_1d(draws, gp)
+    shape <- .ls_shape(draws[, vapply(seq_len(n_thresh2 - 1L), function(k) .gap_cols(gp, k, 1L, use_1d), ""), drop = FALSE],
+                       n_thresh2, gap_link)
+    sc <- compute_trial_params(draws, model, data_src, re_formula, S, N)$criterion2_scale
+    out <- array(NA_real_, c(S, N, n_thresh2))
+    for (j in seq_len(n_thresh2)) out[, , j] <- loc + sc * shape[, j]
+    return(out)
+  }
+  vbin <- .vbin_of(md)
+  labels <- .vbin_labels(md)
+  shift <- sm_mid
+  P_cov <- md$stan_data$P_criterion2_cov %||% 0L
+  if (P_cov > 0) {
+    Xc <- data_src$X_criterion2[, which(md$criterion2$coef_names != "(Intercept)"), drop = FALSE]
+    shift <- shift + draws[, paste0("beta_thresh_mid_2_cov[", seq_len(P_cov), "]"), drop = FALSE] %*% t(Xc)
+  }
+  frame <- data_src$.frame %||% model$data
+  gv <- .gap_param(gap_link, "_2_varying")
+  out <- array(0, c(S, N, K1, n_thresh2))
+  by_bin <- list()
+  for (y1 in seq_len(K1)) {
+    vb <- vbin[y1]
+    key <- as.character(vb)
+    if (is.null(by_bin[[key]])) {
+      loc <- matrix(draws[, paste0("beta_thresh_mid_2_varying[", vb, "]")], S, N) + shift
+      if (include_re && !is.null(crit2_random)) {
+        for (group in names(crit2_random)) {
+          re <- crit2_random[[group]]
+          var_base <- if (!is.null(re$cor_id)) paste0("u_", c2_name, "_", group, "_from_", re$cor_id)
+                      else paste0("u_", c2_name, "_", group)
+          base_col <- if (re$dim > (re$n_re_terms %||% 1L)) vb else 1L
+          loc <- loc + .crit2_varying_u(draws, re, var_base, base_col, S, N,
+                                        if (!is.null(new_u)) new_u[[group]], .new_level_pos(re, N))
+        }
+      }
+      shape <- .ls_shape(draws[, paste0(gv, "[", vb, ",", seq_len(n_thresh2 - 1L), "]"), drop = FALSE], n_thresh2, gap_link)
+      fb <- frame
+      fb$.c2bin <- factor(rep(labels[vb], nrow(fb)), levels = labels)
+      ds_b <- rebuild_design_matrices(model, fb)
+      ds_b$.allow_new_levels <- data_src$.allow_new_levels
+      sc <- compute_trial_params(draws, model, ds_b, re_formula, S, N)$criterion2_scale
+      blk <- array(0, c(S, N, n_thresh2))
+      for (j in seq_len(n_thresh2)) blk[, , j] <- loc + sc * shape[, j]
+      by_bin[[key]] <- blk
+    }
+    out[, , y1, ] <- by_bin[[key]]
+  }
+  if (identical(md$new_source_criteria, "shared")) {
+    gn <- .gap_param(gap_link, "_2_new")
+    shape_new <- .ls_shape(draws[, paste0(gn, "[", seq_len(n_thresh2 - 1L), "]"), drop = FALSE], n_thresh2, gap_link)
+    mid2 <- ceiling(n_thresh2 / 2)
+    attr(out, "thresh2_new") <- draws[, "beta_thresh_mid_2_new"] + shape_new - shape_new[, mid2]
+  }
+  out
+}
+
+.location_scale_thresholds <- function(draws, model, data_src, re_formula, S, N, K, crit_scale) {
+  md <- model$model_data
+  criterion_name <- if (model$family$family %in% c("cumulative", "bivariate_cumulative")) "cutpoints" else "criterion"
+  gap_link <- model$gap_link %||% "log"
+  n_thresh <- K - 1
+  P_crit <- md$criterion$n_coef
+  crit_random <- data_src$criterion_random
+  include_re <- !identical(re_formula, NA)
+  beta_mid <- draws[, paste0("beta_thresh_mid[", seq_len(P_crit), "]"), drop = FALSE]
+  loc <- data_src$X_criterion %*% t(beta_mid)
+  if (include_re && !is.null(crit_random)) {
+    crit_new_u <- if (isTRUE(data_src$.allow_new_levels)) {
+      sample_criterion_new_u(draws, crit_random, criterion_name, S, md, data_src, "criterion")
+    }
+    loc <- loc + compute_criterion_re(draws, crit_random, data_src, criterion_name, S, N,
+                                      thresh_k = 1L, md = md, new_u_cache = crit_new_u)
+  }
+  loc <- loc + compute_criterion_smooth_contribution(draws, data_src$smooth_data, S, N, 1L)$mid
+  gap_prefix <- .gap_param(gap_link)
+  use_1d <- .gap_names_1d(draws, gap_prefix)
+  mid <- ceiling(n_thresh / 2)
+  shape <- matrix(0, S, n_thresh)
+  for (k in seq_len(n_thresh - 1L)) {
+    g <- .gap_transform(draws[, .gap_cols(gap_prefix, k, 1L, use_1d)], gap_link)
+    j <- if (k <= n_thresh - mid) mid + k else mid - (k - (n_thresh - mid))
+    shape[, j] <- g
+  }
+  if (mid < n_thresh) shape[, (mid + 1):n_thresh] <- t(apply(shape[, (mid + 1):n_thresh, drop = FALSE], 1, cumsum))
+  if (mid > 1) shape[, (mid - 1):1] <- -t(apply(shape[, (mid - 1):1, drop = FALSE], 1, cumsum))
+  shape <- shape - rowMeans(shape)
+  loc <- t(loc)
+  thresh <- array(NA_real_, dim = c(S, N, n_thresh))
+  for (j in seq_len(n_thresh)) thresh[, , j] <- loc + crit_scale * shape[, j]
+  thresh
+}
+
 #' Compute criterion RE contribution for a specific threshold
 #' @return N x S matrix
 #' @noRd
@@ -1128,6 +1264,8 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else {
       if (!is.null(re$n_cond_levels)) re$n_cond_levels else 1
     }
+    one_d <- re$dim == 1L && !paste0(var_base, "[1,1]") %in% colnames(draws)
+    ucols <- function(gs, d) if (one_d) paste0(var_base, "[", gs, "]") else paste0(var_base, "[", gs, ",", d, "]")
 
     if (isTRUE(re$use_z_matrix)) {
       Z <- re$Z
@@ -1136,7 +1274,7 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
 
       u_draws_all <- array(NA_real_, dim = c(S, n_groups, re$dim))
       for (d in seq_len(re$dim)) {
-        u_draws_all[, , d] <- draws[, paste0(var_base, "[", 1:n_groups, ",", d, "]"), drop = FALSE]
+        u_draws_all[, , d] <- draws[, ucols(1:n_groups, d), drop = FALSE]
       }
 
       for (n in seq_len(N)) {
@@ -1156,7 +1294,7 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
     } else if (n_re_terms == 1 && is.null(re$term_idx)) {
       u_draws <- matrix(NA_real_, nrow = S, ncol = n_groups)
       for (g in seq_len(n_groups)) {
-        u_draws[, g] <- draws[, paste0(var_base, "[", g, ",", thresh_k, "]")]
+        u_draws[, g] <- draws[, ucols(g, thresh_k)]
       }
       for (n in seq_len(N)) {
         g <- group_idx[n]
@@ -1170,7 +1308,7 @@ compute_criterion_re <- function(draws, crit_random, data_src, criterion_name, S
       term_idx <- re$term_idx
       u_draws <- array(NA_real_, dim = c(S, n_groups, re$dim))
       for (d in seq_len(re$dim)) {
-        u_draws[, , d] <- draws[, paste0(var_base, "[", 1:n_groups, ",", d, "]"), drop = FALSE]
+        u_draws[, , d] <- draws[, ucols(1:n_groups, d), drop = FALSE]
       }
       for (n in seq_len(N)) {
         g <- group_idx[n]
@@ -1232,6 +1370,7 @@ sample_criterion_new_u <- function(draws, crit_random, criterion_name, S, md, da
 #' @noRd
 compute_thresholds_2 <- function(draws, model, data_src, re_formula, S, N) {
   md <- model$model_data
+  if (isTRUE(md$has_criterion2_scale)) return(.location_scale_thresholds_2(draws, model, data_src, re_formula, S, N))
   K2 <- md$K2
   K1 <- md$K
   include_re <- !identical(re_formula, NA)
@@ -1901,7 +2040,7 @@ probs_source_survival <- function(family_name, params, thresh, path, item_type, 
 # column instead of one quantile() call (with its label formatting) per column.
 .col_quantiles <- function(m, probs) {
   m <- as.matrix(m); S <- nrow(m)
-  srt <- matrix(apply(m, 2, sort), nrow = S)
+  srt <- matrix(m[order(rep(seq_len(ncol(m)), each = S), m, method = "radix")], nrow = S)
   h <- (S - 1) * probs + 1; j <- pmin(pmax(floor(h), 1), S); g <- h - j; jp <- pmin(j + 1, S)
   out <- matrix(0, length(probs), ncol(m))
   for (i in seq_along(probs)) out[i, ] <- (1 - g[i]) * srt[j[i], ] + g[i] * srt[jp[i], ]
@@ -2092,101 +2231,31 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 #' EVSDT probabilities
 #' @noRd
 probs_evsdt <- function(params, thresh, is_old, link_name, S, N, K) {
-  dprime <- params$dprime
-  probs <- array(0, dim = c(S, N, K))
-
-  mu <- sweep(dprime, 2, is_old, "*")
-
-  probs[, , 1] <- link_cdf_r(thresh[, , 1] - mu, link_name)
-
-  if (K > 2) {
-    for (k in 2:(K - 1)) {
-      probs[, , k] <- link_cdf_r(thresh[, , k] - mu, link_name) -
-                       link_cdf_r(thresh[, , k - 1] - mu, link_name)
-    }
-  }
-
-  probs[, , K] <- 1 - link_cdf_r(thresh[, , K - 1] - mu, link_name)
-
-  probs <- pmax(probs, 1e-10)
-  probs
+  pmax(.ordinal_cells(thresh, sweep(params$dprime, 2, is_old, "*"), 1, link_name, K), 1e-10)
 }
 
 #' UVSDT probabilities
 #' @noRd
 probs_uvsdt <- function(params, thresh, is_old, link_name, S, N, K) {
-  dprime <- params$dprime
-  sigma <- params$sigma
-  probs <- array(0, dim = c(S, N, K))
-
-  mu <- sweep(dprime, 2, is_old, "*")
-  s <- sigma
-  for (n in seq_len(N)) {
-    if (is_old[n] <= 0) {
-      s[, n] <- 1
-    }
-  }
-
-  probs[, , 1] <- link_cdf_r((thresh[, , 1] - mu) / s, link_name)
-
-  if (K > 2) {
-    for (k in 2:(K - 1)) {
-      probs[, , k] <- link_cdf_r((thresh[, , k] - mu) / s, link_name) -
-                       link_cdf_r((thresh[, , k - 1] - mu) / s, link_name)
-    }
-  }
-
-  probs[, , K] <- 1 - link_cdf_r((thresh[, , K - 1] - mu) / s, link_name)
-  probs <- pmax(probs, 1e-10)
-  probs
+  s <- params$sigma
+  s[, is_old <= 0] <- 1
+  pmax(.ordinal_cells(thresh, sweep(params$dprime, 2, is_old, "*"), s, link_name, K), 1e-10)
 }
 
 #' DPSDT probabilities
 #' @noRd
 probs_dpsdt <- function(params, thresh, is_old, link_name, S, N, K, has_sigma) {
-  dprime <- params$dprime
-  lambda <- params$lambda
-  sigma <- if (has_sigma) params$sigma else matrix(1, nrow = nrow(dprime), ncol = ncol(dprime))
-  probs <- array(0, dim = c(S, N, K))
-
-  for (n in seq_len(N)) {
-    if (is_old[n] > 0) {
-      d <- is_old[n] * dprime[, n]
-      lam <- lambda[, n]
-      s <- sigma[, n]
-
-      p_fam <- numeric(K)
-      for (k in seq_len(K)) {
-        if (k == 1) {
-          p_fam_k <- link_cdf_r((thresh[, n, 1] - d) / s, link_name)
-        } else if (k == K) {
-          p_fam_k <- 1 - link_cdf_r((thresh[, n, K - 1] - d) / s, link_name)
-        } else {
-          p_fam_k <- link_cdf_r((thresh[, n, k] - d) / s, link_name) -
-                     link_cdf_r((thresh[, n, k - 1] - d) / s, link_name)
-        }
-
-        if (k == K) {
-          probs[, n, k] <- lam + (1 - lam) * p_fam_k
-        } else {
-          probs[, n, k] <- (1 - lam) * p_fam_k
-        }
-      }
-    } else {
-      mu_noise <- is_old[n] * dprime[, n]
-      probs[, n, 1] <- link_cdf_r(thresh[, n, 1] - mu_noise, link_name)
-      if (K > 2) {
-        for (k in 2:(K - 1)) {
-          probs[, n, k] <- link_cdf_r(thresh[, n, k] - mu_noise, link_name) -
-                           link_cdf_r(thresh[, n, k - 1] - mu_noise, link_name)
-        }
-      }
-      probs[, n, K] <- 1 - link_cdf_r(thresh[, n, K - 1] - mu_noise, link_name)
-    }
+  old <- is_old > 0
+  s <- if (has_sigma) params$sigma else matrix(1, S, N)
+  s[, !old] <- 1
+  probs <- .ordinal_cells(thresh, sweep(params$dprime, 2, is_old, "*"), s, link_name, K)
+  if (any(old)) {
+    lam <- params$lambda[, old, drop = FALSE]
+    p <- probs[, old, , drop = FALSE] * as.vector(1 - lam)
+    p[, , K] <- p[, , K] + lam
+    probs[, old, ] <- p
   }
-
-  probs <- pmax(probs, 1e-10)
-  probs
+  pmax(probs, 1e-10)
 }
 
 #' Mixture SDT probabilities
@@ -2194,139 +2263,74 @@ probs_dpsdt <- function(params, thresh, is_old, link_name, S, N, K, has_sigma) {
 probs_mixture <- function(params, thresh, is_old, link_name, S, N, K, model) {
   md <- model$model_data
   dprime <- params$dprime
-  lambda <- params$lambda
   sigma <- if (!is.null(params$sigma)) params$sigma else matrix(1, S, N)
   dprime2 <- if (!is.null(params$dprime2)) params$dprime2 else matrix(0, S, N)
   sigma2 <- if (!is.null(params$sigma2)) params$sigma2 else matrix(1, S, N)
-
-  has_lure_mixture <- isTRUE(md$has_lure_mixture)
-  dprime_L <- if (has_lure_mixture && !is.null(params$dprime_L)) params$dprime_L else NULL
-  sigma_L  <- if (has_lure_mixture && !is.null(params$sigma_L)) params$sigma_L else NULL
-  lambda_L <- if (has_lure_mixture && !is.null(params$lambda_L)) params$lambda_L else NULL
-
+  lure <- isTRUE(md$has_lure_mixture) && !is.null(params$dprime_L) && !is.null(params$lambda_L)
   probs <- array(0, dim = c(S, N, K))
-
-  for (n in seq_len(N)) {
-    if (is_old[n] > 0) {
-      mu1 <- is_old[n] * dprime[, n]
-      mu2 <- dprime2[, n] - (1 - is_old[n]) * dprime[, n]
-      s1 <- sigma[, n]; lam <- lambda[, n]
-      s2 <- sigma2[, n]
-
-      for (k in seq_len(K)) {
-        if (k == 1) {
-          p1 <- link_cdf_r((thresh[, n, 1] - mu1) / s1, link_name)
-          p2 <- link_cdf_r((thresh[, n, 1] - mu2) / s2, link_name)
-        } else if (k == K) {
-          p1 <- 1 - link_cdf_r((thresh[, n, K - 1] - mu1) / s1, link_name)
-          p2 <- 1 - link_cdf_r((thresh[, n, K - 1] - mu2) / s2, link_name)
-        } else {
-          p1 <- link_cdf_r((thresh[, n, k] - mu1) / s1, link_name) -
-                link_cdf_r((thresh[, n, k - 1] - mu1) / s1, link_name)
-          p2 <- link_cdf_r((thresh[, n, k] - mu2) / s2, link_name) -
-                link_cdf_r((thresh[, n, k - 1] - mu2) / s2, link_name)
-        }
-        probs[, n, k] <- lam * p1 + (1 - lam) * p2
-      }
+  cols <- function(m, j) m[, j, drop = FALSE]
+  old <- which(is_old > 0)
+  if (length(old)) {
+    th <- thresh[, old, , drop = FALSE]
+    io <- matrix(is_old[old], S, length(old), byrow = TRUE)
+    lam <- cols(params$lambda, old)
+    p1 <- .ordinal_cells(th, io * cols(dprime, old), cols(sigma, old), link_name, K)
+    p2 <- .ordinal_cells(th, cols(dprime2, old) - (1 - io) * cols(dprime, old), cols(sigma2, old), link_name, K)
+    probs[, old, ] <- p1 * as.vector(lam) + p2 * as.vector(1 - lam)
+  }
+  new <- which(is_old <= 0)
+  if (length(new)) {
+    th <- thresh[, new, , drop = FALSE]
+    if (lure) {
+      lamL <- cols(params$lambda_L, new)
+      sL <- if (!is.null(params$sigma_L)) cols(params$sigma_L, new) else 1
+      probs[, new, ] <- .ordinal_cells(th, -cols(params$dprime_L, new), sL, link_name, K) * as.vector(lamL) +
+        .ordinal_cells(th, 0, 1, link_name, K) * as.vector(1 - lamL)
     } else {
-      if (has_lure_mixture && !is.null(dprime_L) && !is.null(lambda_L)) {
-        dL <- dprime_L[, n]
-        sL <- if (!is.null(sigma_L)) sigma_L[, n] else rep(1, S)
-        lamL <- lambda_L[, n]
-
-        for (k in seq_len(K)) {
-          if (k == 1) {
-            p_lure <- link_cdf_r((thresh[, n, 1] + dL) / sL, link_name)
-            p_ref  <- link_cdf_r(thresh[, n, 1], link_name)
-          } else if (k == K) {
-            p_lure <- 1 - link_cdf_r((thresh[, n, K - 1] + dL) / sL, link_name)
-            p_ref  <- 1 - link_cdf_r(thresh[, n, K - 1], link_name)
-          } else {
-            p_lure <- link_cdf_r((thresh[, n, k] + dL) / sL, link_name) -
-                      link_cdf_r((thresh[, n, k - 1] + dL) / sL, link_name)
-            p_ref  <- link_cdf_r(thresh[, n, k], link_name) -
-                      link_cdf_r(thresh[, n, k - 1], link_name)
-          }
-          probs[, n, k] <- lamL * p_lure + (1 - lamL) * p_ref
-        }
-      } else {
-        mu_noise <- is_old[n] * dprime[, n]
-        probs[, n, 1] <- link_cdf_r(thresh[, n, 1] - mu_noise, link_name)
-        if (K > 2) {
-          for (k in 2:(K - 1)) {
-            probs[, n, k] <- link_cdf_r(thresh[, n, k] - mu_noise, link_name) -
-                             link_cdf_r(thresh[, n, k - 1] - mu_noise, link_name)
-          }
-        }
-        probs[, n, K] <- 1 - link_cdf_r(thresh[, n, K - 1] - mu_noise, link_name)
-      }
+      io <- matrix(is_old[new], S, length(new), byrow = TRUE)
+      probs[, new, ] <- .ordinal_cells(th, io * cols(dprime, new), 1, link_name, K)
     }
   }
-
-  probs <- pmax(probs, 1e-10)
-  probs
+  pmax(probs, 1e-10)
 }
 
 #' Cumulative ordinal probabilities
 #' @noRd
 probs_cumulative <- function(params, thresh, link_name, S, N, K) {
-  mu <- params$dprime
-  probs <- array(0, dim = c(S, N, K))
-
-  probs[, , 1] <- link_cdf_r(thresh[, , 1] - mu, link_name)
-
-  if (K > 2) {
-    for (k in 2:(K - 1)) {
-      probs[, , k] <- link_cdf_r(thresh[, , k] - mu, link_name) -
-                       link_cdf_r(thresh[, , k - 1] - mu, link_name)
-    }
-  }
-
-  probs[, , K] <- 1 - link_cdf_r(thresh[, , K - 1] - mu, link_name)
-  probs <- pmax(probs, 1e-10)
-  probs
+  pmax(.ordinal_cells(thresh, params$dprime, 1, link_name, K), 1e-10)
 }
 
 #' Source mixture SDT probabilities
 #' @noRd
 probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, model) {
   md <- model$model_data
-  dprime <- params$dprime
-  lambda <- params$lambda
-  has_dprime_B <- isTRUE(md$has_dprime_B)
-  has_lambda_B <- isTRUE(md$has_lambda_B)
+  B <- source != 0
+  d <- params$dprime
+  if (any(B)) d[, B] <- if (isTRUE(md$has_dprime_B)) params$dprime_B[, B] else -params$dprime[, B]
+  lam <- params$lambda
+  if (any(B) && isTRUE(md$has_lambda_B)) lam[, B] <- params$lambda_B[, B]
+  probs <- .ordinal_cells(thresh, d, 1, link_name, K) * as.vector(lam) +
+    .ordinal_cells(thresh, 0, 1, link_name, K) * as.vector(1 - lam)
+  pmax(probs, 1e-10)
+}
 
-  probs <- array(0, dim = c(S, N, K))
+.link_cdf_v <- function(x, link_name) {
+  switch(link_name,
+    probit = .pnorm_v(x),
+    logit = 1 / (1 + .exp_v(-x)),
+    cloglog = -expm1(-.exp_v(pmin(x, 700))),
+    stop("Unknown link: ", link_name)
+  )
+}
 
-  for (n in seq_len(N)) {
-    src <- source[n]
-
-    if (src == 0) {
-      d <- dprime[, n]
-      lam <- lambda[, n]
-    } else {
-      d <- if (has_dprime_B) params$dprime_B[, n] else -dprime[, n]
-      lam <- if (has_lambda_B) params$lambda_B[, n] else lambda[, n]
-    }
-
-    for (k in seq_len(K)) {
-      if (k == 1) {
-        p_att <- link_cdf_r(thresh[, n, 1] - d, link_name)
-        p_non <- link_cdf_r(thresh[, n, 1], link_name)
-      } else if (k == K) {
-        p_att <- 1 - link_cdf_r(thresh[, n, K - 1] - d, link_name)
-        p_non <- 1 - link_cdf_r(thresh[, n, K - 1], link_name)
-      } else {
-        p_att <- link_cdf_r(thresh[, n, k] - d, link_name) -
-                 link_cdf_r(thresh[, n, k - 1] - d, link_name)
-        p_non <- link_cdf_r(thresh[, n, k], link_name) -
-                 link_cdf_r(thresh[, n, k - 1], link_name)
-      }
-      probs[, n, k] <- lam * p_att + (1 - lam) * p_non
-    }
-  }
-
-  probs <- pmax(probs, 1e-10)
+.ordinal_cells <- function(thresh, mu, s, link_name, K) {
+  d <- dim(thresh)
+  F <- .link_cdf_v((thresh - as.vector(mu)) / as.vector(s), link_name)
+  dim(F) <- d
+  probs <- array(0, dim = c(d[1], d[2], K))
+  probs[, , 1] <- F[, , 1]
+  if (K > 2) probs[, , 2:(K - 1)] <- F[, , 2:(K - 1), drop = FALSE] - F[, , 1:(K - 2), drop = FALSE]
+  probs[, , K] <- 1 - F[, , K - 1]
   probs
 }
 
@@ -2812,6 +2816,12 @@ rebuild_design_matrices <- function(model, newdata) {
   if (family_name == "bivariate_cumulative" && is.null(newdata$.bivar_cum_item_type)) {
     newdata$.bivar_cum_item_type <- factor(rep("A", nrow(newdata)), levels = c("new", "A"))
   }
+  if (isTRUE(md$has_criterion2_scale) && isTRUE(md$varying_source_criteria) && is.null(newdata$.c2bin)) {
+    lab <- .vbin_labels(md)
+    y1 <- newdata[[parsed$response$response]]
+    newdata$.c2bin <- factor(if (!is.null(y1)) lab[.vbin_of(md)[as.integer(y1)]] else rep(lab[1], nrow(newdata)),
+                             levels = lab)
+  }
   missing_cols <- setdiff(required_cols, names(newdata))
   if (length(missing_cols) > 0) {
     stop("newdata is missing required columns: ", paste(missing_cols, collapse = ", "))
@@ -2819,6 +2829,7 @@ rebuild_design_matrices <- function(model, newdata) {
 
   N <- nrow(newdata)
   src <- list(N = N)
+  src$.frame <- newdata
 
   if (!is_cumulative && !is_bivariate && !is_vrdp2d && !is.null(parsed$response$is_old)) {
     src$is_old <- .code_is_old(newdata[[parsed$response$is_old]], parsed$response$is_old, allow_centered = TRUE)
@@ -2897,7 +2908,8 @@ rebuild_design_matrices <- function(model, newdata) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit")
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     if (isTRUE(md[[paste0("has_", pname)]])) {
       fixed_info <- md[[paste0(pname, "_fixed")]]
@@ -2914,7 +2926,7 @@ rebuild_design_matrices <- function(model, newdata) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next

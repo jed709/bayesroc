@@ -296,7 +296,9 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
     side <- paste0(tools::file_path_sans_ext(file), "_loglik.npy")
     if (!identical(normalizePath(fit$.loglik_path, winslash = "/", mustWork = FALSE),
                    normalizePath(side, winslash = "/", mustWork = FALSE))) {
-      if (!isTRUE(file.copy(fit$.loglik_path, side, overwrite = TRUE))) {
+      if (file.exists(side)) unlink(side)
+      if (!isTRUE(suppressWarnings(file.link(fit$.loglik_path, side))) &&
+          !isTRUE(file.copy(fit$.loglik_path, side, overwrite = TRUE))) {
         stop("Could not write the log-likelihood file '", side, "'.", call. = FALSE)
       }
     }
@@ -532,59 +534,33 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
   src <- if (is.environment(samples)) samples else NULL
   if (!is.null(src)) samples <- src$samples
 
-  var_names <- character(0)
-  for (name in names(samples)) {
-    dims <- dim(samples[[name]])
-    if (is.null(dims) || length(dims) == 2) {
-      var_names <- c(var_names, name)
-    } else if (length(dims) == 3) {
-      var_names <- c(var_names, paste0(name, "[", seq_len(dims[3]), "]"))
-    } else if (length(dims) == 4) {
-      for (k1 in seq_len(dims[3])) {
-        var_names <- c(var_names, paste0(name, "[", k1, ",", seq_len(dims[4]), "]"))
-      }
-    }
-  }
-
-  n_params <- length(var_names)
   site_names <- names(samples)
+  names_of <- function(name, dims) {
+    if (is.null(dims) || length(dims) == 2) return(name)
+    if (length(dims) == 3) return(paste0(name, "[", seq_len(dims[3]), "]"))
+    paste0(name, "[", rep(seq_len(dims[3]), each = dims[4]), ",", rep(seq_len(dims[4]), times = dims[3]), "]")
+  }
+  var_list <- lapply(site_names, function(name) names_of(name, dim(samples[[name]])))
+  var_names <- unlist(var_list, use.names = FALSE)
+  n_params <- length(var_names)
   if (!is.null(src)) rm(samples)
 
   draws_3d <- array(NA_real_, dim = c(n_draws, n_chains, n_params))
-  col_idx <- 1L
+  col_idx <- 0L
 
-  for (name in site_names) {
+  for (i in seq_along(site_names)) {
+    name <- site_names[i]
     arr <- if (is.null(src)) samples[[name]] else src$samples[[name]]
     if (!is.null(src)) src$samples[[name]] <- NULL
     dims <- dim(arr)
-
-    if (is.null(dims) || length(dims) == 2) {
-      if (is.null(dims)) {
-        arr <- matrix(arr, nrow = n_chains, ncol = n_draws, byrow = TRUE)
-      }
-      for (ch in seq_len(n_chains)) {
-        draws_3d[, ch, col_idx] <- arr[ch, ]
-      }
-      col_idx <- col_idx + 1L
-
-    } else if (length(dims) == 3) {
-      for (k in seq_len(dims[3])) {
-        for (ch in seq_len(n_chains)) {
-          draws_3d[, ch, col_idx] <- arr[ch, , k]
-        }
-        col_idx <- col_idx + 1L
-      }
-
-    } else if (length(dims) == 4) {
-      for (k1 in seq_len(dims[3])) {
-        for (k2 in seq_len(dims[4])) {
-          for (ch in seq_len(n_chains)) {
-            draws_3d[, ch, col_idx] <- arr[ch, , k1, k2]
-          }
-          col_idx <- col_idx + 1L
-        }
-      }
-    }
+    if (is.null(dims)) arr <- matrix(arr, nrow = n_chains, ncol = n_draws, byrow = TRUE)
+    nv <- length(var_list[[i]])
+    block <- if (is.null(dims) || length(dims) == 2) t(arr)
+             else if (length(dims) == 3) aperm(arr, c(2, 1, 3))
+             else aperm(arr, c(2, 1, 4, 3))
+    dim(block) <- c(n_draws, n_chains, nv)
+    draws_3d[, , col_idx + seq_len(nv)] <- block
+    col_idx <- col_idx + nv
   }
 
   dimnames(draws_3d) <- list(

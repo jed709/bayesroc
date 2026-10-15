@@ -53,6 +53,7 @@ plot_random_effects <- function(fit, type = c("sd", "cor"), group = NULL, pars =
       lab <- (re$bin_levels %||% seq_len(i))[i]
       if (identical(as.character(lab), "new")) "new" else paste0("bin ", lab)
     }
+    if (isTRUE(model$model_data[[p]]$location_scale) && is.null(re$varying_re_mode)) mode <- "shared"
     vapply(seq_len(D), function(d) {
       b <- (d - 1L) %/% R + 1L
       j <- (d - 1L) %% R + 1L

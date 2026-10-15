@@ -376,6 +376,22 @@ def build_thresholds(thresh_mid, log_gaps, n_thresh, gap_link="log"):
     return thresh
 
 
+def _location_scale_criteria(location, shape_gaps, log_scale, n_thresh, gap_link="log"):
+    scale = jnp.exp(log_scale)
+    if shape_gaps.ndim == 1:
+        tbar = jnp.mean(build_thresholds(0.0, shape_gaps, n_thresh, gap_link))
+        shape_gaps = shape_gaps[:, None]
+    else:
+        tbar = jnp.mean(build_thresholds_vectorized(jnp.zeros(location.shape[0]), shape_gaps, n_thresh, gap_link), axis=1)
+    mid = location - scale * tbar
+    if gap_link == "softplus":
+        v = scale[None, :] * jax.nn.softplus(shape_gaps)
+        gaps = v + jnp.log(-jnp.expm1(-v))
+    else:
+        gaps = shape_gaps + log_scale[None, :]
+    return mid, gaps
+
+
 def _gap_thresh_pos(g, mid, n_upper):
     return mid + 1 + g if g < n_upper else mid - 1 - (g - n_upper)
 
@@ -3405,6 +3421,24 @@ def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
     return _fused_cache[key](y, d_attended, lambda_val, thresh_mid, gaps_per_obs)
 
 
+def _gap_rows(gaps, i):
+    return gaps[:, i] if gaps.ndim == 2 else gaps
+
+
+def _by_item_type(is_old, old_ll, new_ll, N, is_old_static=None):
+    if is_old_static is None:
+        idx = jnp.arange(N)
+        return jnp.where(is_old > 0, old_ll(idx), new_ll(idx))
+    old = np.asarray(is_old_static) > 0
+    o, n = np.flatnonzero(old), np.flatnonzero(~old)
+    if not len(n):
+        return old_ll(o)
+    if not len(o):
+        return new_ll(n)
+    ll = jnp.zeros(N, dtype=_FLOAT)
+    return ll.at[o].set(old_ll(o)).at[n].set(new_ll(n))
+
+
 def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
                       sigma=None, lambda_val=None, dprime2=None, sigma2=None,
                       lambda_B=None, dprime_B=None, counts=None,
@@ -3440,16 +3474,18 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
         return log_lik
 
     if family_name == "dpsdt" and lambda_val is not None and has_fused_inputs:
-        mu_per_obs = jnp.where(is_old == 1, mu_signal, mu_noise)
-        sd_per_obs = jnp.where(is_old == 1, sd_signal, sd_noise)
         has_sigma = (sigma is not None)
-        ll_old = fused_loglik_dpsdt(y, K, mu_signal, sd_signal, lambda_val,
-                                     thresh_mid, log_gaps, gap_link,
-                                     has_sigma=has_sigma, link_name=link_name)
-        ll_new = fused_loglik_simple(y, K, mu_noise, sd_noise,
-                                      thresh_mid, log_gaps, gap_link,
-                                      link_name=link_name)
-        log_lik = jnp.where(is_old == 1, ll_old, ll_new)
+        mu_rows = is_old * mu_signal
+
+        def old_ll(i):
+            return fused_loglik_dpsdt(y[i], K, mu_rows[i], sd_signal[i], lambda_val[i], thresh_mid[i],
+                                      _gap_rows(log_gaps, i), gap_link, has_sigma=has_sigma, link_name=link_name)
+
+        def new_ll(i):
+            return fused_loglik_simple(y[i], K, mu_rows[i], sd_noise[i], thresh_mid[i],
+                                       _gap_rows(log_gaps, i), gap_link, link_name=link_name)
+
+        log_lik = _by_item_type(is_old, old_ll, new_ll, N, kwargs.get("is_old_static"))
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -3457,23 +3493,26 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     if family_name == "mixture" and lambda_val is not None and has_fused_inputs:
         _dprime2 = dprime2 if dprime2 is not None else jnp.zeros(N)
         _sigma2 = sigma2 if sigma2 is not None else jnp.ones(N)
-        ll_old = fused_loglik_mixture(y, K, mu_signal, sd_signal,
-                                       _dprime2, _sigma2, lambda_val,
-                                       thresh_mid, log_gaps, gap_link,
-                                       link_name=link_name)
+        mu1_rows = is_old * mu_signal
+        mu2_rows = _dprime2 - (1.0 - is_old) * mu_signal
+
+        def old_ll(i):
+            return fused_loglik_mixture(y[i], K, mu1_rows[i], sd_signal[i], mu2_rows[i], _sigma2[i], lambda_val[i],
+                                        thresh_mid[i], _gap_rows(log_gaps, i), gap_link, link_name=link_name)
 
         if dprime_L is not None and lambda_L is not None:
             sd_L_val = sigma_L if sigma_L is not None else jnp.ones(N)
-            ll_new = fused_loglik_mixture(y, K, -dprime_L, sd_L_val,
-                                           mu_noise, sd_noise, lambda_L,
-                                           thresh_mid, log_gaps, gap_link,
-                                           link_name=link_name)
-        else:
-            ll_new = fused_loglik_simple(y, K, mu_noise, sd_noise,
-                                          thresh_mid, log_gaps, gap_link,
-                                          link_name=link_name)
 
-        log_lik = jnp.where(is_old == 1, ll_old, ll_new)
+            def new_ll(i):
+                return fused_loglik_mixture(y[i], K, -dprime_L[i], sd_L_val[i], mu_noise[i], sd_noise[i],
+                                            lambda_L[i], thresh_mid[i], _gap_rows(log_gaps, i), gap_link,
+                                            link_name=link_name)
+        else:
+            def new_ll(i):
+                return fused_loglik_simple(y[i], K, mu1_rows[i], sd_noise[i], thresh_mid[i],
+                                           _gap_rows(log_gaps, i), gap_link, link_name=link_name)
+
+        log_lik = _by_item_type(is_old, old_ll, new_ll, N, kwargs.get("is_old_static"))
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -3680,7 +3719,7 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
 
 def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
                c_R, c_K, J, old_level_map, n_rkg, counts=None,
-               thresh_mid=None, log_gaps=None, gap_link="log"):
+               thresh_mid=None, log_gaps=None, gap_link="log", rk_static=None, y_static=None):
     """Compute log-likelihood for CDP (Continuous Dual-Process) model.
 
     Args:
@@ -3712,14 +3751,31 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
         is_old_resp = jnp.any(match, axis=1).astype(_FLOAT)
         old_idx = jnp.argmax(match, axis=1)
 
-        log_lik = fused_loglik_cdp(
-            y=y, rk=rk, is_old=is_old,
-            old_idx=old_idx, is_old_resp=is_old_resp,
-            K=K, J=J,
-            mu_R=mu_R, sigma_R=sigma_R, mu_F=mu_F, sigma_F=sigma_F,
-            c_R=c_R, c_K=c_K,
-            thresh_mid=thresh_mid, gaps=log_gaps,
-            gap_link=gap_link, n_rkg=n_rkg)
+        def judged_ll(i):
+            return fused_loglik_cdp(
+                y=y[i], rk=rk[i], is_old=is_old[i],
+                old_idx=old_idx[i], is_old_resp=is_old_resp[i],
+                K=K, J=J,
+                mu_R=mu_R[i], sigma_R=sigma_R[i], mu_F=mu_F[i], sigma_F=sigma_F[i],
+                c_R=c_R[i], c_K=c_K[i],
+                thresh_mid=thresh_mid[i], gaps=_gap_rows(log_gaps, i),
+                gap_link=gap_link, n_rkg=n_rkg)
+
+        unjudged = None if rk_static is None else np.asarray(rk_static) == 0
+        y_np = None if y_static is None else np.asarray(y_static)
+        if unjudged is None or not unjudged.any():
+            log_lik = judged_ll(jnp.arange(N))
+        else:
+            hit = y_np[:, None] == np.asarray(old_level_map)[None, :]
+            y_band = jnp.asarray(np.where(hit.any(axis=1), hit.argmax(axis=1) + 2, 1), dtype=jnp.int32)
+            mu_M = mu_R + mu_F
+            sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2)
+            u, j = np.flatnonzero(unjudged), np.flatnonzero(~unjudged)
+            log_lik = jnp.zeros(N, dtype=_FLOAT).at[u].set(
+                fused_loglik_simple(y_band[u], J + 1, mu_M[u], sd_M[u], thresh_mid[u], _gap_rows(log_gaps, u),
+                                    gap_link))
+            if len(j):
+                log_lik = log_lik.at[j].set(judged_ll(j))
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -4412,7 +4468,18 @@ def sdt_model(config):
 
     gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
     beta_log_gaps = jnp.zeros((n_gaps, P_crit)) if n_gaps > 0 else None
-    if n_gaps > 0 and config.get("crit_scalar") and P_crit > 1:
+    crit_ls = bool(config.get("crit_ls")) and n_gaps > 0
+    if crit_ls:
+        gap_pri = [_gap_prior(k, 0) for k in range(n_gaps)]
+        if P_crit == 1 and len(set(gap_pri)) == 1:
+            beta_log_gaps = numpyro.sample(gap_param_prefix,
+                                           parse_prior(gap_pri[0]).expand([n_gaps])).reshape(n_gaps, 1)
+        else:
+            for k in range(n_gaps):
+                site = f"{gap_param_prefix}[{k+1}]" if P_crit == 1 else f"{gap_param_prefix}[{k+1},1]"
+                beta_log_gaps = beta_log_gaps.at[k, 0].set(numpyro.sample(site, parse_prior(gap_pri[k])))
+        log_gaps_obs = jnp.zeros((n_gaps, N))
+    elif n_gaps > 0 and config.get("crit_scalar") and P_crit > 1:
         for k in range(n_gaps):
             lg_k = numpyro.sample(f"{gap_param_prefix}[{k+1},1]", parse_prior(_gap_prior(k, 0)))
             beta_log_gaps = beta_log_gaps.at[k, 0].set(lg_k)
@@ -4515,9 +4582,14 @@ def sdt_model(config):
 
     for (Zs_sm, s_mat) in _criterion_smooth_s:
         thresh_mid_vec = thresh_mid_vec + Zs_sm @ s_mat[0]
-        if n_gaps > 0:
+        if n_gaps > 0 and not crit_ls:
             for g in range(n_gaps):
                 log_gaps_obs = log_gaps_obs.at[g].add(Zs_sm @ s_mat[1 + g])
+
+    if crit_ls:
+        thresh_mid_vec, log_gaps_obs = _location_scale_criteria(
+            thresh_mid_vec, beta_log_gaps[:, 0], param_values.get("criterion_scale", jnp.zeros(N)),
+            n_thresh, gap_link)
 
     thresh = build_thresholds_vectorized(thresh_mid_vec, log_gaps_obs, n_thresh, gap_link=gap_link)
 
@@ -4569,7 +4641,7 @@ def sdt_model(config):
                 c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
                 n_rkg=n_rkg, counts=counts,
                 thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
-                gap_link=gap_link,
+                gap_link=gap_link, rk_static=np.asarray(config["rk"]), y_static=np.asarray(config["y"]),
             )
 
     elif is_bivariate:
@@ -4582,7 +4654,9 @@ def sdt_model(config):
 
         # -- Sample criterion2 REs first (needed for threshold construction) --
         crit2_re_list = [rc for rc in criterion_re_configs if rc["param"] == "criterion2"]
-        varying_re_mode = "full"
+        varying_re_mode = config.get("crit2_re_mode", "full")
+        crit2_ls = bool(config.get("crit2_ls")) and K2 - 2 > 0
+        s2_eta = param_values.get("criterion2_scale", jnp.zeros(N))
         c2_terms = [(u, i, c) for (u, i, c) in crit_re_contributions
                     if c.get("param") == "criterion2"]
 
@@ -4661,7 +4735,7 @@ def sdt_model(config):
                 b_mid_cov = _grid_sample("beta_thresh_mid_2_cov",
                                          pv2.get("cov_mid", [prior_thresh_mid2] * P_c2), (P_c2,))
                 thresh2_mid_per_obs = thresh2_mid_per_obs + Xc2 @ b_mid_cov
-                if n_gaps2 > 0:
+                if n_gaps2 > 0 and not crit2_ls:
                     gcov_name = "beta_raw_gaps_2_cov" if gap_link == "softplus" else "beta_log_gaps_2_cov"
                     b_gaps_cov = _grid_sample(gcov_name,
                                               pv2.get("cov_gaps", [[prior_log_gaps2] * P_c2] * n_gaps2),
@@ -4670,8 +4744,9 @@ def sdt_model(config):
 
             for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
                 thresh2_mid_per_obs = thresh2_mid_per_obs + Zs_sm2 @ s_mat2[0]
-                for g in range(n_gaps2):
-                    log_gaps2_per_obs = log_gaps2_per_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+                if not crit2_ls:
+                    for g in range(n_gaps2):
+                        log_gaps2_per_obs = log_gaps2_per_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
 
             for u_c2, idx_c2, c2_conf in c2_terms:
                 d_mid, d_gaps = _crit2_varying_shift(u_c2, idx_c2, varying_re_mode, y1_idx,
@@ -4679,6 +4754,10 @@ def sdt_model(config):
                 thresh2_mid_per_obs = thresh2_mid_per_obs + d_mid
                 if d_gaps is not None:
                     log_gaps2_per_obs = log_gaps2_per_obs + d_gaps
+
+            if crit2_ls:
+                thresh2_mid_per_obs, log_gaps2_per_obs = _location_scale_criteria(
+                    thresh2_mid_per_obs, log_gaps2_per_obs, s2_eta, n_thresh2, gap_link)
 
             thresh2 = build_thresholds_vectorized(thresh2_mid_per_obs, log_gaps2_per_obs, n_thresh2, gap_link=gap_link)
             _t2_mid_fused = thresh2_mid_per_obs
@@ -4739,7 +4818,12 @@ def sdt_model(config):
                                      per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
                            for j in range(c2_n_coef)] for k in range(n_gaps2)]
                 g2_uniform = len({p for row in g2_pri for p in row}) == 1
-                if c2_n_coef == 1 and not g2_uniform:
+                if crit2_ls:
+                    beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
+                    for k in range(n_gaps2):
+                        site = f"{gap2_name_ij}[{k+1}]" if c2_n_coef == 1 else f"{gap2_name_ij}[{k+1},1]"
+                        beta_log_gaps2 = beta_log_gaps2.at[k, 0].set(numpyro.sample(site, parse_prior(g2_pri[k][0])))
+                elif c2_n_coef == 1 and not g2_uniform:
                     beta_log_gaps2 = jnp.stack([
                         numpyro.sample(f"{gap2_name_ij}[{k+1}]", parse_prior(g2_pri[k][0]))
                         for k in range(n_gaps2)]).reshape(n_gaps2, 1)
@@ -4773,9 +4857,13 @@ def sdt_model(config):
 
             for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
                 thresh2_mid_vec = thresh2_mid_vec + Zs_sm2 @ s_mat2[0]
-                if n_gaps2 > 0:
+                if n_gaps2 > 0 and not crit2_ls:
                     for g in range(n_gaps2):
                         log_gaps2_obs = log_gaps2_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+
+            if crit2_ls:
+                thresh2_mid_vec, log_gaps2_obs = _location_scale_criteria(
+                    thresh2_mid_vec, beta_log_gaps2[:, 0], s2_eta, n_thresh2, gap_link)
 
             thresh2 = build_thresholds_vectorized(thresh2_mid_vec, log_gaps2_obs, n_thresh2, gap_link=gap_link)
             _t2_mid_fused = thresh2_mid_vec
@@ -4803,7 +4891,7 @@ def sdt_model(config):
             thresh2_single = build_thresholds(thresh2_mid, log_gaps2, n_thresh2, gap_link=gap_link)
             thresh2 = jnp.broadcast_to(thresh2_single[None, :], (N, n_thresh2))
 
-            if c2_terms or _criterion2_smooth_s:
+            if c2_terms or _criterion2_smooth_s or crit2_ls:
                 thresh2_mid_vec_re = jnp.broadcast_to(thresh2_mid, (N,))
                 log_gaps2_obs_re = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
                 for u_c2, idx_c2, conf_c2 in c2_terms:
@@ -4813,9 +4901,12 @@ def sdt_model(config):
                         log_gaps2_obs_re = log_gaps2_obs_re + d_gaps
                 for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
                     thresh2_mid_vec_re = thresh2_mid_vec_re + Zs_sm2 @ s_mat2[0]
-                    if n_gaps2 > 0:
+                    if n_gaps2 > 0 and not crit2_ls:
                         for g in range(n_gaps2):
                             log_gaps2_obs_re = log_gaps2_obs_re.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+                if crit2_ls:
+                    thresh2_mid_vec_re, log_gaps2_obs_re = _location_scale_criteria(
+                        thresh2_mid_vec_re, log_gaps2, s2_eta, n_thresh2, gap_link)
                 thresh2 = build_thresholds_vectorized(thresh2_mid_vec_re, log_gaps2_obs_re, n_thresh2, gap_link=gap_link)
                 _t2_mid_fused = thresh2_mid_vec_re
                 _t2_gaps_fused = log_gaps2_obs_re
@@ -4877,6 +4968,7 @@ def sdt_model(config):
             thresh_mid=thresh_mid_vec,
             log_gaps=log_gaps_obs,
             gap_link=gap_link,
+            is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
         )
 
     if counts is not None:

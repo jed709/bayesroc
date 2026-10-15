@@ -37,8 +37,8 @@
 .gap_cases <- function() {
   du <- .gap_univariate(); db <- .gap_bivariate(); dc <- .gap_cdp()
   list(
-    cumulative_mu_slope = list(brf(item_resp ~ cond + (0 + ind | sub), cutpoints ~ 1 + (1 | grp),
-                                   family = cumulative()), du, "u_mu_sub", du$cond == "a"),
+    cumulative_mu_slope = list(brf(item_resp ~ 1, cutpoints ~ cond + (0 + ind | sub) + (1 | grp), cutpoints_scale ~ 1,
+                                   family = cumulative()), du, "u_cutpoints_sub", du$cond == "a"),
     criterion_indicator = list(brf(item_resp | is_old ~ 1, criterion ~ 1 + ind + (0 + ind | sub),
                                    family = evsd()), du, "u_criterion_sub", du$ind == 0),
     criterion2_indicator_per_bin = list(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
@@ -107,7 +107,7 @@ test_that("every listed prior can be set, is echoed back, and reaches Stan and t
     varying_full = list(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1,
                             criterion2 ~ 1 + x + (1 + x | sub), rho ~ 1,
                             family = bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)), db),
-    cumulative = list(brf(item_resp ~ cond + (1 + cond | sub), cutpoints ~ 1 + x + (1 | grp),
+    cumulative = list(brf(item_resp ~ 1, cutpoints ~ cond + x + (1 + cond | sub) + (1 | grp), cutpoints_scale ~ x,
                           family = cumulative()), du),
     cross = list(brf(item_resp | is_old ~ 1 + (1 | p | sub), sigma ~ 1 + (1 | p | sub),
                      criterion ~ 1 + (1 | p | sub), family = uvsd()), du),

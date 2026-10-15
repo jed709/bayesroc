@@ -9,55 +9,13 @@
 
 #include "xla/ffi/api/ffi.h"
 #include "bayesroc/bvn_simd.h"
+
+static inline bvn::v4d vphi_p(bvn::v4d x);
 #include "bayesroc/tmap_kernel.h"
 
 namespace ffi = xla::ffi;
 
 namespace {
-
-ffi::Error BvnRectImpl(ffi::Buffer<ffi::F64> z1lo, ffi::Buffer<ffi::F64> z1hi,
-                       ffi::Buffer<ffi::F64> z2lo, ffi::Buffer<ffi::F64> z2hi,
-                       ffi::Buffer<ffi::F64> rho, ffi::ResultBuffer<ffi::F64> p,
-                       ffi::ResultBuffer<ffi::F64> d1lo, ffi::ResultBuffer<ffi::F64> d1hi,
-                       ffi::ResultBuffer<ffi::F64> d2lo, ffi::ResultBuffer<ffi::F64> d2hi,
-                       ffi::ResultBuffer<ffi::F64> drho) {
-  bvn::rect_array(z1lo.element_count(), z1lo.typed_data(), z1hi.typed_data(), z2lo.typed_data(),
-                  z2hi.typed_data(), rho.typed_data(), p->typed_data(), d1lo->typed_data(),
-                  d1hi->typed_data(), d2lo->typed_data(), d2hi->typed_data(), drho->typed_data());
-  return ffi::Error::Success();
-}
-
-ffi::Error BvnCdfImpl(ffi::Buffer<ffi::F64> h, ffi::Buffer<ffi::F64> k, ffi::Buffer<ffi::F64> rho,
-                      ffi::ResultBuffer<ffi::F64> p, ffi::ResultBuffer<ffi::F64> dh,
-                      ffi::ResultBuffer<ffi::F64> dk, ffi::ResultBuffer<ffi::F64> drho) {
-  bvn::cdf_array(h.element_count(), h.typed_data(), k.typed_data(), rho.typed_data(),
-                 p->typed_data(), dh->typed_data(), dk->typed_data(), drho->typed_data());
-  return ffi::Error::Success();
-}
-
-ffi::Error VrdpImpl(ffi::Buffer<ffi::F64> i0, ffi::Buffer<ffi::F64> i1, ffi::Buffer<ffi::F64> i2, ffi::Buffer<ffi::F64> i3, ffi::Buffer<ffi::F64> i4, ffi::Buffer<ffi::F64> i5, ffi::Buffer<ffi::F64> i6, ffi::Buffer<ffi::F64> i7, ffi::Buffer<ffi::F64> i8, ffi::Buffer<ffi::F64> i9, ffi::Buffer<ffi::F64> i10, ffi::Buffer<ffi::F64> i11, ffi::Buffer<ffi::F64> i12, ffi::Buffer<ffi::F64> i13,
-                    ffi::ResultBuffer<ffi::F64> o0, ffi::ResultBuffer<ffi::F64> o1, ffi::ResultBuffer<ffi::F64> o2, ffi::ResultBuffer<ffi::F64> o3, ffi::ResultBuffer<ffi::F64> o4, ffi::ResultBuffer<ffi::F64> o5, ffi::ResultBuffer<ffi::F64> o6, ffi::ResultBuffer<ffi::F64> o7, ffi::ResultBuffer<ffi::F64> o8, ffi::ResultBuffer<ffi::F64> o9, ffi::ResultBuffer<ffi::F64> o10) {
-  const double* in[14] = {i0.typed_data(), i1.typed_data(), i2.typed_data(), i3.typed_data(), i4.typed_data(), i5.typed_data(), i6.typed_data(), i7.typed_data(), i8.typed_data(), i9.typed_data(), i10.typed_data(), i11.typed_data(), i12.typed_data(), i13.typed_data()};
-  double* out[11] = {o0->typed_data(), o1->typed_data(), o2->typed_data(), o3->typed_data(), o4->typed_data(), o5->typed_data(), o6->typed_data(), o7->typed_data(), o8->typed_data(), o9->typed_data(), o10->typed_data()};
-  bvn::vrdp_array(i0.element_count(), in, out);
-  return ffi::Error::Success();
-}
-
-ffi::Error BvnCdf2Impl(ffi::Buffer<ffi::F64> i0, ffi::Buffer<ffi::F64> i1, ffi::Buffer<ffi::F64> i2, ffi::Buffer<ffi::F64> i3, ffi::Buffer<ffi::F64> i4, ffi::Buffer<ffi::F64> i5,
-                        ffi::ResultBuffer<ffi::F64> o0, ffi::ResultBuffer<ffi::F64> o1, ffi::ResultBuffer<ffi::F64> o2, ffi::ResultBuffer<ffi::F64> o3, ffi::ResultBuffer<ffi::F64> o4, ffi::ResultBuffer<ffi::F64> o5, ffi::ResultBuffer<ffi::F64> o6, ffi::ResultBuffer<ffi::F64> o7, ffi::ResultBuffer<ffi::F64> o8, ffi::ResultBuffer<ffi::F64> o9, ffi::ResultBuffer<ffi::F64> o10, ffi::ResultBuffer<ffi::F64> o11, ffi::ResultBuffer<ffi::F64> o12, ffi::ResultBuffer<ffi::F64> o13, ffi::ResultBuffer<ffi::F64> o14, ffi::ResultBuffer<ffi::F64> o15, ffi::ResultBuffer<ffi::F64> o16, ffi::ResultBuffer<ffi::F64> o17) {
-  const double* in[6] = {i0.typed_data(), i1.typed_data(), i2.typed_data(), i3.typed_data(), i4.typed_data(), i5.typed_data()};
-  double* out[18] = {o0->typed_data(), o1->typed_data(), o2->typed_data(), o3->typed_data(), o4->typed_data(), o5->typed_data(), o6->typed_data(), o7->typed_data(), o8->typed_data(), o9->typed_data(), o10->typed_data(), o11->typed_data(), o12->typed_data(), o13->typed_data(), o14->typed_data(), o15->typed_data(), o16->typed_data(), o17->typed_data()};
-  bvn::cdf_multi_array<2, 1>(i0.element_count(), in, out);
-  return ffi::Error::Success();
-}
-
-ffi::Error BvnCdf4Impl(ffi::Buffer<ffi::F64> i0, ffi::Buffer<ffi::F64> i1, ffi::Buffer<ffi::F64> i2, ffi::Buffer<ffi::F64> i3, ffi::Buffer<ffi::F64> i4, ffi::Buffer<ffi::F64> i5, ffi::Buffer<ffi::F64> i6, ffi::Buffer<ffi::F64> i7, ffi::Buffer<ffi::F64> i8, ffi::Buffer<ffi::F64> i9, ffi::Buffer<ffi::F64> i10,
-                        ffi::ResultBuffer<ffi::F64> o0, ffi::ResultBuffer<ffi::F64> o1, ffi::ResultBuffer<ffi::F64> o2, ffi::ResultBuffer<ffi::F64> o3, ffi::ResultBuffer<ffi::F64> o4, ffi::ResultBuffer<ffi::F64> o5, ffi::ResultBuffer<ffi::F64> o6, ffi::ResultBuffer<ffi::F64> o7, ffi::ResultBuffer<ffi::F64> o8, ffi::ResultBuffer<ffi::F64> o9, ffi::ResultBuffer<ffi::F64> o10, ffi::ResultBuffer<ffi::F64> o11, ffi::ResultBuffer<ffi::F64> o12, ffi::ResultBuffer<ffi::F64> o13, ffi::ResultBuffer<ffi::F64> o14, ffi::ResultBuffer<ffi::F64> o15, ffi::ResultBuffer<ffi::F64> o16, ffi::ResultBuffer<ffi::F64> o17, ffi::ResultBuffer<ffi::F64> o18, ffi::ResultBuffer<ffi::F64> o19, ffi::ResultBuffer<ffi::F64> o20, ffi::ResultBuffer<ffi::F64> o21, ffi::ResultBuffer<ffi::F64> o22, ffi::ResultBuffer<ffi::F64> o23, ffi::ResultBuffer<ffi::F64> o24, ffi::ResultBuffer<ffi::F64> o25, ffi::ResultBuffer<ffi::F64> o26, ffi::ResultBuffer<ffi::F64> o27, ffi::ResultBuffer<ffi::F64> o28, ffi::ResultBuffer<ffi::F64> o29, ffi::ResultBuffer<ffi::F64> o30, ffi::ResultBuffer<ffi::F64> o31, ffi::ResultBuffer<ffi::F64> o32, ffi::ResultBuffer<ffi::F64> o33, ffi::ResultBuffer<ffi::F64> o34, ffi::ResultBuffer<ffi::F64> o35) {
-  const double* in[11] = {i0.typed_data(), i1.typed_data(), i2.typed_data(), i3.typed_data(), i4.typed_data(), i5.typed_data(), i6.typed_data(), i7.typed_data(), i8.typed_data(), i9.typed_data(), i10.typed_data()};
-  double* out[36] = {o0->typed_data(), o1->typed_data(), o2->typed_data(), o3->typed_data(), o4->typed_data(), o5->typed_data(), o6->typed_data(), o7->typed_data(), o8->typed_data(), o9->typed_data(), o10->typed_data(), o11->typed_data(), o12->typed_data(), o13->typed_data(), o14->typed_data(), o15->typed_data(), o16->typed_data(), o17->typed_data(), o18->typed_data(), o19->typed_data(), o20->typed_data(), o21->typed_data(), o22->typed_data(), o23->typed_data(), o24->typed_data(), o25->typed_data(), o26->typed_data(), o27->typed_data(), o28->typed_data(), o29->typed_data(), o30->typed_data(), o31->typed_data(), o32->typed_data(), o33->typed_data(), o34->typed_data(), o35->typed_data()};
-  bvn::cdf_multi_array<4, 2>(i0.element_count(), in, out);
-  return ffi::Error::Success();
-}
 
 template <typename F>
 void pool_for(ffi::ThreadPool& pool, int64_t n, int64_t grain, F body) {
@@ -87,6 +45,16 @@ void pool_for(ffi::ThreadPool& pool, int64_t n, int64_t grain, F body) {
   st->work();
   while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
 }
+
+template <typename F>
+void chunk_for(ffi::ThreadPool& pool, int64_t n, int64_t G, F body) {
+  const int64_t nch = (n + G - 1) / G;
+  pool_for(pool, nch, 1, [&](int64_t c0, int64_t c1) {
+    for (int64_t c = c0; c < c1; ++c) body(c * G, std::min(n, (c + 1) * G));
+  });
+}
+
+constexpr int64_t kCellChunk = 2048;
 
 // ---- transport map: fused per-group factor / solves and their adjoint ----
 
@@ -250,7 +218,7 @@ void cdp_k(int64_t n, const double* const* i, double* const* o) {
 }
 
 template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
-ffi::Error F64Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
+ffi::Error F64Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
   if (args.size() != NI || rets.size() != NO) return ffi::Error::InvalidArgument("bayesroc: f64 arity");
   const double* in[NI];
   double* out[NO];
@@ -266,7 +234,13 @@ ffi::Error F64Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
     if (b.has_error()) return b.error();
     out[a] = static_cast<double*>(b.value()->untyped_data());
   }
-  K(n, in, out);
+  chunk_for(pool, n, kCellChunk, [&](int64_t i0, int64_t i1) {
+    const double* ci[NI];
+    double* co[NO];
+    for (int a = 0; a < NI; ++a) ci[a] = in[a] + i0;
+    for (int a = 0; a < NO; ++a) co[a] = out[a] + i0;
+    K(i1 - i0, ci, co);
+  });
   return ffi::Error::Success();
 }
 
@@ -277,7 +251,7 @@ struct FlushDenormals {
 };
 
 template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
-ffi::Error F32Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
+ffi::Error F32Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
   if (args.size() != NI || rets.size() != NO) return ffi::Error::InvalidArgument("bayesroc: f32 arity");
   const float* fin[NI];
   float* fout[NO];
@@ -293,20 +267,23 @@ ffi::Error F32Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
     if (b.has_error()) return b.error();
     fout[a] = static_cast<float*>(b.value()->untyped_data());
   }
-  thread_local std::vector<double> buf;
-  if (buf.size() < size_t((NI + NO) * n)) buf.resize((NI + NO) * n);
-  FlushDenormals ftz;
-  const double* din[NI];
-  double* dout[NO];
-  for (int a = 0; a < NI; ++a) {
-    double* d = buf.data() + a * n;
-    for (int64_t k = 0; k < n; ++k) d[k] = fin[a][k];
-    din[a] = d;
-  }
-  for (int a = 0; a < NO; ++a) dout[a] = buf.data() + (NI + a) * n;
-  K(n, din, dout);
-  for (int a = 0; a < NO; ++a)
-    for (int64_t k = 0; k < n; ++k) fout[a][k] = static_cast<float>(dout[a][k]);
+  chunk_for(pool, n, kCellChunk, [&](int64_t i0, int64_t i1) {
+    const int64_t m = i1 - i0;
+    thread_local std::vector<double> buf;
+    if (buf.size() < size_t((NI + NO) * m)) buf.resize((NI + NO) * m);
+    FlushDenormals ftz;
+    const double* din[NI];
+    double* dout[NO];
+    for (int a = 0; a < NI; ++a) {
+      double* d = buf.data() + a * m;
+      for (int64_t k = 0; k < m; ++k) d[k] = fin[a][i0 + k];
+      din[a] = d;
+    }
+    for (int a = 0; a < NO; ++a) dout[a] = buf.data() + (NI + a) * m;
+    K(m, din, dout);
+    for (int a = 0; a < NO; ++a)
+      for (int64_t k = 0; k < m; ++k) fout[a][i0 + k] = static_cast<float>(dout[a][k]);
+  });
   return ffi::Error::Success();
 }
 
@@ -314,7 +291,7 @@ ffi::Error F32Impl(ffi::RemainingArgs args, ffi::RemainingRets rets) {
 
 #define BAYESROC_F32(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F32Impl<NI, NO, K>),                           \
-                                ffi::Ffi::Bind().RemainingArgs().RemainingRets())
+                                ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
 
 BAYESROC_F32(BayesrocBvnRectF32, 5, 6, rect_k);
 BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
@@ -323,8 +300,16 @@ BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
 BAYESROC_F32(BayesrocCdpCellF32, 10, 9, cdp_k);
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocCdpCell, (F64Impl<10, 9, cdp_k>),
-                              ffi::Ffi::Bind().RemainingArgs().RemainingRets());
+#define BAYESROC_F64(NAME, NI, NO, K)                                               \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F64Impl<NI, NO, K>),                           \
+                                ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
+
+BAYESROC_F64(BayesrocCdpCell, 10, 9, cdp_k);
+BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
+BAYESROC_F64(BayesrocBvnCdf, 3, 4, cdf_k);
+BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);
+BAYESROC_F64(BayesrocBvnCdf2, 6, 18, (bvn::cdf_multi_array<2, 1>));
+BAYESROC_F64(BayesrocBvnCdf4, 11, 36, (bvn::cdf_multi_array<4, 2>));
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitDiff, ProbitDiffImpl,
                               ffi::Ffi::Bind()
@@ -344,134 +329,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitCell, ProbitCellImpl,
                                   .Ret<ffi::Buffer<ffi::F64>>()
                                   .Ret<ffi::Buffer<ffi::F64>>());
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnRect, BvnRectImpl,
-                              ffi::Ffi::Bind()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>());
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnCdf, BvnCdfImpl,
-                              ffi::Ffi::Bind()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>());
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocVrdp2d, VrdpImpl,
-                              ffi::Ffi::Bind()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>());
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnCdf2, BvnCdf2Impl,
-                              ffi::Ffi::Bind()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>());
 
-XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocBvnCdf4, BvnCdf4Impl,
-                              ffi::Ffi::Bind()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Arg<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>()
-                                  .Ret<ffi::Buffer<ffi::F64>>());
 
 #define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
 #define A_ .Arg<ffi::AnyBuffer>()
@@ -512,7 +373,14 @@ extern "C" void bayesroc_r_pnorm(const double* x, const int* n, const int* threa
   const int64_t grain = 16384;
   int64_t T = std::max<int64_t>(1, std::min<int64_t>(*threads, (N + grain - 1) / grain));
   auto work = [=](int64_t i0, int64_t i1) {
-    for (int64_t i = i0; i < i1; ++i) p[i] = 0.5 * std::erfc(-x[i] * 0.7071067811865476);
+    int64_t i = i0;
+    for (; i + 4 <= i1; i += 4) {
+      bvn::v4d v;
+      std::memcpy(&v, x + i, 32);
+      bvn::v4d r = vphi_p(v);
+      std::memcpy(p + i, &r, 32);
+    }
+    for (; i < i1; ++i) p[i] = 0.5 * std::erfc(-x[i] * 0.7071067811865476);
   };
   if (T == 1) { work(0, N); return; }
   const int64_t per = (N + T - 1) / T;
@@ -641,7 +509,14 @@ extern "C" void bayesroc_r_exp(const double* x, const int* n, const int* threads
   const int64_t grain = 16384;
   int64_t T = std::max<int64_t>(1, std::min<int64_t>(*threads, (N + grain - 1) / grain));
   auto work = [=](int64_t i0, int64_t i1) {
-    for (int64_t i = i0; i < i1; ++i) p[i] = std::exp(x[i]);
+    int64_t i = i0;
+    for (; i + 4 <= i1; i += 4) {
+      bvn::v4d v;
+      std::memcpy(&v, x + i, 32);
+      bvn::v4d r = bvn::vexp(v);
+      std::memcpy(p + i, &r, 32);
+    }
+    for (; i < i1; ++i) p[i] = std::exp(x[i]);
   };
   if (T == 1) { work(0, N); return; }
   const int64_t per = (N + T - 1) / T;
@@ -693,11 +568,17 @@ extern "C" void bayesroc_r_bvn_rect(const double* a1, const double* b1, const do
 // 2: (1 - lam) normal(mu, sig) + lam normal(mu2, sig). path 1: criterion j lies at u[j] along
 // the row's own thresholds (extended by ext at both ends, linear between knots); path 0: at
 // u[j] itself. acc [S, U] receives sum over rows of w * max(1 - F(criterion), 0).
-// the link's CDF at z: 0 probit, 1 logit, 2 cloglog (Gumbel-min)
-static inline double link_cdf(double z, int link) {
-  if (link == 1) return 1.0 / (1.0 + std::exp(-z));
-  if (link == 2) return -std::expm1(-std::exp(std::min(z, 700.0)));
-  return 0.5 * std::erfc(-z * 0.7071067811865476);
+static inline bvn::v4d vlink_surv(bvn::v4d z, int link) {
+  using bvn::splat;
+  if (link == 1) return splat(1.0) / (splat(1.0) + bvn::vexp(z));
+  if (link == 2) return bvn::vexp(-bvn::vexp(bvn::vmin(z, splat(700.0))));
+  return vphi_p(-z);
+}
+
+static inline void accumulate_surv(double* out, int64_t s, int64_t S, int64_t j, int64_t U, double wr, bvn::v4d sv) {
+  const int64_t n = std::min<int64_t>(4, U - j);
+  for (int64_t q = 0; q < n; ++q)
+    if (sv[q] > 0.0) out[s + S * (j + q)] += wr * sv[q];
 }
 
 extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, const double* sig,
@@ -717,28 +598,31 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
   }
   int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, R));
   std::vector<std::vector<double>> part(T, std::vector<double>(size_t(S) * size_t(U), 0.0));
+  const int64_t Up = (U + 3) & ~int64_t(3);
   auto work = [&](int64_t t, int64_t r0, int64_t r1) {
+    using bvn::splat;
     double* out = part[t].data();
-    std::vector<double> knots(J + 2);
+    std::vector<double> knots(J + 2), cu(Up, 0.0);
     for (int64_t r = r0; r < r1; ++r) {
       const double wr = w[r];
       if (wr == 0.0) continue;
       for (int64_t s = 0; s < S; ++s) {
         const int64_t sr = s + S * r;
-        const double m = mu[sr], is = 1.0 / sig[sr];
-        const double l = kind ? lam[sr] : 0.0, m2 = kind == 2 ? mu2[sr] : 0.0;
+        const bvn::v4d vm = splat(mu[sr]), vis = splat(1.0 / sig[sr]);
+        const bvn::v4d vl = splat(kind ? lam[sr] : 0.0), vm2 = splat(kind == 2 ? mu2[sr] : 0.0);
         if (path) {
           for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
           knots[0] = knots[1] - e;
           knots[J + 1] = knots[J] + e;
         }
-        for (int64_t j = 0; j < U; ++j) {
-          const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
-          double F = link_cdf((c - m) * is, link);
-          if (kind == 1) F = (1.0 - l) * F;
-          else if (kind == 2) F = (1.0 - l) * F + l * link_cdf((c - m2) * is, link);
-          const double sv = 1.0 - F;
-          if (sv > 0.0) out[s + S * j] += wr * sv;
+        for (int64_t j = 0; j < U; ++j) cu[j] = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
+        for (int64_t j = 0; j < Up; j += 4) {
+          bvn::v4d c;
+          std::memcpy(&c, &cu[j], 32);
+          bvn::v4d sv = vlink_surv((c - vm) * vis, link);
+          if (kind == 1) sv = vl + (splat(1.0) - vl) * sv;
+          else if (kind == 2) sv = (splat(1.0) - vl) * sv + vl * vlink_surv((c - vm2) * vis, link);
+          accumulate_surv(out, s, S, j, U, wr, sv);
         }
       }
     }
@@ -778,26 +662,29 @@ extern "C" void bayesroc_r_mix_survival(const double* th, const double* mu, cons
   }
   int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, R));
   std::vector<std::vector<double>> part(T, std::vector<double>(size_t(S) * size_t(U), 0.0));
+  const int64_t Up = (U + 3) & ~int64_t(3);
   auto work = [&](int64_t t, int64_t r0, int64_t r1) {
+    using bvn::splat;
     double* out = part[t].data();
-    std::vector<double> knots(J + 2);
+    std::vector<double> knots(J + 2), cu(Up, 0.0);
     for (int64_t r = r0; r < r1; ++r) {
       const double wr = w[r];
       if (wr == 0.0) continue;
       for (int64_t s = 0; s < S; ++s) {
         const int64_t sr = s + S * r;
-        const double m = mu[sr], is = 1.0 / sig[sr];
-        const double l = lam[sr], m2 = mu2[sr], is2 = 1.0 / sig2[sr];
+        const bvn::v4d vm = splat(mu[sr]), vis = splat(1.0 / sig[sr]);
+        const bvn::v4d vl = splat(lam[sr]), vm2 = splat(mu2[sr]), vis2 = splat(1.0 / sig2[sr]);
         if (path) {
           for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
           knots[0] = knots[1] - e;
           knots[J + 1] = knots[J] + e;
         }
-        for (int64_t j = 0; j < U; ++j) {
-          const double c = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
-          const double F = (1.0 - l) * link_cdf((c - m) * is, link) + l * link_cdf((c - m2) * is2, link);
-          const double sv = 1.0 - F;
-          if (sv > 0.0) out[s + S * j] += wr * sv;
+        for (int64_t j = 0; j < U; ++j) cu[j] = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
+        for (int64_t j = 0; j < Up; j += 4) {
+          bvn::v4d c;
+          std::memcpy(&c, &cu[j], 32);
+          bvn::v4d sv = (splat(1.0) - vl) * vlink_surv((c - vm) * vis, link) + vl * vlink_surv((c - vm2) * vis2, link);
+          accumulate_surv(out, s, S, j, U, wr, sv);
         }
       }
     }

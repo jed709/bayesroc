@@ -343,6 +343,7 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
       }
     }
 
+    .check_factor_levels(fixed_formula, data_clean)
     X <- model.matrix(fixed_formula, data = data_clean)
     n_coef <- ncol(X)
     coef_names <- colnames(X)

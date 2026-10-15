@@ -141,9 +141,12 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
         data.frame(x = mat[, j], .chain = chain, .iteration = iter, .draw = seq_along(chain)))),
         error = function(e) NULL)
       if (is.null(arr)) next
-      out$rhat[j] <- posterior::rhat(posterior::extract_variable_matrix(arr, "x"))
-      out$ess_bulk[j] <- posterior::ess_bulk(posterior::extract_variable_matrix(arr, "x"))
-      out$ess_tail[j] <- posterior::ess_tail(posterior::extract_variable_matrix(arr, "x"))
+      xm <- posterior::extract_variable_matrix(arr, "x")
+      withCallingHandlers({
+        out$rhat[j] <- posterior::rhat(xm)
+        out$ess_bulk[j] <- posterior::ess_bulk(xm)
+        out$ess_tail[j] <- posterior::ess_tail(xm)
+      }, warning = function(w) if (grepl("ESS has been capped", conditionMessage(w))) invokeRestart("muffleWarning"))
     }
   }
   rownames(out) <- NULL

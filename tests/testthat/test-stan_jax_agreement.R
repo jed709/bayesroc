@@ -57,14 +57,14 @@ test_that("cdp (rotello_2005): Stan and JAX agree on rec/fam/sigma_R/rec_crit", 
 test_that("cumulative: Stan and JAX agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
+  m <- broc(brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()),
             d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   .assert_means_agree(fs, fj,
-                      c("beta_mu[1]", "beta_thresh_mid[1]"))
+                      c("beta_thresh_mid[1]", "beta_thresh_mid[2]"))
 })
 
 test_that("bivariate_cumulative: Stan and JAX posterior means agree", {

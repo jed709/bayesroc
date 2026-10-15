@@ -6,14 +6,20 @@
 # =============================================================================
 
 #' @noRd
+.crit_scale_spec <- function() {
+  list(required = FALSE, default = NULL, link = "log",
+       null_value = "k-1", null_description = "criteria parameterized by a midpoint and K-2 gaps",
+       description = "criterion scale (log link): multiplies every gap, so the criteria stretch about their mean")
+}
+
 .param_name_map <- function(family_name) {
   switch(family_name,
     cdp                  = list(dprime = "rec", dprime2 = "fam",
                                 sigma  = "sigma_R", sigma2 = "sigma_F"),
-    cumulative           = list(dprime = "mu", criterion = "cutpoints"),
+    cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
-                                criterion = "cutpoints",
-                                criterion2 = "cutpoints2"),
+                                criterion = "cutpoints", criterion_scale = "cutpoints_scale",
+                                criterion2 = "cutpoints2", criterion2_scale = "cutpoints2_scale"),
     list()
   )
 }
@@ -129,6 +135,7 @@ evsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity")
       ),
       description = "Equal Variance Signal Detection Model"
@@ -190,6 +197,7 @@ uvsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         sigma = list(required = TRUE, default = NULL, link = "log")
       ),
@@ -255,6 +263,7 @@ dpsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "recollection probability"),
@@ -348,6 +357,7 @@ mixture <- function(link = link_probit()) {
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "d' for state 1 (high state)"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "probability of state 1"),
@@ -385,37 +395,36 @@ mixture <- function(link = link_probit()) {
 #' @details
 #' ## Likelihood
 #' For an ordinal response Y on a K-point scale with cutpoints
-#' c_1 < ... < c_{K-1}:
-#' \deqn{P(Y \le k \mid x) = F(c_k - \mu(x))}
-#' with \eqn{c_0 = -\infty} and \eqn{c_K = +\infty}, where F is the link CDF
-#' (probit or logit) and \eqn{\mu(x)} is the linear predictor. Cell
-#' probabilities by differencing:
-#' \eqn{P(Y = k \mid x) = F(c_k - \mu(x)) - F(c_{k-1} - \mu(x))}.
+#' c_1(x) < ... < c_{K-1}(x):
+#' \deqn{P(Y \le k \mid x) = F(c_k(x))}
+#' with \eqn{c_0 = -\infty} and \eqn{c_K = +\infty}, where F is the link CDF.
+#' Cell probabilities by differencing:
+#' \eqn{P(Y = k \mid x) = F(c_k(x)) - F(c_{k-1}(x))}. The latent distribution is fixed
+#' (mean 0, SD 1), so every effect is an effect on the cutpoints and the response formula
+#' takes no predictors (`rating ~ 1`).
 #'
 #' ## Parameters
 #' \describe{
-#'   \item{mu}{(the primary formula) A shift of the latent distribution common to all
-#'     cutpoints, the proportional-odds part. Its intercept is 0 (the cutpoints hold the
-#'     location), a factor is treatment-coded (`~ 0 + f` is fitted as `~ f`, since there is no
-#'     identified cell-means form), and a random effect is one shift per group: `rating ~ 1 +
-#'     (1 | rater) + (1 | item)` is the random-intercept ordinal model. Identity link.}
-#'   \item{cutpoints}{K-1 ordered cutpoints (mid-anchor + K-2 ordered gaps; default `~ 1`).
-#'     An effect here is category-specific: one coefficient per cutpoint, so the response
-#'     scale changes shape between levels; a random effect is K-1 correlated shifts per
-#'     group. Identity link. Set priors via `thresh_mid` and `log_gaps`.}
+#'   \item{cutpoints}{K-1 ordered cutpoints (a midpoint and K-2 ordered gaps; default `~ 1`).
+#'     Without `cutpoints_scale`, every term has one coefficient per cutpoint (the midpoint
+#'     and each log gap) and a random effect is K-1 correlated shifts per group. Identity link.
+#'     Set priors via `thresh_mid` and `log_gaps`.}
+#'   \item{cutpoints_scale}{(optional) Makes the cutpoints location-scale:
+#'     \eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t} set by the gap
+#'     intercepts. `cutpoints` then gives the location \eqn{L} (the mean cutpoint), one
+#'     coefficient per term, and `cutpoints_scale` gives the log scale \eqn{s}, which has no
+#'     intercept of its own. A positive location coefficient moves responses down.}
 #' }
-#'
-#' Only the differences cutpoint - mu are identified, so a variable (a predictor or a
-#' grouping factor) goes on one of the two formulas: on `mu` for a common shift, on
-#' `cutpoints` for category-specific effects. A variable on both is refused.
 #'
 #' ## Formula syntax
 #' ```
-#' # random-intercept ordinal model with a condition effect common to all cutpoints
-#' broc(brf(rating ~ condition + (1 | subj) + (1 | item),
+#' # random-intercept ordinal model with a condition shift
+#' broc(brf(rating ~ 1,
+#'          cutpoints ~ condition + (1 | subj) + (1 | item),
+#'          cutpoints_scale ~ 1,
 #'          family = cumulative()), data = dat)
-#' # category-specific condition and subject effects instead
-#' broc(brf(rating ~ 1 + (1 | item),
+#' # per-cutpoint condition and subject effects
+#' broc(brf(rating ~ 1,
 #'          cutpoints ~ condition + (1 | subj),
 #'          family = cumulative()), data = dat)
 #' ```
@@ -439,6 +448,7 @@ cumulative <- function(link = link_probit()) {
       params = list(
         dprime    = list(required = TRUE, default = NULL, link = "identity",
                          description = "linear predictor for location"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "threshold/cutpoint parameters")
       ),
@@ -461,43 +471,37 @@ cumulative <- function(link = link_probit()) {
 #' is the bivariate normal CDF:
 #' \deqn{P(Y_1 \le j,\; Y_2 \le k \mid x) = \Phi_2\big(c1_j - \mu_1(x),\;
 #'       c2_k - \mu_2(x);\; \rho\big)}
-#' with \eqn{c_0 = -\infty}, \eqn{c_K = +\infty}. Variance fixed at 1 on
-#' both dimensions; \eqn{\mu_1} and \eqn{\mu_2} have no intercept (absorbed
-#' into cutpoints) for identifiability. Cell probabilities by 4-corner
-#' differencing:
+#' with \eqn{c_0 = -\infty}, \eqn{c_K = +\infty}. Both latent dimensions have mean 0
+#' and variance 1, so effects go on the cutpoints and the response formula takes no
+#' predictors. Cell probabilities by 4-corner differencing:
 #' \deqn{P(Y_1 = j,\; Y_2 = k \mid x) = P(\le j, \le k) - P(\le j-1, \le k)
 #'       - P(\le j, \le k-1) + P(\le j-1, \le k-1)}
 #'
 #' ## Parameters
 #' \describe{
-#'   \item{mu}{(the primary formula) Location of dimension 1: a shift common to all
-#'     of its cutpoints. Its intercept is 0 (the cutpoints hold the location), factors are
-#'     treatment-coded, and a random effect is one shift per group. Identity link.}
-#'   \item{mu2}{Location of dimension 2, likewise (default `~ 1`). Identity link.}
-#'   \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (mid-anchor + ordered
-#'     gaps; default `~ 1`): category-specific effects, one per cutpoint. Identity link.
-#'     Set priors via `thresh_mid` and `log_gaps`. `cutpoints1` is accepted as an older
-#'     spelling.}
+#'   \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (a midpoint and ordered
+#'     gaps; default `~ 1`), one coefficient per cutpoint unless `cutpoints_scale` is given,
+#'     as in [cumulative()]. Identity link. Set priors via `thresh_mid` and `log_gaps`.
+#'     `cutpoints1` is accepted as an older spelling.}
+#'   \item{cutpoints_scale}{(optional) Location-scale cutpoints for dimension 1; see
+#'     [cumulative()].}
 #'   \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default `~ 1`).
 #'     Identity link. Set priors via `thresh_mid2` and `log_gaps2`.}
+#'   \item{cutpoints2_scale}{(optional) Location-scale cutpoints for dimension 2.}
 #'   \item{rho}{(required) Correlation between dimensions; effective
 #'     \eqn{\rho = \tanh(\rho_{\text{param}})}. Fisher z link.}
 #' }
 #'
 #' ## Formula syntax
 #' ```
-#' broc(brf(resp(y1, y2) ~ x1 + (1 | subj),
-#'          mu2 ~ x2 + (1 | subj),
-#'          cutpoints ~ 1,
-#'          cutpoints2 ~ 1,
+#' broc(brf(resp(y1, y2) ~ 1,
+#'          cutpoints ~ x1 + (1 | subj),
+#'          cutpoints_scale ~ 1,
+#'          cutpoints2 ~ x2 + (1 | subj),
 #'          rho ~ 1,
 #'          family = bivariate_cumulative()),
 #'     data = dat)
 #' ```
-#'
-#' Only (cutpoint - mu) is identified on each dimension, so a variable goes on the location
-#' formula (common shift) or on that dimension's cutpoints formula (category-specific), not
-#' both; the model refuses the overlap. See [cumulative()].
 #'
 #' @return A `broc_family` object.
 #' @seealso [cumulative()] for univariate ordinal,
@@ -517,6 +521,7 @@ bivariate_cumulative <- function() {
                           description = "linear predictor for dimension 2 location"),
         criterion  = list(required = TRUE, default = NULL, link = "identity",
                           description = "dimension 1 threshold/cutpoint parameters"),
+        criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "dimension 2 threshold/cutpoint parameters"),
         rho        = list(required = TRUE, default = NULL, link = "fisherz",
@@ -597,6 +602,7 @@ source_mixture <- function(link = link_probit()) {
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "d' for attended Source A items (Psi_A location)"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "attention/encoding probability for Source A"),
@@ -802,8 +808,10 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
                      null_value = 0, null_description = "fixed at 0",
                      description = "rho_N correlation for new items"),
 
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
+        criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Discrimination thresholds (c2)")
       ),
@@ -982,8 +990,10 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
                          null_description = "constrained equal to lambda2",
                          description = "source recollection probability for Source B"),
 
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
+        criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Discrimination thresholds (c2)")
       ),
@@ -1122,6 +1132,7 @@ cdp <- function(old_levels = NULL) {
                          description = "Remember criterion (c_R) on the recollection axis"),
         know_crit = list(required = FALSE, default = NULL, link = "identity",
                          description = "Know criterion (c_K) on the familiarity axis (R/K/G mode)"),
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Confidence thresholds (tau) on memory strength M = R + F")
       ),
@@ -1246,8 +1257,10 @@ vrdp2d <- function(source_criteria = c("common", "varying", "varying_shared_new"
                       null_value = 1, null_description = "fixed at 1",
                       description = "sigma_S: SD on source dimension for recollected items"),
         
+        criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Item dimension thresholds (K1-1 thresholds)"),
+        criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Source dimension thresholds (K2-1 thresholds, or K1x(K2-1) if varying)")
       ),

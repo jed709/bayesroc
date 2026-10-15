@@ -120,7 +120,7 @@ test_that("vrdp2d: smoke", {
 test_that("cumulative: smoke", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
+  m <- broc(brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()),
             d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
                   parallel_chains = .fast_chains,

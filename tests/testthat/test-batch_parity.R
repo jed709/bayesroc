@@ -37,6 +37,6 @@ test_that("cumulative: batch path engages and agrees with plain Stan", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
   .assert_batch_plain_agree(
-    brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()),
-    d, c("beta_mu[1]", "beta_thresh_mid[1]"))
+    brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()),
+    d, c("beta_thresh_mid[1]", "beta_thresh_mid[2]"))
 })

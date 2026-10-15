@@ -151,11 +151,7 @@ test_that("encoding factor with one surviving level does not crash", {
   )
 })
 
-test_that("cumulative default slope prior is centred at 0", {
-  d <- .fixture_univariate()
-  m <- broc(brf(item_resp ~ cond, cutpoints ~ 1, family = cumulative()), d)
-  expect_identical(m$model_data$prior_lookup$b[["dprime"]], "normal(0, 1)")
-
+test_that("the default d' prior is centred at 1", {
   d2 <- .fixture_univariate()
   m2 <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d2)
   expect_identical(m2$model_data$prior_lookup$b[["dprime"]], "normal(1, 1)")
