@@ -2507,7 +2507,7 @@ fit_broc <- function(model,
     tpc <- as.integer(threads_per_chain)
     N <- model$stan_data$N
     model$stan_data$grainsize <- max(1L, as.integer(N / (2L * tpc)))
-    stan_fit <- mod$sample(
+    stan_fit <- .stan_sample(mod,
       data = model$stan_data,
       chains = chains,
       parallel_chains = parallel_chains,
@@ -2525,7 +2525,7 @@ fit_broc <- function(model,
     )
   } else {
     mod <- .compile_broc_stan(model)
-    stan_fit <- mod$sample(
+    stan_fit <- .stan_sample(mod,
       data = model$stan_data,
       chains = chains,
       parallel_chains = parallel_chains,
@@ -3139,6 +3139,10 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
       invokeRestart("muffleWarning")
     }
   })
+}
+
+.stan_sample <- function(mod, ..., output_basename = NULL) {
+  mod$sample(..., output_basename = output_basename %||% basename(tempfile(paste0(mod$model_name(), "-"))))
 }
 
 .recover_dropped_chains <- function(stan_fit, chains) {

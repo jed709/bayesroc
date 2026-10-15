@@ -3,7 +3,8 @@ prior_init <- function(model, chains = 4, seed = NULL) {
   if (!inherits(model, "broc_model")) {
     stop("`model` must be a broc_model object built with broc().", call. = FALSE)
   }
-  if (!is.null(seed)) set.seed(seed)
+  restore_seed <- .seed_scope(seed)
+  on.exit(restore_seed(), add = TRUE)
 
   parsed <- .parse_stan_param_block(model$stan_code, model$stan_data)
 

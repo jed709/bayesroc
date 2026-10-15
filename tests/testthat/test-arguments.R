@@ -70,3 +70,16 @@ test_that("seed makes pp_check and plot_roc draw subsets reproducible", {
   set.seed(99); invisible(pp_check(f, ndraws = 20, seed = 4)); x2 <- runif(1)
   expect_identical(x1, x2)
 })
+
+test_that("seeded prior inits are reproducible and leave the caller's RNG stream alone", {
+  m <- suppressMessages(broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), .fixture_univariate()))
+  set.seed(99)
+  a <- prior_init(m, chains = 2, seed = 1)
+  x <- runif(1)
+  set.seed(99)
+  b <- prior_init(m, chains = 2, seed = 1)
+  expect_identical(a, b)
+  expect_identical(runif(1), x)
+  set.seed(99)
+  expect_identical(runif(1), x)
+})

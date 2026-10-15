@@ -4,8 +4,9 @@
   out <- tempfile(fileext = ".csv")
   old <- Sys.getenv("PATH")
   on.exit(Sys.setenv(PATH = old), add = TRUE)
-  Sys.setenv(PATH = paste(file.path(cmdstanr::cmdstan_path(), "stan/lib/stan_math/lib/tbb"),
-                          old, sep = .Platform$path.sep))
+  tool <- if (.Platform$OS.type == "windows") cmdstanr:::toolchain_PATH_env_var() else NULL
+  Sys.setenv(PATH = paste(c(file.path(cmdstanr::cmdstan_path(), "stan/lib/stan_math/lib/tbb"), tool, old),
+                          collapse = .Platform$path.sep))
   system2(mod$exe_file(), c("log_prob", paste0("constrained_params=", draws_csv), "data",
                             paste0("file=", js), "output", paste0("file=", out), "sig_figs=18"),
           stdout = FALSE, stderr = FALSE)

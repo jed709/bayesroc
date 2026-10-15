@@ -8,7 +8,6 @@ Entry point: fit_model(config, chains, warmup, samples, seed)
 """
 
 import os
-import pickle
 import sys
 import time
 import re as _re
@@ -45,7 +44,7 @@ _PHI_D = 0.3989422804014327
 
 import numpyro
 import numpyro.distributions as dist
-from numpyro.infer import MCMC, NUTS, init_to_uniform, init_to_sample
+from numpyro.infer import MCMC, NUTS, init_to_uniform
 
 
 # =============================================================================
@@ -2585,7 +2584,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
     n_upper = n_thresh - mid_idx - 1
     gap_mask_np = _make_batch_gap_mask_np(n_gaps, n_thresh, mid_idx, n_upper)
 
-    _INV_2PI = 1.0 / (2.0 * np.pi)
 
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):
@@ -2704,8 +2702,6 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
         inv_sR = 1.0 / jnp.clip(sigma_R, 1e-10)
         inv_sF = 1.0 / jnp.clip(sigma_F, 1e-10)
         inv_sM = 1.0 / jnp.clip(sigma_M, 1e-10)
-        rho2 = rho * rho
-        denom_rho = jnp.sqrt(jnp.clip(1.0 - rho2, 1e-10))
 
         has_tau_lo = (is_old_resp_val == 1)
         has_tau_hi = ~has_tau_lo | (old_idx < J - 1)
@@ -4515,7 +4511,6 @@ def sdt_model(config):
         log_gaps_obs = jnp.zeros((0, N))
 
     mid_idx = (n_thresh + 1) // 2 - 1
-    n_upper = n_thresh - mid_idx - 1
 
     crit_re_contributions = list(cross_cor_criterion_contributions)
 
@@ -4698,7 +4693,6 @@ def sdt_model(config):
         # -- Build source dimension thresholds --
         n_gaps2 = n_thresh2 - 1
         mid2 = (n_thresh2 + 1) // 2 - 1
-        n_upper2 = n_thresh2 - mid2 - 1
         _t2_mid_fused = None
         _t2_gaps_fused = None
 
@@ -4791,7 +4785,6 @@ def sdt_model(config):
             c2_conf = params_config["criterion2"]
             c2_n_coef = c2_conf["n_coef"]
             X_c2 = _ensure_2d(jnp.array(c2_conf["X"], dtype=_FLOAT))
-            c2_priors = c2_conf.get("priors", {})
             c2_col_names = c2_conf.get("col_names", [f"V{i+1}" for i in range(c2_n_coef)])
             if isinstance(c2_col_names, str):
                 c2_col_names = [c2_col_names]

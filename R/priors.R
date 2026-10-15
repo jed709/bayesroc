@@ -744,14 +744,15 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
 
   crit_dpar <- if (is_cumulative || is_bivariate_cumulative) "cutpoints" else "criterion"
   crit2_dpar <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
-  add_thresh_priors <- function(mid_key, gap_key, coefs, n_gaps) {
+  add_thresh_priors <- function(mid_key, gap_key, coefs, n_gaps, ls = FALSE) {
     tg <- .thresh_prior_grid(pl, mid_key, gap_key, coefs, n_gaps)
+    gap_cols <- if (ls) seq_len(min(1L, length(tg$coefs))) else seq_along(tg$coefs)
     for (p in seq_along(tg$coefs)) {
       add_prior("b", mid_key, tg$coefs[p], NA, tg$mid[p],
                 if (is_user_b(mid_key) || !is.null(pl$b_coef[[paste0(mid_key, "_", tg$coefs[p])]])) "user" else "default")
     }
     for (k in seq_len(max(0L, n_gaps))) {
-      for (p in seq_along(tg$coefs)) {
+      for (p in gap_cols) {
         cf <- paste0("gap", k, "_", tg$coefs[p])
         user <- is_user_b(gap_key) || !is.null(pl$b_coef[[paste0(gap_key, "_", cf)]]) ||
           !is.null(pl$b_coef[[paste0(gap_key, "_[", k, "]")]])
@@ -759,7 +760,8 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
       }
     }
   }
-  add_thresh_priors("thresh_mid", "log_gaps", model$model_data$criterion$coef_names, model$model_data$K - 2L)
+  add_thresh_priors("thresh_mid", "log_gaps", model$model_data$criterion$coef_names, model$model_data$K - 2L,
+                    isTRUE(model$model_data$has_criterion_scale))
   
   if (model$model_data$has_sigma)
     add_fixed_priors("sigma", "sigma", model$model_data$sigma_fixed$coef_names)
@@ -809,7 +811,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
 
   if (isTRUE(model$model_data$has_criterion2)) {
     add_thresh_priors("thresh_mid2", "log_gaps2", model$model_data$criterion2$coef_names,
-                      model$model_data$K2 - 2L)
+                      model$model_data$K2 - 2L, isTRUE(model$model_data$has_criterion2_scale))
   }
   
   # --- Random effect SDs (class = "sd") and correlations (class = "cor") ---

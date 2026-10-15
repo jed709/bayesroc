@@ -19,7 +19,6 @@ earlier blocks that enter the same linear-predictor terms move by Delta_g, so po
 parent levels and crossed factors stay untied as well. For fixed (Lam, s) the map
 (x, beta, zeta) -> (x, beta, z) is a triangular bijection; sampling zeta with its log-Jacobian
 leaves the posterior of the model's own parameters unchanged."""
-import os
 import re
 import numpy as np
 import jax
@@ -228,7 +227,6 @@ def _fixed_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched=None
         n_comp = 1 if scalar else n_thresh
         if int(conf["n_terms"]) != n_comp * R:
             return []
-        n_gaps = n_thresh - 1
         for r in range(R):
             js = [j for j in range(P) if np.array_equal(Zc[:, r], X[:, j])]
             if not js:
@@ -261,73 +259,6 @@ def _fixed_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched=None
             flat = batched.get(param)
         if flat is not None:
             out.append((r, flat))
-    return out
-
-
-def _group_fixed_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched, index, n, taken):
-    """Terms that equal no population column as a whole but whose rows, within every group,
-    share one row of the population design (a subject's effect of a within-subject factor when
-    the population formula crosses it with a between-subject factor):
-    [(dim_within_conf, flat beta indices [P'], weights [n, P'])], the weights being each group's
-    design row. Such an effect and that combination of coefficients enter the same rows."""
-    N = int(config["N"])
-    Zc = _re_columns(conf, N)
-    R, nt = Zc.shape[1], int(conf["n_terms"])
-    if (param == "criterion2" and config.get("varying_source_criteria")) or not np.all((Zc == 0) | (Zc == 1)):
-        return []
-    comps = []
-    if param in ("criterion", "criterion2"):
-        mid_name = "beta_thresh_mid"
-        if param == "criterion2":
-            pc = (config.get("params") or {}).get("criterion2")
-            X = np.asarray(pc["X"], dtype=float).reshape(N, -1) if pc and pc.get("X") is not None else np.ones((N, 1))
-            n_thresh = int(config["K2"]) - 1
-            mid = (n_thresh + 1) // 2 - 1
-            mid_name, gap_prefix = "beta_thresh_mid_2", gap_prefix + "_2"
-        else:
-            X = np.asarray(config["X_crit"], dtype=float).reshape(N, -1)
-        P = X.shape[1]
-        scalar = bool(conf.get("location_only"))
-        n_comp = 1 if scalar else n_thresh
-        if nt != n_comp * R:
-            return []
-        for k in range(n_comp):
-            flats = []
-            for j in range(P):
-                if scalar or k == mid:
-                    flats.append(_beta_site(off, None, [(f"{mid_name}[{j + 1}]", None)]))
-                else:
-                    g = _gap_of_component(k, mid, n_thresh)
-                    flats.append(_beta_site(off, None, [(f"{gap_prefix}[{g + 1},{j + 1}]", None),
-                                                        (f"{gap_prefix}[{g + 1}]", None) if P == 1 else ("", None),
-                                                        (gap_prefix, (g,)) if P == 1 else ("", None)]))
-            comps.append((k * R, flats))
-    else:
-        pc = (config.get("params") or {}).get(param)
-        if not pc or int(pc.get("n_coef", 0)) < 1 or nt != R:
-            return []
-        X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
-        P = X.shape[1]
-        flats = [_beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))]) for j in range(P)]
-        if P == 1 and flats[0] is None and batched:
-            flats = [batched.get(param)]
-        comps.append((0, flats))
-    out = []
-    for r in range(R):
-        on = Zc[:, r] == 1
-        if not on.any():
-            continue
-        g, Xr = index[on], X[on]
-        mean = np.zeros((n, P))
-        np.add.at(mean, g, Xr)
-        mean /= np.maximum(np.bincount(g, minlength=n), 1)[:, None]
-        if np.max(np.abs(Xr - mean[g])) > 1e-12:
-            continue
-        used = np.where(np.any(mean != 0.0, 0))[0]
-        for d0, flats in comps:
-            if d0 + r in taken or not len(used) or any(flats[j] is None for j in used):
-                continue
-            out.append((d0 + r, [int(flats[j]) for j in used], mean[:, used]))
     return out
 
 
@@ -568,19 +499,12 @@ def _supers(config, off, split=False):
                 for r in range(R):
                     B.slots[o + r] = (mp, 0, Zc[:, r].tobytes())
                     B.zcol[o + r] = Zc[:, r]
-            if mp in _RE_PARAMS and os.environ.get("BAYESROC_LEGACY_COORDS"):    # benchmarking only: column-matching pairs
-                pairs = _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)
-                B.bpairs += [(o + d, f) for d, f in pairs]
-                B.gpairs += [(o + d, flats, W) for d, flats, W in
-                             _group_fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas,
-                                              B.index, B.n, {d for d, _ in pairs})]
+            if mp == "criterion2" and config.get("varying_source_criteria"):
+                B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
             else:
-                if mp == "criterion2" and config.get("varying_source_criteria"):
-                    B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
-                else:
-                    bp, gp = _proj_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas, B.index, B.n)
-                    B.bpairs += [(o + d, f) for d, f in bp]
-                    B.gpairs += [(o + d, flats, W) for d, flats, W in gp]
+                bp, gp = _proj_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas, B.index, B.n)
+                B.bpairs += [(o + d, f) for d, f in bp]
+                B.gpairs += [(o + d, flats, W) for d, flats, W in gp]
             o += nt
         if o != B.dim:
             continue
@@ -591,20 +515,10 @@ def _supers(config, off, split=False):
     # projected onto the later block's columns for that component (an intercept takes the mean over the
     # group's rows, a slope the difference it explains), whatever the terms' columns. Without this a
     # population coefficient both blocks absorb would be compensated twice.
-    legacy = bool(os.environ.get("BAYESROC_LEGACY_COORDS"))
     for k, sb in enumerate(sbs):
         for e in range(k):
             E = sbs[e]
             if sb.n * E.n > _MAX_LINK:
-                continue
-            if legacy:                                            # benchmarking only: links between identical columns
-                cd = [i for i, si in enumerate(sb.slots) if si is not None and si in E.slots]
-                if cd:
-                    ed = [E.slots.index(sb.slots[i]) for i in cd]
-                    cnt = np.zeros((sb.n, E.n))
-                    np.add.at(cnt, (sb.index, E.index), 1.0)
-                    W = cnt / np.maximum(cnt.sum(1, keepdims=True), 1.0)
-                    sb.links.append((e, np.array(cd, int), np.array(ed, int), np.stack([W] * len(cd))))
                 continue
             comps, pairs = {}, []
             for i, si in enumerate(sb.slots):
@@ -821,7 +735,7 @@ class TMap:
         return A, Ainv, jnp.take(jnp.take(Q, an["perm"], axis=0), an["perm"], axis=1)[::-1, ::-1]
 
     def _parts(self, k, v, post, ans, us):
-        sb, an = self.sbs[k], ans[k]
+        an = ans[k]
         A, Ainv, Q = self._prior(k, v, post, an)
         L = _chol(an["Lam"][::-1, ::-1], Q)
         return A, Ainv, L, _fsolve(L, self._linear(k, v, an, us, ans)[::-1])
