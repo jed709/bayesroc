@@ -175,6 +175,33 @@
           T, keep, fmt("pop"), fmt("sd"), fmt("cor"), .fmt_rhat(dg$rhat, rhat), rhat, sm, need_txt, round_s, elapsed)
 }
 
+.auto_labels <- function(model, vars) {
+  out <- stats::setNames(vars, vars)
+  cm <- tryCatch(.coef_map(model, vars), error = function(e) NULL)
+  if (!is.null(cm) && nrow(cm)) {
+    lab <- ifelse(cm$term %in% c("", "Intercept"), cm$parameter, paste0(cm$parameter, ", ", cm$term))
+    out[cm$variable] <- lab
+  }
+  blocks <- tryCatch(.re_blocks(model), error = function(e) list())
+  for (b in blocks) {
+    sdn <- if (b$dim == 1L) c(b$sd, paste0(b$sd, "[1]")) else paste0(b$sd, "[", seq_len(b$dim), "]")
+    labs <- sub(": Intercept$", "", rep_len(b$labels, length(sdn)))
+    hit <- sdn %in% vars
+    out[sdn[hit]] <- paste0(b$group, " SD of ", labs[hit])
+    if (b$dim < 2L) next
+    l2 <- sub(": Intercept$", "", b$labels)
+    for (i in 2:b$dim) for (j in seq_len(i - 1L)) {
+      for (cv in c(paste0(b$cor, "[", i, ",", j, "]"), paste0(b$cor, "[", j, ",", i, "]")))
+        if (cv %in% vars) out[cv] <- paste0(b$group, " correlation of ", l2[j], " and ", l2[i])
+    }
+  }
+  out
+}
+
+.lab_of <- function(lab, n) {
+  if (is.null(n)) "?" else if (n %in% names(lab)) lab[[n]] else n
+}
+
 .fmt_rhat <- function(x, target) {
   d <- 3L
   while (d < 6L && is.finite(x) && x > target && round(x, d) <= target) d <- d + 1L
@@ -264,6 +291,7 @@
 
   info <- jsonlite::read_json(file.path(out, "start.json"))
   mm <- .mon_map(model, unlist(info$mon_keys), info$mon_shapes)
+  mon_lab <- .auto_labels(model, mm$names)
   map_args <- list(cols = mm$cols, names = mm$names, classes = mm$classes, old_mon = NULL,
                    old_stride = if (is.null(rs)) 1L else rs$stride)
   if (!is.null(rs)) {
@@ -313,10 +341,9 @@
     if (isTRUE(progress_bar)) {
       need_txt <- if (!is.null(fixed_draws)) sprintf("%d/%d", T - T0, as.integer(fixed_draws))
         else if (met) "targets met"
-        else paste0("waiting on ", paste(c(if (any(!ess_ok)) sprintf("ESS %s (%s)", paste(names(ess_ok)[!ess_ok], collapse = "/"),
-                                                                      st$worst %||% "?"),
-                                            if (dg$rhat > auto$rhat) sprintf("R-hat (%s)", st$worst_rhat %||% "?")),
-                                          collapse = " + "),
+        else paste0("waiting on ", paste(c(if (any(!ess_ok)) paste("ESS", paste(names(ess_ok)[!ess_ok], collapse = "/")),
+                                            if (dg$rhat > auto$rhat) "R-hat"), collapse = " + "),
+                    if (!is.null(st$blocker)) sprintf(" (%s)", .lab_of(mon_lab, st$blocker)) else "",
                     if (any(!ess_ok)) sprintf(" (~%d more draws)", as.integer(ceiling(need - T))) else "")
       message(.auto_status(T, kept, stride, dg, st, sampler, need_txt, st$seconds, elapsed,
                            auto$targets, auto$rhat))

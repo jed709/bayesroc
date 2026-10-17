@@ -18,6 +18,15 @@
 #' `log_gaps` prior applies to the unconstrained gap parameters that the
 #' softplus maps to spacings.
 #'
+#' The same names set the random-effect SDs of the criteria (`class = "sd"`):
+#' `dpar = "thresh_mid"` for the midpoint SD, `dpar = "log_gaps"` for the gap
+#' SDs, and `coef = "gap2"` for one gap (`"gap2_x"` for one random-slope term).
+#' Gaps are numbered as in the fixed effects: outward from the midpoint, upper
+#' gaps first, then lower ones. With varying source criteria, a component prior
+#' applies to that component in every detection bin. `dpar = "criterion"` (or
+#' `"criterion2"`) still sets every criterion SD at once; component priors
+#' override it.
+#'
 #' @param prior The prior as a distribution call, e.g. `"normal(0, 1)"`,
 #'   `"student_t(3, 0, 2.5)"`, or `"lkj(2)"`. Supported on both backends:
 #'   `normal`, `std_normal`, `student_t`, `cauchy`, `logistic`, `gumbel`,
@@ -39,7 +48,8 @@
 #'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
 #'   `class`. [get_broc_prior()] lists every settable prior with its `dpar` and
 #'   `coef`.
-#' @param coef Optional specific coefficient name (e.g., `"conditionread"`)
+#' @param coef Optional specific coefficient name (e.g., `"conditionread"`). For
+#'   criterion gaps, `"gap<k>"` or `"gap<k>_<term>"`.
 #' @param group Optional grouping factor for random effects (e.g., `"participant"`)
 #' @return A `broc_prior` object. Combine several with [c()] and pass to [broc()].
 #' @seealso [get_broc_prior()]
@@ -51,6 +61,11 @@
 #' # Prior on specific d' coefficient
 #' broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime", coef = "conditionread")
 #' 
+#' # Criterion SDs by component: midpoint, all gaps, and one source gap
+#' broc_prior("normal(0, 0.4)", class = "sd", dpar = "thresh_mid", group = "participant")
+#' broc_prior("normal(0, 0.2)", class = "sd", dpar = "log_gaps", group = "participant")
+#' broc_prior("normal(0, 0.1)", class = "sd", dpar = "log_gaps2", coef = "gap2")
+#'
 #' # Prior on every random-effect standard deviation
 #' broc_prior("normal(0, 0.5)", class = "sd")
 #' 
@@ -822,11 +837,21 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     !is.null(pl$sd_dpar_group_coef[[paste0(p, "_", group, "_", coef)]]) ||
       !is.null(pl$sd_dpar_coef[[paste0(p, "_", coef)]]) || is_user_sd_prior(pl, p, group)
   }
+  add_crit_sd <- function(p, group, re) {
+    r <- .crit_re_sd_resolve(pl, p, group, re)
+    r <- r[!duplicated(r[c("comp", "term")]), , drop = FALSE]
+    r <- r[order(r$comp > 0L, r$comp), , drop = FALSE]
+    for (i in seq_len(nrow(r))) {
+      add_prior("sd", r$dpar[i], if (r$comp[i] == 0L) r$term[i] else paste0("gap", r$comp[i], "_", r$term[i]),
+                group, r$prior[i], if (r$user[i]) "user" else "default")
+    }
+  }
   for (p in .re_param_names()) {
     res <- .re_list_of(model$model_data, p)
     for (group in names(res)) {
       re <- res[[group]]
       if (!is.null(re$cor_id)) next
+      if (p %in% c("criterion", "criterion2")) { add_crit_sd(p, group, re); next }
       for (coef in .re_sd_coef_names(p, re)) {
         add_prior("sd", label(p), coef, group, get_sd_prior(pl, p, group, coef),
                   if (user_sd(p, group, coef)) "user" else "default")
@@ -847,6 +872,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     for (member in cc$members) {
       re <- .re_list_of(model$model_data, member$param)[[cc$group]]
       if (is.null(re)) next
+      if (member$param %in% c("criterion", "criterion2")) { add_crit_sd(member$param, cc$group, re); next }
       for (coef in .re_sd_coef_names(member$param, re)) {
         add_prior("sd", label(member$param), coef, cc$group, get_sd_prior(pl, member$param, cc$group, coef),
                   if (user_sd(member$param, cc$group, coef)) "user" else "default")
@@ -966,10 +992,51 @@ print.broc_prior_table <- function(x, ...) {
   re$level_names %||% paste0("term", seq_len(R))
 }
 
+.crit_re_components <- function(re) {
+  R <- as.integer(re$n_re_terms %||% 1L)
+  nb <- as.integer(re$dim) %/% R
+  mode <- re$varying_re_mode %||% "none"
+  J <- if (mode == "full") nb %/% as.integer(re$n_bins) else if (mode == "none") nb else 1L
+  k <- ((seq_len(nb) - 1L) %% J) + 1L
+  m <- (J + 1L) %/% 2L
+  rep(ifelse(k == m, 0L, ifelse(k > m, k - m, J - k)), each = R)
+}
+
+.first_prior <- function(...) {
+  for (x in list(...)) {
+    x <- unlist(x, use.names = FALSE)
+    x <- x[!is.na(x)]
+    if (length(x)) return(x[[1]])
+  }
+  NA_character_
+}
+
+.crit_re_sd_resolve <- function(pl, dpar, group, re) {
+  terms <- rep_len(.crit_re_coef_names(re), re$dim)
+  comp <- .crit_re_components(re)
+  sfx <- if (dpar == "criterion2") "2" else ""
+  out <- lapply(seq_len(re$dim), function(d) {
+    cf <- terms[d]
+    cd <- if (comp[d] == 0L) paste0("thresh_mid", sfx) else paste0("log_gaps", sfx)
+    cc <- if (comp[d] == 0L) cf else c(paste0("gap", comp[d], "_", cf), paste0("gap", comp[d]), cf)
+    user <- .first_prior(pl$sd_dpar_group_coef[paste0(cd, "_", group, "_", cc)],
+                         pl$sd_dpar_group_coef[[paste0(dpar, "_", group, "_", cf)]],
+                         pl$sd_dpar_coef[paste0(cd, "_", cc)],
+                         pl$sd_dpar_coef[[paste0(dpar, "_", cf)]],
+                         pl$sd_dpar_group[[paste0(cd, "_", group)]],
+                         pl$sd_dpar_group[[paste0(dpar, "_", group)]],
+                         pl$sd_group[[group]],
+                         pl$sd_dpar[[cd]])
+    if (!is.na(user)) return(list(prior = user, user = TRUE))
+    list(prior = .first_prior(pl$sd_dpar[[dpar]], pl$sd), user = is_user_sd_prior(pl, dpar, group))
+  })
+  data.frame(comp = comp, term = terms, dpar = ifelse(comp == 0L, paste0("thresh_mid", sfx), paste0("log_gaps", sfx)),
+             prior = vapply(out, `[[`, "", "prior"), user = vapply(out, `[[`, TRUE, "user"),
+             stringsAsFactors = FALSE)
+}
+
 .crit_re_sd_priors <- function(pl, dpar, group, re) {
-  per_term <- vapply(.crit_re_coef_names(re), function(coef) get_sd_prior(pl, dpar, group, coef),
-                     character(1), USE.NAMES = FALSE)
-  rep_len(per_term, re$dim)
+  .crit_re_sd_resolve(pl, dpar, group, re)$prior
 }
 
 .thresh_prior_grid <- function(pl, mid_key, gap_key, coefs, n_gaps) {
@@ -1026,6 +1093,7 @@ print.broc_prior_table <- function(x, ...) {
 }
 
 .re_sd_priors <- function(pl, p, group, re) {
+  if (p %in% c("criterion", "criterion2")) return(.crit_re_sd_priors(pl, p, group, re))
   per <- vapply(.re_sd_coef_names(p, re), function(coef) get_sd_prior(pl, p, group, coef),
                 character(1), USE.NAMES = FALSE)
   rep_len(per, re$dim)

@@ -31,7 +31,8 @@ accepted. The correlation prior of a cross-parameter group \code{(... | id | g)}
 \code{class}. \code{\link[=get_broc_prior]{get_broc_prior()}} lists every settable prior with its \code{dpar} and
 \code{coef}.}
 
-\item{coef}{Optional specific coefficient name (e.g., \code{"conditionread"})}
+\item{coef}{Optional specific coefficient name (e.g., \code{"conditionread"}). For
+criterion gaps, \code{"gap<k>"} or \code{"gap<k>_<term>"}.}
 
 \item{group}{Optional grouping factor for random effects (e.g., \code{"participant"})}
 }
@@ -57,6 +58,15 @@ criterion priors via \code{dpar = "thresh_mid"} (overall criterion location) and
 \code{dpar = "log_gaps"} (threshold spread). With \code{gap_link = "softplus"} the
 \code{log_gaps} prior applies to the unconstrained gap parameters that the
 softplus maps to spacings.
+
+The same names set the random-effect SDs of the criteria (\code{class = "sd"}):
+\code{dpar = "thresh_mid"} for the midpoint SD, \code{dpar = "log_gaps"} for the gap
+SDs, and \code{coef = "gap2"} for one gap (\code{"gap2_x"} for one random-slope term).
+Gaps are numbered as in the fixed effects: outward from the midpoint, upper
+gaps first, then lower ones. With varying source criteria, a component prior
+applies to that component in every detection bin. \code{dpar = "criterion"} (or
+\code{"criterion2"}) still sets every criterion SD at once; component priors
+override it.
 }
 \examples{
 # Prior on all d' fixed effects
@@ -64,6 +74,11 @@ broc_prior("normal(1, 1)", class = "b", dpar = "dprime")
 
 # Prior on specific d' coefficient
 broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime", coef = "conditionread")
+
+# Criterion SDs by component: midpoint, all gaps, and one source gap
+broc_prior("normal(0, 0.4)", class = "sd", dpar = "thresh_mid", group = "participant")
+broc_prior("normal(0, 0.2)", class = "sd", dpar = "log_gaps", group = "participant")
+broc_prior("normal(0, 0.1)", class = "sd", dpar = "log_gaps2", coef = "gap2")
 
 # Prior on every random-effect standard deviation
 broc_prior("normal(0, 0.5)", class = "sd")

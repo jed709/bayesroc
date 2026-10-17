@@ -135,8 +135,13 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
     J <- .n_thresh_of(model, cn)
     mids <- grep(paste0("^beta_thresh_mid", sfx, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
     if (length(mids)) {
+      vb <- if (any(grepl("_varying[", c(mids, vars), fixed = TRUE))) .varying_bins(model$family, md$K)$labels else NULL
+      bin_of <- function(b) if (identical(vb[b], "new")) "new" else paste0("bin ", vb[b])
+      mterm <- if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids)
+      vm <- grepl("_varying[", mids, fixed = TRUE)
+      if (any(vm)) mterm[vm] <- vapply(mids[vm], function(v) bin_of(as.integer(sub(".*\\[([0-9]+)\\]$", "\\1", v))), "")
       add(paste0(lab, ": ", if (isTRUE(crit$location_scale)) "location (mean)" else .crit_mid_label(J)), mids,
-          if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids), "identity")
+          mterm, "identity")
     }
     gp <- .gap_param(gl, sfx)
     gaps <- grep(paste0("^", gp, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
@@ -146,6 +151,11 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
         if (grepl("_varying|_cov|_new", gaps[i]) || anyNA(ix[[i]])) NA_integer_ else ix[[i]][1]
       }, integer(1))
       glab <- vapply(seq_along(gaps), function(i) {
+        if (grepl("_varying[", gaps[i], fixed = TRUE) && length(ix[[i]]) == 2L && !anyNA(ix[[i]])) {
+          vb <- .varying_bins(model$family, md$K)$labels
+          b <- ix[[i]][1]
+          return(paste0(if (identical(vb[b], "new")) "new" else paste0("bin ", vb[b]), ", ", .crit_gap_label(ix[[i]][2], J)))
+        }
         if (is.na(gi[i])) return(gaps[i])
         k <- ix[[i]]
         if (length(k) == 2L && k[2] <= length(coefs)) paste0(.crit_gap_label(gi[i], J), ": ", coefs[k[2]])

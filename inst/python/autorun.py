@@ -20,6 +20,13 @@ _MON_CHUNK = 64
 _FINAL_CHUNK = 256
 
 
+def _blocker(ess, rhat, classes, names, targets, rhat_target):
+    lim = np.array([float(targets.get(c, 0.0)) for c in classes])
+    bad = (np.isfinite(ess) & (ess < lim)) | (np.isfinite(rhat) & (rhat > rhat_target))
+    idx = np.flatnonzero(bad)
+    return names[int(idx[0])] if idx.size == 1 else None
+
+
 def _block_plan(check_every, chains, D, itemsize, bcap):
     """Block length b and blocks per round with b * nblocks == check_every exactly; b is
     capped by the block's memory and by `bcap` (how long a stop waits on a running block)."""
@@ -625,6 +632,7 @@ class AutoSession:
         x = np.transpose(self.mon[:, :self.mon_n], (1, 0, 2))
         bulk, tail, rhat = ess_rhat(x)
         ess = np.minimum(bulk, tail)
+        self.last_ess, self.last_rhat = ess, rhat
         out = {}
         for c in ("pop", "sd", "cor"):
             v = ess[(self.mon_class == c) & np.isfinite(ess)]
@@ -750,7 +758,11 @@ class AutoSession:
         else:
             self.skip_checks -= 1
             check_s = 0.0
-        dg = self.last_dg
+        if checked:
+            self.blocker = (None if getattr(self, "last_ess", None) is None else
+                            _blocker(self.last_ess, self.last_rhat, self.mon_class, self.mon_names,
+                                     a.get("targets") or {}, float(a.get("rhat", np.inf))))
+        dg = dict(self.last_dg, blocker=getattr(self, "blocker", None))
         met = checked and not a.get("fixed") and all(
             dg.get("ess_" + c) is None or dg["ess_" + c] >= float(t)
             for c, t in (a.get("targets") or {}).items()) and (
