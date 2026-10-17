@@ -67,7 +67,10 @@ only; see \emph{Group transport map}).
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
 ("f64" or "f32"), \code{transport} (\code{TRUE}: random effects are sampled through a
-per-group transport map; see \emph{Group transport map}).
+per-group transport map; see \emph{Group transport map}), \code{transport_wide} (\code{"auto"}:
+a random-effect block of more than ten effects per group is left non-centred when
+a trial in warmup finds that faster; \code{TRUE} maps every block; \code{FALSE} leaves every
+such block non-centred).
 \item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
 named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
 \code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
@@ -208,6 +211,17 @@ JAX backend samples in the same coordinates, its map built by a DR-G-HMC warmup 
 runs before its own (in float32 a float64 process builds it). Both samplers draw each
 random-effect standard deviation on the quantile scale of its prior. Set
 \code{control = list(transport = FALSE)} to sample the standardised effects directly.
+
+A block of more than ten effects per group (source criteria that vary by response
+set, or condition-specific effects on several parameters) carries most of the map's
+cost, which grows with the cube of the block's width, and its effects are often too
+weakly informed for the map to change how they mix. For each such block the warmup
+therefore runs a short trial from the same positions with the block mapped and with it
+non-centred, and keeps the non-centred form when its cheaper iterations and the step
+size they allow buy more draws per second, unless the block is well informed and its
+slowest correlations then mix clearly slower.
+\code{control = list(transport_wide = TRUE)} maps every block regardless, and \code{FALSE} leaves
+every such block non-centred.
 }
 
 \examples{

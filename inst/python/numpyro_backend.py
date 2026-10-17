@@ -5164,7 +5164,8 @@ class NutsCoords:
                                                 th0, user_init=init_z is not None)
                 aux = np.asarray(aux_c)[:1]
                 self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c), np.repeat(aux, chains, 0))
-            self.tm, self.aux_flat = tm, np.asarray(aux)[:1]
+            self.aux_flat = np.asarray(aux)[:1]
+            self.tm = tm.cheap_of(self.aux_flat)
             self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
 
     def flat(self, z):

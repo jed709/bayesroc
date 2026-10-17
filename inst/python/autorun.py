@@ -218,7 +218,7 @@ class _Nuts(_InProcess):
                 "aux": self.coords.aux_flat}
 
 
-def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None):
+def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None, on_decide=None):
     """(imm, eps, positions in sampler coordinates, momenta, transport anchors)."""
     if resume is not None:
         return (np.asarray(resume["imm"]), float(resume["eps"]), np.asarray(resume["th"]),
@@ -229,7 +229,7 @@ def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=
                                 s.init_z, s.unflatten.to_sampled)
     imm, eps, th, aux, _ = dr._adapt(model, config, s.keys, s.off, s.vg, vg_s, tm, s.D, s.chains,
                                      int(a["warmup"]), seed, ctrl, s.parallel, s.progress, th0,
-                                     user_init=s.init_z is not None, init=init)
+                                     user_init=s.init_z is not None, init=init, on_decide=on_decide)
     return np.asarray(imm), float(eps), np.asarray(th), None, aux
 
 
@@ -255,36 +255,56 @@ class _Dr(_InProcess):
         self.seed = int(resume["seed"]) if resume is not None else int(a["seed"])
         tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
         vg_s = dr._sampler_vg(model, config, s.unflatten, tm)
-        setup_p, chunk = dr._sampler_fns(vg_s, D, ctrl, s.parallel, tm)
+        if tm is not None and resume is not None and resume.get("aux") is not None:
+            tm = tm.cheap_of(resume["aux"])
+            vg_s = tm.wrap(tm.pot_off)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
         off0 = jnp.zeros(N)
-        aux0 = dr.aux_zeros(tm, C)
-        low_setup = setup_p.lower(z0, z0, off0, aux0)
-        low_chunk = chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), ck, jnp.ones(D),
-                                jnp.ones(D), jnp.asarray(1e-3), off0, aux0)
-        comp = {}
+
+        def lower(tm_v, vg_v):
+            setup_p, chunk = dr._sampler_fns(vg_v, D, ctrl, s.parallel, tm_v)
+            aux0 = dr.aux_zeros(tm_v, C)
+            return (setup_p.lower(z0, z0, off0, aux0),
+                    chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), ck, jnp.ones(D),
+                                jnp.ones(D), jnp.asarray(1e-3), off0, aux0))
+
+        def compile_on_thread(low, comp, ready):
+            def _compile():
+                try:
+                    comp["setup"] = low[0].compile()
+                    ready.set()
+                    comp["chunk"] = low[1].compile()
+                    msg = dr.memory_check(comp["chunk"], C, s.parallel)
+                    if msg is not None:
+                        print(f"[auto] warning: {msg}", flush=True)
+                except BaseException as e:
+                    comp["err"] = e
+                    ready.set()
+            t = threading.Thread(target=_compile, daemon=True)
+            t.start()
+            return t
+
+        comp, final = {}, {}
         setup_ready = threading.Event()
+        th_c = compile_on_thread(lower(tm, vg_s), comp, setup_ready)
 
-        def _compile():
-            try:
-                comp["setup"] = low_setup.compile()
-                setup_ready.set()
-                comp["chunk"] = low_chunk.compile()
-                msg = dr.memory_check(comp["chunk"], C, s.parallel)
-                if msg is not None:
-                    print(f"[auto] warning: {msg}", flush=True)
-            except BaseException as e:
-                comp["err"] = e
-                setup_ready.set()
+        def on_decide(flags):
+            if any(flags):
+                final["tm"] = tm.view(flags)
+                final["thread"] = compile_on_thread(lower(final["tm"], final["tm"].wrap(tm.pot_off)), final,
+                                                    threading.Event())
 
-        th_c = threading.Thread(target=_compile, daemon=True)
-        th_c.start()
         imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s,
-                                           dr._setup_init(setup_ready, comp, z0, off0))
+                                           dr._setup_init(setup_ready, comp, z0, off0), on_decide)
         th_c.join()
         if "err" in comp:
             raise comp["err"]
+        if final:
+            final["thread"].join()
+            if "err" in final:
+                raise final["err"]
+            comp, tm = final, final["tm"]
 
         IMM = jnp.asarray(imm)
         MSQ = jnp.sqrt(1.0 / IMM)
@@ -434,6 +454,9 @@ def _dr_f32_server(argfile):
     with open(donor, "rb") as fh:
         don = pickle.load(fh)
     th = np.asarray(don["th"])
+    if tm is not None and tuple(tm.flags(don["aux"])) != tm.static:
+        tm = tm.cheap_of(don["aux"])
+        setup_p, chunk = dr._sampler_fns(tm.wrap(tm.pot_off), D, p["ctrl"], bool(p["parallel"]), tm)
     AUX = dr.aux_in(tm, don["aux"] if don.get("aux") is not None else np.zeros(1))
     OFF = (jnp.asarray(don["offset"]) if don.get("offset") is not None
            else dr.ll_offset(pp, unflatten, config,

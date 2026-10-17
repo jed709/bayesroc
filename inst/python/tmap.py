@@ -31,6 +31,7 @@ _FD_STEP = 1e-3
 _NEWTON = 3
 _NEWTON_CAP = 0.5
 _UNINFORMED = 0.1
+_CAND_MIN_DIM = 10
 _MAX_LINK = 4_000_000
 
 
@@ -97,21 +98,23 @@ class _Block:
         self.sd_idx = np.array([off[s][0].start + (0 if t is None else t) for s, t in self.sd_sites])
         self.x_idx = np.concatenate([self.sd_idx] + [np.arange(off[k][0].start, off[k][0].stop) for k in self.L_sites])
 
-    def A(self, post):
+    def sd(self, post):
         if self.sd_det is not None:
-            sd = post[self.sd_det]
-        else:
-            sd = jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
+            return post[self.sd_det]
+        ts = [t for _, t in self.sd_sites]
+        if len({s for s, _ in self.sd_sites}) == 1 and ts == list(range(len(ts))):
+            return jnp.reshape(post[self.sd_sites[0][0]], (-1,))[:len(ts)]
+        return jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
+
+    def A(self, post):
+        sd = self.sd(post)
         Lk = f"L_corr_{self.prefix}"
         L = post[Lk] if Lk in post else jnp.eye(self.dim, dtype=sd.dtype)
         return sd[:, None] * L
 
     def Ainv(self, post):
         """(sd * L)^-1 = L^-1 diag(1/sd); a diagonal when the block is uncorrelated."""
-        if self.sd_det is not None:
-            sd = post[self.sd_det]
-        else:
-            sd = jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
+        sd = self.sd(post)
         Lk = f"L_corr_{self.prefix}"
         if Lk in post:
             return solve_triangular(post[Lk], jnp.eye(self.dim, dtype=sd.dtype), lower=True) / sd[None, :]
@@ -386,6 +389,13 @@ class _Super:
         self.blocks = blocks
         self.n = blocks[0].n
         self.D = sum(b.dim for b in blocks)
+        cand, self.cand_names, o = np.zeros(self.D, bool), [], 0
+        for b in blocks:
+            if b.dim > _CAND_MIN_DIM:
+                cand[o:o + b.dim] = True
+                self.cand_names.append(b.prefix)
+            o += b.dim
+        self.cand = cand if cand.any() else None
         self.starts = [int(r[0]) for b in blocks for r in b.z_idx]
         self.index = blocks[0].index
         self.zcol = []
@@ -411,13 +421,35 @@ class _Super:
         self.links = []
         # one gather / one scatter for the whole [D, n] block: D chained dynamic_update_slices
         # each copied the full parameter vector, forward and again in the VJP
-        self.pos = jnp.asarray(np.add.outer(np.array(self.starts, int), np.arange(self.n)))
+        self.pos_np = np.add.outer(np.array(self.starts, int), np.arange(self.n))
+        self.pos = jnp.asarray(self.pos_np)
+        self.linked = False
+        if self.cand is not None:
+            self.kept_nat, self.cand_nat = np.nonzero(~cand)[0], np.nonzero(cand)[0]
+            self.kept_index, self.cand_index = np.full(self.D, -1), np.full(self.D, -1)
+            self.kept_index[self.kept_nat] = np.arange(len(self.kept_nat))
+            self.cand_index[self.cand_nat] = np.arange(len(self.cand_nat))
+            self.pos1, self.pos2 = jnp.asarray(self.pos_np[self.kept_nat]), jnp.asarray(self.pos_np[self.cand_nat])
+            self.kept_blocks = [b for b in blocks if b.dim <= _CAND_MIN_DIM]
+            self.cand_blocks = [b for b in blocks if b.dim > _CAND_MIN_DIM]
 
     def A(self, post):
         return block_diag(*[b.A(post) for b in self.blocks])
 
     def Ainv(self, post):
         return block_diag(*[b.Ainv(post) for b in self.blocks])
+
+    def A1(self, post):
+        return block_diag(*[b.A(post) for b in self.kept_blocks])
+
+    def Ainv1(self, post):
+        return block_diag(*[b.Ainv(post) for b in self.kept_blocks])
+
+    def A2(self, post):
+        return block_diag(*[b.A(post) for b in self.cand_blocks])
+
+    def Ainv2(self, post):
+        return block_diag(*[b.Ainv(post) for b in self.cand_blocks])
 
     def get(self, v):
         return v[self.pos]
@@ -547,10 +579,25 @@ def _supers(config, off, split=False):
                     for b, d in enumerate(edims):
                         if np.any(W[a, b] != 0.0):
                             pairs.append((c, d, W[a, b]))
-            # one contraction per earlier block: W [P, n, n_e] over the pairs, scattered onto the dims
+            # one contraction per earlier block and distinct weight matrix (intercept-only terms share
+            # one): W [n, n_e] against the pairs' earlier effects, scattered onto the dims
             if pairs:
-                sb.links.append((e, np.array([c for c, _, _ in pairs], int), np.array([d for _, d, _ in pairs], int),
-                                 np.stack([w for _, _, w in pairs])))
+                groups = []
+                for c, d, w in pairs:
+                    for g in groups:
+                        if np.array_equal(g[2], w):
+                            g[0].append(c)
+                            g[1].append(d)
+                            break
+                    else:
+                        groups.append(([c], [d], w))
+                for cs, ds, w in groups:
+                    sb.links.append((e, np.array(cs, int), np.array(ds, int), w))
+        sb.links_kept = sb.links
+        if sb.cand is not None:
+            sb.links_kept = [(e, cd[m], ed[m], W) for e, cd, ed, W in sb.links for m in [~sb.cand[cd]] if m.any()]
+        for e, _, _, _ in sb.links:
+            sbs[e].linked = True
     return sbs
 
 
@@ -656,9 +703,62 @@ class TMap:
         self.sbs = sbs
         self.post = post
         self.sizes = [(sb.D * sb.D * _n4(sb.n) * 4, sb.D * sb.n, len(sb.bflat), sb.D * sb.n, sb.D) for sb in sbs]
-        self.aux_size = int(sum(sum(s) for s in self.sizes))
+        self.body = int(sum(sum(s) for s in self.sizes))
+        self.kept_dims = [0 if sb.cand is None else sb.D - int(sb.cand.sum()) for sb in sbs]
+        self.kept_sizes = [d * d * _n4(sb.n) * 4 for d, sb in zip(self.kept_dims, sbs)]
+        self.aux_size = self.body + sum(self.kept_sizes) + len(sbs)
         self.specs = [f"{sb.name} ({sb.D} x {sb.n})" for sb in sbs]
+        self.static = (0,) * len(sbs)
+        self._views = {self.static: self}
+        self._var = {}
         self._fwd = self._inv = self._anch = None
+
+    def view(self, flags):
+        """The map with the super-blocks flagged 1 treated as in `_cheap` (their candidate blocks
+        non-centred): one object per configuration, so each traces and compiles its own
+        programs; the anchors program and the views are shared."""
+        import copy
+        flags = tuple(int(f) for f in flags)
+        if flags not in self._views:
+            v = copy.copy(self)
+            v.static = flags
+            v._fwd = v._inv = None
+            self._views[flags] = v
+        return self._views[flags]
+
+    def cheap_of(self, aux):
+        """The view matching the flags stored in `aux`."""
+        return self.view(self.flags(aux))
+
+    def flags(self, aux):
+        """Per super-block: 1 where its candidate blocks are sampled non-centred, else 0."""
+        aux = np.asarray(aux)
+        return aux[0, -len(self.sbs):].copy() if aux.shape[1] == self.aux_size else np.zeros(len(self.sbs))
+
+    def _complete(self, aux):
+        """[chains, aux_size] from anchors stored before the kept-dimension tiles and flags
+        existed (both derived), or as they are."""
+        aux = np.asarray(aux, dtype=np.float64)
+        if aux.shape[1] == self.aux_size:
+            return aux
+        if aux.shape[1] != self.body:
+            raise ValueError(f"transport-map anchors have {aux.shape[1]} values; expected {self.aux_size}")
+        C, tail, o = aux.shape[0], [], 0
+        aux = aux.copy()
+        for sb, (a, b, c, d, e), D1 in zip(self.sbs, self.sizes, self.kept_dims):
+            aux[:, o + a:o + a + b] = aux[:, o + a:o + a + b].reshape(C, sb.D, sb.n)[:, ::-1].reshape(C, -1)
+            if D1:
+                perm = aux[0, o + a + b + c + d:o + a + b + c + d + e].astype(int)
+                ks1 = self._kept(sb, perm)[0]
+                tiles = aux[:, o:o + a].reshape(C, _n4(sb.n), sb.D, sb.D, 4)
+                tail.append(tiles[:, :, ks1][:, :, :, ks1].reshape(C, -1))
+            o += a + b + c + d + e
+        return np.concatenate([aux] + tail + [np.zeros((C, len(self.sbs)))], 1)
+
+    def with_flags(self, aux, flags):
+        out = self._complete(aux).copy()
+        out[:, -len(self.sbs):] = np.asarray(flags, dtype=np.float64)[None]
+        return out
 
     def scale_mask(self, D):
         """Flat positions of the mapped blocks' standard deviations and correlations."""
@@ -671,54 +771,122 @@ class TMap:
     def parts(self, aux):
         """Flat anchors [chains, A] -> per block (Lam tiles, s, bref, uref, perm), each [chains, ...]:
         the form the compiled programs take, so that none of them slices the anchors per gradient."""
-        aux = np.asarray(aux)
-        C, out, o = aux.shape[0], [], 0
-        for sb, (a, b, c, d, e) in zip(self.sbs, self.sizes):
+        aux = self._complete(aux)
+        C, out, o, ok = aux.shape[0], [], 0, self.body
+        for k, (sb, (a, b, c, d, e), D1, f) in enumerate(zip(self.sbs, self.sizes, self.kept_dims, self.kept_sizes)):
             out += [aux[:, o:o + a].reshape(C, _n4(sb.n), sb.D, sb.D, 4),
                     aux[:, o + a:o + a + b].reshape(C, sb.D, sb.n),
                     aux[:, o + a + b:o + a + b + c],
                     aux[:, o + a + b + c:o + a + b + c + d].reshape(C, sb.D, sb.n),
-                    aux[:, o + a + b + c + d:o + a + b + c + d + e].astype(np.int32)]
+                    aux[:, o + a + b + c + d:o + a + b + c + d + e].astype(np.int32),
+                    aux[:, ok:ok + f].reshape(C, _n4(sb.n), D1, D1, 4),
+                    aux[:, self.body + sum(self.kept_sizes) + k]]
             o += a + b + c + d + e
+            ok += f
         return tuple(jnp.asarray(x) for x in out)
 
     def _unpack(self, parts, dtype):
         out = []
         for k, sb in enumerate(self.sbs):
-            tiled, s, bref, uref = (x.astype(dtype) for x in parts[5 * k:5 * k + 4])
-            perm = parts[5 * k + 4]
-            out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1], s=s, bref=bref, uref=uref,
-                            perm=perm, inv=jnp.argsort(perm)))
+            tiled, s_k, bref, uref = (x.astype(dtype) for x in parts[7 * k:7 * k + 4])
+            perm, kept, flag = parts[7 * k + 4], parts[7 * k + 5].astype(dtype), parts[7 * k + 6]
+            perm_rev = perm[::-1]
+            out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1], s=s_k[::-1], s_k=s_k, bref=bref,
+                            uref=uref, perm=perm, perm_rev=perm_rev, inv=jnp.argsort(perm),
+                            inv_rev=jnp.argsort(perm_rev), Lam1_t=kept, flag=flag))
         return out
 
-    def _delta(self, k, v, an, us, ans):
-        """The shift of each group's effects implied by the fixed effects and earlier blocks,
-        [D, n] in the block's permuted order, or None when nothing couples."""
+    @staticmethod
+    def _kept(sb, perm):
+        """Kernel-order positions of the dimensions kept in the map when the candidates are
+        non-centred, and of the candidates best informed first (numpy or jax `perm`)."""
+        xp = np if isinstance(perm, np.ndarray) else jnp
+        mask = xp.asarray(sb.cand)[perm][::-1]
+        D2 = int(sb.cand.sum())
+        if xp is np:
+            return np.nonzero(~mask)[0], np.nonzero(mask)[0][::-1]
+        return jnp.nonzero(~mask, size=sb.D - D2)[0], jnp.nonzero(mask, size=D2)[0][::-1]
+
+    def _split(self, sb, an):
+        """For a super-block with candidates: kernel-order positions of the kept dimensions and
+        the permutation of the kept dimensions (natural order) to the kernel's order with its
+        inverse."""
+        ks1 = self._kept(sb, an["perm"])[0]
+        perm1 = jnp.take(jnp.asarray(sb.kept_index), jnp.take(an["perm_rev"], ks1))
+        return ks1, perm1, jnp.argsort(perm1)
+
+    def _kept_dense(self, an, Q1, s1, delta):
+        """Batched factor L [n, D1, D1] of the kept dimensions' Lam + Q and y = L^-1 (s - Lam delta)."""
+        Lam1 = jnp.transpose(_untile(an["Lam1_t"], s1.shape[1]), (2, 0, 1))
+        r = s1.T if delta is None else s1.T - jnp.einsum("nab,nb->na", Lam1, delta.T)
+        L1 = jnp.linalg.cholesky(Lam1 + Q1[None])
+        return L1, solve_triangular(L1, r[..., None], lower=True)[..., 0]
+
+    def _kept_solve(self, k, v, an, us, ans, post, ks1, perm1, inv1, native):
+        """The kept dimensions mapped on their own anchors: u [D1, n] in their natural order, the
+        log-determinant term and the prior factors A1, A1^-1."""
         sb = self.sbs[k]
-        rows = [None] * sb.D
+        A1, Ainv1 = sb.A1(post).astype(v.dtype), sb.Ainv1(post).astype(v.dtype)
+        Q1 = Ainv1.T @ Ainv1
+        Q1 = jnp.take(jnp.take(Q1, perm1, axis=0), perm1, axis=1)
+        s1 = jnp.take(an["s_k"], ks1, axis=0)
+        delta = self._delta(k, v, an, us, ans, kept=perm1)
+        zeta = jnp.take(v[sb.pos1], perm1, axis=0)
+        if native:
+            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros_like(zeta) if delta is None else delta, zeta)
+        else:
+            L1, y1 = self._kept_dense(an, Q1, s1, delta)
+            u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
+            ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
+        return jnp.take(u_k, inv1, axis=0), jnp.sum(ld) + sb.n * jnp.sum(jnp.log(jnp.diag(A1))), A1, Ainv1
+
+    def _cheap(self, k, v, an, us, ans, post, native):
+        """(th, log-determinant term, u [D, n] in natural order) for super-block k with its
+        candidate blocks non-centred (their standardised effects sampled as they are) and the
+        kept dimensions mapped on their own anchors."""
+        sb = self.sbs[k]
+        ks1, perm1, inv1 = self._split(sb, an)
+        th, ld = v, 0.0
+        u = jnp.zeros((sb.D, sb.n), v.dtype)
+        if ks1.shape[0]:
+            u1, ld, A1, Ainv1 = self._kept_solve(k, v, an, us, ans, post, ks1, perm1, inv1, native)
+            th = th.at[sb.pos1].set(Ainv1 @ u1)
+            if sb.linked:
+                u = u.at[sb.kept_nat].set(u1)
+        if sb.linked:
+            u = u.at[sb.cand_nat].set(sb.A2(post).astype(v.dtype) @ v[sb.pos2])
+        return th, ld, u
+
+    def _delta(self, k, v, an, us, ans, kept=None):
+        """The shift of each group's effects implied by the fixed effects and earlier blocks,
+        [D, n] in the kernel's order, or None when nothing couples. With `kept` (the kept
+        dimensions' permutation to the kernel's order) the kept dimensions only, [D1, n]: the
+        candidates have no anchors to shift."""
+        sb = self.sbs[k]
+        if kept is None:
+            index, Dout, links, order = np.arange(sb.D), sb.D, sb.links, an["perm_rev"]
+        else:
+            index, Dout, links, order = sb.kept_index, len(sb.kept_nat), sb.links_kept, kept
+        delta, coupled = jnp.zeros((Dout, sb.n), dtype=v.dtype), False
         if len(sb.bflat):
             db = v[sb.bflat] - an["bref"]
-            for i, d in enumerate(sb.bdims):
-                rows[int(d)] = jnp.broadcast_to(db[i], (sb.n,))
-            if len(sb.gdims):
-                dg = jnp.asarray(sb.gW, dtype=v.dtype) @ db
-                for i, d in enumerate(sb.gdims):
-                    rows[int(d)] = dg[i] if rows[int(d)] is None else rows[int(d)] + dg[i]
-        for e, cd, ed, W in sb.links:
-            du = jnp.einsum("pge,pe->pg", jnp.asarray(W, dtype=v.dtype), (us[e] - ans[e]["uref"])[ed])
-            acc = jax.ops.segment_sum(du, jnp.asarray(cd), num_segments=sb.D)
-            for c in np.unique(cd):
-                rows[int(c)] = acc[c] if rows[int(c)] is None else rows[int(c)] + acc[c]
-        if all(r is None for r in rows):
-            return None
-        zero = jnp.zeros((sb.n,), dtype=v.dtype)
-        return jnp.take(jnp.stack([zero if r is None else r for r in rows]), an["perm"], axis=0)
+            sel = np.nonzero(index[sb.bdims] >= 0)[0]
+            if sel.size:
+                delta, coupled = delta.at[index[sb.bdims[sel]]].add(db[sel][:, None]), True
+            gsel = np.nonzero(index[sb.gdims] >= 0)[0] if len(sb.gdims) else np.zeros(0, int)
+            if gsel.size:
+                delta, coupled = delta.at[index[sb.gdims[gsel]]].add(jnp.asarray(sb.gW[gsel], dtype=v.dtype) @ db), True
+        for e, cd, ed, W in links:
+            du = (us[e] - ans[e]["uref"])[ed] @ jnp.asarray(W.T, dtype=v.dtype)
+            delta, coupled = delta + jax.ops.segment_sum(du, jnp.asarray(index[cd]), num_segments=Dout), True
+        return jnp.take(delta, order, axis=0) if coupled else None
 
     def _linear(self, k, v, an, us, ans):
         sb = self.sbs[k]
         delta = self._delta(k, v, an, us, ans)
         if delta is None:
             return [an["s"][a] for a in range(sb.D)]
+        delta = delta[::-1]
         out = []
         for a in range(sb.D):
             acc = an["s"][a]
@@ -732,7 +900,7 @@ class TMap:
         A = sb.A(post).astype(v.dtype)
         Ainv = sb.Ainv(post).astype(v.dtype)
         Q = Ainv.T @ Ainv
-        return A, Ainv, jnp.take(jnp.take(Q, an["perm"], axis=0), an["perm"], axis=1)[::-1, ::-1]
+        return A, Ainv, jnp.take(jnp.take(Q, an["perm_rev"], axis=0), an["perm_rev"], axis=1)
 
     def _parts(self, k, v, post, ans, us):
         an = ans[k]
@@ -746,10 +914,10 @@ class TMap:
         sb, an = self.sbs[k], ans[k]
         A, Ainv, Q = self._prior(k, v, post, an)
         Lam = jnp.transpose(_untile(an["Lam_t"], sb.n), (2, 0, 1))
-        r = an["s"][::-1].T
+        r = an["s_k"].T
         delta = self._delta(k, v, an, us, ans)
         if delta is not None:
-            r = r - jnp.einsum("nab,nb->na", Lam, delta[::-1].T)
+            r = r - jnp.einsum("nab,nb->na", Lam, delta.T)
         L = jnp.linalg.cholesky(Lam + Q[None])
         return A, Ainv, L, solve_triangular(L, r[..., None], lower=True)[..., 0]
 
@@ -762,27 +930,31 @@ class TMap:
         native = _native()
         for k, sb in enumerate(self.sbs):
             an = ans[k]
-            zeta = jnp.take(sb.get(tht), an["perm"], axis=0)[::-1]
-            if native:
-                A, Ainv, Q = self._prior(k, tht, post, an)
-                delta = self._delta(k, tht, an, us, ans)
-                delta = jnp.zeros_like(zeta) if delta is None else delta[::-1]
-                u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s"][::-1], delta, zeta)
-                u = jnp.take(u_rev[::-1], an["inv"], axis=0)
-                ld = ld + jnp.sum(ldg)
-            elif sb.D <= _UNROLL_MAX:
-                A, Ainv, L, y = self._parts(k, tht, post, ans, us)
-                u = jnp.take(jnp.stack(_bsolve(L, [y[i] + zeta[i] for i in range(sb.D)])[::-1]),
-                             an["inv"], axis=0)
-                ld = ld + sum(jnp.sum(jnp.log(L[i][i])) for i in range(sb.D))
+
+            def full(th):
+                zeta = jnp.take(sb.get(th), an["perm_rev"], axis=0)
+                A, Ainv, Q = self._prior(k, th, post, an)
+                if native:
+                    delta = self._delta(k, th, an, us, ans)
+                    u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s_k"], jnp.zeros_like(zeta) if delta is None else delta, zeta)
+                    ldg = jnp.sum(ldg)
+                elif sb.D <= _UNROLL_MAX:
+                    _, _, L, y = self._parts(k, th, post, ans, us)
+                    u_rev = jnp.stack(_bsolve(L, [y[i] + zeta[i] for i in range(sb.D)]))
+                    ldg = sum(jnp.sum(jnp.log(L[i][i])) for i in range(sb.D))
+                else:
+                    _, _, L, y = self._dense(k, th, post, ans, us)
+                    u_rev = solve_triangular(jnp.swapaxes(L, 1, 2), (y + zeta.T)[..., None], lower=False)[..., 0].T
+                    ldg = jnp.sum(jnp.log(jnp.diagonal(L, axis1=1, axis2=2)))
+                u = jnp.take(u_rev, an["inv_rev"], axis=0)
+                return sb.put(th, Ainv @ u), ldg + sb.n * jnp.sum(jnp.log(jnp.diag(A))), u
+
+            if sb.cand is not None and self.static[k]:
+                th, ldg, u = self._cheap(k, th, an, us, ans, post, native)
             else:
-                A, Ainv, L, y = self._dense(k, tht, post, ans, us)
-                u_rev = solve_triangular(jnp.swapaxes(L, 1, 2), (y + zeta.T)[..., None], lower=False)[..., 0]
-                u = jnp.take(u_rev.T[::-1], an["inv"], axis=0)
-                ld = ld + jnp.sum(jnp.log(jnp.diagonal(L, axis1=1, axis2=2)))
+                th, ldg, u = full(th)
             us[k] = u
-            th = sb.put(th, Ainv @ u)
-            ld = ld + sb.n * jnp.sum(jnp.log(jnp.diag(A)))
+            ld = ld + ldg
         return th, ld
 
     def inverse(self, th, aux):
@@ -790,17 +962,62 @@ class TMap:
         post = self.post(th)
         tht, us = th, {}
         for k, sb in enumerate(self.sbs):
+            an = ans[k]
             dense = sb.D > _UNROLL_MAX
-            A, Ainv, L, y = (self._dense if dense else self._parts)(k, th, post, ans, us)
-            u = A @ sb.get(th)
+
+            def full(tht):
+                A, Ainv, Q = self._prior(k, th, post, an)
+                u = A @ sb.get(th)
+                ur = jnp.take(u, an["perm_rev"], axis=0)
+                _, _, L, y = (self._dense if dense else self._parts)(k, th, post, ans, us)
+                if dense:
+                    zp = (jnp.einsum("nji,nj->ni", L, ur.T) - y).T
+                else:
+                    zp = jnp.stack([sum(L[j][i] * ur[j] for j in range(i, sb.D)) - y[i] for i in range(sb.D)])
+                return sb.put(tht, jnp.take(zp, an["inv_rev"], axis=0)), u
+
+            def cheap(tht):
+                ks1, perm1, inv1 = self._split(sb, an)
+                u = jnp.zeros((sb.D, sb.n), th.dtype)
+                if ks1.shape[0]:
+                    A1, Ainv1 = sb.A1(post).astype(th.dtype), sb.Ainv1(post).astype(th.dtype)
+                    u1 = A1 @ th[sb.pos1]
+                    Q1 = Ainv1.T @ Ainv1
+                    Q1 = jnp.take(jnp.take(Q1, perm1, axis=0), perm1, axis=1)
+                    L1, y1 = self._kept_dense(an, Q1, jnp.take(an["s_k"], ks1, axis=0),
+                                              self._delta(k, th, an, us, ans, kept=perm1))
+                    zk = (jnp.einsum("nji,nj->ni", L1, jnp.take(u1, perm1, axis=0).T) - y1).T
+                    tht = tht.at[sb.pos1].set(jnp.take(zk, inv1, axis=0))
+                    u = u.at[sb.kept_nat].set(u1)
+                return tht, u.at[sb.cand_nat].set(sb.A2(post).astype(th.dtype) @ th[sb.pos2])
+
+            tht, u = cheap(tht) if sb.cand is not None and self.static[k] else full(tht)
             us[k] = u
-            ur = jnp.take(u, ans[k]["perm"], axis=0)[::-1]
-            if dense:
-                zp = (jnp.einsum("nji,nj->ni", L, ur.T) - y).T[::-1]
-            else:
-                zp = jnp.stack([sum(L[j][i] * ur[j] for j in range(i, sb.D)) - y[i] for i in range(sb.D)][::-1])
-            tht = sb.put(tht, jnp.take(zp, ans[k]["inv"], axis=0))
         return tht
+
+    def cand_variance(self, k, th, aux):
+        """[D2, n]: the variance of super-block k's candidates' standardised effects under the
+        anchors' Gaussian approximation at the model-side position `th` (one chain), the masses
+        a trial of the non-centred form starts from. `aux`: that chain's anchors as parts() gives
+        them."""
+        sb = self.sbs[k]
+        if k in self._var:
+            return np.asarray(self._var[k](jnp.asarray(th), aux))
+
+        def var(th, aux):
+            an = self._unpack(aux, th.dtype)[k]
+            post = self.post(th)
+            _, _, Q = self._prior(k, th, post, an)
+            Lam = jnp.transpose(_untile(an["Lam_t"], sb.n), (2, 0, 1))
+            S = jnp.linalg.inv(Lam + Q[None])
+            kpos = jnp.take(an["inv_rev"], jnp.asarray(sb.cand_nat))
+            S2 = jnp.take(jnp.take(S, kpos, axis=1), kpos, axis=2)
+            Ainv2 = sb.Ainv2(post).astype(th.dtype)
+            T = jnp.einsum("ab,nbc,dc->nad", Ainv2, S2, Ainv2)
+            return jnp.diagonal(T, axis1=1, axis2=2).T
+
+        self._var[k] = jax.jit(var)
+        return np.asarray(self._var[k](jnp.asarray(th), aux))
 
     def wrap(self, pot_off):
         """pot_off(v, OFF) -> value_and_grad of the mapped potential, (v, OFF, AUX) -> (U, g)."""
@@ -810,18 +1027,21 @@ class TMap:
         return jax.value_and_grad(pot)
 
     def forward_chains(self, tht, aux):
-        """Sampler -> model coordinates for positions [chains, D] with anchors [chains, A]."""
-        if self._fwd is None:
-            self._fwd = jax.jit(lambda v, a: self.forward(v, a)[0])
+        """Sampler -> model coordinates for positions [chains, D] with anchors [chains, A], in
+        the configuration the anchors' flags name."""
+        v = self.cheap_of(aux)
+        if v._fwd is None:
+            v._fwd = jax.jit(lambda x, a: v.forward(x, a)[0])
         P = self.parts(aux)
-        return np.stack([np.asarray(self._fwd(jnp.asarray(x), tuple(p[c] for p in P)))
+        return np.stack([np.asarray(v._fwd(jnp.asarray(x), tuple(p[c] for p in P)))
                          for c, x in enumerate(np.asarray(tht))])
 
     def inverse_chains(self, th, aux):
-        if self._inv is None:
-            self._inv = jax.jit(self.inverse)
+        v = self.cheap_of(aux)
+        if v._inv is None:
+            v._inv = jax.jit(v.inverse)
         P = self.parts(aux)
-        return np.stack([np.asarray(self._inv(jnp.asarray(x), tuple(p[c] for p in P)))
+        return np.stack([np.asarray(v._inv(jnp.asarray(x), tuple(p[c] for p in P)))
                          for c, x in enumerate(np.asarray(th))])
 
     def lower_anchors(self, vg, chains, D, parallel=True):
@@ -840,20 +1060,24 @@ class TMap:
         if self._anch is None:
             self._anch = self.lower_anchors(vg, C, ref.shape[1], parallel).compile()
         raw = jax.tree.map(np.asarray, self._anch(jnp.asarray(ref)))
-        packed = [[] for _ in range(C)]
+        packed, kept = [[] for _ in range(C)], [[] for _ in range(C)]
         for sb, r in zip(self.sbs, raw):
             Lam = r["Lam"]
             s_ = -np.swapaxes(r["q0"], 1, 2) + np.einsum("cnab,cnb->cna", Lam, np.swapaxes(r["u"], 1, 2))
             strength = np.mean(np.einsum("cnaa->cna", Lam), axis=(0, 1)) * r["A2"].mean(0)
             weight = strength / (1.0 + strength)
+            sb.weight = weight
             idx = np.arange(sb.D)
             # informed dims first in reversed natural order, then the rest by falling weight
             perm = np.lexsort((-idx, np.where(weight >= _UNINFORMED, -idx - 1.0, -weight)))
+            ks1 = None if sb.cand is None else self._kept(sb, perm)[0]
             for c in range(C):
                 Lp = Lam[c][:, perm][:, :, perm][:, ::-1, ::-1]
-                packed[c] += [np.asarray(_tile(jnp.asarray(Lp))).reshape(-1), s_[c][:, perm].T.reshape(-1),
+                packed[c] += [np.asarray(_tile(jnp.asarray(Lp))).reshape(-1), s_[c][:, perm].T[::-1].reshape(-1),
                               ref[c, sb.bflat], r["u0"][c].reshape(-1), perm.astype(np.float64)]
-        return np.stack([np.concatenate(p) for p in packed])
+                if ks1 is not None:
+                    kept[c].append(np.asarray(_tile(jnp.asarray(Lp[:, ks1][:, :, ks1]))).reshape(-1))
+        return np.stack([np.concatenate(p + q + [np.zeros(len(self.sbs))]) for p, q in zip(packed, kept)])
 
     def anchors(self, vg, th):
         """Raw anchors at one position th (model coordinates), one dict per super-block: each
