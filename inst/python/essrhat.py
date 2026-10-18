@@ -1,8 +1,13 @@
-"""Rank-normalised bulk/tail ESS and R-hat (Vehtari et al., 2021), vectorised over
-parameters. A line-by-line port of the posterior R package (1.7.1): ess_bulk,
-ess_tail, rhat and their helpers, so the stopping rule of iter_sampling = "auto"
-gives the numbers summary() reports. Internally arrays are [parameters, chains,
-iterations] so sorts and FFTs run over contiguous memory."""
+"""Rank-normalised bulk/tail ESS and R-hat, vectorised over parameters. R-hat is a port of
+the posterior R package (1.7.1). ESS is by batch means: each chain's draws are cut into
+batches of b = max(100, N/10) (N/2 for shorter runs), the batch means of all chains are
+pooled about the grand mean, and ESS = M N var(x) / (b var(batch means)). Geyer's initial
+positive sequence, which posterior uses, assumes a reversible chain; under generalised HMC
+with persistent momentum the autocorrelation oscillates, so it stops at the first negative
+pair and overstates tail ESS while understating it for means. The R side (R/ess.R)
+computes the same estimator, so summary() reports the numbers the stopping rule of
+iter_sampling = "auto" uses. Internally arrays are [parameters, chains, iterations] so
+sorts run over contiguous memory."""
 import os
 import numpy as np
 from scipy.special import ndtri
@@ -49,75 +54,29 @@ def _z_scale(x):
     return ndtri((r - 0.375) / (S + 0.25)).reshape(x.shape)
 
 
-def _next_fast(n):
-    m = n
-    while True:
-        k = m
-        for f in (2, 3, 5):
-            while k % f == 0:
-                k //= f
-        if k == 1:
-            return m
-        m += 1
+_BATCH = 100
+
+
+def _batch(N):
+    b = max(_BATCH, N // 10)
+    return b if N >= 2 * b else N // 2
 
 
 def _ess(x):
     V, M, N = x.shape
     out = np.full(V, np.nan)
-    if N < 3:
+    b = _batch(N)
+    if b < 1:
         return out
     bad = _degenerate(x)
     x = np.where(bad[:, None, None], 0.0, x)
-    yc = x - x.mean(2, keepdims=True)
-    nfft = 2 * _next_fast(N)
-    f = np.fft.rfft(yc, n=nfft, axis=2)
-    acov = (np.fft.irfft(f.real ** 2 + f.imag ** 2, n=nfft, axis=2)[:, :, :N] / N).mean(1).T
-    mean_var = acov[0] * N / (N - 1)
-    var_plus = mean_var * (N - 1) / N
-    if M > 1:
-        var_plus = var_plus + x.mean(2).var(1, ddof=1)
+    nb = N // b
+    bm = x[:, :, :nb * b].reshape(V, M, nb, b).mean(3).reshape(V, M * nb)
     with np.errstate(invalid="ignore", divide="ignore"):
-        rho = lambda k: 1.0 - (mean_var - acov[k]) / var_plus
-        R = np.zeros((N, V))
-        R[0] = 1.0
-        even = np.ones(V)
-        odd = rho(1)
-        R[1] = odd
-        t = np.zeros(V, dtype=int)
-        active = np.ones(V, dtype=bool)
-        tt = 0
-        while True:
-            s = even + odd
-            active &= (tt < N - 5) & ~np.isnan(s) & (s > 0)
-            if not active.any():
-                break
-            tt += 2
-            e, o = rho(tt), rho(tt + 1)
-            even = np.where(active, e, even)
-            odd = np.where(active, o, odd)
-            store = active & (e + o >= 0)
-            R[tt] = np.where(store, e, R[tt])
-            R[tt + 1] = np.where(store, o, R[tt + 1])
-            t = np.where(active, tt, t)
-        cols = np.arange(V)
-        pos = even > 0
-        R[t[pos], cols[pos]] = even[pos]
-        tt = 0
-        while True:
-            act = tt <= t - 4
-            if not act.any():
-                break
-            tt += 2
-            prev = R[tt - 2] + R[tt - 1]
-            fix = act & (R[tt] + R[tt + 1] > prev)
-            R[tt] = np.where(fix, prev / 2, R[tt])
-            R[tt + 1] = np.where(fix, prev / 2, R[tt + 1])
-        cs = np.cumsum(R, axis=0)
-        head = np.where(t > 0, cs[np.maximum(t - 1, 0), cols], R[0])
-        tau = -1.0 + 2.0 * head + R[t, cols]
-        tau = np.maximum(tau, 1.0 / np.log10(M * N))
-        ess = M * N / tau
-    return np.where(bad, np.nan, ess)
+        vb = b * bm.var(1, ddof=1)
+        vx = x.reshape(V, M * N).var(1, ddof=1)
+        ess = np.minimum(M * N * vx / vb, M * N * np.log10(M * N))
+    return np.where(bad | ~(vb > 0), np.nan, ess)
 
 
 def _rhat(x):
@@ -134,7 +93,7 @@ def _rhat(x):
 def _ess_quantile(x, prob, raw_bad):
     q = np.quantile(x.reshape(x.shape[0], -1), prob, axis=1)
     ind = (x <= q[:, None, None]).astype(float)
-    return np.where(raw_bad, np.nan, _ess(_split(ind)))
+    return np.where(raw_bad, np.nan, _ess(ind))
 
 
 def ess_rhat(x, threads=None):
@@ -154,9 +113,8 @@ def ess_rhat(x, threads=None):
 
 def _ess_rhat(x):
     raw_bad = _degenerate(x)
-    xs = _split(x)
-    zs = _z_scale(xs)
-    bulk = _ess(zs)
+    zs = _z_scale(_split(x))
+    bulk = _ess(_z_scale(x))
     tail = np.minimum(_ess_quantile(x, 0.05, raw_bad), _ess_quantile(x, 0.95, raw_bad))
     with np.errstate(invalid="ignore"):
         folded = np.abs(x - np.median(x.reshape(x.shape[0], -1), axis=1)[:, None, None])

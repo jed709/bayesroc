@@ -144,8 +144,8 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
       xm <- posterior::extract_variable_matrix(arr, "x")
       withCallingHandlers({
         out$rhat[j] <- posterior::rhat(xm)
-        out$ess_bulk[j] <- posterior::ess_bulk(xm)
-        out$ess_tail[j] <- posterior::ess_tail(xm)
+        out$ess_bulk[j] <- .ess_bulk(xm)
+        out$ess_tail[j] <- .ess_tail(xm)
       }, warning = function(w) if (grepl("ESS has been capped", conditionMessage(w))) invokeRestart("muffleWarning"))
     }
   }

@@ -129,9 +129,9 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
   self$summary <- function(variables = NULL, ...) {
     if (use_cmdstan) {
       if (is.null(variables)) {
-        backend_fit$summary(variables = setdiff(stan_vars(), "log_lik"), ...)
+        do.call(backend_fit$summary, c(list(variables = setdiff(stan_vars(), "log_lik")), .summary_measures(...)))
       } else {
-        backend_fit$summary(variables = variables, ...)
+        do.call(backend_fit$summary, c(list(variables = variables), .summary_measures(...)))
       }
     } else {
       da <- self$.draws_array
@@ -149,7 +149,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
         }
         da <- posterior::subset_draws(da, variable = matched)
       }
-      posterior::summarise_draws(da, ...)
+      do.call(posterior::summarise_draws, c(list(da), .summary_measures(...)))
     }
   }
 
