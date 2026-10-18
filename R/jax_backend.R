@@ -758,21 +758,20 @@ read_npy <- function(path) {
     TF_CPP_MIN_LOG_LEVEL = "2",   # XLA's C++ log lines (cache loads, slow-compile alarms) are noise to the user
     BAYESROC_XLA_CACHE = .xla_cache_dir(),
     BAYESROC_BVN_FFI = if (is.null(bvn_lib)) "" else bvn_lib,
-    BAYESROC_ENABLE_X64 = if (f32) "0" else "1")
+    BAYESROC_ENABLE_X64 = if (f32) "0" else "1",
+    BAYESROC_PROGRESS = "events")
 }
 
 .stream_process <- function(proc) {
+  .prog_reset()
+  on.exit(.prog_done(), add = TRUE)
   while (proc$is_alive()) {
     proc$poll_io(200)
-    out <- proc$read_output()
-    err <- proc$read_error()
-    if (nzchar(out)) cat(out)
-    if (nzchar(err)) cat(err)
+    .prog_out(proc$read_output())
+    .prog_err(proc$read_error())
   }
-  out <- proc$read_output()
-  err <- proc$read_error()
-  if (nzchar(out)) cat(out)
-  if (nzchar(err)) cat(err)
+  .prog_out(proc$read_output())
+  .prog_err(proc$read_error())
 }
 
 .jax_worker_start <- function(python = NULL, chains = 4L, chain_method = "parallel",
@@ -812,20 +811,21 @@ read_npy <- function(path) {
   withCallingHandlers(
     repeat {
       worker$proc$poll_io(100)
-      out <- worker$proc$read_output()
-      err <- worker$proc$read_error()
-      if (nzchar(out)) cat(out)
-      if (nzchar(err)) cat(err)
+      .prog_out(worker$proc$read_output())
+      .prog_err(worker$proc$read_error())
       if (file.exists(done)) break
       if (file.exists(errf)) {
+        .prog_done()
         stop("The JAX worker failed:\n", paste(utils::tail(readLines(errf), 12), collapse = "\n"),
              call. = FALSE)
       }
       if (!worker$proc$is_alive()) {
+        .prog_done()
         stop("The JAX worker process exited before returning a result.", call. = FALSE)
       }
     },
     interrupt = function(e) {
+      .prog_done()
       try(file.create(file.path(worker$ctrl, "stop")), silent = TRUE)
       try(worker$proc$kill_tree(), silent = TRUE)
     })

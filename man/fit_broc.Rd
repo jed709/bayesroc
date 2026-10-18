@@ -102,7 +102,10 @@ move it.}
 \item{python}{Optional path to the Python executable for the JAX backend.
 \code{NULL} (default) uses the managed environment (see \code{\link[=install_jax_backend]{install_jax_backend()}}).}
 
-\item{progress_bar}{If \code{TRUE} (default), show the sampler progress bar.}
+\item{progress_bar}{If \code{TRUE} (default), show the sampler's progress. On the JAX backend
+this is one bar per phase (warmup, sampling and, with \code{iter_sampling = "auto"}, each
+round between convergence checks), redrawn in place in the console and printed at each
+quarter instead when output goes to a file or a knitted document.}
 
 \item{seed}{Optional integer seed for reproducible sampling. \code{NULL} (default)
 uses a random seed.}

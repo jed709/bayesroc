@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 
 import drghmc as dr
+import progress
 from essrhat import ess_rhat
 
 _UNMONITORED = re.compile(r"^(log_lik|lp__|z_|u_|zs_|s_|L_corr_)")
@@ -36,6 +37,11 @@ def _block_plan(check_every, chains, D, itemsize, bcap):
     while n % nblocks:
         nblocks += 1
     return n // nblocks, nblocks
+
+
+def _round_bar(T, n):
+    """The bar of one round: draws T to T + n per chain, gone once the round is checked."""
+    return progress.bar(T + n, "Sampling", start=T, unit="draws", leave=False)
 
 
 def _kept(t, stride, burn):
@@ -145,11 +151,14 @@ class _Totals:
 # =============================================================================
 
 class _InProcess:
-    def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0):
+    def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0, show=False):
         zs, ts, stats = [], [], {}
         t = T
+        bar = _round_bar(T, nblocks * b) if show else None
         for _ in range(nblocks):
             if cancel.is_set():
+                if bar is not None:
+                    bar.close(drop=True)
                 return None
             pos = np.arange(t, t + b)
             keep = _kept(pos, stride, burn)
@@ -160,6 +169,10 @@ class _InProcess:
             for name, v in st.items():
                 stats.setdefault(name, []).append(np.asarray(v))
             t += b
+            if bar is not None:
+                bar.update(b)
+        if bar is not None:
+            bar.close()
         return (carry, np.concatenate(zs, 1), np.concatenate(ts),
                 {n: np.concatenate(v, 1) for n, v in stats.items()})
 
@@ -195,8 +208,9 @@ class _Nuts(_InProcess):
             mcmc = MCMC(kernel, num_warmup=int(a["warmup"]), num_samples=1, num_chains=C,
                         chain_method="parallel" if s.parallel else "sequential",
                         progress_bar=s.progress)
-            mcmc.warmup(jax.random.PRNGKey(int(a["seed"])), config, init_params=coords.init_params(C),
-                        collect_warmup=False)
+            with progress.nuts(C, s.parallel and C > 1, desc="NUTS warmup"):
+                mcmc.warmup(jax.random.PRNGKey(int(a["seed"])), config, init_params=coords.init_params(C),
+                            collect_warmup=False)
             state = _batched(mcmc.post_warmup_state, C)
         cfg = config
         if not jax.config.jax_enable_x64:
@@ -382,12 +396,12 @@ class _DrF32:
         self.positions = _model_positions(tm, th, aux)
         self.n = 0
 
-    def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0):
+    def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0, show=False):
         n = self.n
         self.n += 1
         req = os.path.join(self.tmp, f"req_{n}.json")
         with open(req + ".tmp", "w") as fh:
-            json.dump(dict(T=int(T), nblocks=int(nblocks), stride=int(stride), burn=int(burn)), fh)
+            json.dump(dict(T=int(T), nblocks=int(nblocks), stride=int(stride), burn=int(burn), show=bool(show)), fh)
         os.replace(req + ".tmp", req)
         res = os.path.join(self.tmp, f"res_{n}.npz")
         while not os.path.exists(res):
@@ -488,6 +502,7 @@ def _dr_f32_server(argfile):
         t, k = int(r["T"]), int(r["stride"])
         zs, ts, ss, es = [], [], [], []
         cancelled = False
+        bar = _round_bar(t, int(r["nblocks"]) * b) if r.get("show") else None
         for _ in range(int(r["nblocks"])):
             if os.path.exists(os.path.join(d, f"cancel_{n}")):
                 cancelled = True
@@ -500,6 +515,10 @@ def _dr_f32_server(argfile):
             zs.append(np.asarray(thb)[:, sel]); ts.append(pos[sel])
             ss.append(np.asarray(st)); es.append(np.asarray(e))
             t += b
+            if bar is not None:
+                bar.update(b)
+        if bar is not None:
+            bar.close(drop=cancelled)
         if cancelled:
             n += 1
             continue
@@ -531,7 +550,7 @@ class AutoSession:
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config)
         itemsize = 8 if jax.config.jax_enable_x64 else 4
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
-                                           25 if self.sampler == "nuts" else 500)
+                                           25 if self.sampler == "nuts" else 100)
         self.round_len = self.b * self.nblocks
         self.init_z = None
         resume = None
@@ -660,7 +679,7 @@ class AutoSession:
         t0 = time.time()
         T_end = T + self.round_len
         k = _grow_stride(stride, max(T_end - self.burn, 0), self.max_kept)
-        r = self.ad.run_round(carry, T, self.nblocks, self.b, k, self.cancel, self.burn)
+        r = self.ad.run_round(carry, T, self.nblocks, self.b, k, self.cancel, self.burn, self.progress)
         if r is None:
             return None
         carry_end, z, tk, stats = r
@@ -813,7 +832,7 @@ class AutoSession:
 
         out, files = {}, {}
         centred = {k[6:] for k in shapes if k.startswith("orig__")}
-        bar = dr._pbar(-(-self.n // chunk), "constrain") if self.progress and self.n else None
+        bar = dr._pbar(-(-self.n // chunk), "Constraining draws", unit="chunks") if self.progress and self.n else None
         for i, m, blk in _padded_chains(fn, rows, chunk):
             for k, v in blk.items():
                 if k.startswith("z_") and not keep_re:

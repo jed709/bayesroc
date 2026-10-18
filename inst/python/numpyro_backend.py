@@ -45,6 +45,7 @@ _PHI_D = 0.3989422804014327
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, init_to_uniform
+import progress
 
 
 # =============================================================================
@@ -5163,7 +5164,7 @@ class NutsCoords:
                 vg_s = dr._sampler_vg(sdt_model, config, self.unflatten, tm)
                 _, _, tht, aux_c, _ = dr._adapt(sdt_model, config, self.keys, self.off, self.vg, vg_s, tm,
                                                 self.D, chains, _MAP_WARMUP, seed, ctrl, parallel, progress_bar,
-                                                th0, user_init=init_z is not None)
+                                                th0, user_init=init_z is not None, title="Transport map warmup")
                 aux = np.asarray(aux_c)[:1]
                 self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c), np.repeat(aux, chains, 0))
             self.aux_flat = np.asarray(aux)[:1]
@@ -5312,16 +5313,19 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     f32 = not jax.config.jax_enable_x64
     offset = None
     t0 = time.time()
+    par = chain_method == "parallel" and chains > 1
     if f32:
-        mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
+        with progress.nuts(chains, par, desc="NUTS warmup"):
+            mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
         rng_key = mcmc.post_warmup_state.rng_key
     if f32:
         offset = _nuts_ll_offset(config, mcmc.post_warmup_state, coords)
         config = {**config, "_ll_offset": jnp.asarray(offset)}
         mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state, coords)
 
-    mcmc.run(rng_key, config, init_params=None if f32 else init_params,
-             extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
+    with progress.nuts(chains, par, desc="NUTS sampling" if f32 else None, split=None if f32 else int(warmup)):
+        mcmc.run(rng_key, config, init_params=None if f32 else init_params,
+                 extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
     elapsed = time.time() - t0
 
     samples_dict = mcmc.get_samples(group_by_chain=True)

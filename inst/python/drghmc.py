@@ -84,12 +84,9 @@ def memory_check(compiled, chains, parallel):
     return None
 
 
-def _pbar(total, desc):
-    try:
-        from tqdm.auto import tqdm
-        return tqdm(total=int(total), desc=desc)
-    except Exception:
-        return None
+def _pbar(total, desc, **kw):
+    import progress
+    return progress.bar(total, desc, **kw)
 
 
 def _convert_matrices(obj):
@@ -390,8 +387,10 @@ def _pilot_start(model, config, keys, off, D, tm, chains, warmup, seed, ctrl, pa
     vg_p, unfl_p, keys_p, off_p, D_p, _ = _build(model, cfg_p)
     tm_p = _transport(model, cfg_p, ctrl, off_p, unfl_p)
     vg_s_p = _sampler_vg(model, cfg_p, unfl_p, tm_p)
-    _, _, tht, aux, _ = _adapt_stages(vg_p, vg_s_p, tm_p, D_p, chains, warmup, seed + 7, ctrl, parallel,
-                                      progress_bar, np.zeros((chains, D_p)), int(cfg_p["N"]), True, decide=False)
+    with _group(progress_bar, warmup, "Pilot warmup"):
+        _, _, tht, aux, _ = _adapt_stages(vg_p, vg_s_p, tm_p, D_p, chains, warmup, seed + 7, ctrl, parallel,
+                                          progress_bar, np.zeros((chains, D_p)), int(cfg_p["N"]), True,
+                                          decide=False)
     th_p = tm_p.forward_chains(tht, aux)
     th0 = np.zeros((chains, D))
     for k in keys:
@@ -542,7 +541,7 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
 
     def build(th, w, sd, flags=None):
         _, _, tf, _, mf = _self_adapt(vg_plain, D, chains, w, sd, ctrl, parallel, progress_bar,
-                                      th0=np.where(mask_np, 0.0, th), return_mean=True, cache=c_plain,
+                                      th0=np.where(mask_np, 0.0, th), return_mean=True, cache=c_plain, stage="map",
                                       aux=np.concatenate([th, np.ones((chains, 1))], 1))
         progs.wait_anchors()
         aux = tm.anchors_chains(vg, np.where(mask_np, th, mf), parallel)
@@ -552,11 +551,11 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
     if cold:
         w0, wf, w1 = max(H, warmup // 5), max(H, warmup // 10), max(H, warmup // 5)
         ci, ce, th, _ = _self_adapt(vg_plain, D, chains, w0, seed, ctrl, parallel, progress_bar, th0=th,
-                                    cache=c_plain, aux=np.zeros((chains, D + 1)))
+                                    cache=c_plain, aux=np.zeros((chains, D + 1)), stage="start")
         th, aux = build(th, wf, seed + 1)
         ci, ce, tht, _ = _self_adapt(vg_m(aux), D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
                                      th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=mapped(aux), init=init,
-                                     imm0=ci, eps0=ce)
+                                     imm0=ci, eps0=ce, stage="mapped")
         th = tm.forward_chains(tht, aux)
         th, aux = build(th, wf, seed + 3)
         rest = warmup - w0 - 2 * wf - w1
@@ -573,24 +572,25 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
     imm, eps, tht, _, (between, within) = _self_adapt(
         vg_m(aux), D, chains, rest, seed + 4, ctrl, parallel, progress_bar,
         th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=mapped(aux), spread=True, init=init,
-        imm0=ci, eps0=ce)
+        imm0=ci, eps0=ce, stage="tuning")
     slow = mask_np & (between > _DISAGREE * within)
     if slow.any():
         if progress_bar:
             print(f"[DR-G-HMC] chains still disagree on {int(slow.sum())} scale parameter(s); "
                   f"extending warmup by {rest // 2 + wf + rest} iterations", flush=True)
         imm, eps, tht, _ = _self_adapt(vg_m(aux), D, chains, rest // 2, seed + 5, ctrl, parallel, progress_bar,
-                                       th0=tht, aux=tm.parts(aux), cache=mapped(aux), pooled=True, init=init)
+                                       th0=tht, aux=tm.parts(aux), cache=mapped(aux), pooled=True, init=init,
+                                       stage="extended")
         th, aux = build(tm.forward_chains(tht, aux), wf, seed + 6, tm.flags(aux))
         imm, eps, tht, _ = _self_adapt(vg_m(aux), D, chains, rest, seed + 7, ctrl, parallel, progress_bar,
                                        th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=mapped(aux),
-                                       imm0=imm, eps0=eps, init=init)
+                                       imm0=imm, eps0=eps, init=init, stage="tuning")
     progs.close()
     return imm, eps, tht, aux, None
 
 
 def _adapt(model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
-           progress_bar, th0, user_init=False, init=None, on_decide=None):
+           progress_bar, th0, user_init=False, init=None, on_decide=None, title="DR-G-HMC warmup"):
     """Adaptation. Without a transport map this is _self_adapt. With one:
 
     1. the scale parameters of the mapped blocks are held where they are while everything
@@ -617,15 +617,24 @@ def _adapt(model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl
     positions in sampler coordinates, aux [chains, A], wall)."""
     t0 = time.time()
     if tm is None:
-        imm, eps, th, wall = _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar, th0=th0)
+        with _group(progress_bar, warmup, title):
+            imm, eps, th, wall = _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar, th0=th0,
+                                             stage="tuning")
         return imm, eps, th, None, wall
     cold = True
     if not user_init and max(sb.n for sb in tm.sbs) > _PILOT_ABOVE:
         th0 = _pilot_start(model, config, keys, off, D, tm, chains, warmup, seed, ctrl, parallel, progress_bar)
         cold = False
-    imm, eps, tht, aux, _ = _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
-                                          progress_bar, th0, int(config["N"]), cold, init, on_decide=on_decide)
+    with _group(progress_bar, warmup, title):
+        imm, eps, tht, aux, _ = _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
+                                              progress_bar, th0, int(config["N"]), cold, init, on_decide=on_decide)
     return imm, eps, tht, aux, time.time() - t0
+
+
+def _group(on, total, title):
+    import contextlib
+    import progress
+    return progress.group(total, title) if on else contextlib.nullcontext()
 
 
 def ll_offset(postprocess_fn, unflatten, config, th):
@@ -713,7 +722,7 @@ def _lower_window(vg_in, with_aux, D, chains, ctrl, parallel, aux0):
 
 def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
                 th0=None, aux=None, return_mean=False, cache=None, imm0=None, eps0=None,
-                spread=False, pooled=False, init=None):
+                spread=False, pooled=False, init=None, stage=None):
     """DR-native adaptation: per-chain RM on log(eps) -> acc_target, progressive
     diagonal mass from accumulated within-chain Welford variance. `warmup`
     iterations are split exactly across the adaptation windows. Returns
@@ -807,7 +816,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     mass_end = max(burn + 1, int(round(ctrl["mass_end_frac"] * H)))
     late_sum, late_n = 0.0, 0
     spread_out = None
-    bar = _pbar(warmup, "DR-G-HMC adapt") if progress_bar else None
+    bar = _pbar(warmup, "DR-G-HMC warmup", stage=stage) if progress_bar else None
     for w, lr0 in enumerate(sched):
         nw = lengths[w]
         lr = (0.10 * 0.65 ** (w - mass_end)) if w >= mass_end else lr0
@@ -1045,7 +1054,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     AUX = aux_in(tm, state["aux"])
     carry = jax.tree.map(np.asarray, setup_p(th0, jnp.asarray(rho0), OFF, AUX))
 
-    bar = _pbar(samples, "DR-G-HMC sample") if progress_bar else None
+    bar = _pbar(samples, "DR-G-HMC sampling") if progress_bar else None
     tp, sp, ep = [], [], []
     for i in range(t0, t0 + samples, step):
         ts = jnp.arange(i, min(i + step, t0 + samples))
@@ -1091,7 +1100,7 @@ def _postprocess_chunked(postprocess_fn, unflatten, ths, save_loglik=True,
     namedC = jax.pmap(named1, axis_name="chain") if par else None
     n_chunks = (kept + chunk - 1) // chunk
     bar = _pbar(n_chunks if par else chains * n_chunks,
-                "DR-G-HMC constrain") if progress_bar else None
+                "Constraining draws", unit="chunks") if progress_bar else None
 
     out = {}
     if par:

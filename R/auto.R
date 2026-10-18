@@ -245,6 +245,8 @@
   worker <- .jax_worker_start(python = python, chains = chains, chain_method = chain_method,
                               sampler = sampler, control = sampler_ctrl)
   on.exit(.jax_worker_stop(worker), add = TRUE)
+  .prog_reset()
+  on.exit(.prog_done(), add = TRUE)
   token <- basename(tempfile("auto_"))
   work <- tempfile("bayesroc_auto_")
   dir.create(work)
@@ -322,7 +324,7 @@
     T <- as.integer(st$T)
     kept <- as.integer(st$kept)
     if (isTRUE(st$kept_bytes >= mem_next)) {
-      message(sprintf("Kept draws use %.1f GB of memory; set thin to keep fewer.", st$kept_bytes / 1e9))
+      .prog_message(sprintf("Kept draws use %.1f GB of memory; set thin to keep fewer.", st$kept_bytes / 1e9))
       while (st$kept_bytes >= mem_next) mem_next <- 2 * mem_next
     }
     T_prev <- T
@@ -345,14 +347,15 @@
                                             if (dg$rhat > auto$rhat) "R-hat"), collapse = " + "),
                     if (!is.null(st$blocker)) sprintf(" (%s)", .lab_of(mon_lab, st$blocker)) else "",
                     if (any(!ess_ok)) sprintf(" (~%d more draws)", as.integer(ceiling(need - T))) else "")
-      message(.auto_status(T, kept, stride, dg, st, sampler, need_txt, st$seconds, elapsed,
-                           auto$targets, auto$rhat))
+      .prog_message(.auto_status(T, kept, stride, dg, st, sampler, need_txt, st$seconds, elapsed,
+                                 auto$targets, auto$rhat))
     }
     if (met) { stop_reason <- "targets"; break }
     if (T >= auto$max_draws) { stop_reason <- if (is.null(fixed_draws)) "max_draws" else "draws"; break }
     if (!is.null(auto$max_time) && elapsed >= auto$max_time) { stop_reason <- "max_time"; break }
   }
 
+  .prog_done()
   if (isTRUE(progress_bar)) {
     message(sprintf("[auto] %s; constraining %d x %d kept draws%s...",
                     switch(stop_reason, targets = "targets met", draws = "done",

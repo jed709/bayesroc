@@ -2139,7 +2139,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   move it.
 #' @param python Optional path to the Python executable for the JAX backend.
 #'   `NULL` (default) uses the managed environment (see [install_jax_backend()]).
-#' @param progress_bar If `TRUE` (default), show the sampler progress bar.
+#' @param progress_bar If `TRUE` (default), show the sampler's progress. On the JAX backend
+#'   this is one bar per phase (warmup, sampling and, with `iter_sampling = "auto"`, each
+#'   round between convergence checks), redrawn in place in the console and printed at each
+#'   quarter instead when output goes to a file or a knitted document.
 #' @param seed Optional integer seed for reproducible sampling. `NULL` (default)
 #'   uses a random seed.
 #' @param file Optional path to save the fitted model to. When set,
