@@ -98,11 +98,14 @@ struct DOut {
 
 constexpr int kTmapChunks = 8;
 
-// groups are split into at most kTmapChunks ranges of whole 4-group tiles
+// groups are split into at most kTmapChunks ranges of whole 4-group tiles, each at least
+// kTmapGrain / D^3 tiles (a tile's work grows as D^3)
+constexpr int64_t kTmapGrain = 64 * 16 * 16 * 16;
+
 template <typename F>
-void tmap_for(ffi::ThreadPool& pool, int64_t n, F body) {
-  int64_t tiles = (n + 3) / 4;
-  int64_t per = std::max<int64_t>(64, (tiles + kTmapChunks - 1) / kTmapChunks);
+void tmap_for(ffi::ThreadPool& pool, int64_t n, int D, F body) {
+  int64_t tiles = (n + 3) / 4, d3 = int64_t(D) * D * D;
+  int64_t per = std::max<int64_t>((kTmapGrain + d3 - 1) / d3, (tiles + kTmapChunks - 1) / kTmapChunks);
   int64_t nchunks = (tiles + per - 1) / per;
   int64_t threads = std::min<int64_t>(pool.num_threads(), nchunks);
   if (threads <= 1) {
@@ -127,51 +130,218 @@ void tmap_for(ffi::ThreadPool& pool, int64_t n, F body) {
   while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
 }
 
-// Lam [n4, D, D, 4], Q [D, D], s, delta, zeta [D, n] -> u [D, n], ld [n]
+// Lam [n4, D, D, 4], Q [D, D], s, delta, zeta [D, n] (delta may be empty: no shift) -> u [D, n],
+// ld [n], and for D >= kTriMin what the adjoint reads instead of Lam: the packed factors
+// lfac [n4 / 4, D (D + 1) / 2 * 4] and yres = L^-1 r [D, n] (unwritten below kTriMin)
 template <typename T>
 ffi::Error TmapFwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer Q, ffi::AnyBuffer s,
                        ffi::AnyBuffer delta, ffi::AnyBuffer zeta, ffi::Result<ffi::AnyBuffer> u,
-                       ffi::Result<ffi::AnyBuffer> ld) {
+                       ffi::Result<ffi::AnyBuffer> ld, ffi::Result<ffi::AnyBuffer> lfac,
+                       ffi::Result<ffi::AnyBuffer> yres) {
   const int D = static_cast<int>(Lam.dimensions()[1]);
   const int64_t n = s.dimensions()[1];
-  tmap::FwdFn f = tmap::forward_for(D);
+  const bool shift = delta.element_count() > 0;
   DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta);
-  DOut<T> uo(u), ldo(ld);
-  std::vector<double> r(size_t(D) * n);
-  for (int64_t k = 0; k < int64_t(D) * n; ++k) r[k] = ss.ptr[k];
-  const double *pl = lam.ptr, *pq = q.ptr, *pd = dd.ptr, *pz = z.ptr;
-  double *pr = r.data(), *pu = uo.ptr, *pld = ldo.ptr;
-  tmap_for(pool, n, [=](int64_t, int64_t g0, int64_t g1) {
-    tmap::coupling(D, n, g0, g1, pl, pd, pr);
-    if (f) f(g0, g1, n, pl, pq, pr, pz, pu, pld);
-    else tmap::Wide::forward(D, g0, g1, n, pl, pq, pr, pz, pu, pld);
+  DOut<T> uo(u), ldo(ld), lo(lfac), yo(yres);
+  const double *pl = lam.ptr, *pq = q.ptr, *ps = ss.ptr, *pd = shift ? dd.ptr : nullptr, *pz = z.ptr;
+  double *pu = uo.ptr, *pld = ldo.ptr, *plf = lo.ptr, *py = yo.ptr;
+  if (D >= tmap::kTriMin) {
+    tmap_for(pool, n, D, [=](int64_t, int64_t g0, int64_t g1) {
+      tmap::tri::forward(D, g0, g1, n, pl, pq, ps, pd, pz, pu, pld, plf, py);
+    });
+    return ffi::Error::Success();
+  }
+  tmap::FwdFn f = tmap::forward_for(D);
+  std::vector<double> r(ps, ps + size_t(D) * n);
+  double* pr = r.data();
+  tmap_for(pool, n, D, [=](int64_t, int64_t g0, int64_t g1) {
+    if (pd) tmap::coupling(D, n, g0, g1, pl, pd, pr);
+    f(g0, g1, n, pl, pq, pr, pz, pu, pld);
   });
   return ffi::Error::Success();
 }
 
-// Lam, Q, s, delta, zeta as above, ubar [D, n], ldbar [n] -> zetabar [D, n], deltabar [D, n],
-// Qbar [kTmapChunks, D, D] (lower-triangle cotangent of Q, per chunk; sum over chunks)
+// Lam, Q, s, delta, zeta as above, ubar [D, n], ldbar [n], and the forward pass's lfac, yres, u ->
+// zetabar [D, n], deltabar [D, n] (unwritten when delta is empty), Qbar [kTmapChunks, D, D]
+// (lower-triangle cotangent of Q, per chunk; sum over chunks)
 template <typename T>
 ffi::Error TmapBwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer Q, ffi::AnyBuffer s,
                        ffi::AnyBuffer delta, ffi::AnyBuffer zeta, ffi::AnyBuffer ubar,
-                       ffi::AnyBuffer ldbar, ffi::Result<ffi::AnyBuffer> zetabar,
-                       ffi::Result<ffi::AnyBuffer> deltabar, ffi::Result<ffi::AnyBuffer> Qbar) {
+                       ffi::AnyBuffer ldbar, ffi::AnyBuffer lfac, ffi::AnyBuffer yres, ffi::AnyBuffer ures,
+                       ffi::Result<ffi::AnyBuffer> zetabar, ffi::Result<ffi::AnyBuffer> deltabar,
+                       ffi::Result<ffi::AnyBuffer> Qbar) {
   const int D = static_cast<int>(Lam.dimensions()[1]);
   const int64_t n = s.dimensions()[1];
-  tmap::BwdFn f = tmap::backward_for(D);
-  DBuf<T> lam(Lam), q(Q), ss(s), dd(delta), z(zeta), ub(ubar), lb(ldbar);
+  const bool shift = delta.element_count() > 0;
+  DBuf<T> q(Q), ub(ubar), lb(ldbar);
   DOut<T> zo(zetabar), dob(deltabar), qo(Qbar);
-  std::vector<double> r(size_t(D) * n);
-  for (int64_t k = 0; k < int64_t(D) * n; ++k) r[k] = ss.ptr[k];
   for (int64_t k = 0; k < int64_t(kTmapChunks) * D * D; ++k) qo.ptr[k] = 0.0;
-  const double *pl = lam.ptr, *pq = q.ptr, *pd = dd.ptr, *pz = z.ptr, *pub = ub.ptr, *plb = lb.ptr;
-  double *pr = r.data(), *pzb = zo.ptr, *pdb = dob.ptr, *pqb = qo.ptr;
-  tmap_for(pool, n, [=](int64_t c, int64_t g0, int64_t g1) {
-    tmap::coupling(D, n, g0, g1, pl, pd, pr);
-    if (f) f(g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
-    else tmap::Wide::backward(D, g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, pdb, pqb + c * D * D);
-    tmap::coupling_adjoint(D, n, g0, g1, pl, pdb);
+  const double *pq = q.ptr, *pub = ub.ptr, *plb = lb.ptr;
+  double *pzb = zo.ptr, *pdb = shift ? dob.ptr : nullptr, *pqb = qo.ptr;
+  if (D >= tmap::kTriMin) {
+    DBuf<T> lf(lfac), yr(yres), ur(ures);
+    const double *plf = lf.ptr, *py = yr.ptr, *pu = ur.ptr;
+    tmap_for(pool, n, D, [=](int64_t c, int64_t g0, int64_t g1) {
+      tmap::tri::backward(D, g0, g1, n, plf, pq, py, pu, pub, plb, pzb, pdb, pqb + c * D * D);
+    });
+    return ffi::Error::Success();
+  }
+  tmap::BwdFn f = tmap::backward_for(D);
+  DBuf<T> lam(Lam), ss(s), dd(delta), z(zeta);
+  const double *pl = lam.ptr, *pd = shift ? dd.ptr : nullptr, *pz = z.ptr;
+  std::vector<double> r(ss.ptr, ss.ptr + size_t(D) * n), rb(size_t(D) * n);
+  double *pr = r.data(), *prb = rb.data();
+  tmap_for(pool, n, D, [=](int64_t c, int64_t g0, int64_t g1) {
+    if (pd) tmap::coupling(D, n, g0, g1, pl, pd, pr);
+    f(g0, g1, n, pl, pq, pr, pz, pub, plb, pzb, prb, pqb + c * D * D);
+    if (pdb) {
+      tmap::coupling_adjoint(D, n, g0, g1, pl, prb);
+      for (int a = 0; a < D; ++a)
+        for (int64_t g = g0; g < g1; ++g) pdb[a * n + g] = prb[a * n + g];
+    }
   });
+  return ffi::Error::Success();
+}
+
+
+
+// One wide block's whole map step, for D >= kTriMin. Natural order in and out: z [D, n] the
+// sampler's coordinates, A [D, D] the prior factor (lower triangular), perm [D] (int32) the
+// kernel's order (row i of the kernel is natural row perm[i]); Lam, s, delta as in TmapFwdImpl, in
+// the kernel's order. -> th = A^-1 u [D, n] and u [D, n] (natural), ld [n], and for the adjoint
+// lfac, yres, uk (u in the kernel's order), Qk = (A^-T A^-1) in the kernel's order [D, D] and
+// Ainv = A^-1 [D, D].
+template <typename T>
+ffi::Error TmapBlkFwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Lam, ffi::AnyBuffer s, ffi::AnyBuffer delta,
+                          ffi::AnyBuffer z, ffi::AnyBuffer Afac, ffi::AnyBuffer perm,
+                          ffi::Result<ffi::AnyBuffer> th, ffi::Result<ffi::AnyBuffer> ld,
+                          ffi::Result<ffi::AnyBuffer> un, ffi::Result<ffi::AnyBuffer> lfac,
+                          ffi::Result<ffi::AnyBuffer> yres, ffi::Result<ffi::AnyBuffer> uk,
+                          ffi::Result<ffi::AnyBuffer> Qk, ffi::Result<ffi::AnyBuffer> Ainv) {
+  const int D = static_cast<int>(Lam.dimensions()[1]);
+  const int64_t n = s.dimensions()[1];
+  const bool shift = delta.element_count() > 0;
+  const int32_t* pm = static_cast<const int32_t*>(perm.untyped_data());
+  DBuf<T> lam(Lam), ss(s), dd(delta), zz(z), af(Afac);
+  DOut<T> tho(th), ldo(ld), uno(un), lo(lfac), yo(yres), uko(uk), qo(Qk), aio(Ainv);
+  double* Ai = aio.ptr;
+  const double* F = af.ptr;
+  for (int i = 0; i < D; ++i) {
+    double* ri = Ai + size_t(i) * D;
+    for (int c = 0; c < D; ++c) ri[c] = c == i ? 1.0 : 0.0;
+    for (int k = 0; k < i; ++k) {
+      const double f = F[i * D + k];
+      const double* rk = Ai + size_t(k) * D;
+      for (int c = 0; c <= k; ++c) ri[c] -= f * rk[c];
+    }
+    const double inv = 1.0 / F[i * D + i];
+    for (int c = 0; c <= i; ++c) ri[c] *= inv;
+  }
+  const double* A = Ai;
+  double* q = qo.ptr;
+  for (int i = 0; i < D; ++i)
+    for (int j = 0; j <= i; ++j) {
+      const int b = pm[i], c = pm[j];
+      double acc = 0.0;
+      for (int a = std::max(b, c); a < D; ++a) acc += A[a * D + b] * A[a * D + c];
+      q[i * D + j] = acc;
+      q[j * D + i] = acc;
+    }
+  std::vector<double> zk(size_t(D) * n);
+  for (int i = 0; i < D; ++i) std::copy(zz.ptr + size_t(pm[i]) * n, zz.ptr + size_t(pm[i] + 1) * n, zk.data() + size_t(i) * n);
+  const double *pl = lam.ptr, *ps = ss.ptr, *pd = shift ? dd.ptr : nullptr, *pz = zk.data(), *pq = q;
+  double *pth = tho.ptr, *pld = ldo.ptr, *pun = uno.ptr, *plf = lo.ptr, *py = yo.ptr, *puk = uko.ptr;
+  tmap_for(pool, n, D, [=](int64_t, int64_t g0, int64_t g1) {
+    tmap::tri::forward(D, g0, g1, n, pl, pq, ps, pd, pz, puk, pld, plf, py);
+    std::vector<tmap::v4d> u(D);
+    for (int64_t g = g0; g < g1; g += 4) {
+      for (int i = 0; i < D; ++i) {
+        u[pm[i]] = tmap::ldn(puk + size_t(i) * n, n, g, 0.0);
+        tmap::stn(pun + size_t(pm[i]) * n, n, g, u[pm[i]]);
+      }
+      for (int a = 0; a < D; ++a) {
+        tmap::v4d acc = tmap::splat(0.0);
+        for (int b = 0; b <= a; ++b) acc += tmap::splat(A[a * D + b]) * u[b];
+        tmap::stn(pth + size_t(a) * n, n, g, acc);
+      }
+    }
+  });
+  return ffi::Error::Success();
+}
+
+// The adjoint of TmapBlkFwdImpl: Ainv, perm, Qk, lfac, yres, uk, u from the forward pass, the
+// cotangents thbar, ldbar, ubar, and delta (only its size is read) -> zbar [D, n] (natural),
+// deltabar [D, n] (kernel order; unwritten when delta is empty), Abar [D, D] (lower triangle).
+template <typename T>
+ffi::Error TmapBlkBwdImpl(ffi::ThreadPool pool, ffi::AnyBuffer Ainv, ffi::AnyBuffer perm, ffi::AnyBuffer Qk,
+                          ffi::AnyBuffer lfac, ffi::AnyBuffer yres, ffi::AnyBuffer uk, ffi::AnyBuffer un,
+                          ffi::AnyBuffer thbar, ffi::AnyBuffer ldbar, ffi::AnyBuffer unbar, ffi::AnyBuffer delta,
+                          ffi::Result<ffi::AnyBuffer> zbar, ffi::Result<ffi::AnyBuffer> deltabar,
+                          ffi::Result<ffi::AnyBuffer> Abar) {
+  const int D = static_cast<int>(Qk.dimensions()[0]);
+  const int64_t n = thbar.dimensions()[1];
+  const bool shift = delta.element_count() > 0;
+  const int32_t* pm = static_cast<const int32_t*>(perm.untyped_data());
+  DBuf<T> ai(Ainv), q(Qk), lf(lfac), yr(yres), ukb(uk), unb(un), tb(thbar), lb(ldbar), ubn(unbar);
+  DOut<T> zo(zbar), dob(deltabar), ao(Abar);
+  const double *A = ai.ptr, *pq = q.ptr, *plf = lf.ptr, *py = yr.ptr, *puk = ukb.ptr, *pun = unb.ptr,
+               *ptb = tb.ptr, *plb = lb.ptr, *pubn = ubn.ptr;
+  const size_t DD = size_t(D) * D;
+  std::vector<double> ubk(size_t(D) * n), zbk(size_t(D) * n), qb(kTmapChunks * DD, 0.0), ab(kTmapChunks * DD, 0.0);
+  double *pubk = ubk.data(), *pzbk = zbk.data(), *pqb = qb.data(), *pab = ab.data(), *pdb = shift ? dob.ptr : nullptr;
+  tmap_for(pool, n, D, [=](int64_t c, int64_t g0, int64_t g1) {
+    std::vector<tmap::v4d> t(D), u(D), abt(DD, tmap::splat(0.0));
+    for (int64_t g = g0; g < g1; g += 4) {
+      for (int a = 0; a < D; ++a) {
+        t[a] = tmap::ldn(ptb + size_t(a) * n, n, g, 0.0);
+        u[a] = tmap::ldn(pun + size_t(a) * n, n, g, 0.0);
+      }
+      for (int a = 0; a < D; ++a)
+        for (int b = 0; b <= a; ++b) abt[size_t(a) * D + b] += t[a] * u[b];
+      for (int i = 0; i < D; ++i) {
+        const int b = pm[i];
+        tmap::v4d acc = tmap::ldn(pubn + size_t(b) * n, n, g, 0.0);
+        for (int a = b; a < D; ++a) acc += tmap::splat(A[a * D + b]) * t[a];
+        tmap::stn(pubk + size_t(i) * n, n, g, acc);
+      }
+    }
+    double* abc = pab + c * DD;
+    for (size_t k = 0; k < DD; ++k) abc[k] = abt[k][0] + abt[k][1] + abt[k][2] + abt[k][3];
+    tmap::tri::backward(D, g0, g1, n, plf, pq, py, puk, pubk, plb, pzbk, pdb, pqb + c * DD);
+  });
+  double* pz = zo.ptr;
+  for (int i = 0; i < D; ++i) std::copy(pzbk + size_t(i) * n, pzbk + size_t(i + 1) * n, pz + size_t(pm[i]) * n);
+  std::vector<double> G(DD, 0.0);
+  for (int c = 1; c < kTmapChunks; ++c)
+    for (size_t k = 0; k < DD; ++k) { pqb[k] += pqb[c * DD + k]; pab[k] += pab[c * DD + k]; }
+  for (int i = 0; i < D; ++i)
+    for (int j = 0; j <= i; ++j) {
+      G[size_t(pm[i]) * D + pm[j]] += pqb[size_t(i) * D + j];
+      G[size_t(pm[j]) * D + pm[i]] += pqb[size_t(i) * D + j];
+    }
+  std::vector<double> Gi(DD, 0.0), W(DD, 0.0);
+  for (int a = 0; a < D; ++a)
+    for (int b = 0; b <= a; ++b) {
+      double acc = pab[size_t(a) * D + b];
+      for (int k = 0; k <= a; ++k) acc += A[a * D + k] * G[size_t(k) * D + b];
+      Gi[size_t(a) * D + b] = acc;
+    }
+  for (int a = 0; a < D; ++a)
+    for (int c = 0; c < D; ++c) {
+      const int m = std::min(a, c);
+      double acc = 0.0;
+      for (int b = 0; b <= m; ++b) acc += Gi[size_t(a) * D + b] * A[size_t(c) * D + b];
+      W[size_t(a) * D + c] = acc;
+    }
+  double* pa = ao.ptr;
+  for (size_t k = 0; k < DD; ++k) pa[k] = 0.0;
+  for (int a = 0; a < D; ++a)
+    for (int r = 0; r <= a; ++r) {
+      const double f = A[a * D + r];
+      double* pr = pa + size_t(r) * D;
+      const double* wa = W.data() + size_t(a) * D;
+      for (int c = 0; c <= r; ++c) pr[c] -= f * wa[c];
+    }
   return ffi::Error::Success();
 }
 
@@ -337,10 +507,14 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitCell, ProbitCellImpl,
 #define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
 #define A_ .Arg<ffi::AnyBuffer>()
 #define R_ .Ret<ffi::AnyBuffer>()
-BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_);
-BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_);
-BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
-BAYESROC_TMAP(BayesrocTmapBwdF32, TmapBwdImpl<float>, A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBwdF32, TmapBwdImpl<float>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBlkFwd, TmapBlkFwdImpl<double>, A_ A_ A_ A_ A_ A_, R_ R_ R_ R_ R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBlkFwdF32, TmapBlkFwdImpl<float>, A_ A_ A_ A_ A_ A_, R_ R_ R_ R_ R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBlkBwd, TmapBlkBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocTmapBlkBwdF32, TmapBlkBwdImpl<float>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
 
 // Plain C entry for R's .C(): Phi2(h, k; rho) at n finite points, split over threads.
 extern "C" void bayesroc_r_bvn_cdf(const double* h, const double* k, const double* rho, const int* n,

@@ -21,7 +21,7 @@ _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 _DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
                  mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64",
-                 transport=True, transport_links=True, transport_wide="auto")
+                 transport=True, transport_links=True, transport_wide=True)
 _INTEGRATORS = ("bcss3", "bcss2", "leapfrog")
 
 
@@ -47,8 +47,7 @@ def _merge_control(control):
         (c["precision"] in ("f64", "f32"), "precision must be 'f64' or 'f32'"),
         (isinstance(c["transport"], (bool, np.bool_)), "transport must be TRUE or FALSE"),
         (isinstance(c["transport_links"], (bool, np.bool_)), "transport_links must be TRUE or FALSE"),
-        (c["transport_wide"] == "auto" or isinstance(c["transport_wide"], (bool, np.bool_)),
-         "transport_wide must be \"auto\", TRUE or FALSE"),
+        (isinstance(c["transport_wide"], (bool, np.bool_)), "transport_wide must be TRUE or FALSE"),
     ]
     for ok, msg in checks:
         if not ok:
@@ -414,8 +413,7 @@ class _Programs:
     candidates non-centred) the mapped window and the gradient over the chains. Everything is
     lowered on the calling thread (NumPyro's handler stack is not shared safely across threads)
     and compiled on one worker thread in the order queued, so that the plain stage can start
-    at once and the configurations the block trials need are ready when warmup reaches them;
-    a configuration never queued is compiled when first asked for."""
+    at once; a configuration never queued is compiled when first asked for."""
 
     def __init__(self, vg_plain, tm, D, chains, ctrl, parallel, off0):
         import threading
@@ -508,167 +506,16 @@ def vg_plain_base(vg_plain, D):
     return lambda v: vg_plain(v, jnp.zeros(D + 1))
 
 
-_PILOT_ARM, _PILOT_CREDIT, _PILOT_COST = 300, 200, 30
-_PILOT_MIN_SAVING = 1.15
-_PILOT_MIN_SHARE = 0.2
-_PILOT_GAIN = 1.0
-_PILOT_HOPELESS = 0.6
-_PILOT_INFORMED = 0.4
-_PILOT_CORR = 0.4
-_PILOT_SLOWEST = 5
-
-
-def _pilot_arm(tm, D, chains, th, aux, imm, eps, progs, parallel, ctrl, seed, block=None):
-    """One trial arm: a full adaptation stage of _PILOT_ARM iterations with the anchors `aux`
-    from the model-side positions `th`, starting from the masses `imm` and step size `eps`
-    (a non-centred `block` starts its coordinates at the anchors' analytic variances). Returns
-    the end positions (model coordinates), the adapted masses and step size, seconds per
-    iteration and the snapshots of the windows after burn-in."""
-    cache = progs.get(tm.flags(aux))
-    imm = np.array(imm, dtype=np.float64)
-    if block is not None:
-        sb = tm.sbs[block]
-        AX = aux_in(tm, aux)
-        imm[sb.pos_np[sb.cand_nat]] = np.mean([tm.cand_variance(block, np.asarray(th)[c], tuple(p[c] for p in AX))
-                                               for c in range(chains)], 0)
-    imm1, eps1, tht, wall, snaps = _self_adapt(progs.vg_m(tm.flags(aux)), D, chains, _PILOT_ARM, seed, ctrl, parallel,
-                                               th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=cache,
-                                               imm0=imm, eps0=eps, trial=True)
-    return dict(th=tm.forward_chains(tht, aux), imm=imm1, eps=eps1, t=wall / _PILOT_ARM, snaps=snaps)
-
-
-def _pilot_rates(arms, mon):
-    """Per arm, two mixing rates of each monitored coordinate from the windows' snapshots: the
-    mean squared jump between consecutive snapshots over the variance (pooled over both arms,
-    so a coordinate one arm has not explored counts as slow there), and the snapshots'
-    effective sample size."""
-    allsnaps = np.concatenate([np.concatenate(a["snaps"], 1) for a in arms], 1)
-    var = np.maximum(allsnaps.reshape(-1, allsnaps.shape[-1]).var(0), 1e-300)
-    jumps, esss = [], []
-    for a in arms:
-        d2 = np.concatenate([np.diff(w, axis=1) ** 2 for w in a["snaps"]], 1)
-        jumps.append(np.mean(d2, axis=(0, 1))[mon] / var[mon])
-        esss.append(_snap_ess(np.concatenate(a["snaps"], 1))[mon])
-    return jumps, esss
-
-
-def _snap_ess(buf, max_lag=None):
-    """Effective sample size per coordinate from position snapshots [chains, K, D]: the
-    chains' pooled autocorrelation (between-chain variance included, Vehtari et al. 2021)
-    summed by Geyer's initial positive sequence."""
-    C, K, D = buf.shape
-    x = buf - buf.mean(1, keepdims=True)
-    W = np.mean(x * x, axis=(0, 1))
-    B = buf.mean(1).var(0, ddof=1) if C > 1 else np.zeros(D)
-    vp = np.maximum(W * (K - 1) / K + B, 1e-300)
-    L = min(K // 3 if max_lag is None else max_lag, K - 2)
-    rho = np.empty((L + 1, D))
-    for t in range(L + 1):
-        rho[t] = 1.0 - (W - np.mean(x[:, :K - t] * x[:, t:], axis=(0, 1))) / vp
-    tau = np.ones(D)
-    alive = np.ones(D, bool)
-    for t in range(1, L, 2):
-        p = rho[t] + rho[t + 1]
-        alive &= p > 0.0
-        tau += np.where(alive, 2.0 * p, 0.0)
-    return C * K / tau
-
-
-def _candidates(tm):
-    """Super-blocks whose candidate blocks are worth a trial: those with candidates and at least
-    _PILOT_MIN_SHARE of the largest one's kernel work (n D^3)."""
-    work = {k: sb.n * sb.D ** 3 for k, sb in enumerate(tm.sbs) if sb.cand is not None}
-    return [k for k, w in work.items() if w >= _PILOT_MIN_SHARE * max(work.values())] if work else []
-
-
-def _choose_blocks(tm, D, chains, ctrl, parallel, progress_bar, th, aux, imm, eps, progs, seed, rest, names):
-    """For each super-block with candidate blocks, a trial of both treatments from the same
-    positions, each a full adaptation stage: the candidates non-centred first and, unless
-    that already loses, mapped. The non-centred form is kept when it is expected to give at
-    least _PILOT_GAIN times the effective draws per second: the mapped arm's seconds per
-    iteration over its own, times the squared step-size ratio (every coordinate the block
-    does not touch mixes diffusively, so its effective draws per iteration follow the square
-    of the step), unless the block has a data-informed dimension (shrinkage weight at least
-    _PILOT_INFORMED) and the _PILOT_SLOWEST slowest correlation coordinates mix less than
-    _PILOT_CORR times as fast non-centred: an informed dimension late in a block's Cholesky
-    order ties that dimension to every group's effects, the fit's slowest correlations then
-    set its length, and the step size does not show it.
-    Returns the chosen arm's end positions (model coordinates), the anchors with the flags
-    set, its masses and step size, and the warmup iterations spent."""
-    cands = _candidates(tm)
-    W = _PILOT_ARM
-    wide = ctrl.get("transport_wide", "auto")
-    if not cands or (not isinstance(wide, str) and bool(wide)):
-        return th, aux, imm, eps, 0
-    if not isinstance(wide, str):
-        flags = tm.flags(aux)
-        flags[[k for k, sb in enumerate(tm.sbs) if sb.cand is not None]] = 1.0
-        return th, tm.with_flags(aux, flags), imm, eps, 0
-    if imm is None or rest < _PILOT_CREDIT + 30 * int(ctrl["adapt_windows"]):
-        return th, aux, imm, eps, 0
-    _map = lambda f, in_axes=None: _chain_map(f, in_axes, parallel)
-    ident = _map(lambda x: x)
-    zmask = np.zeros(D, bool)
-    for sb in tm.sbs:
-        zmask[np.asarray(sb.pos).reshape(-1)] = True
-    mon = np.nonzero(~zmask)[0]
-    corr = np.array([bool(names and str(names[i]).startswith("L_corr_")) for i in mon]) if names else np.zeros(len(mon), bool)
-    flags, used = tm.flags(aux), 0
-    for k in sorted(cands, key=lambda k: -tm.sbs[k].n * tm.sbs[k].D ** 3):
-        sb = tm.sbs[k]
-        auxes = []
-        for f in (0.0, 1.0):
-            fl = flags.copy()
-            fl[k] = f
-            auxes.append(tm.with_flags(aux, fl))
-        runs = []
-        for a in auxes:
-            AX = aux_in(tm, a)
-            pr = progs.get(tm.flags(a))
-            tht = ident(jnp.asarray(tm.inverse_chains(th, a)))
-            U, g = pr["vg0"](tht, AX)
-            rho = _map(lambda kk: jax.random.normal(kk, (D,)))(jax.random.split(_tagged(seed, 9), chains))
-            le = ident(jnp.asarray(np.full(chains, np.log(eps))))
-            args = (jax.random.split(_tagged(seed, 8), chains), tht, rho, U, g, le, AX, jnp.asarray(imm), 0.0)
-            jax.block_until_ready(pr["window"](*args, jnp.asarray(5)))
-            runs.append((pr["window"], args))
-        cost = [np.inf, np.inf]
-        for _ in range(2):
-            for i, (win, args) in enumerate(runs):
-                t0 = time.perf_counter()
-                jax.block_until_ready(win(*args, jnp.asarray(_PILOT_COST)))
-                cost[i] = min(cost[i], (time.perf_counter() - t0) / _PILOT_COST)
-        label = f"{sb.name}: {', '.join(sb.cand_names)} ({int(sb.cand.sum())} of {sb.D} dims)"
-        if cost[0] < _PILOT_MIN_SAVING * cost[1]:
-            continue
-        armb = _pilot_arm(tm, D, chains, th, auxes[1], imm, eps, progs, parallel, ctrl, seed + 11 + 2 * k, block=k)
-        low = lambda x: np.mean(np.sort(x)[:_PILOT_SLOWEST])
-        if cost[0] / cost[1] * (armb["eps"] / eps) ** 2 < _PILOT_HOPELESS * _PILOT_GAIN:
-            c, r, gain, cheap, arms = cost[0] / cost[1], armb["eps"] / eps, np.nan, False, None
-        else:
-            arms = [_pilot_arm(tm, D, chains, th, auxes[0], imm, eps, progs, parallel, ctrl, seed + 10 + 2 * k), armb]
-            used += _PILOT_CREDIT
-            c = arms[0]["t"] / arms[1]["t"]
-            r = arms[1]["eps"] / arms[0]["eps"]
-            gain = c * r * r
-            (ra, rb), (ea, eb) = _pilot_rates(arms, mon)
-            informed = float(np.max(sb.weight[sb.cand])) >= _PILOT_INFORMED
-            cmix = low(eb[corr]) / low(ea[corr]) if informed and corr.sum() >= _PILOT_SLOWEST else np.nan
-            cheap = gain >= _PILOT_GAIN and not (informed and cmix < _PILOT_CORR)
-        if progress_bar:
-            print(f"[DR-G-HMC] {label} {'sampled non-centred' if cheap else 'kept in the map'}: "
-                  f"iterations {c:.2f}x cheaper, step size {r:.2f}x"
-                  + (f", slowest correlations mix {cmix:.2f}x as fast" if arms is not None and np.isfinite(cmix) else ""), flush=True)
-        if arms is None:
-            continue
-        pick = arms[1 if cheap else 0]
-        flags[k] = 1.0 if cheap else 0.0
-        th, aux, imm, eps = pick["th"], tm.with_flags(aux, flags), pick["imm"], pick["eps"]
-    return th, aux, imm, eps, used
+def _wide_flags(tm, ctrl, aux):
+    """The anchors with every super-block's wide blocks non-centred under
+    control$transport_wide = FALSE, as they are otherwise."""
+    if bool(ctrl.get("transport_wide", True)):
+        return aux
+    return tm.with_flags(aux, [1.0 if sb.cand is not None else 0.0 for sb in tm.sbs])
 
 
 def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progress_bar, th0, n_obs, cold,
-                  init=None, decide=True, names=None, on_decide=None):
+                  init=None, decide=True, on_decide=None):
     H = int(ctrl["adapt_windows"])
     if warmup < 5 * H:
         raise ValueError(f"DR-G-HMC with transport needs warmup >= {5 * H}; got {warmup}")
@@ -685,10 +532,6 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
         return U + 0.5 * jnp.sum(jnp.where(on, v * v, 0.0)), jnp.where(on, v, g)
 
     progs = _Programs(vg_plain, tm, D, chains, ctrl, parallel, off0)
-    auto = decide and isinstance(ctrl.get("transport_wide", "auto"), str)
-    if auto:
-        for k in sorted(_candidates(tm), key=lambda k: -tm.sbs[k].n * tm.sbs[k].D ** 3):
-            progs.add(tuple(int(i == k) for i in range(len(tm.sbs))))
     c_plain = progs.wait_plain()
 
     def mapped(aux):
@@ -722,16 +565,8 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
         th, aux = build(th, wf, seed + 1)
         rest = warmup - wf
         ci = ce = None
-        if auto and _candidates(tm):
-            w1 = max(H, rest // 4)
-            ci, ce, tht, _ = _self_adapt(vg_m(aux), D, chains, w1, seed + 2, ctrl, parallel, progress_bar,
-                                         th0=tm.inverse_chains(th, aux), aux=tm.parts(aux), cache=mapped(aux), init=init)
-            th = tm.forward_chains(tht, aux)
-            rest -= w1
     if decide:
-        th, aux, ci, ce, used = _choose_blocks(tm, D, chains, ctrl, parallel, progress_bar, th, aux, ci, ce, progs,
-                                               seed + 8, rest, names)
-        rest -= used
+        aux = _wide_flags(tm, ctrl, aux)
         if on_decide is not None:
             on_decide(tuple(int(f) for f in tm.flags(aux)))
     init = init if tuple(tm.flags(aux)) == progs.base else None
@@ -788,14 +623,8 @@ def _adapt(model, config, keys, off, vg, vg_s, tm, D, chains, warmup, seed, ctrl
     if not user_init and max(sb.n for sb in tm.sbs) > _PILOT_ABOVE:
         th0 = _pilot_start(model, config, keys, off, D, tm, chains, warmup, seed, ctrl, parallel, progress_bar)
         cold = False
-    names = [None] * D
-    for k in keys:
-        sl, shp = off[k]
-        for i, pos in enumerate(np.ndindex(*shp) if shp else [()]):
-            names[sl.start + i] = k + ("[" + ",".join(str(p + 1) for p in pos) + "]" if pos else "")
     imm, eps, tht, aux, _ = _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel,
-                                          progress_bar, th0, int(config["N"]), cold, init, names=names,
-                                          on_decide=on_decide)
+                                          progress_bar, th0, int(config["N"]), cold, init, on_decide=on_decide)
     return imm, eps, tht, aux, time.time() - t0
 
 
@@ -884,7 +713,7 @@ def _lower_window(vg_in, with_aux, D, chains, ctrl, parallel, aux0):
 
 def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
                 th0=None, aux=None, return_mean=False, cache=None, imm0=None, eps0=None,
-                spread=False, pooled=False, init=None, trial=False):
+                spread=False, pooled=False, init=None):
     """DR-native adaptation: per-chain RM on log(eps) -> acc_target, progressive
     diagonal mass from accumulated within-chain Welford variance. `warmup`
     iterations are split exactly across the adaptation windows. Returns
@@ -896,8 +725,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     average variance within a chain over the draws the masses were estimated from. With
     `pooled` every mass is the variance over all chains' draws together. `init(th, aux)`
     -> (U, g), when given, supplies the starting values from an already compiled program
-    instead of compiling `vg` over the chains for that alone. With `trial` the return ends
-    with the position snapshots of every window after the burn-in, [chains, K, D] each."""
+    instead of compiling `vg` over the chains for that alone."""
     acc_t = ctrl["acc_target"]
     gamma = ctrl["gamma"]
     integ = ctrl["integrator"]
@@ -974,7 +802,7 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     acc_mean = np.zeros((chains, D)); acc_m2 = np.zeros((chains, D))
     acc_n = np.zeros(chains)
     acc_g2 = np.zeros((chains, D))
-    kept, snaps = [], []
+    kept = []
     burn = max(1, int(round(ctrl["mass_burn_frac"] * H)))
     mass_end = max(burn + 1, int(round(ctrl["mass_end_frac"] * H)))
     late_sum, late_n = 0.0, 0
@@ -1008,8 +836,6 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
         th = jax.block_until_ready(th)
         if bar is not None:
             bar.update(nw)
-        if trial and w >= burn:
-            snaps.append(np.asarray(buf)[:, :min(_KEEP, nw)])
         if burn <= w < mass_end:
             mns, m2s = np.asarray(mn), np.asarray(m2)
             nwf = float(nw)
@@ -1035,8 +861,6 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     if bar is not None:
         bar.close()
     eps = float(np.exp(np.median(np.asarray(le))))
-    if trial:
-        return np.asarray(imm), eps, np.asarray(th), time.time() - t0, snaps
     if spread:
         return np.asarray(imm), eps, np.asarray(th), time.time() - t0, spread_out
     if return_mean:
@@ -1058,7 +882,7 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
 
     last = {1: 0, 2: 2, 3: 6}[kmax]
 
-    def scanner(c, ts, ckey, IMM, MSQ, E0, OFF, AUX):
+    def scanner(c, ts, keep, ckey, IMM, MSQ, E0, OFF, AUX):
         vg = (lambda v: vg_off(v, OFF)) if tm is None else (lambda v: vg_off(v, OFF, AUX))
         eps_k = E0 * RSC
         tiny = jnp.finfo(c[0].dtype).tiny
@@ -1073,7 +897,8 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
         def sel(p, a, b):
             return jax.tree.map(lambda x, y: jnp.where(p, x, y), a, b)
 
-        def dr_step(carry, t):
+        def dr_step(carry, x):
+            t, kept = x
             # Delayed rejection as a while_loop over at most 7 integrator steps (one compiled
             # copy of the gradient): 0 proposal 1; 1 proposal 2; 2 its ghost; 3 proposal 3;
             # 4 its ghost; 5 proposal 2 from 3; 6 that one's ghost. S2 holds proposal 2 and
@@ -1118,10 +943,10 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
             th_n, rho_n, U_n, g_n = s[4]
             stage = s[5]
             rho_n = jnp.where(stage > 0, -rho_n, rho_n)
-            out = th_n if tm is None else tm.forward(th_n, AUX)[0]
+            out = th_n if tm is None else jax.lax.cond(kept, lambda v: tm.forward(v, AUX)[0], jnp.zeros_like, th_n)
             return (th_n, rho_n, U_n, g_n), (out, stage, H0)
 
-        return jax.lax.scan(dr_step, c, ts)
+        return jax.lax.scan(dr_step, c, (ts, keep))
 
     def setup(th0, rho0, OFF, AUX):
         U0, g0 = vg_off(th0, OFF) if tm is None else vg_off(th0, OFF, AUX)
@@ -1129,7 +954,7 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
 
     ax = None if tm is None else 0
     return (_chain_map(setup, (0, 0, None, ax), parallel),
-            _chain_map(scanner, (0, None, 0, None, None, None, None, ax), parallel))
+            _chain_map(scanner, (0, None, None, 0, None, None, None, None, ax), parallel))
 
 
 def _chain_map(f, in_axes=None, parallel=True):
@@ -1196,7 +1021,7 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
         dummy = jnp.zeros((chains, D))
         aux0 = aux_zeros(tm, chains)
         c0 = jax.tree.map(np.asarray, setup_p(dummy, dummy, zero_off, aux0))
-        cw = chunk_c(c0, jnp.arange(step), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3),
+        cw = chunk_c(c0, jnp.arange(step), jnp.ones(step, bool), chain_keys, jnp.ones(D), jnp.ones(D), jnp.asarray(1e-3),
                      zero_off, aux0)
         jax.block_until_ready(cw)
         del c0, cw, dummy
@@ -1225,9 +1050,9 @@ def _sample_phase(vg_off, D, chains, samples, thinning, seed, ctrl,
     for i in range(t0, t0 + samples, step):
         ts = jnp.arange(i, min(i + step, t0 + samples))
         fn = chunk_c if ts.shape[0] == step else chunk_raw
-        carry, (t, s, e) = fn(carry, ts, chain_keys, IMM, MSQ, E0, OFF, AUX)
-        carry = jax.tree.map(np.asarray, carry)
         keep = (np.asarray(ts) - t0) % thinning == 0
+        carry, (t, s, e) = fn(carry, ts, jnp.asarray(keep), chain_keys, IMM, MSQ, E0, OFF, AUX)
+        carry = jax.tree.map(np.asarray, carry)
         tp.append(np.asarray(t)[:, keep]); sp.append(np.asarray(s)[:, keep]); ep.append(np.asarray(e)[:, keep])
         if bar is not None:
             bar.update(int(ts.shape[0]))
@@ -1417,7 +1242,7 @@ def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
                 setup_p, chunk_raw = _sampler_fns(vg_v, D, ctrl, parallel, tm_v)
                 _aux0 = aux_zeros(tm_v, chains)
                 return (setup_p.lower(_th0, _th0, _off0, _aux0),
-                        chunk_raw.lower(_c0, jnp.arange(step), _ck, jnp.ones(D), jnp.ones(D),
+                        chunk_raw.lower(_c0, jnp.arange(step), jnp.ones(step, bool), _ck, jnp.ones(D), jnp.ones(D),
                                         jnp.asarray(1e-3), _off0, _aux0), chunk_raw)
 
             def compile_sampler(low, res, ready):

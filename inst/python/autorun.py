@@ -151,9 +151,10 @@ class _InProcess:
         for _ in range(nblocks):
             if cancel.is_set():
                 return None
-            carry, z, st = self.block(carry, t)
             pos = np.arange(t, t + b)
-            sel = np.nonzero(_kept(pos, stride, burn))[0]
+            keep = _kept(pos, stride, burn)
+            carry, z, st = self.block(carry, t, keep)
+            sel = np.nonzero(keep)[0]
             zs.append(np.asarray(z)[:, sel])
             ts.append(pos[sel])
             for name, v in st.items():
@@ -215,7 +216,7 @@ class _Nuts(_InProcess):
         self.carry0 = state
         self.positions = coords.positions(state.z)
 
-    def block(self, carry, t):
+    def block(self, carry, t, keep=None):
         carry, (z, ns, en, ap, dv) = self.fn(carry)
         return carry, z, dict(num_steps=ns, energy=en, accept_prob=ap, diverging=dv)
 
@@ -273,7 +274,7 @@ class _Dr(_InProcess):
             setup_p, chunk = dr._sampler_fns(vg_v, D, ctrl, s.parallel, tm_v)
             aux0 = dr.aux_zeros(tm_v, C)
             return (setup_p.lower(z0, z0, off0, aux0),
-                    chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), ck, jnp.ones(D),
+                    chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), jnp.ones(s.b, bool), ck, jnp.ones(D),
                                 jnp.ones(D), jnp.asarray(1e-3), off0, aux0))
 
         def compile_on_thread(low, comp, ready):
@@ -329,9 +330,9 @@ class _Dr(_InProcess):
                                                              dr.aux_in(tm, self.aux)))
         self.positions = _model_positions(tm, th, self.aux)
 
-    def block(self, carry, t):
+    def block(self, carry, t, keep):
         ck, IMM, MSQ, E0, OFF, AUX = self.args
-        carry, (th, stage, H0) = self.chunk(carry, jnp.arange(t, t + self.b), ck, IMM, MSQ, E0, OFF, AUX)
+        carry, (th, stage, H0) = self.chunk(carry, jnp.arange(t, t + self.b), jnp.asarray(keep), ck, IMM, MSQ, E0, OFF, AUX)
         return jax.tree.map(np.asarray, carry), th, dict(dr_stage=stage, energy=H0)
 
     def state(self, carry, T):
@@ -450,7 +451,7 @@ def _dr_f32_server(argfile):
     aux0 = dr.aux_zeros(tm, C)
     c0 = setup_p(z0, z0, jnp.zeros(N), aux0)
     c0 = jax.tree.map(np.asarray, c0)
-    jax.block_until_ready(chunk(c0, jnp.arange(b), ck, jnp.ones(D), jnp.ones(D),
+    jax.block_until_ready(chunk(c0, jnp.arange(b), jnp.ones(b, bool), ck, jnp.ones(D), jnp.ones(D),
                                 jnp.asarray(1e-3), jnp.zeros(N), aux0))
     stop = os.path.join(d, "stop")
     donor = os.path.join(d, "donor.pkl")
@@ -491,10 +492,11 @@ def _dr_f32_server(argfile):
             if os.path.exists(os.path.join(d, f"cancel_{n}")):
                 cancelled = True
                 break
-            carry, (thb, st, e) = chunk(carry, jnp.arange(t, t + b), ck, IMM, MSQ, E0, OFF, AUX)
-            carry = jax.tree.map(np.asarray, carry)
             pos = np.arange(t, t + b)
-            sel = np.nonzero(_kept(pos, k, int(r.get("burn", 0))))[0]
+            keep = _kept(pos, k, int(r.get("burn", 0)))
+            carry, (thb, st, e) = chunk(carry, jnp.arange(t, t + b), jnp.asarray(keep), ck, IMM, MSQ, E0, OFF, AUX)
+            carry = jax.tree.map(np.asarray, carry)
+            sel = np.nonzero(keep)[0]
             zs.append(np.asarray(thb)[:, sel]); ts.append(pos[sel])
             ss.append(np.asarray(st)); es.append(np.asarray(e))
             t += b

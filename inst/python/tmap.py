@@ -663,6 +663,7 @@ def _native():
 
 
 _CHUNKS = 8
+_TRI_MIN = 16  # tmap_kernel.h kTriMin: wider blocks keep their factors for the adjoint
 _UNROLL_MAX = 20  # without the kernel: unrolled up to here, batched linear algebra above
 
 
@@ -676,26 +677,72 @@ def _ffi(name, outs, *args):
 def _group_solve(Lam_t, Q, s, delta, zeta):
     """Per group g (dimensions in the kernel's order): r_g = s_g - Lam_g delta_g,
     L_g = chol(Lam_g + Q), u_g = L_g^-T (L_g^-1 r_g + zeta_g), ld_g = sum log diag L_g.
-    Lam_t [n4, D, D, 4] tiled, Q [D, D], s, delta, zeta [D, n] -> u [D, n], ld [n]. Native,
-    with the adjoint in closed form (Lam and s fixed)."""
-    D, n = s.shape
-    return _ffi("tmap_fwd", [(D, n), (n,)], Lam_t, Q, s, delta, zeta)
+    Lam_t [n4, D, D, 4] tiled, Q [D, D], s, zeta [D, n], delta [D, n] or empty (no shift) ->
+    u [D, n], ld [n]. Native, with the adjoint in closed form (Lam and s fixed)."""
+    return _group_solve_fwd(Lam_t, Q, s, delta, zeta)[0]
+
+
+def _tri_shapes(D, n):
+    return [(_n4(n), D * (D + 1) // 2 * 4), (D, n)] if D >= _TRI_MIN else [(1,), (1,)]
 
 
 def _group_solve_fwd(Lam_t, Q, s, delta, zeta):
-    return _group_solve(Lam_t, Q, s, delta, zeta), (Lam_t, Q, s, delta, zeta)
+    D, n = s.shape
+    u, ld, lfac, yres = _ffi("tmap_fwd", [(D, n), (n,)] + _tri_shapes(D, n), Lam_t, Q, s, delta, zeta)
+    return (u, ld), (Lam_t, Q, s, delta, zeta, lfac, yres, u)
 
 
 def _group_solve_bwd(res, cts):
-    Lam_t, Q, s, delta, zeta = res
+    Lam_t, Q, s, delta, zeta, lfac, yres, u = res
     ubar, ldbar = cts
     D, n = s.shape
-    zetabar, deltabar, Qbar = _ffi("tmap_bwd", [(D, n), (D, n), (_CHUNKS, D, D)],
-                                   Lam_t, Q, s, delta, zeta, ubar, ldbar)
+    zetabar, deltabar, Qbar = _ffi("tmap_bwd", [(D, n), (D, n) if delta.size else (1,), (_CHUNKS, D, D)],
+                                   Lam_t, Q, s, delta, zeta, ubar, ldbar, lfac, yres, u)
+    deltabar = deltabar if delta.size else jnp.zeros_like(delta)
     return (jnp.zeros_like(Lam_t), jnp.sum(Qbar, 0), jnp.zeros_like(s), deltabar, zetabar)
 
 
 _group_solve.defvjp(_group_solve_fwd, _group_solve_bwd)
+
+
+@jax.custom_vjp
+def _block_map(Lam_t, s, delta, z, A, perm):
+    """A wide block's whole map step, natively: z [D, n] (sampler coordinates, natural order),
+    A [D, D] the prior factor (lower triangular), perm [D] int32 (kernel row i is natural row
+    perm[i]); Lam_t, s, delta as in _group_solve, in the kernel's order -> th = A^-1 u [D, n],
+    ld [n], u [D, n] (natural order), with A^-1 and Q = A^-T A^-1 formed inside."""
+    return _block_map_fwd(Lam_t, s, delta, z, A, perm)[0]
+
+
+def _block_map_fwd(Lam_t, s, delta, z, A, perm):
+    D, n = s.shape
+    th, ld, u, lfac, yres, uk, Qk, Ainv = _ffi("tmap_blk_fwd", [(D, n), (n,), (D, n)] + _tri_shapes(D, n) + [(D, n), (D, D), (D, D)],
+                                               Lam_t, s, delta, z, A, perm)
+    return (th, ld, u), (Ainv, perm, Qk, lfac, yres, uk, u, delta, Lam_t, s)
+
+
+def _block_map_bwd(res, cts):
+    Ainv, perm, Qk, lfac, yres, uk, u, delta, Lam_t, s = res
+    thbar, ldbar, ubar = cts
+    D, n = s.shape
+    zbar, deltabar, Abar = _ffi("tmap_blk_bwd", [(D, n), (D, n) if delta.size else (1,), (D, D)],
+                                Ainv, perm, Qk, lfac, yres, uk, u, thbar, ldbar, ubar, delta)
+    deltabar = deltabar if delta.size else jnp.zeros_like(delta)
+    return (jnp.zeros_like(Lam_t), jnp.zeros_like(s), deltabar, zbar, Abar,
+            np.zeros(perm.shape, dtype=jax.dtypes.float0))
+
+
+_block_map.defvjp(_block_map_fwd, _block_map_bwd)
+
+
+def _link_groups(links):
+    """Links from the same earlier block with as many pairs each, stacked so that one contraction
+    serves them all: (e, ed [K, m], cd [K, m], W [K, n, n_e])."""
+    groups = {}
+    for e, cd, ed, W in links:
+        groups.setdefault((e, len(ed)), []).append((cd, ed, W))
+    return [(e, np.stack([x[1] for x in g]), np.stack([x[0] for x in g]), np.stack([x[2] for x in g]))
+            for (e, _), g in groups.items()]
 
 
 class TMap:
@@ -710,7 +757,6 @@ class TMap:
         self.specs = [f"{sb.name} ({sb.D} x {sb.n})" for sb in sbs]
         self.static = (0,) * len(sbs)
         self._views = {self.static: self}
-        self._var = {}
         self._fwd = self._inv = self._anch = None
 
     def view(self, flags):
@@ -833,7 +879,7 @@ class TMap:
         delta = self._delta(k, v, an, us, ans, kept=perm1)
         zeta = jnp.take(v[sb.pos1], perm1, axis=0)
         if native:
-            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros_like(zeta) if delta is None else delta, zeta)
+            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
         else:
             L1, y1 = self._kept_dense(an, Q1, s1, delta)
             u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
@@ -876,9 +922,14 @@ class TMap:
             gsel = np.nonzero(index[sb.gdims] >= 0)[0] if len(sb.gdims) else np.zeros(0, int)
             if gsel.size:
                 delta, coupled = delta.at[index[sb.gdims[gsel]]].add(jnp.asarray(sb.gW[gsel], dtype=v.dtype) @ db), True
-        for e, cd, ed, W in links:
-            du = (us[e] - ans[e]["uref"])[ed] @ jnp.asarray(W.T, dtype=v.dtype)
-            delta, coupled = delta + jax.ops.segment_sum(du, jnp.asarray(index[cd]), num_segments=Dout), True
+        parts, rows = [], []
+        for e, ed, cd, W in _link_groups(links):
+            du = jnp.einsum("kmj,knj->kmn", (us[e] - ans[e]["uref"])[ed], jnp.asarray(W, dtype=v.dtype))
+            parts.append(du.reshape(-1, sb.n))
+            rows.append(index[cd.reshape(-1)])
+        if parts:
+            du = parts[0] if len(parts) == 1 else jnp.concatenate(parts, 0)
+            delta, coupled = delta + jax.ops.segment_sum(du, jnp.asarray(np.concatenate(rows)), num_segments=Dout), True
         return jnp.take(delta, order, axis=0) if coupled else None
 
     def _linear(self, k, v, an, us, ans):
@@ -932,11 +983,17 @@ class TMap:
             an = ans[k]
 
             def full(th):
+                if native and sb.D >= _TRI_MIN:
+                    A = sb.A(post).astype(th.dtype)
+                    delta = self._delta(k, th, an, us, ans)
+                    thb, ldg, u = _block_map(an["Lam_t"], an["s_k"], jnp.zeros((0,), th.dtype) if delta is None else delta,
+                                             sb.get(th), A, an["perm_rev"])
+                    return sb.put(th, thb), jnp.sum(ldg) + sb.n * jnp.sum(jnp.log(jnp.diag(A))), u
                 zeta = jnp.take(sb.get(th), an["perm_rev"], axis=0)
                 A, Ainv, Q = self._prior(k, th, post, an)
                 if native:
                     delta = self._delta(k, th, an, us, ans)
-                    u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s_k"], jnp.zeros_like(zeta) if delta is None else delta, zeta)
+                    u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s_k"], jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
                     ldg = jnp.sum(ldg)
                 elif sb.D <= _UNROLL_MAX:
                     _, _, L, y = self._parts(k, th, post, ans, us)
@@ -995,30 +1052,6 @@ class TMap:
             us[k] = u
         return tht
 
-    def cand_variance(self, k, th, aux):
-        """[D2, n]: the variance of super-block k's candidates' standardised effects under the
-        anchors' Gaussian approximation at the model-side position `th` (one chain), the masses
-        a trial of the non-centred form starts from. `aux`: that chain's anchors as parts() gives
-        them."""
-        sb = self.sbs[k]
-        if k in self._var:
-            return np.asarray(self._var[k](jnp.asarray(th), aux))
-
-        def var(th, aux):
-            an = self._unpack(aux, th.dtype)[k]
-            post = self.post(th)
-            _, _, Q = self._prior(k, th, post, an)
-            Lam = jnp.transpose(_untile(an["Lam_t"], sb.n), (2, 0, 1))
-            S = jnp.linalg.inv(Lam + Q[None])
-            kpos = jnp.take(an["inv_rev"], jnp.asarray(sb.cand_nat))
-            S2 = jnp.take(jnp.take(S, kpos, axis=1), kpos, axis=2)
-            Ainv2 = sb.Ainv2(post).astype(th.dtype)
-            T = jnp.einsum("ab,nbc,dc->nad", Ainv2, S2, Ainv2)
-            return jnp.diagonal(T, axis1=1, axis2=2).T
-
-        self._var[k] = jax.jit(var)
-        return np.asarray(self._var[k](jnp.asarray(th), aux))
-
     def wrap(self, pot_off):
         """pot_off(v, OFF) -> value_and_grad of the mapped potential, (v, OFF, AUX) -> (U, g)."""
         def pot(v, OFF, AUX):
@@ -1066,7 +1099,6 @@ class TMap:
             s_ = -np.swapaxes(r["q0"], 1, 2) + np.einsum("cnab,cnb->cna", Lam, np.swapaxes(r["u"], 1, 2))
             strength = np.mean(np.einsum("cnaa->cna", Lam), axis=(0, 1)) * r["A2"].mean(0)
             weight = strength / (1.0 + strength)
-            sb.weight = weight
             idx = np.arange(sb.D)
             # informed dims first in reversed natural order, then the rest by falling weight
             perm = np.lexsort((-idx, np.where(weight >= _UNINFORMED, -idx - 1.0, -weight)))

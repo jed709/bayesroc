@@ -33,10 +33,12 @@
   path
 }
 
-test_that("control$transport_wide takes \"auto\", TRUE or FALSE", {
+test_that("control$transport_wide takes TRUE or FALSE", {
   skip_if_no_jax()
   m <- suppressMessages(.wide_model(.fixture_wide()))
   expect_error(fit_broc(m, backend = "jax", sampler = "drghmc", control = list(transport_wide = "yes")),
+               "transport_wide")
+  expect_error(fit_broc(m, backend = "jax", sampler = "drghmc", control = list(transport_wide = "auto")),
                "transport_wide")
   expect_error(fit_broc(m, backend = "jax", sampler = "nuts", control = list(transport_wide = TRUE)),
                "Unknown control key")
@@ -68,18 +70,4 @@ test_that("a wide block sampled non-centred gives the same posterior as mapped",
   z <- (sm[[1]]$mean - sm[[2]]$mean) / sqrt(sm[[1]]$mcse_mean^2 + sm[[2]]$mcse_mean^2)
   expect_true(all(abs(z) < 5), label = "means within 5 MCSE")
   expect_true(all(abs(sm[[1]]$sd / sm[[2]]$sd - 1) < 0.2), label = "spreads within 20%")
-})
-
-test_that("warmup leaves a wide weakly informed block non-centred and keeps an informed one mapped", {
-  skip_if_no_jax()
-  decide <- function(d, seed) {
-    m <- suppressMessages(.wide_model(d))
-    out <- utils::capture.output(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 4, iter_warmup = 2000,
-                                          iter_sampling = 100, seed = seed, progress_bar = TRUE))
-    line <- grep("^\\[DR-G-HMC\\] item: cross_w_item", out, value = TRUE)
-    expect_length(line, 1)
-    if (grepl("sampled non-centred", line)) "non-centred" else "mapped"
-  }
-  expect_equal(decide(.fixture_wide(seed = 11, P = 20L, I = 240L, reps = 1L, k = 0.05, C = 4L), 1), "non-centred")
-  expect_equal(decide(.fixture_wide(seed = 11, P = 20L, I = 240L, reps = 1L, k = 1.5, C = 4L), 1), "mapped")
 })

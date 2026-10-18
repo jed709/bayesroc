@@ -2111,10 +2111,9 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
 #'     ("f64" or "f32"), `transport` (`TRUE`: random effects are sampled through a
-#'     per-group transport map; see *Group transport map*), `transport_wide` (`"auto"`:
-#'     a random-effect block of more than ten effects per group is left non-centred when
-#'     a trial in warmup finds that faster; `TRUE` maps every block; `FALSE` leaves every
-#'     such block non-centred).
+#'     per-group transport map; see *Group transport map*), `transport_wide` (`TRUE`:
+#'     every random-effect block is mapped; `FALSE` leaves a block of more than ten
+#'     effects per group non-centred).
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
 #'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
@@ -2239,14 +2238,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'
 #' A block of more than ten effects per group (source criteria that vary by response
 #' set, or condition-specific effects on several parameters) carries most of the map's
-#' cost, which grows with the cube of the block's width, and its effects are often too
-#' weakly informed for the map to change how they mix. For each such block the warmup
-#' therefore runs a short trial from the same positions with the block mapped and with it
-#' non-centred, and keeps the non-centred form when its cheaper iterations and the step
-#' size they allow buy more draws per second, unless the block is well informed and its
-#' slowest correlations then mix clearly slower.
-#' `control = list(transport_wide = TRUE)` maps every block regardless, and `FALSE` leaves
-#' every such block non-centred.
+#' cost, which grows with the cube of the block's width. Every block is mapped by default;
+#' `control = list(transport_wide = FALSE)` leaves every such block non-centred.
 #' @references Vehtari, A., Gelman, A., Simpson, D., Carpenter, B., & Bürkner, P.-C.
 #'   (2021). Rank-normalization, folding, and localization: An improved R-hat for
 #'   assessing convergence of MCMC. *Bayesian Analysis*, 16(2), 667-718.
@@ -2355,10 +2348,9 @@ fit_broc <- function(model,
                                           !is.na(.ctrl[["transport"]]))) {
     stop("`control$transport` must be TRUE or FALSE.", call. = FALSE)
   }
-  if (!is.null(.ctrl$transport_wide) && !(identical(.ctrl$transport_wide, "auto") ||
-                                          (is.logical(.ctrl$transport_wide) && length(.ctrl$transport_wide) == 1L &&
-                                           !is.na(.ctrl$transport_wide)))) {
-    stop("`control$transport_wide` must be \"auto\", TRUE or FALSE.", call. = FALSE)
+  if (!is.null(.ctrl$transport_wide) && !(is.logical(.ctrl$transport_wide) && length(.ctrl$transport_wide) == 1L &&
+                                          !is.na(.ctrl$transport_wide))) {
+    stop("`control$transport_wide` must be TRUE or FALSE.", call. = FALSE)
   }
   .valid <- if (sampler == "drghmc") .drghmc_keys else .nuts_keys
   .unknown <- setdiff(names(.ctrl), .valid)

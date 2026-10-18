@@ -687,12 +687,14 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"),
-                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd")):
+                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("cdp_cell", "CdpCell"),
-                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd")):
+                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
     except Exception as _e:
