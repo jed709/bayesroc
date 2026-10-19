@@ -18,7 +18,7 @@ _B2, _A2 = 0.5 - _B1, 1.0 - 2.0 * _A1
 _DR_EPS = (0, 1, 0, 2, 0, 1, 0)
 _SCHED10 = (0.15, 0.08, 0.08, 0.05, 0.05, 0.05, 0.05, 0.03, 0.02, 0.02)
 
-_DEFAULTS = dict(acc_target=0.92, gamma=0.08, integrator="bcss3", dr_k=2,
+_DEFAULTS = dict(acc_target=0.92, gamma=0.32, integrator="bcss3", dr_k=2,
                  dr_r=4.0, adapt_windows=10, eps_c=1.0,
                  mass_burn_frac=0.4, mass_end_frac=0.7, precision="f64",
                  transport=True, transport_links=True, transport_wide=True)

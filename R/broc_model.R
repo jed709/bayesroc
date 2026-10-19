@@ -2107,7 +2107,7 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
 #'     `precision` ("f64" or "f32"; JAX backend only), `transport` (`TRUE`; JAX backend
 #'     only; see *Group transport map*).
-#'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.08), `integrator`
+#'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.32), `integrator`
 #'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
 #'     ("f64" or "f32"), `transport` (`TRUE`: random effects are sampled through a

@@ -63,7 +63,7 @@ parentheses; an unknown key is an error):
 \item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
 \code{precision} ("f64" or "f32"; JAX backend only), \code{transport} (\code{TRUE}; JAX backend
 only; see \emph{Group transport map}).
-\item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.08), \code{integrator}
+\item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.32), \code{integrator}
 ("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
 ("f64" or "f32"), \code{transport} (\code{TRUE}: random effects are sampled through a
