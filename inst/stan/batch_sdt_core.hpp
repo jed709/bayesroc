@@ -603,8 +603,7 @@ struct BinormalCdfResult {
 };
 
 // Bivariate normal CDF: P(Z1 <= z1, Z2 <= z2) with correlation rho
-// Uses Owen's T function (via boost) for forward value,
-// direct analytic formulas for gradients.
+// Drezner-Wesolowsky rectangle (bvn_tail::rect_full) with exact derivatives.
 inline bvn_tail::DwNodes& dw_cache() {
   static thread_local bvn_tail::DwNodes nd;
   return nd;

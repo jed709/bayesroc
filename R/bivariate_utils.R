@@ -153,8 +153,12 @@ binormal_cdf_r <- function(z1, z2, rho) {
   product <- z1f * z2f
   delta <- as.numeric(product < 0 | (product == 0 & (z1f + z2f) < 0))
 
-  result[finite] <- 0.5 * (pnorm(z1f) + pnorm(z2f) - delta) -
-                    owens_t_r(z1f, a1) - owens_t_r(z2f, a2)
+  p <- 0.5 * (pnorm(z1f) + pnorm(z2f) - delta) - owens_t_r(z1f, a1) - owens_t_r(z2f, a2)
+  for (i in which(p < 1e-6 & abs(rhof) < 1)) {
+    s <- sqrt((1 - rhof[i]) * (1 + rhof[i]))
+    p[i] <- exp(.log_lin_integral_r(-Inf, 0, z2[finite][i] / s, -rhof[i] / s, -Inf, z1[finite][i]))
+  }
+  result[finite] <- p
   result
 }
 
