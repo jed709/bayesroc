@@ -104,7 +104,7 @@ def group(total, title):
 
 class _Chains:
     """NumPyro's per-chain bars as one bar per phase: chains in parallel share one that
-    follows the slowest, with the range over chains while they differ; chains in sequence
+    follows the slowest, labelled with the range over chains; chains in sequence
     each get their own."""
 
     def __init__(self, chains, parallel, desc, split):
@@ -131,8 +131,7 @@ class _Chains:
                         desc = name + (f" (chain {key + 1}/{self.chains})" if self.chains > 1 else "")
                     else:
                         c = [min(max(x - lo, 0), m) for x in counts]
-                        desc = name + (f" ({self.chains} chains)" if min(c) == max(c)
-                                       else f" ({self.chains} chains: {min(c)}-{max(c)})")
+                        desc = name + f" ({self.chains} chains: {min(c)}-{max(c)})"
                     b = self.bars.get((key, i))
                     if b is None:
                         b = self.bars[(key, i)] = Bar(m, desc)

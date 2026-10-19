@@ -17,7 +17,7 @@ test_that("progress events draw one line in place, however the stream is split",
   expect_match(txt, "hello")
   expect_match(txt, "world")
   expect_match(txt, "\r", fixed = TRUE)
-  expect_match(out[length(out)], "NUTS sampling  \\[=+\\]  100%  100/100 iterations")
+  expect_match(out[length(out)], "^v NUTS sampling  100 iterations in 0:0")
   expect_null(.prog$cur)
 })
 
@@ -43,7 +43,7 @@ test_that("without a live console, a bar prints at its quarters and a transient 
                                          .ev("r", 0, 10, leave = FALSE), .ev("r", 10, 10, leave = FALSE, done = TRUE))))
   expect_false(any(grepl("\r", out, fixed = TRUE)))
   expect_length(out, 3L)
-  expect_match(out[3], "100%")
+  expect_match(out[3], "^v NUTS sampling  100 iterations in")
 })
 
 test_that("ordinary output passes straight through, and a dropped bar leaves nothing", {
@@ -65,4 +65,21 @@ test_that("a narrow console keeps the bar and drops detail first", {
     expect_match(ln, "\\[=+-+\\]")
   }
   expect_match(.prog_line(b, width = 120L), "iterations")
+})
+
+test_that("a UTF-8 console gets block bars, colour only when live, and a ticked finished line", {
+  b <- list(desc = "DR-G-HMC sampling", n = 500, total = 1000, start = 0, unit = "iterations",
+            t0 = proc.time()[["elapsed"]] - 4, tn = NA_real_, nn = NA_real_)
+  .prog_reset()
+  .prog$style <- .prog_style(TRUE, TRUE)
+  ln <- .prog_line(b, width = 79L)
+  expect_match(ln, "\033[36m█", fixed = TRUE)
+  expect_match(ln, "\033[90m░", fixed = TRUE)
+  expect_lte(cli::ansi_nchar(ln, type = "width"), 79L)
+  expect_equal(cli::ansi_strip(.prog_line(b, width = 79L, final = TRUE)),
+               "✔ DR-G-HMC sampling  500 iterations in 0:04")
+  .prog$style <- .prog_style(TRUE, FALSE)
+  ln <- .prog_line(b, width = 79L)
+  expect_false(grepl("\033", ln, fixed = TRUE))
+  expect_match(ln, "DR-G-HMC sampling  █{10}░{10}   50%")
 })

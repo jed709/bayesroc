@@ -26,6 +26,7 @@ Imports:
     loo,
     mgcv,
     bayesplot,
+    cli,
     rstantools
 Suggests:
     qs2,

@@ -12,7 +12,16 @@
   .prog$drawn <- 0L
   .prog$midline <- FALSE
   .prog$dynamic <- (interactive() || isatty(stdout())) && !isTRUE(getOption("knitr.in.progress"))
+  .prog$style <- .prog_style(cli::is_utf8_output(), .prog$dynamic && cli::num_ansi_colors() > 1L)
   invisible(NULL)
+}
+
+.prog_style <- function(utf8, colour) {
+  paint <- function(code) if (colour) function(x) paste0("\033[", code, "m", x, "\033[39m") else identity
+  list(fill = if (utf8) "█" else "=", empty = if (utf8) "░" else "-",
+       open = if (utf8) " " else " [", close = if (utf8) " " else "] ",
+       tick = if (utf8) "✔" else "v",
+       on = paint("36"), off = paint("90"), ok = paint("32"))
 }
 
 .prog_clear <- function() {
@@ -30,8 +39,9 @@
 }
 
 .prog_draw <- function(line) {
-  cat("\r", line, strrep(" ", max(0L, .prog$drawn - nchar(line))), sep = "")
-  .prog$drawn <- nchar(line)
+  w <- cli::ansi_nchar(line, type = "width")
+  cat("\r", line, strrep(" ", max(0L, .prog$drawn - w)), sep = "")
+  .prog$drawn <- w
   utils::flush.console()
 }
 
@@ -48,12 +58,18 @@
 }
 
 .prog_line <- function(b, width = 80L, final = FALSE) {
+  st <- .prog$style %||% .prog_style(FALSE, FALSE)
   now <- proc.time()[["elapsed"]]
   span <- max(b$total - b$start, 1)
   frac <- min(max((b$n - b$start) / span, 0), 1)
   count <- sprintf("%s/%s", format(b$n, big.mark = ","), format(b$total, big.mark = ","))
   took <- .prog_time(now - b$t0)
-  left <- if (!final && !is.na(b$tn) && b$n > b$nn && b$n < b$total) {
+  if (final) {
+    done <- paste0(format(b$n - b$start, big.mark = ","), if (nzchar(b$unit %||% "")) paste0(" ", b$unit), " in ", took)
+    head <- cli::ansi_strtrim(paste0(b$desc, "  "), max(1L, width - nchar(done) - 2L), ellipsis = "")
+    return(paste0(st$ok(st$tick), " ", head, done))
+  }
+  left <- if (!is.na(b$tn) && b$n > b$nn && b$n < b$total) {
     paste0(", ~", .prog_time((now - b$tn) / (b$n - b$nn) * (b$total - b$n)), " left")
   } else ""
   pct <- sprintf("%3d%%", as.integer(floor(100 * frac)))
@@ -65,7 +81,9 @@
   }
   bw <- max(10L, min(20L, bw))
   full <- as.integer(floor(bw * frac))
-  substr(paste0(b$desc, "  [", strrep("=", full), strrep("-", bw - full), "]  ", info), 1L, width)
+  desc <- substr(b$desc, 1L, max(1L, width - bw - nchar(info) - 6L))
+  bar <- paste0(st$on(strrep(st$fill, full)), st$off(strrep(st$empty, bw - full)))
+  cli::ansi_strtrim(paste0(desc, " ", st$open, bar, st$close, " ", info), width, ellipsis = "")
 }
 
 .prog_event <- function(ev) {
