@@ -311,7 +311,7 @@ Points: the rules of the rating grid, labelled with P(say B | B)" else ""),
   }
   bs <- .biv_trial_setup(params, it, seq_len(n), 1L, md)
   wt <- w_rows
-  if (fam == "bivariate_dp" && !is.null(params$lambda)) wt <- wt * ifelse(it == 1L, 1, 1 - as.vector(params$lambda))
+  if (fam == "bivariate_dp" && !is.null(params[["lambda"]])) wt <- wt * ifelse(it == 1L, 1, 1 - as.vector(params[["lambda"]]))
   data.frame(row = seq_len(n), w_row = w_rows, weight = wt, mu_x = bs$mu1, mu_y = bs$mu2, s_x = bs$sig1, s_y = bs$sig2, rho = bs$rho,
              type = type_lab, component = "")
 }
@@ -337,8 +337,8 @@ Points: the rules of the rating grid, labelled with P(say B | B)" else ""),
     rng_x <- range(c(rng_x, thx[thx > rng_x[1] - 1 & thx < rng_x[2] + 1]))
     rng_y <- range(c(comp$mu_y - 3 * comp$s_y, comp$mu_y + 3 * comp$s_y))
     if (cdp) {
-      ck <- if (!is.null(setup$tp$know_crit)) mean(colMeans(setup$tp$know_crit[, red$rows, drop = FALSE])) else NA
-      cr <- if (!is.null(setup$tp$rec_crit)) mean(colMeans(setup$tp$rec_crit[, red$rows, drop = FALSE])) else 1.5
+      ck <- if (!is.null(setup$tp[["know_crit"]])) mean(colMeans(setup$tp[["know_crit"]][, red$rows, drop = FALSE])) else NA
+      cr <- if (!is.null(setup$tp[["rec_crit"]])) mean(colMeans(setup$tp[["rec_crit"]][, red$rows, drop = FALSE])) else 1.5
       crit[[lev]] <- data.frame(.cell = lev, kind = c(rep("tau", length(thx)), "rec_crit", if (!is.na(ck)) "know_crit"),
                                 value = c(thx, cr, if (!is.na(ck)) ck), x0 = NA, x1 = NA)
       rng_y <- range(c(rng_y, cr, ck), na.rm = TRUE); rng_x <- range(c(rng_x, ck), na.rm = TRUE)
@@ -347,19 +347,16 @@ Points: the rules of the rating grid, labelled with P(say B | B)" else ""),
       K1 <- model$model_data$K; K2 <- model$model_data$K2
       md <- model$model_data
       varying <- length(dim(th2)) == 4L
-      new_shared <- identical(md$new_source_criteria, "shared")
-      is_new <- if (new_shared) !(seq_len(K1) %in% md$old_levels) else rep(FALSE, K1)
       edges <- c(-Inf, thx, Inf)
       seg <- list()
       for (j in seq_len(K1)) for (k in seq_len(K2 - 1L)) {
-        v <- .source_edge(th2, red$rows, j, k, K2, setup$S * length(red$rows), length(red$rows), varying, new_shared, is_new,
-                          attr(th2, "thresh2_new"))
+        v <- .source_edge(th2, red$rows, j, k, K2, setup$S * length(red$rows), length(red$rows), varying)
         v <- sum(colMeans(matrix(v, setup$S)) * red$w) / sum(red$w)
         seg[[length(seg) + 1L]] <- data.frame(.cell = lev, kind = "source", value = v, x0 = edges[j], x1 = edges[j + 1L])
       }
       seg <- do.call(rbind, seg)
-      if (!varying && !new_shared) seg <- seg[!duplicated(seg$value), ]
-      if (!varying && !new_shared) { seg$x0 <- -Inf; seg$x1 <- Inf }
+      if (!varying) seg <- seg[!duplicated(seg$value), ]
+      if (!varying) { seg$x0 <- -Inf; seg$x1 <- Inf }
       crit[[lev]] <- rbind(data.frame(.cell = lev, kind = "detection", value = thx, x0 = NA, x1 = NA), seg)
       rng_y <- range(c(rng_y, seg$value[seg$value > rng_y[1] - 1 & seg$value < rng_y[2] + 1]))
     }

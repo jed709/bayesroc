@@ -74,11 +74,12 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "  array[N] int<lower=1, upper=K1> y;   // Item responses",
       "  array[N] int<lower=1, upper=K2> y2;  // Source responses",
       "  array[N] int<lower=1, upper=3> item_type;  // 1=new, 2=A, 3=B",
-      if (identical(model_data$new_source_criteria, "shared"))
-        "  array[K1] int<lower=0, upper=1> is_new_response;  // 1=new response, 0=old response",
       if (isTRUE(model_data$varying_source_criteria))
         c("  int<lower=1, upper=K1> n_vbin;  // sets of varying source criteria",
-          "  array[K1] int<lower=1, upper=n_vbin> vbin;  // set read by each detection response")
+          "  array[K1] int<lower=1, upper=n_vbin> vbin;  // set read by each detection response",
+          "  int<lower=1> n_vcell;",
+          "  int<lower=1> n_vset;",
+          "  array[N] int<lower=1, upper=n_vcell> vcell;")
     )
   } else if (is_cdp) {
     J <- model_data$stan_data$J
@@ -140,6 +141,10 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   }
   if (model_data$has_dprime2) {
     lines <- c(lines, "", "  int<lower=1> P_dprime2;", "  matrix[N, P_dprime2] X_dprime2;")
+  }
+  if (isTRUE(model_data$needs_ordered_dprime)) {
+    lines <- c(lines, "  int<lower=1, upper=P_dprime> dprime_pivot;", "  vector[P_dprime] dprime_xbar;",
+               "  vector[P_dprime2] dprime2_xbar;")
   }
   if (model_data$has_sigma2) {
     lines <- c(lines, "", "  int<lower=1> P_sigma2;", "  matrix[N, P_sigma2] X_sigma2;")
@@ -351,8 +356,10 @@ generate_parameters_block_v2 <- function(model_data, family) {
   
   if (model_data$needs_ordered_dprime) {
     lines <- c(lines,
-               "  // Ordered constraint for identifiability: dprime > dprime2 for each predictor",
-               "  array[P_dprime] ordered[2] beta_dprime_ordered;  // [p][1] = dprime2, [p][2] = dprime")
+               "  // dprime > dprime2 on average over the old items' design rows",
+               "  vector[P_dprime - 1] beta_dprime_free;",
+               "  vector[P_dprime2] beta_dprime2;",
+               "  real<lower=0> dprime_order_gap;")
   } else if (has_dprime_fixed) {
     lines <- c(lines, "  vector[P_dprime] beta_dprime;")
     if (model_data$has_dprime2) {
@@ -412,16 +419,11 @@ generate_parameters_block_v2 <- function(model_data, family) {
   if (isTRUE(model_data$has_criterion2)) {
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines,
-                 "  vector[n_vbin] beta_thresh_mid_2_varying;  // Mid-anchor source threshold of each set",
-                 "  matrix[n_vbin, K2-2] beta_log_gaps_2_varying;  // Log-gaps of each set")
+                 "  vector[n_vset] beta_thresh_mid_2_varying;  // Mid-anchor source threshold of each set",
+                 "  matrix[n_vset, K2-2] beta_log_gaps_2_varying;  // Log-gaps of each set")
       if (.has_crit2_cov(model_data)) {
         lines <- c(lines, "  vector[P_criterion2_cov] beta_thresh_mid_2_cov;",
                    if (!isTRUE(model_data$has_criterion2_scale)) "  matrix[K2-2, P_criterion2_cov] beta_log_gaps_2_cov;")
-      }
-      if (identical(model_data$new_source_criteria, "shared")) {
-        lines <- c(lines,
-                   "  real beta_thresh_mid_2_new;  // Mid-anchor source threshold for new items (shared)",
-                   "  vector[K2-2] beta_log_gaps_2_new;  // Log-gaps for new items (shared)")
       }
     } else {
       lines <- c(lines,
@@ -507,12 +509,19 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
   
   if (model_data$needs_ordered_dprime) {
     lines <- c(lines,
-               "  // Extract dprime and dprime2 from ordered constraint",
                "  vector[P_dprime] beta_dprime;",
-               "  vector[P_dprime] beta_dprime2;",
-               "  for (p in 1:P_dprime) {",
-               "    beta_dprime[p] = beta_dprime_ordered[p][2];   // Higher value",
-               "    beta_dprime2[p] = beta_dprime_ordered[p][1];  // Lower value",
+               "  {",
+               "    int k = 1;",
+               "    for (p in 1:P_dprime) {",
+               "      if (p == dprime_pivot) {",
+               "        beta_dprime[p] = 0;",
+               "      } else {",
+               "        beta_dprime[p] = beta_dprime_free[k];",
+               "        k += 1;",
+               "      }",
+               "    }",
+               "    beta_dprime[dprime_pivot] = (dprime_order_gap + dot_product(dprime2_xbar, beta_dprime2)",
+               "                                 - dot_product(dprime_xbar, beta_dprime)) / dprime_xbar[dprime_pivot];",
                "  }",
                "")
   }
@@ -709,22 +718,8 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
   
   if (model_data$needs_ordered_dprime) {
-    dp_coefs <- model_data$dprime_fixed$coef_names
-    dp2_coefs <- model_data$dprime2_fixed$coef_names %||% dp_coefs
-    dprime_prior <- vapply(dp_coefs, function(cf) get_fixed_prior(pl, "dprime", cf), character(1), USE.NAMES = FALSE)
-    dprime2_prior <- vapply(dp2_coefs, function(cf) get_fixed_prior(pl, "dprime2", cf), character(1), USE.NAMES = FALSE)
-    if (length(unique(dprime_prior)) == 1L && length(unique(dprime2_prior)) == 1L) {
-      lines <- c(lines,
-                 "  // Priors on ordered dprime parameters",
-                 "  for (p in 1:P_dprime) {",
-                 sprintf("    beta_dprime_ordered[p][2] ~ %s;  // dprime (higher)", dprime_prior[1]),
-                 sprintf("    beta_dprime_ordered[p][1] ~ %s;  // dprime2 (lower)", dprime2_prior[1]),
-                 "  }")
-    } else {
-      lines <- c(lines, "  // Priors on ordered dprime parameters",
-                 sprintf("  beta_dprime_ordered[%d][2] ~ %s;  // dprime %s", seq_along(dp_coefs), dprime_prior, dp_coefs),
-                 sprintf("  beta_dprime_ordered[%d][1] ~ %s;  // dprime2 %s", seq_along(dp2_coefs), dprime2_prior, dp2_coefs))
-    }
+    lines <- c(lines, generate_fixed_priors("dprime", model_data$dprime_fixed$coef_names, "beta_dprime"),
+               generate_fixed_priors("dprime2", model_data$dprime2_fixed$coef_names, "beta_dprime2"))
   } else if (has_dprime_fixed) {
     dprime_coefs <- model_data$dprime_fixed$coef_names
     lines <- c(lines, generate_fixed_priors("dprime", dprime_coefs, "beta_dprime"))
@@ -828,21 +823,11 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$has_criterion2)) {
     if (isTRUE(model_data$varying_source_criteria)) {
       vg <- .crit2_vary_prior_grid(pl, model_data)
-      lines <- c(lines, sprintf("  beta_thresh_mid_2_varying ~ %s;", vg$mid))
-      if (length(vg$gaps)) {
-        lines <- c(lines, if (length(unique(vg$gaps)) == 1L) {
-          sprintf("  to_vector(beta_log_gaps_2_varying) ~ %s;", vg$gaps[1])
-        } else {
-          sprintf("  beta_log_gaps_2_varying[, %d] ~ %s;", seq_along(vg$gaps), vg$gaps)
-        })
-      }
+      lines <- c(lines, .stan_prior_vec("beta_thresh_mid_2_varying", vg$mid),
+                 .stan_prior_mat("beta_log_gaps_2_varying", t(vg$gaps)))
       if (.has_crit2_cov(model_data)) {
         lines <- c(lines, .stan_prior_vec("beta_thresh_mid_2_cov", vg$cov_mid),
                    if (!isTRUE(model_data$has_criterion2_scale)) .stan_prior_mat("beta_log_gaps_2_cov", vg$cov_gaps))
-      }
-      if (identical(model_data$new_source_criteria, "shared")) {
-        lines <- c(lines, sprintf("  beta_thresh_mid_2_new ~ %s;", vg$mid),
-                   .stan_prior_vec("beta_log_gaps_2_new", vg$gaps))
       }
     } else {
       tg2 <- .thresh_prior_grid(pl, "thresh_mid2", "log_gaps2", model_data$criterion2$coef_names,
@@ -1135,7 +1120,7 @@ generate_thresh_code_cdp <- function(model_data) {
   M <- as.integer(ceiling(J / 2))
   n_up <- J - M
   varying <- isTRUE(model_data$varying_source_criteria)
-  gap <- if (varying) function(k) sprintf("beta_log_gaps_2_varying[vb, %s]", k)
+  gap <- if (varying) function(k) sprintf("beta_log_gaps_2_varying[vs, %s]", k)
          else function(k) sprintf("beta_log_gaps_2[%s, 1]", k)
   shape <- c(sprintf("vector[%d] t_ls2 = rep_vector(0, %d);", J, J),
              if (n_up > 0) sprintf("for (k in %d:%d) t_ls2[k] = t_ls2[k - 1] + exp(%s);", M + 1L, J, gap(sprintf("k - %d", M))),
@@ -1144,7 +1129,7 @@ generate_thresh_code_cdp <- function(model_data) {
              "real tbar_ls2 = mean(t_ls2);")
   crit <- model_data$criterion2
   if (varying) {
-    loc <- "real criterion2_n = beta_thresh_mid_2_varying[vb];"
+    loc <- "real criterion2_n = beta_thresh_mid_2_varying[vs];"
     if (.has_crit2_cov(model_data)) loc <- c(loc, "criterion2_n += X_criterion2_cov[n, ] * beta_thresh_mid_2_cov;")
     for (group in names(crit$random)) {
       re <- crit$random[[group]]
@@ -1181,16 +1166,10 @@ generate_thresh_code_cdp <- function(model_data) {
   } else {
     sprintf("        u_ls_rows2[n, col] = %s + criterion2_scale_n;", p$gap("g"))
   }
-  new_shared <- p$varying && identical(model_data$new_source_criteria, "shared")
   c(sprintf("    matrix[N, %d] u_ls_rows2;", J),
     if (!p$varying) paste0("    ", p$shape),
     "    for (n in 1:N) {",
-    if (p$varying) c("      int vb = vbin[y[n]];", paste0("      ", p$shape)),
-    if (new_shared) c("      if (is_new_response[y[n]] == 1) {",
-                      sprintf("        u_ls_rows2[n, %d] = beta_thresh_mid_2_new;", M),
-                      sprintf("        for (g in 1:%d) u_ls_rows2[n, g <= %d ? %d + g : %d - (g - %d)] = beta_log_gaps_2_new[g];",
-                              J - 1L, n_up, M, M, n_up),
-                      "      } else {"),
+    if (p$varying) c("      int vb = vbin[y[n]];", "      int vs = vb + n_vbin * (vcell[n] - 1);", paste0("      ", p$shape)),
     paste0("      ", c(p$loc, p$scale)),
     "      real sc_ls2 = exp(criterion2_scale_n);",
     sprintf("      u_ls_rows2[n, %d] = criterion2_n - sc_ls2 * tbar_ls2;", M),
@@ -1198,7 +1177,6 @@ generate_thresh_code_cdp <- function(model_data) {
     sprintf("        int col = g <= %d ? %d + g : %d - (g - %d);", n_up, M, M, n_up),
     gap_row,
     "      }",
-    if (new_shared) "      }",
     "    }")
 }
 
@@ -1214,6 +1192,7 @@ generate_thresh_code_cdp <- function(model_data) {
     paste0("      ", p$scale),
     "      for (k1 in 1:K1) {",
     "        int vb = vbin[k1];",
+    "        int vs = vb + n_vbin * (vcell[n] - 1);",
     paste0("        ", c(p$loc, p$shape)),
     "        thresh2_varying[k1] = (criterion2_n + exp(criterion2_scale_n) * (t_ls2 - tbar_ls2))';",
     "      }",

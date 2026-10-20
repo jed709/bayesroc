@@ -16,11 +16,23 @@
   vars <- unique(c(unlist(lapply(c(list(brf_obj$primary), brf_obj$params), function(f) {
     if (is.null(f)) character(0) else tryCatch(all.vars(f), error = function(e) character(0))
   })), encoding_vars))
+  scale_vars <- .scale_resp_vars(brf_obj)
   for (v in intersect(vars, names(data))) {
     x <- data[[v]]
+    if (is.ordered(x) && v %in% scale_vars) next
     if (is.factor(x) && !all(levels(x) %in% as.character(unique(x)))) data[[v]] <- droplevels(x)
   }
   data
+}
+
+.scale_resp_vars <- function(brf_obj) {
+  rv <- .resp_vars(brf_obj)
+  if (length(rv)) return(rv)
+  lhs <- brf_obj$primary
+  if (is.null(lhs) || length(lhs) < 3L) return(character(0))
+  e <- lhs[[2]]
+  if (is.call(e) && identical(e[[1]], as.name("|"))) e <- e[[2]]
+  all.vars(e)
 }
 
 .drop_incomplete_rows <- function(data, brf_obj, family, encoding_vars, counts) {

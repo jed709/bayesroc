@@ -292,17 +292,17 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   if (!is.null(pt)) {
     # a normal (or recollection-mixed normal) response's survival along the criterion path, accumulated natively
     th <- setup$th[, rows, , drop = FALSE]
-    if (pt$kind == 3L) {
-      acc <- .C(.bvn_native$sym_mixsurv, as.double(th), as.double(pt$mu), as.double(pt$sig), as.double(pt$lam),
-                as.double(pt$mu_rec), as.double(pt$sig2), as.double(u), as.double(w_rows),
+    if (pt[["kind"]] == 3L) {
+      acc <- .C(.bvn_native$sym_mixsurv, as.double(th), as.double(pt[["mu"]]), as.double(pt[["sig"]]), as.double(pt[["lam"]]),
+                as.double(pt[["mu_rec"]]), as.double(pt[["sig2"]]), as.double(u), as.double(w_rows),
                 as.integer(c(S, r, dim(th)[3], length(u), identical(attr(crit, "mode"), "path"), .native_threads(),
                              .native_link_code(link, fam))),
                 8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
       return(matrix(acc, S, length(u)) / sum(w_rows))
     }
-    acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(pt$mu), as.double(pt$sig),
-              as.double(pt$lam %||% 0), as.double(pt$mu_rec %||% 0), as.double(u), as.double(w_rows),
-              as.integer(c(S, r, dim(th)[3], length(u), pt$kind, identical(attr(crit, "mode"), "path"),
+    acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(pt[["mu"]]), as.double(pt[["sig"]]),
+              as.double(pt[["lam"]] %||% 0), as.double(pt[["mu_rec"]] %||% 0), as.double(u), as.double(w_rows),
+              as.integer(c(S, r, dim(th)[3], length(u), pt[["kind"]], identical(attr(crit, "mode"), "path"),
                            .native_threads(), .native_link_code(link, fam))),
               8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
     return(matrix(acc, S, length(u)) / sum(w_rows))
@@ -318,8 +318,8 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     if (fam == "cdp") {
       c_path <- crit(setup$th[, idx, , drop = FALSE])
       old <- model$stan_data$is_old[idx] == 1
-      mu <- tps$dprime + (tps$dprime2 %||% 0)
-      sg <- sqrt((tps$sigma %||% 1)^2 + (tps$sigma2 %||% 1)^2)
+      mu <- tps[["dprime"]] + (tps[["dprime2"]] %||% 0)
+      sg <- sqrt((tps[["sigma"]] %||% 1)^2 + (tps[["sigma2"]] %||% 1)^2)
       mu[, !old] <- 0
       sg[, !old] <- sqrt(2)
       surv <- 1 - .pnorm_v((c_path - as.vector(mu)) / as.vector(sg))
@@ -343,8 +343,8 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
       pt <- .vrdp2d_source_parts(tps, setup$data_src$item_type[idx], S, r, model$model_data)
       th1 <- setup$th[, idx, , drop = FALSE]
       varying <- length(dim(t2)) == 4L
-      res <- .C(.bvn_native$sym_srcsurv, as.double(th1), as.double(t2), as.double(pt$muF), as.double(pt$sig1),
-                as.double(pt$muR), as.double(pt$lam), as.double(pt$mu2), as.double(pt$sig2), as.double(u),
+      res <- .C(.bvn_native$sym_srcsurv, as.double(th1), as.double(t2), as.double(pt[["muF"]]), as.double(pt[["sig1"]]),
+                as.double(pt[["muR"]]), as.double(pt[["lam"]]), as.double(pt[["mu2"]]), as.double(pt[["sig2"]]), as.double(u),
                 as.double(w[idx]),
                 as.integer(c(S, r, dim(th1)[3], dim(t2)[length(dim(t2))], length(u), varying,
                              identical(attr(crit, "mode"), "path"), .native_threads(), 0L)),
@@ -352,16 +352,15 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
       acc <- acc + matrix(res, S, length(u))
       next
     } else if (fam %in% c("bivariate_sdt", "bivariate_dp") && !is.null(u) && .bvn_native_ready() &&
-               !is.null(.bvn_native$sym_srcsurv_g) && isTRUE(getOption("bayesroc.source_survival_native", TRUE)) &&
-               is.null(attr(.subset_thresh2(setup$th2, idx), "thresh2_new"))) {
+               !is.null(.bvn_native$sym_srcsurv_g) && isTRUE(getOption("bayesroc.source_survival_native", TRUE))) {
       t2 <- .subset_thresh2(setup$th2, idx)
       md <- model$model_data
       st <- .biv_trial_setup(tps, setup$data_src$item_type[idx], seq_len(r), S, md)
       th1 <- setup$th[, idx, , drop = FALSE]
       varying <- length(dim(t2)) == 4L
       oldv <- as.double(st$it != 1L) + as.double(st$it == 3L)
-      lam <- if (fam == "bivariate_dp") st$sub(tps$lambda) else double(S * r)
-      lam2 <- if (fam == "bivariate_dp") st$sub(tps$lambda2) else double(S * r)
+      lam <- if (fam == "bivariate_dp") st$lam else double(S * r)
+      lam2 <- if (fam == "bivariate_dp") st$lam2 else double(S * r)
       res <- .C(.bvn_native$sym_srcsurv_g, as.double(th1), as.double(t2), as.double(st$mu1), as.double(st$mu2),
                 as.double(st$sig1), as.double(st$sig2), as.double(st$rho), oldv, as.double(lam), as.double(lam2),
                 as.double(u), as.double(w[idx]),
@@ -378,11 +377,9 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
         for (b in seq_len(dim(t2)[3])) a[, , b, ] <- crit(array(t2[, , b, ], c(S, r, dim(t2)[4])))
         a
       } else crit(t2)
-      nw <- attr(t2, "thresh2_new")
-      if (!is.null(nw)) attr(t2g, "thresh2_new") <- crit(array(nw, c(S, 1L, ncol(nw))))[, 1, ]
       if (isTRUE(getOption("bayesroc.source_survival_fast", TRUE))) {
         sv <- probs_source_survival(fam, tps, setup$th[, idx, , drop = FALSE], t2g, ds$item_type, S, r,
-                                    model$model_data$K, U, model, thresh2_new = attr(t2g, "thresh2_new"))
+                                    model$model_data$K, U, model)
         for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(sv[, , j], S, r) %*% w[idx]
         next
       }
@@ -412,43 +409,41 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   vec <- function(nm, alt) if (!is.null(tps[[nm]])) as.vector(tps[[nm]]) else alt
   if (fam == "cdp") {
     old <- rep(is_old == 1, each = S)
-    mu <- as.vector(tps$dprime + (tps$dprime2 %||% 0))
-    sig <- as.vector(sqrt((tps$sigma %||% 1)^2 + (tps$sigma2 %||% 1)^2)) * one
+    mu <- as.vector(tps[["dprime"]] + (tps[["dprime2"]] %||% 0))
+    sig <- as.vector(sqrt((tps[["sigma"]] %||% 1)^2 + (tps[["sigma2"]] %||% 1)^2)) * one
     return(list(mu = ifelse(old, mu, 0), sig = ifelse(old, sig, sqrt(2)), lam = NULL, mu_rec = NULL, kind = 0L))
   }
-  if (fam == "cumulative") return(list(mu = as.vector(tps$dprime), sig = one, lam = NULL, mu_rec = NULL, kind = 0L))
+  if (fam == "cumulative") return(list(mu = as.vector(tps[["dprime"]]), sig = one, lam = NULL, mu_rec = NULL, kind = 0L))
   if (fam == "source_mixture") {
     if (is.null(.bvn_native$sym_mixsurv)) return(NULL)
     B <- rep(source != 0, each = S)
-    d <- as.vector(tps$dprime)
-    dB <- if (isTRUE(md$has_dprime_B)) as.vector(tps$dprime_B) else -d
-    lam <- as.vector(tps$lambda)
-    lamB <- if (isTRUE(md$has_lambda_B)) as.vector(tps$lambda_B) else lam
+    d <- as.vector(tps[["dprime"]])
+    dB <- if (isTRUE(md$has_dprime_B)) as.vector(tps[["dprime_B"]]) else -d
+    lam <- as.vector(tps[["lambda"]])
+    lamB <- if (isTRUE(md$has_lambda_B)) as.vector(tps[["lambda_B"]]) else lam
     return(list(mu = 0 * one, sig = one, lam = ifelse(B, lamB, lam), mu_rec = ifelse(B, dB, d), sig2 = one, kind = 3L))
   }
   io <- rep(is_old, each = S)
   old <- io > 0
-  mu <- io * as.vector(tps$dprime)
+  mu <- io * as.vector(tps[["dprime"]])
   if (fam == "mixture") {
     if (is.null(.bvn_native$sym_mixsurv)) return(NULL)
-    lure <- isTRUE(md$has_lure_mixture) && !is.null(tps$dprime_L) && !is.null(tps$lambda_L)
-    mu2 <- vec("dprime2", 0 * one) - (1 - io) * as.vector(tps$dprime)
+    lure <- isTRUE(md$has_lure_mixture) && !is.null(tps[["dprime_L"]]) && !is.null(tps[["lambda_L"]])
+    mu2 <- vec("dprime2", 0 * one) - (1 - io) * as.vector(tps[["dprime"]])
     out <- list(mu = ifelse(old, mu2, if (lure) 0 else mu), sig = ifelse(old, vec("sigma2", one), 1),
-                lam = ifelse(old, as.vector(tps$lambda), if (lure) as.vector(tps$lambda_L) else 0),
-                mu_rec = ifelse(old, mu, if (lure) -as.vector(tps$dprime_L) else 0),
+                lam = ifelse(old, as.vector(tps[["lambda"]]), if (lure) as.vector(tps[["lambda_L"]]) else 0),
+                mu_rec = ifelse(old, mu, if (lure) -as.vector(tps[["dprime_L"]]) else 0),
                 sig2 = ifelse(old, vec("sigma", one), if (lure) vec("sigma_L", one) else 1), kind = 3L)
     return(out)
   }
   sig <- one
-  if (fam == "uvsdt" || (fam == "dpsdt" && isTRUE(md$has_sigma))) sig <- ifelse(old, as.vector(tps$sigma), 1)
-  lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps$lambda), 0) else NULL
+  if (fam == "uvsdt" || (fam == "dpsdt" && isTRUE(md$has_sigma))) sig <- ifelse(old, as.vector(tps[["sigma"]]), 1)
+  lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps[["lambda"]]), 0) else NULL
   list(mu = mu, sig = sig, lam = lam, mu_rec = NULL, kind = if (fam == "dpsdt") 1L else 0L)
 }
 
 .subset_thresh2 <- function(t2, idx) {
-  out <- if (length(dim(t2)) == 4L) t2[, idx, , , drop = FALSE] else t2[, idx, , drop = FALSE]
-  if (!is.null(attr(t2, "thresh2_new"))) attr(out, "thresh2_new") <- attr(t2, "thresh2_new")
-  out
+  if (length(dim(t2)) == 4L) t2[, idx, , , drop = FALSE] else t2[, idx, , drop = FALSE]
 }
 
 .tail_by_rows <- function(pr, w) {
@@ -522,11 +517,11 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   it <- matrix(rep(item_type, each = S), S, r)
   isnew <- it == 1L; isB <- it == 3L
   one <- matrix(1, S, r)
-  dF <- tps$dprime; dR <- dF + tps$dprime2; lam <- tps$lambda
-  s1 <- if (!is.null(tps$sigma)) tps$sigma else one
-  s2 <- if (!is.null(tps$sigma2)) tps$sigma2 else one
-  qA <- tps$discrim
-  src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, tps$discrim_B, qA) else ifelse(isB, -qA, qA)
+  dF <- tps[["dprime"]]; dR <- dF + tps[["dprime2"]]; lam <- tps[["lambda"]]
+  s1 <- if (!is.null(tps[["sigma"]])) tps[["sigma"]] else one
+  s2 <- if (!is.null(tps[["sigma2"]])) tps[["sigma2"]] else one
+  qA <- tps[["discrim"]]
+  src <- if (isTRUE(md$has_discrim_B)) ifelse(isB, tps[["discrim_B"]], qA) else ifelse(isB, -qA, qA)
   list(muF = ifelse(isnew, 0, dF), sig1 = ifelse(isnew, 1, s1), muR = ifelse(isnew, 0, dR),
        lam = ifelse(isnew, 0, lam), mu2 = ifelse(isnew, 0, src), sig2 = ifelse(isnew, 1, s2))
 }

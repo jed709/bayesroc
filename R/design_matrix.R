@@ -42,18 +42,32 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
     X <- matrix(0, nrow = N, ncol = P)
     colnames(X) <- colnames(X_old)
     X[old_idx, ] <- X_old
+    loc <- .location_coefs(X_old)
     
   } else {
     X <- model.matrix(formula, data = data)
+    loc <- .location_coefs(X)
   }
   
   list(
     X = X,
     n_coef = ncol(X),
     coef_names = colnames(X),
+    location_coefs = loc,
     has_encoding = has_encoding,
     formula = formula
   )
+}
+
+.location_coefs <- function(X) {
+  cn <- colnames(X)
+  if ("(Intercept)" %in% cn) return("(Intercept)")
+  a <- attr(X, "assign")
+  if (is.null(a) || !nrow(X)) return(character(0))
+  unlist(lapply(unique(a), function(t) {
+    S <- X[, a == t, drop = FALSE]
+    if (all(S == 0 | S == 1) && all(rowSums(S) == 1)) colnames(S)
+  }))
 }
 
 #' Build Random Effects Structure
@@ -348,6 +362,7 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     n_coef <- ncol(X)
     coef_names <- colnames(X)
   }
+  location_coefs <- if (!is.null(crit_cond_info)) crit_fixed$location_coefs else .location_coefs(X)
 
   is_intercept_only <- n_coef == 1 && coef_names[1] == "(Intercept)"
 
@@ -514,6 +529,7 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
     X = X,
     n_coef = n_coef,
     coef_names = coef_names,
+    location_coefs = location_coefs,
     is_intercept_only = is_intercept_only,
     random = re_list,
     n_thresh = n_thresh,

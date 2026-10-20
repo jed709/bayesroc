@@ -18,13 +18,6 @@
 
   varying <- isTRUE(md$varying_source_criteria)
   bounded <- isTRUE(md$bounded)
-  new_shared <- identical(md$new_source_criteria, "shared")
-  thresh2_new <- attr(thresh2, "thresh2_new")
-  is_new_response <- if (new_shared) {
-    !(seq_len(K1) %in% md$old_levels)
-  } else {
-    rep(FALSE, K1)
-  }
 
   prob_fn <- if (bounded) compute_bounded_prob_r else compute_bivariate_prob_r
   probs <- array(0, dim = c(S, N, K1, K2))
@@ -66,10 +59,7 @@
       c1_hi_z <- if (j < K1) (thresh[, n, j] - mu1_s) / sig1_s else rep(Inf, S)
 
       for (k in seq_len(K2)) {
-        if (new_shared && is_new_response[j] && !is.null(thresh2_new)) {
-          c2_lo_z <- if (k > 1) (thresh2_new[, k - 1] - mu2_s) / sig2_s else rep(-Inf, S)
-          c2_hi_z <- if (k < K2) (thresh2_new[, k] - mu2_s) / sig2_s else rep(Inf, S)
-        } else if (varying) {
+        if (varying) {
           c2_lo_z <- if (k > 1) (thresh2[, n, j, k - 1] - mu2_s) / sig2_s else rep(-Inf, S)
           c2_hi_z <- if (k < K2) (thresh2[, n, j, k] - mu2_s) / sig2_s else rep(Inf, S)
         } else {
@@ -80,9 +70,7 @@
         if (use_bounded) {
           for (s in seq_len(S)) {
             c1_raw <- thresh[s, n, ]
-            if (new_shared && is_new_response[j] && !is.null(thresh2_new)) {
-              c2_raw <- thresh2_new[s, ]
-            } else if (varying) {
+            if (varying) {
               c2_raw <- thresh2[s, n, j, ]
             } else {
               c2_raw <- thresh2[s, n, ]
@@ -126,13 +114,6 @@
 
   varying <- isTRUE(md$varying_source_criteria)
   bounded <- isTRUE(md$bounded)
-  new_shared <- identical(md$new_source_criteria, "shared")
-  thresh2_new <- attr(thresh2, "thresh2_new")
-  is_new_response <- if (new_shared) {
-    !(seq_len(K1) %in% md$old_levels)
-  } else {
-    rep(FALSE, K1)
-  }
 
   probs <- array(0, dim = c(S, N, K1, K2))
 
@@ -172,9 +153,7 @@
       c1_lo_z <- if (j > 1) (thresh[, n, j - 1] - mu1_s) / sig1_s else rep(-Inf, S)
       c1_hi_z <- if (j < K1) (thresh[, n, j] - mu1_s) / sig1_s else rep(Inf, S)
 
-      if (new_shared && is_new_response[j] && !is.null(thresh2_new)) {
-        c2_raw <- thresh2_new
-      } else if (varying) {
+      if (varying) {
         c2_raw <- thresh2[, n, j, , drop = FALSE]
         dim(c2_raw) <- c(S, K2 - 1)
       } else {

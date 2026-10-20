@@ -289,6 +289,7 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
   N <- nrow(data)
   blocks <- list()
   all_cond_info <- list()
+  loc <- character(0)
 
   if (length(regular_terms) > 0) {
     terms_str <- paste(regular_terms, collapse = " + ")
@@ -314,8 +315,10 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
       X_reg <- matrix(0, nrow = N, ncol = ncol(X_old))
       colnames(X_reg) <- colnames(X_old)
       X_reg[old_idx, ] <- X_old
+      loc <- .location_coefs(X_old)
     } else {
       X_reg <- model.matrix(reg_formula, data = data)
+      loc <- .location_coefs(X_reg)
     }
     blocks[[length(blocks) + 1]] <- X_reg
   }
@@ -342,6 +345,7 @@ build_conditional_fixed_matrix <- function(parsed_fixed, formula, data,
     X = X,
     n_coef = ncol(X),
     coef_names = colnames(X),
+    location_coefs = if ("(Intercept)" %in% colnames(X)) "(Intercept)" else loc,
     has_encoding = has_encoding_overall,
     formula = formula,
     conditional_info = if (length(all_cond_info) > 0) all_cond_info else NULL

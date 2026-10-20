@@ -9,19 +9,55 @@ prior_init <- function(model, chains = 4, seed = NULL) {
   parsed <- .parse_stan_param_block(model$stan_code, model$stan_data)
 
   pl <- model$prior_lookup
+  stmts <- .model_block_priors(model$stan_code, names(parsed))
 
   inits <- vector("list", chains)
   for (ch in seq_len(chains)) {
     init <- list()
     for (p in names(parsed)) {
       spec <- parsed[[p]]
-      prior_str <- .resolve_prior_for_param(p, spec, pl)
-      init[[p]] <- .sample_prior(prior_str, spec$shape, spec$type,
-                                  spec$has_lower_zero)
+      st <- stmts[[p]]
+      prior_str <- if (!is.null(st$whole)) st$whole else .resolve_prior_for_param(p, spec, pl)
+      v <- .sample_prior(prior_str, spec$shape, spec$type, spec$has_lower_zero)
+      if (length(st$elem) && !spec$type %in% c("cholesky_factor_corr", "corr_matrix", "cov_matrix", "simplex",
+                                                "ordered", "positive_ordered", "unit_vector", "cholesky_factor_cov")) {
+        dims <- if (length(spec$shape)) spec$shape else 1L
+        for (e in st$elem) {
+          if (length(e$idx) != length(dims) || any(e$idx > dims)) next
+          x <- .sample_univariate(e$prior, 1L)
+          if (spec$has_lower_zero) x <- abs(x)
+          k <- if (length(dims) == 1L) e$idx else e$idx[1] + (e$idx[2] - 1L) * dims[1]
+          v[k] <- x
+        }
+      }
+      init[[p]] <- v
     }
     inits[[ch]] <- init
   }
   inits
+}
+
+# Prior statements of the generated model block: a whole-variable statement (`x ~ d;`,
+# `to_vector(x) ~ d;`) and element statements (`x[k] ~ d;`, `x[i, j] ~ d;`) per parameter
+.model_block_priors <- function(stan_code, params) {
+  L <- strsplit(stan_code, "\n")[[1]]
+  s <- grep("^model\\s*\\{", L)
+  if (!length(s)) return(list())
+  L <- trimws(sub("//.*$", "", L[s[1]:length(L)]))
+  pat <- "^(to_vector\\()?([A-Za-z_][A-Za-z0-9_]*)(\\[([0-9 ,]+)\\])?\\)?\\s*~\\s*(.+?)\\s*;$"
+  out <- list()
+  for (ln in L) {
+    m <- regmatches(ln, regexec(pat, ln, perl = TRUE))[[1]]
+    if (length(m) < 6 || !(m[3] %in% params)) next
+    nm <- m[3]
+    if (!nzchar(m[5])) {
+      out[[nm]]$whole <- m[6]
+    } else {
+      idx <- as.integer(strsplit(gsub(" ", "", m[5]), ",")[[1]])
+      out[[nm]]$elem[[length(out[[nm]]$elem) + 1L]] <- list(idx = idx, prior = m[6])
+    }
+  }
+  out
 }
 
 # =========================================================================

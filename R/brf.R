@@ -40,11 +40,13 @@ resp <- function(response1, response2) {
 #'
 #' @section Random effects:
 #' Group-level terms follow lme4/brms syntax. `(1 + x | g)` estimates every
-#' correlation among the term's effects; `(1 + x || g)` keeps the effects of
-#' different terms uncorrelated (it is shorthand for `(1 | g) + (0 + x | g)`).
+#' correlation among the term's effects; `(1 + x || g)` makes every effect
+#' uncorrelated, including each contrast column of a factor.
 #' Several terms for one grouping factor may be given; their effects are
 #' correlated within a term and uncorrelated across terms. `(1 | id | g)` in
-#' several parameter formulas correlates those parameters' effects.
+#' several parameter formulas correlates those parameters' effects. A grouping
+#' factor may be an interaction (`(1 | a:b)`) or a nesting (`(1 | a/b)`, i.e.
+#' `(1 | a) + (1 | a:b)`).
 #'
 #' On the thresholds (`criterion`, `criterion2`) every term has one effect per
 #' threshold component (the middle threshold and each gap), and by default those

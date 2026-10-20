@@ -319,22 +319,22 @@ data to `get_broc_prior()`, and we can then specify the priors we want to overri
 get_broc_prior(f.2, 
                whitridge_2024)
 #>    class       dpar                    coef       group                prior  source
-#> 1      b     dprime           conditionread        <NA>         normal(1, 1) default
-#> 2      b     dprime           conditionsing        <NA>         normal(1, 1) default
-#> 3      b     dprime          conditionspeak        <NA>         normal(1, 1) default
-#> 4      b     dprime  conditionread:scale_wf        <NA>         normal(1, 1) default
-#> 5      b     dprime  conditionsing:scale_wf        <NA>         normal(1, 1) default
-#> 6      b     dprime conditionspeak:scale_wf        <NA>         normal(1, 1) default
-#> 7      b thresh_mid             (Intercept)        <NA>       normal(0, 1.5) default
-#> 8      b thresh_mid                scale_wf        <NA>       normal(0, 1.5) default
-#> 9      b   log_gaps        gap1_(Intercept)        <NA>         normal(0, 1) default
-#> 10     b   log_gaps           gap1_scale_wf        <NA>         normal(0, 1) default
-#> 11     b   log_gaps        gap2_(Intercept)        <NA>         normal(0, 1) default
-#> 12     b   log_gaps           gap2_scale_wf        <NA>         normal(0, 1) default
-#> 13     b   log_gaps        gap3_(Intercept)        <NA>         normal(0, 1) default
-#> 14     b   log_gaps           gap3_scale_wf        <NA>         normal(0, 1) default
-#> 15     b   log_gaps        gap4_(Intercept)        <NA>         normal(0, 1) default
-#> 16     b   log_gaps           gap4_scale_wf        <NA>         normal(0, 1) default
+#> 1      b     dprime           conditionread        <NA>    normal(1.5, 0.75) default
+#> 2      b     dprime           conditionsing        <NA>    normal(1.5, 0.75) default
+#> 3      b     dprime          conditionspeak        <NA>    normal(1.5, 0.75) default
+#> 4      b     dprime  conditionread:scale_wf        <NA>      normal(0, 0.75) default
+#> 5      b     dprime  conditionsing:scale_wf        <NA>      normal(0, 0.75) default
+#> 6      b     dprime conditionspeak:scale_wf        <NA>      normal(0, 0.75) default
+#> 7      b thresh_mid             (Intercept)        <NA>    normal(0.5, 0.75) default
+#> 8      b thresh_mid                scale_wf        <NA>      normal(0, 0.75) default
+#> 9      b   log_gaps        gap1_(Intercept)        <NA>    normal(-0.5, 0.5) default
+#> 10     b   log_gaps           gap1_scale_wf        <NA>       normal(0, 0.5) default
+#> 11     b   log_gaps        gap2_(Intercept)        <NA>    normal(-0.5, 0.5) default
+#> 12     b   log_gaps           gap2_scale_wf        <NA>       normal(0, 0.5) default
+#> 13     b   log_gaps        gap3_(Intercept)        <NA>    normal(-0.5, 0.5) default
+#> 14     b   log_gaps           gap3_scale_wf        <NA>       normal(0, 0.5) default
+#> 15     b   log_gaps        gap4_(Intercept)        <NA>    normal(-0.5, 0.5) default
+#> 16     b   log_gaps           gap4_scale_wf        <NA>       normal(0, 0.5) default
 #> 17    sd     dprime           conditionread participant       normal(0, 0.5) default
 #> 18    sd     dprime           conditionsing participant       normal(0, 0.5) default
 #> 19    sd     dprime          conditionspeak participant       normal(0, 0.5) default

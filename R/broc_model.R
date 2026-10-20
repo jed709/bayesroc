@@ -253,6 +253,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   # --- 3. Unpack formulas from brf ---
   dprime <- brf_obj$primary
   params <- brf_obj$params
+  gx <- .expand_grouping(c(list(.primary = dprime), params), data)
+  dprime <- gx$formulas$.primary
+  params <- gx$formulas[names(params)]
+  data <- gx$data
 
   # --- 3a. Reject formulas naming params not in the family ---
   valid_names <- names(family$params)
@@ -270,6 +274,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                  paste(sort(valid_names), collapse = ", ")),
          call. = FALSE)
   }
+
+  params <- .canonical_param_formulas(params, family)
 
   criterion  <- params[["criterion"]]
   sigma      <- params[["sigma"]]
@@ -330,6 +336,16 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (length(enc_in_crit)) {
     warning("Encoding variable in criterion formula: ", paste(enc_in_crit, collapse = ", "), call. = FALSE)
   }
+  for (lp in c("rho_N", "dprime_L", "sigma_L", "lambda_L")) {
+    f <- params[[lp]]
+    if (!inherits(f, "formula")) next
+    enc <- unique(c(intersect(encoding_vars, all.vars(f)),
+                    if (grepl("encoding\\s*\\(", paste(deparse(f), collapse = ""))) "encoding()"))
+    if (length(enc)) {
+      stop(lp, " describes new items only, which have no encoding condition, so it cannot depend on an ",
+           "encoding variable (", paste(enc, collapse = ", "), ").", call. = FALSE)
+    }
+  }
 
   # --- 4. Handle cumulative family early-return ---
   if (family$family == "cumulative") {
@@ -338,6 +354,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                           gap_link = gap_link, smooth_info = smooth_info,
                           cutpoints_scale = criterion_scale)
     res$dropped_rows <- dropped_rows
+    .check_priors_matched(res, priors)
     return(res)
   }
 
@@ -351,6 +368,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
       gap_link = gap_link, smooth_info = smooth_info,
       cutpoints_scale = criterion_scale, cutpoints2_scale = criterion2_scale)
     res$dropped_rows <- dropped_rows
+    .check_priors_matched(res, priors)
     return(res)
   }
 
@@ -578,7 +596,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     if (is.null(criterion2)) {
       stop("criterion2 formula is required for vrdp2d family (source dimension thresholds)")
     }
-    
+    if (is.null(discrim_B)) {
+      message("Note: discrim_B not specified - constraining discrim_B = -discrim")
+    }
+
     if (is.null(sigma)) {
       message("Note: sigma not specified - fixing sigma = 1")
     }
@@ -621,6 +642,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = encoding_vars)
+  prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$gap_link <- gap_link
 
@@ -662,6 +684,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   )
 
   class(result) <- c("broc_model", "list")
+  .check_priors_matched(result, priors)
   result
 }
 
@@ -1067,9 +1090,19 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     if (isTRUE(family$varying_source_criteria)) {
       vb2 <- .varying_bins(family, K)
       data$.c2bin <- factor(vb2$labels[vb2$of[stan_data$y]], levels = vb2$labels)
+      own <- .criterion_scale_design(parsed$criterion2_scale, data, encoding_vars, is_old_var, N)
       parsed$criterion2_scale <- parse_broc_parameter_formula(.per_bin_formula(parsed$criterion2_scale, ".c2bin"))
+      parsed$criterion2_scale$random <- .merge_group_terms(parsed$criterion2_scale$random, "criterion2_scale")
     }
-    criterion2_scale_fixed <- .criterion_scale_design(parsed$criterion2_scale, data, encoding_vars, is_old_var, N)
+    criterion2_scale_fixed <- suppressMessages(.criterion_scale_design(parsed$criterion2_scale, data, encoding_vars,
+                                                                       is_old_var, N))
+    if (isTRUE(family$varying_source_criteria)) {
+      keep <- colnames(criterion2_scale_fixed$X) %in%
+        as.vector(outer(paste0(".c2bin", levels(data$.c2bin), ":"), own$coef_names, paste0))
+      criterion2_scale_fixed$X <- criterion2_scale_fixed$X[, keep, drop = FALSE]
+      criterion2_scale_fixed$coef_names <- criterion2_scale_fixed$coef_names[keep]
+      criterion2_scale_fixed$n_coef <- sum(keep)
+    }
     criterion2_scale_random <- build_random_effects_structure(parsed$criterion2_scale$random, data, encoding_vars, is_old_var)
     stan_data$P_criterion2_scale <- criterion2_scale_fixed$n_coef
     stan_data$X_criterion2_scale <- criterion2_scale_fixed$X
@@ -1113,9 +1146,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   }
   
   if (needs_ordered_dprime) {
-    dprime2_fixed <- dprime_fixed
-    stan_data$P_dprime2 <- dprime_fixed$n_coef
-    stan_data$X_dprime2 <- dprime_fixed$X
+    stan_data[c("dprime_pivot", "dprime_xbar", "dprime2_xbar")] <-
+      .dprime_order_data(dprime_fixed$X, dprime2_fixed$X, stan_data$is_old)
   }
   
   sigma2_fixed <- NULL
@@ -1377,10 +1409,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
     criterion2_cond <- extract_conditional_from_parsed(parsed$criterion2)
 
-    if (isTRUE(family$varying_source_criteria) && !isTRUE(parsed$criterion2$fixed$intercept)) {
-      parsed$criterion2$fixed$intercept <- TRUE
-      criterion2_fixed_formula <- build_formula_from_parsed(parsed$criterion2$fixed)
-    }
     if (has_criterion2_scale && K2 - 1L < 2L) {
       stop("A criterion2_scale formula needs at least two source criteria (three source response ",
            "categories): with one criterion there are no gaps to scale.", call. = FALSE)
@@ -1392,6 +1420,18 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                             parsed_fixed = parsed$criterion2$fixed)
     if (has_criterion2_scale) criterion2$location_scale <- TRUE
 
+    if (isTRUE(family$varying_source_criteria) && length(parsed$criterion2$smooth)) {
+      sm2 <- parsed$criterion2$smooth
+      if (any(grepl("\\bby\\s*=", sm2))) {
+        stop("A smooth in criterion2 already has a by= variable; with varying source criteria each detection-",
+             "response set gets its own curve (by the set), so one smooth cannot take a second by= variable.",
+             call. = FALSE)
+      }
+      vb2 <- .varying_bins(family, K)
+      data$.c2bin <- factor(vb2$labels[vb2$of[stan_data$y]], levels = vb2$labels)
+      parsed$criterion2$smooth <- sub("\\)\\s*$", ", by = .c2bin)", sm2)
+      parsed$criterion2$fixed$smooth_terms <- parsed$criterion2$smooth
+    }
     crit2_smooth_info <- build_param_smooth_info(parsed$criterion2, data, encoding_vars, is_old_var)
     if (!is.null(crit2_smooth_info)) {
       n_thresh2 <- if (has_criterion2_scale) 1L else K2 - 1
@@ -1405,10 +1445,15 @@ build_model_data <- function(parsed, data, family, counts = NULL,
 
     if (isTRUE(family$varying_source_criteria)) {
       c2_names <- colnames(criterion2$X) %||% criterion2$coef_names
-      cov_cols <- which(c2_names != "(Intercept)")
+      vc <- .varying_cells(criterion2$X, c2_names, criterion2$location_coefs)
+      cov_cols <- which(!c2_names %in% c("(Intercept)", vc$names))
       criterion2$cov_names <- c2_names[cov_cols]
+      criterion2$vcell_names <- vc$labels
       stan_data$P_criterion2_cov <- length(cov_cols)
       stan_data$X_criterion2_cov <- criterion2$X[, cov_cols, drop = FALSE]
+      stan_data$n_vcell <- length(vc$labels)
+      stan_data$vcell <- as.array(vc$of)
+      stan_data$n_vset <- .varying_bins(family, K)$n * length(vc$labels)
     }
 
     stan_data$P_criterion2 <- criterion2$n_coef
@@ -1551,6 +1596,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     rho_B = if (has_rho_B) rho_B_fixed else NULL,
     rho_N = if (has_rho_N) rho_N_fixed else NULL,
     lambda2 = if (has_lambda2) lambda2_fixed else NULL,
+    lambda2_B = if (has_lambda2_B) lambda2_B_fixed else NULL,
     rec_crit = if (has_rec_crit) rec_crit_fixed else NULL,
     know_crit = if (has_know_crit) know_crit_fixed else NULL,
     dprime_L = if (has_dprime_L) dprime_L_fixed else NULL,
@@ -1779,11 +1825,13 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
   fx <- parsed_param$fixed
   fixed <- if (length(fx$terms)) paste0(bin, ":", fx$terms)
   sm <- vapply(fx$smooth_terms %||% character(0), function(x) sub("\\)$", paste0(", by = ", bin, ")"), x), "")
-  re <- vapply(parsed_param$random, function(r) {
+  one <- function(r) {
     lhs <- c("0", if (isTRUE(r$intercept)) bin, if (length(r$terms)) paste0(bin, ":", r$terms))
     grp <- if (!is.null(r$cor_id)) paste0(r$cor_id, " | ", r$group) else r$group
     sprintf("(%s %s %s)", paste(lhs, collapse = " + "), if (isFALSE(r$correlated) && is.null(r$cor_id)) "||" else "|", grp)
-  }, "")
+  }
+  re <- unlist(lapply(parsed_param$random, function(r) if (length(r$parts)) vapply(r$parts, one, "") else one(r)),
+               use.names = FALSE)
   rhs <- c(fixed, sm, re)
   stats::as.formula(paste("~", if (length(rhs)) paste(rhs, collapse = " + ") else "1"))
 }
@@ -1941,6 +1989,13 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
       }
     }
     
+    groups <- unique(vapply(members, `[[`, "", "group"))
+    if (length(groups) > 1L) {
+      stop("Correlation label '|", cor_id, "|' is used with different grouping factors (",
+           paste(groups, collapse = ", "), "). Effects can only be correlated within one grouping factor: ",
+           "use a separate label for each, e.g. (1|", cor_id, "1|", groups[1], ") and (1|", cor_id, "2|", groups[2], ").",
+           call. = FALSE)
+    }
     if (length(members) > 0) {
       cross_cor[[cor_id]] <- list(
         group = group,
@@ -2715,6 +2770,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = NULL)
+  prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$is_cumulative <- TRUE
   model_data$gap_link <- gap_link
@@ -2947,6 +3003,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
 
   model_data <- build_model_data(parsed, data, family, counts = counts)
+  prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$is_bivariate_cumulative <- TRUE
   model_data$gap_link <- gap_link
@@ -3030,7 +3087,6 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   if (isTRUE(md$has_criterion2_scale)) {
     md$criterion2 <- row_re("lsrow2", md$K2 - 1L)
     md$varying_source_criteria <- FALSE
-    md$new_source_criteria <- NULL
     md$has_criterion2_scale <- FALSE
     md$criterion2_scale_fixed <- NULL
     md$criterion2_scale_random <- NULL
@@ -3196,6 +3252,29 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   list(n = length(labels), of = of, labels = labels)
 }
 
+.varying_cells <- function(X, names, location) {
+  loc <- if ("(Intercept)" %in% names) character(0) else intersect(location, names)
+  if (!length(loc)) return(list(names = character(0), labels = "(Intercept)", of = rep(1L, nrow(X))))
+  L <- X[, loc, drop = FALSE]
+  of <- max.col(L, ties.method = "first")
+  none <- rowSums(L) == 0
+  labels <- loc
+  if (any(none)) {
+    labels <- c(labels, "(none)")
+    of[none] <- length(labels)
+  }
+  list(names = loc, labels = labels, of = as.integer(of))
+}
+
+.vcell_of <- function(md, N = length(md$stan_data$y)) as.integer(md$stan_data$vcell %||% rep(1L, N))
+.n_vcell <- function(md) as.integer(md$stan_data$n_vcell %||% 1L)
+.vset_labels <- function(md) {
+  b <- .vbin_labels(md)
+  cl <- md$criterion2$vcell_names %||% "(Intercept)"
+  if (length(cl) == 1L) return(b)
+  paste0(rep(b, times = length(cl)), ":", rep(cl, each = length(b)))
+}
+
 # vbin of a model, including fits saved before the map existed (one set per response)
 .vbin_of <- function(md) as.integer(md$stan_data$vbin %||% seq_len(md$K))
 .vbin_labels <- function(md) {
@@ -3223,4 +3302,101 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   re$cor_blocks <- .re_cor_blocks(n_terms, n_base, col_set, set_ct)
   re$correlated <- length(re$cor_blocks) > 0
   re
+}
+
+.dprime_order_data <- function(X1, X2, is_old) {
+  old <- if (is.null(is_old)) rep(TRUE, nrow(X1)) else is_old == max(is_old)
+  x1 <- colMeans(X1[old, , drop = FALSE])
+  x2 <- colMeans(X2[old, , drop = FALSE])
+  list(unname(which.max(abs(x1))), as.array(unname(x1)), as.array(unname(x2)))
+}
+
+.canonical_param_formulas <- function(params, family) {
+  params <- params[!vapply(params, identical_to_null_formula, logical(1))]
+  m <- .param_name_map(family$family)
+  if (family$family == "bivariate_cumulative") m$criterion <- c(m$criterion, "cutpoints1")
+  for (internal in unique(c("dprime", names(m)))) {
+    spell <- c(internal, m[[internal]])
+    given <- intersect(spell, names(params))
+    if (!length(given)) next
+    if (internal == "dprime") {
+      stop("A separate '", given[1], " ~' formula is not used: ", m$dprime %||% "dprime",
+           " takes the right-hand side of the main formula (response ~ ...). Put its terms there.", call. = FALSE)
+    }
+    if (length(given) > 1L) {
+      stop("Formulas for '", paste(given, collapse = "' and '"), "' name the same parameter; give only one.",
+           call. = FALSE)
+    }
+    if (given != internal) {
+      params[[internal]] <- params[[given]]
+      params[[given]] <- NULL
+    }
+  }
+  params
+}
+
+.expand_grouping <- function(formulas, data) {
+  defs <- attr(data, "bayesroc_group_defs") %||% list()
+  col_for <- function(vars) {
+    hit <- Filter(function(d) identical(d, vars), defs)
+    if (length(hit)) return(names(hit)[1])
+    nm <- paste(vars, collapse = "_")
+    while (nm %in% c(names(data), names(defs))) nm <- paste0(nm, "_")
+    defs[[nm]] <<- vars
+    data[[nm]] <<- interaction(data[vars], drop = TRUE, sep = ":")
+    nm
+  }
+  chain <- function(e) {
+    if (is.call(e) && identical(e[[1]], as.name("/"))) return(c(chain(e[[2]]), list(all.vars(e[[3]]))))
+    list(all.vars(e))
+  }
+  group_sym <- function(vars) if (length(vars) == 1L) as.name(vars) else as.name(col_for(vars))
+  expand_term <- function(e) {
+    if (!(is.call(e) && identical(e[[1]], as.name("(")) && is.call(e[[2]]) &&
+          as.character(e[[2]][[1]]) %in% c("|", "||"))) return(list(e))
+    bar <- e[[2]]
+    g <- bar[[3]]
+    wrap <- function(sym) sym
+    if (is.call(g) && identical(g[[1]], as.name("gr")) && length(g) >= 2L) {
+      gr_call <- g
+      g <- g[[2]]
+      wrap <- function(sym) { out <- gr_call; out[[2]] <- sym; out }
+    }
+    if (is.symbol(g)) return(list(e))
+    levels <- chain(g)
+    nested <- Reduce(function(acc, v) c(acc, list(c(acc[[length(acc)]], v))), levels[-1], list(levels[[1]]))
+    lhs <- bar[[2]]
+    id <- if (is.call(lhs) && identical(lhs[[1]], as.name("|"))) as.character(lhs[[3]])
+    lapply(seq_along(nested), function(i) {
+      gs <- group_sym(nested[[i]])
+      new_lhs <- if (!is.null(id)) {
+        lab <- if (i == 1L) id else paste0(id, "_", as.character(gs))
+        call("|", lhs[[2]], as.name(lab))
+      } else lhs
+      call("(", call(as.character(bar[[1]]), new_lhs, wrap(gs)))
+    })
+  }
+  flat <- function(e) {
+    if (is.call(e) && length(e) == 3L && identical(e[[1]], as.name("+"))) return(c(flat(e[[2]]), flat(e[[3]])))
+    if (is.call(e) && length(e) == 3L && identical(e[[1]], as.name("-"))) return(list(call("-", walk(e[[2]]), e[[3]])))
+    expand_term(e)
+  }
+  walk <- function(e) Reduce(function(a, b) call("+", a, b), flat(e))
+  out <- lapply(formulas, function(f) {
+    if (!inherits(f, "formula")) return(f)
+    rhs <- f[[length(f)]]
+    new_rhs <- walk(rhs)
+    if (identical(new_rhs, rhs)) return(f)
+    f[[length(f)]] <- new_rhs
+    f
+  })
+  if (length(defs)) attr(data, "bayesroc_group_defs") <- defs
+  list(formulas = out, data = data)
+}
+
+.add_group_columns <- function(newdata, defs) {
+  for (nm in names(defs)) {
+    if (is.null(newdata[[nm]])) newdata[[nm]] <- interaction(newdata[defs[[nm]]], drop = TRUE, sep = ":")
+  }
+  newdata
 }

@@ -70,7 +70,7 @@ override it.
 }
 \examples{
 # Prior on all d' fixed effects
-broc_prior("normal(1, 1)", class = "b", dpar = "dprime")
+broc_prior("normal(1.5, 0.75)", class = "b", dpar = "dprime")
 
 # Prior on specific d' coefficient
 broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime", coef = "conditionread")

@@ -690,9 +690,10 @@ class AutoSession:
                     kept_stats={n: v[:, sel] for n, v in stats.items()}, mon=mon,
                     wall=time.time() - t0)
 
-    def _launch(self):
+    def _launch(self, after=None):
         res = {}
-        carry, T, stride = self.carry, self.T, self.stride
+        carry, T, stride = ((self.carry, self.T, self.stride) if after is None
+                            else (after["carry"], after["T"], after["stride"]))
 
         def work():
             try:
@@ -756,9 +757,10 @@ class AutoSession:
             self.mon_n += m
 
     def step(self, out_dir, a=None):
-        """One round: commit the pending round, diagnose, and start the next round unless
-        the stopping rule (`targets`, `rhat`; never with `fixed` draws) is met or this is
-        the last check (`force`), so that finishing never has to cut a running block."""
+        """One round: start the next round from the finished one's end (unless this is the last
+        check, `force`), then commit and diagnose while it samples. When the stopping rule
+        (`targets`, `rhat`; never with `fixed` draws) is met the new round is cancelled and its
+        draws dropped, so the kept draws and the saved state end at the committed round."""
         a = a or {}
         if self.pending is None:
             self._launch()
@@ -768,6 +770,8 @@ class AutoSession:
         if "err" in res:
             raise res["err"]
         r = res["out"]
+        if not a.get("force"):
+            self._launch(after=r)
         self._commit(r)
         os.makedirs(out_dir, exist_ok=True)
         checked = self.skip_checks == 0 or self.last_dg is None or bool(a.get("force"))
@@ -788,8 +792,8 @@ class AutoSession:
             dg.get("ess_" + c) is None or dg["ess_" + c] >= float(t)
             for c, t in (a.get("targets") or {}).items()) and (
             dg.get("rhat") is None or dg["rhat"] <= float(a.get("rhat", np.inf)))
-        if not (met or a.get("force")):
-            self._launch()
+        if met:
+            self._stop_pending()
         n_all = max(float(self.tot.n.sum()), 1.0)
         kept_bytes = (self.n * self.chains * self.D * self.rows.itemsize
                       + self.mon_n * self.mon.shape[0] * self.mon.shape[2] * self.mon.itemsize)

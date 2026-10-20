@@ -151,10 +151,10 @@ test_that("encoding factor with one surviving level does not crash", {
   )
 })
 
-test_that("the default d' prior is centred at 1", {
+test_that("the default d' prior is centred at 1.5", {
   d2 <- .fixture_univariate()
   m2 <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d2)
-  expect_identical(m2$model_data$prior_lookup$b[["dprime"]], "normal(1, 1)")
+  expect_identical(m2$model_data$prior_lookup$b[["dprime"]], "normal(1.5, 0.75)")
 })
 
 test_that("an encoding variable in the criterion formula warns", {

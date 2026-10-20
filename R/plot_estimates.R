@@ -136,7 +136,7 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
     mids <- grep(paste0("^beta_thresh_mid", sfx, "(_varying|_cov|_new)?(\\[|$)"), vars, value = TRUE)
     if (length(mids)) {
       vb <- if (any(grepl("_varying[", c(mids, vars), fixed = TRUE))) .varying_bins(model$family, md$K)$labels else NULL
-      bin_of <- function(b) if (identical(vb[b], "new")) "new" else paste0("bin ", vb[b])
+      bin_of <- function(st) .vset_pretty(model, st)
       mterm <- if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids)
       vm <- grepl("_varying[", mids, fixed = TRUE)
       if (any(vm)) mterm[vm] <- vapply(mids[vm], function(v) bin_of(as.integer(sub(".*\\[([0-9]+)\\]$", "\\1", v))), "")
@@ -152,9 +152,7 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
       }, integer(1))
       glab <- vapply(seq_along(gaps), function(i) {
         if (grepl("_varying[", gaps[i], fixed = TRUE) && length(ix[[i]]) == 2L && !anyNA(ix[[i]])) {
-          vb <- .varying_bins(model$family, md$K)$labels
-          b <- ix[[i]][1]
-          return(paste0(if (identical(vb[b], "new")) "new" else paste0("bin ", vb[b]), ", ", .crit_gap_label(ix[[i]][2], J)))
+          return(paste0(.vset_pretty(model, ix[[i]][1]), ", ", .crit_gap_label(ix[[i]][2], J)))
         }
         if (is.na(gi[i])) return(gaps[i])
         k <- ix[[i]]
@@ -223,4 +221,15 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
       ggplot2::scale_fill_manual(values = .broc_accent, guide = "none")
   }
   p
+}
+
+.vset_pretty <- function(model, st) {
+  md <- model$model_data
+  vb <- .varying_bins(model$family, md$K)$labels
+  nb <- length(vb)
+  b <- (st - 1L) %% nb + 1L
+  out <- if (identical(vb[b], "new")) "new" else paste0("bin ", vb[b])
+  cl <- md$criterion2$vcell_names
+  if (length(cl) > 1L) out <- paste0(out, ", ", .pretty_coef(cl, model$data)[(st - 1L) %/% nb + 1L])
+  out
 }

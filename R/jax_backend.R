@@ -176,6 +176,21 @@ find_backend_script <- function() {
 # Config Builder
 # =============================================================================
 
+.cross_member_order <- function(re_configs, cross_cor_groups) {
+  for (cid in names(cross_cor_groups)) {
+    slots <- which(vapply(re_configs, function(r) identical(r$cor_id, cid), logical(1)))
+    if (length(slots) < 2L) next
+    key <- vapply(re_configs[slots], function(r) paste(r$param, r$group), "")
+    want <- vapply(cross_cor_groups[[cid]]$members, function(m) paste(m$param, m$group), "")
+    ord <- match(want, key)
+    if (anyNA(ord) || length(ord) != length(slots)) {
+      stop("internal: cross-parameter group '", cid, "' members do not match the random-effect configs", call. = FALSE)
+    }
+    re_configs[slots] <- re_configs[slots][ord]
+  }
+  re_configs
+}
+
 #' Build NumPyro config dict from broc_model
 #'
 #' Translates the R-side broc_model into a flat config dictionary that
@@ -292,7 +307,9 @@ build_numpyro_config <- function(model) {
     config$prior_log_gaps2_grid <- lapply(seq_len(nrow(tg2$gaps)), function(k) as.list(tg2$gaps[k, ]))
     if (isTRUE(md$varying_source_criteria)) {
       vg <- .crit2_vary_prior_grid(prior_lookup, md)
-      config$prior_vary2 <- list(mid = vg$mid, gaps = as.list(vg$gaps), cov_mid = as.list(vg$cov_mid),
+      config$prior_vary2 <- list(mid = as.list(vg$mid),
+                                 gaps = lapply(seq_len(ncol(vg$gaps)), function(s) as.list(vg$gaps[, s])),
+                                 cov_mid = as.list(vg$cov_mid),
                                  cov_gaps = lapply(seq_len(nrow(vg$cov_gaps)), function(k) as.list(vg$cov_gaps[k, ])))
     }
   }
@@ -455,17 +472,27 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$cross_cor_groups)) {
     config$cross_cor_groups <- md$cross_cor_groups
   }
+  if (length(md$cross_cor)) {
+    config$random_effects <- .cross_member_order(config$random_effects, md$cross_cor)
+  }
 
   if (!is.null(md$stan_data$is_old)) {
     config$is_old <- as.numeric(md$stan_data$is_old)
   }
 
   config$varying_source_criteria <- isTRUE(family$varying_source_criteria)
-  if (isTRUE(md$needs_ordered_dprime)) config$needs_ordered_dprime <- TRUE
+  if (isTRUE(md$needs_ordered_dprime)) {
+    config$needs_ordered_dprime <- TRUE
+    config$dprime_pivot <- as.integer(md$stan_data$dprime_pivot)
+    config$dprime_xbar <- as.list(as.numeric(md$stan_data$dprime_xbar))
+    config$dprime2_xbar <- as.list(as.numeric(md$stan_data$dprime2_xbar))
+  }
   if (!is.null(md$bounded)) config$bounded <- md$bounded
   if (!is.null(md$stan_data$vbin)) {
     config$vbin <- as.list(as.integer(md$stan_data$vbin))
     config$n_vbin <- as.integer(md$stan_data$n_vbin)
+    config$n_vcell <- .n_vcell(md)
+    config$vcell <- as.list(.vcell_of(md))
   }
   if (!is.null(md$gap_link)) config$gap_link <- md$gap_link
   if (isTRUE(md$has_criterion_scale)) config$crit_ls <- TRUE

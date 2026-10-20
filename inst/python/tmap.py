@@ -26,7 +26,6 @@ import jax.numpy as jnp
 from jax.scipy.linalg import solve_triangular, block_diag
 
 
-_RE_PARAMS = ("dprime", "sigma", "lambda", "dprime2", "sigma2", "criterion", "criterion2", "discrim", "rho")
 _FD_STEP = 1e-3
 _NEWTON = 3
 _NEWTON_CAP = 0.5
@@ -186,83 +185,78 @@ def _varying_sets(config, conf):
     return (n_sets, nth) if int(conf["n_terms"]) % (n_sets * nth) == 0 else None
 
 
-def _fixed_map_varying(config, conf, off, Zc, gap_prefix):
-    """Varying source criteria: an intercept random effect's dimension for (set, threshold
-    component) enters exactly the rows the set's own coefficient enters."""
-    lay = _varying_sets(config, conf)
-    if lay is None or Zc.shape[1] != 1 or not np.all(Zc[:, 0] == 1.0):
-        return []
-    n_sets, n_comp = lay
-    nth = int(config["K2"]) - 1
-    mid = (nth + 1) // 2 - 1
-    out = []
-    for b in range(n_sets):
-        for c in range(n_comp):
-            if n_comp == 1 or c == mid:
-                flat = _beta_site(off, None, [("beta_thresh_mid_2_varying", (b,))])
-            else:
-                flat = _beta_site(off, None, [(gap_prefix + "_2_varying", (b, _gap_of_component(c, mid, nth)))])
-            if flat is not None:
-                out.append((b * n_comp + c, flat))
-    return out
+def _varying_row_bins(config):
+    """0-based set of varying source criteria each observation reads (from its detection response)."""
+    y = np.asarray(config["y"], dtype=int).reshape(-1) - 1
+    vbin = config.get("vbin")
+    return y if vbin is None else np.asarray(vbin, dtype=int).reshape(-1)[y] - 1
 
 
-def _fixed_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched=None):
-    """[(dim_within_conf, flat beta index)] for the conf's terms that equal a fixed-effect column."""
+def _proj_map_varying(config, conf, off, gap_prefix, index, n):
+    """_proj_map for a criterion2 random effect under varying source criteria. Its dimension for
+    (bin b, threshold component k, term r) acts on the rows whose detection response reads bin b;
+    the population coefficients there are each cell's set coefficient for (b, k) and the shared
+    covariate coefficients for k. Within every group the effect is projected onto them as in
+    _proj_map, so a group nested in a cell answers to that cell's set only."""
     N = int(config["N"])
     Zc = _re_columns(conf, N)
     R = Zc.shape[1]
-    out = []
-    if param == "criterion2" and config.get("varying_source_criteria"):
-        return _fixed_map_varying(config, conf, off, Zc, gap_prefix)
-    if param in ("criterion", "criterion2"):
-        mid_name = "beta_thresh_mid"
-        if param == "criterion2":
-            pc = (config.get("params") or {}).get("criterion2")
-            X = np.asarray(pc["X"], dtype=float).reshape(N, -1) if pc and pc.get("X") is not None else np.ones((N, 1))
-            n_thresh = int(config["K2"]) - 1
-            mid = (n_thresh + 1) // 2 - 1
-            mid_name, gap_prefix = "beta_thresh_mid_2", gap_prefix + "_2"
-        else:
-            X = np.asarray(config["X_crit"], dtype=float).reshape(N, -1)
-        P = X.shape[1]
-        scalar = bool(conf.get("location_only"))
-        n_comp = 1 if scalar else n_thresh
-        if int(conf["n_terms"]) != n_comp * R:
-            return []
-        for r in range(R):
-            js = [j for j in range(P) if np.array_equal(Zc[:, r], X[:, j])]
-            if not js:
-                continue
-            j = js[0]
-            for k in range(n_comp):
-                if scalar or k == mid:
-                    flat = _beta_site(off, None, [(f"{mid_name}[{j + 1}]", None)])
-                else:
-                    g = _gap_of_component(k, mid, n_thresh)
-                    flat = _beta_site(off, None, [(f"{gap_prefix}[{g + 1},{j + 1}]", None),
-                                                  (f"{gap_prefix}[{g + 1}]", None) if P == 1 else ("", None),
-                                                  (gap_prefix, (g,)) if P == 1 else ("", None)])
-                if flat is not None:
-                    out.append((k * R + r, flat))
-        return out
-    pc = (config.get("params") or {}).get(param)
-    if not pc or int(pc.get("n_coef", 0)) < 1:
-        return []
-    X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
-    if int(conf["n_terms"]) != R:
-        return []
-    for r in range(R):
-        js = [j for j in range(X.shape[1]) if np.array_equal(Zc[:, r], X[:, j])]
-        if not js:
-            continue
-        j = js[0]
-        flat = _beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))])
-        if flat is None and X.shape[1] == 1 and batched:
-            flat = batched.get(param)
-        if flat is not None:
-            out.append((r, flat))
-    return out
+    nth = int(config["K2"]) - 1
+    mid = (nth + 1) // 2 - 1
+    n_vbin = int(config.get("n_vbin") or config["K"])
+    n_vcell = int(config.get("n_vcell") or 1)
+    nt = int(conf["n_terms"])
+    if nt == n_vbin * nth * R:
+        comps = list(range(nth))
+    elif nt == n_vbin * R:
+        comps = [mid]
+    else:
+        return [], []
+    rb = _varying_row_bins(config)
+    cell = (np.asarray(config["vcell"], dtype=int).reshape(-1) - 1 if n_vcell > 1 else np.zeros(N, int))
+    cov = config.get("crit2_cov")
+    Xcov = np.asarray(cov["X"], dtype=float).reshape(N, -1) if cov else np.zeros((N, 0))
+    gv, gcov = gap_prefix + "_2_varying", gap_prefix + "_2_cov"
+    order = np.argsort(index, kind="stable")
+    bounds = np.searchsorted(index[order], np.arange(n + 1))
+    bp, gp = [], []
+    for b in range(n_vbin):
+        on = (rb == b).astype(float)
+        Zb = Zc * on[:, None]
+        for ci, k in enumerate(comps):
+            g = None if k == mid else _gap_of_component(k, mid, nth)
+            flats, cols = [], []
+            for c in range(n_vcell):
+                st = b + n_vbin * c
+                flats.append(_beta_site(off, None, [("beta_thresh_mid_2_varying", (st,))] if g is None
+                                        else [(gv, (st, g))]))
+                cols.append(on * (cell == c))
+            for q in range(Xcov.shape[1]):
+                flats.append(_beta_site(off, None, [("beta_thresh_mid_2_cov", (q,))] if g is None
+                                        else [(gcov, (g, q))]))
+                cols.append(on * Xcov[:, q])
+            X = np.stack(cols, 1)
+            P = X.shape[1]
+            W = np.zeros((n, R, P))
+            act = np.zeros((n, R), bool)
+            for grp in range(n):
+                rows = order[bounds[grp]:bounds[grp + 1]]
+                if not len(rows):
+                    continue
+                act[grp] = np.any(Zb[rows] != 0.0, 0)
+                W[grp] = np.linalg.lstsq(Zb[rows], X[rows], rcond=None)[0]
+            W[np.abs(W) < 1e-10] = 0.0
+            for r in range(R):
+                d = (b * len(comps) + ci) * R + r
+                Wr = W[:, r, :]
+                one = [j for j in range(P) if flats[j] is not None and act[:, r].any()
+                       and np.all(np.abs(Wr[act[:, r], j] - 1.0) < 1e-9) and np.all(Wr[~act[:, r], j] == 0.0)]
+                rest = [j for j in range(P) if flats[j] is not None and j not in one and np.any(Wr[:, j] != 0.0)]
+                for j in one:
+                    bp.append((d, int(flats[j])))
+                if rest:
+                    gp.append((d, [int(flats[j]) for j in rest], Wr[:, rest].copy()))
+    return bp, gp
 
 
 def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
@@ -305,7 +299,10 @@ def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
         cum_loc = config.get("family") in ("cumulative", "bivariate_cumulative") and param in ("dprime", "discrim")
         if nt != R or (not cum_loc and (not pc or int(pc.get("n_coef", 0)) < 1)):
             return None
-        if pc and int(pc.get("n_coef", 0)) >= 1:
+        if param == "dprime" and config.get("needs_ordered_dprime") and "dprime_order_loggap" in off:
+            X, flats = _ordered_dprime_design(config, off, N)
+            centre = None
+        elif pc and int(pc.get("n_coef", 0)) >= 1:
             X = np.asarray(pc["X"], dtype=float).reshape(N, -1)
             centre = pc.get("centre")
             P = X.shape[1]
@@ -340,6 +337,57 @@ def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
     return X, comps
 
 
+def _ordered_dprime_design(config, off, N):
+    """mixture with dprime > dprime2 on the old items' average: dprime's pivot coefficient is
+    (exp(gap) + xbar2' b2 - sum_{j != pivot} xbar1_j b1_j) / xbar1_pivot, so X1 b1 is linear in
+    the free dprime coefficients, the dprime2 coefficients and exp(gap) (the gap enters the map
+    through exp, see _Super.bexp)."""
+    pcs = config.get("params") or {}
+    X1 = np.asarray(pcs["dprime"]["X"], dtype=float).reshape(N, -1)
+    X2 = np.asarray(pcs["dprime2"]["X"], dtype=float).reshape(N, -1)
+    piv = int(config["dprime_pivot"]) - 1
+    x1 = np.asarray(config["dprime_xbar"], dtype=float).reshape(-1)
+    x2 = np.asarray(config["dprime2_xbar"], dtype=float).reshape(-1)
+    cols, flats, k = [], [], 0
+    for j in range(X1.shape[1]):
+        if j == piv:
+            continue
+        k += 1
+        cols.append(X1[:, j] - X1[:, piv] * x1[j] / x1[piv])
+        flats.append(_beta_site(off, None, [(f"beta_dprime_free[{k}]", None), ("beta_dprime_free", (k - 1,))]))
+    for j in range(X2.shape[1]):
+        cols.append(X1[:, piv] * x2[j] / x1[piv])
+        flats.append(_beta_site(off, None, [(f"beta_dprime2[{j + 1}]", None), ("beta_dprime2", (j,))]))
+    cols.append(X1[:, piv] / x1[piv])
+    flats.append(off["dprime_order_loggap"][0].start)
+    return np.stack(cols, 1), flats
+
+
+_OLD_ONLY = ("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B", "discrim", "discrim_B",
+             "sigma_B", "sigma2_B", "rho", "rho_B", "lambda2", "lambda2_B")
+_NEW_ONLY = ("dprime_L", "sigma_L", "lambda_L", "rho_N")
+
+
+def _param_rows(config, param, N):
+    """The observations a parameter enters the likelihood through (old items for the signal
+    parameters, new items for the lure ones), or None for all: a group's effects trade off
+    with the population coefficients on those rows only."""
+    if config.get("family") in ("cumulative", "bivariate_cumulative", "source_mixture"):
+        return None
+    if param not in _OLD_ONLY and param not in _NEW_ONLY:
+        return None
+    if config.get("item_type") is not None:
+        old = np.asarray(config["item_type"], dtype=int).reshape(-1) != 1
+    elif config.get("is_old") is not None:
+        io = np.asarray(config["is_old"], dtype=float).reshape(-1)
+        old = io == io.max()
+    else:
+        return None
+    if len(old) != N:
+        return None
+    return old if param in _OLD_ONLY else ~old
+
+
 def _proj_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched, index, n):
     """How a change of the population coefficients moves each group's effects: within every
     group, the least-squares projection of the (centred) population design onto the term's
@@ -359,8 +407,11 @@ def _proj_map(config, conf, param, off, n_thresh, mid, gap_prefix, batched, inde
     act = np.zeros((n, R), bool)
     order = np.argsort(index, kind="stable")
     bounds = np.searchsorted(index[order], np.arange(n + 1))
+    used = _param_rows(config, param, N)
     for g in range(n):
         rows = order[bounds[g]:bounds[g + 1]]
+        if used is not None:
+            rows = rows[used[rows]]
         if not len(rows):
             continue
         act[g] = np.any(Zc[rows] != 0.0, 0)
@@ -413,6 +464,7 @@ class _Super:
             for f in flats:
                 pos.setdefault(f, len(bf) + len(pos))
         self.bdims, self.bflat = np.array(bd, int), np.array(bf + list(pos), int)
+        self.bexp = np.zeros(len(self.bflat), bool)
         self.gdims = np.array([d for d, _, _ in gp], int)
         self.gW = np.zeros((len(gp), self.n, len(self.bflat)))
         for i, (_, flats, W) in enumerate(gp):
@@ -523,25 +575,32 @@ def _supers(config, off, split=False):
                 else:
                     n_comp = int(config["K2"]) - 1
             if n_comp is not None and nt == n_comp * R:
+                rb = (_varying_row_bins(config) if mp == "criterion2" and config.get("varying_source_criteria")
+                      else None)
+                nth2 = (int(config["K2"]) - 1) if rb is not None else 1
                 for k in range(n_comp):
+                    zk = Zc if rb is None else Zc * (rb == k // nth2)[:, None]
                     for r in range(R):
-                        B.slots[o + k * R + r] = (mp, k, Zc[:, r].tobytes())
-                        B.zcol[o + k * R + r] = Zc[:, r]
+                        B.slots[o + k * R + r] = (mp, k, zk[:, r].tobytes())
+                        B.zcol[o + k * R + r] = zk[:, r]
             elif nt == R:
                 for r in range(R):
                     B.slots[o + r] = (mp, 0, Zc[:, r].tobytes())
                     B.zcol[o + r] = Zc[:, r]
             if mp == "criterion2" and config.get("varying_source_criteria"):
-                B.bpairs += [(o + d, f) for d, f in _fixed_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas)]
+                bp, gp = _proj_map_varying(config, m, off, gap_prefix, B.index, B.n)
             else:
                 bp, gp = _proj_map(config, m, mp, off, n_thresh, mid, gap_prefix, batched_betas, B.index, B.n)
-                B.bpairs += [(o + d, f) for d, f in bp]
-                B.gpairs += [(o + d, flats, W) for d, flats, W in gp]
+            B.bpairs += [(o + d, f) for d, f in bp]
+            B.gpairs += [(o + d, flats, W) for d, flats, W in gp]
             o += nt
         if o != B.dim:
             continue
         by_group.setdefault((B.prefix if split else conf["group"], B.n), []).append(B)
     sbs = sorted((_Super(key[0], bl) for key, bl in by_group.items()), key=lambda s: s.n)
+    if "dprime_order_loggap" in off:
+        for sb in sbs:
+            sb.bexp = sb.bflat == off["dprime_order_loggap"][0].start
     # links: a later block's effects on (param, component) answer to an earlier block's effects on the
     # same (param, component): within each later group, the earlier effects' per-row contributions are
     # projected onto the later block's columns for that component (an intercept takes the mean over the
@@ -915,7 +974,9 @@ class TMap:
             index, Dout, links, order = sb.kept_index, len(sb.kept_nat), sb.links_kept, kept
         delta, coupled = jnp.zeros((Dout, sb.n), dtype=v.dtype), False
         if len(sb.bflat):
-            db = v[sb.bflat] - an["bref"]
+            vb = v[sb.bflat]
+            db = (jnp.where(jnp.asarray(sb.bexp), jnp.exp(vb) - jnp.exp(an["bref"]), vb - an["bref"])
+                  if sb.bexp.any() else vb - an["bref"])
             sel = np.nonzero(index[sb.bdims] >= 0)[0]
             if sel.size:
                 delta, coupled = delta.at[index[sb.bdims[sel]]].add(db[sel][:, None]), True

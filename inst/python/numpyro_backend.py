@@ -3489,15 +3489,20 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
             log_lik = log_lik * counts
         return log_lik
 
-    if family_name == "mixture" and lambda_val is not None and has_fused_inputs:
+    if family_name == "mixture" and has_fused_inputs and (lambda_val is not None or lambda_L is not None):
         _dprime2 = dprime2 if dprime2 is not None else jnp.zeros(N)
         _sigma2 = sigma2 if sigma2 is not None else jnp.ones(N)
         mu1_rows = is_old * mu_signal
         mu2_rows = _dprime2 - (1.0 - is_old) * mu_signal
 
-        def old_ll(i):
-            return fused_loglik_mixture(y[i], K, mu1_rows[i], sd_signal[i], mu2_rows[i], _sigma2[i], lambda_val[i],
-                                        thresh_mid[i], _gap_rows(log_gaps, i), gap_link, link_name=link_name)
+        if lambda_val is not None:
+            def old_ll(i):
+                return fused_loglik_mixture(y[i], K, mu1_rows[i], sd_signal[i], mu2_rows[i], _sigma2[i], lambda_val[i],
+                                            thresh_mid[i], _gap_rows(log_gaps, i), gap_link, link_name=link_name)
+        else:
+            def old_ll(i):
+                return fused_loglik_simple(y[i], K, mu1_rows[i], sd_signal[i], thresh_mid[i],
+                                           _gap_rows(log_gaps, i), gap_link, link_name=link_name)
 
         if dprime_L is not None and lambda_L is not None:
             sd_L_val = sigma_L if sigma_L is not None else jnp.ones(N)
@@ -4013,26 +4018,33 @@ def sdt_model(config):
                 if isinstance(dp2_col_names, str):
                     dp2_col_names = [dp2_col_names]
 
-                beta_dp = jnp.zeros(n_coef_dp)
-                beta_dp2 = jnp.zeros(n_coef_dp)
-                for j in range(n_coef_dp):
-                    cname = dp_col_names[j] if j < len(dp_col_names) else f"V{j+1}"
-                    dp_prior = parse_prior(dp_priors.get(cname, "normal(1, 1)"))
+                n_coef_dp2 = dp2_conf["n_coef"]
+                pivot = int(config["dprime_pivot"]) - 1
+                xbar1 = jnp.asarray(np.asarray(config["dprime_xbar"], dtype=np.float64).reshape(-1), dtype=_FLOAT)
+                xbar2 = jnp.asarray(np.asarray(config["dprime2_xbar"], dtype=np.float64).reshape(-1), dtype=_FLOAT)
+                beta_dp2 = jnp.zeros(n_coef_dp2)
+                for j in range(n_coef_dp2):
                     cname2 = dp2_col_names[j] if j < len(dp2_col_names) else f"V{j+1}"
                     dp2_prior = parse_prior(dp2_priors.get(cname2, "normal(0, 1)"))
-
-                    val_lo = numpyro.sample(f"beta_dprime2[{j+1}]", dp2_prior)
-                    raw_gap = numpyro.sample(
-                        f"beta_dprime_loggap[{j+1}]",
-                        dist.ImproperUniform(dist.constraints.real, (), ()))
-                    gap = jnp.exp(raw_gap)
-                    numpyro.factor(f"beta_dprime_loggap_jac[{j+1}]", raw_gap)
-                    val_hi = numpyro.deterministic(f"beta_dprime[{j+1}]", val_lo + gap)
-                    numpyro.factor(f"beta_dprime_prior[{j+1}]",
-                                   dp_prior.log_prob(val_hi))
-
-                    beta_dp2 = beta_dp2.at[j].set(val_lo)
-                    beta_dp = beta_dp.at[j].set(val_hi)
+                    beta_dp2 = beta_dp2.at[j].set(numpyro.sample(f"beta_dprime2[{j+1}]", dp2_prior))
+                beta_dp = jnp.zeros(n_coef_dp)
+                k_free = 0
+                for j in range(n_coef_dp):
+                    if j == pivot:
+                        continue
+                    k_free += 1
+                    cname = dp_col_names[j] if j < len(dp_col_names) else f"V{j+1}"
+                    beta_dp = beta_dp.at[j].set(numpyro.sample(
+                        f"beta_dprime_free[{k_free}]", parse_prior(dp_priors.get(cname, "normal(1, 1)"))))
+                raw_gap = numpyro.sample("dprime_order_loggap",
+                                         dist.ImproperUniform(dist.constraints.real, (), ()))
+                numpyro.factor("dprime_order_loggap_jac", raw_gap)
+                piv_val = (jnp.exp(raw_gap) + xbar2 @ beta_dp2 - xbar1 @ beta_dp) / xbar1[pivot]
+                beta_dp = beta_dp.at[pivot].set(piv_val)
+                cpiv = dp_col_names[pivot] if pivot < len(dp_col_names) else f"V{pivot+1}"
+                numpyro.factor("beta_dprime_pivot_prior", parse_prior(dp_priors.get(cpiv, "normal(1, 1)")).log_prob(piv_val))
+                for j in range(n_coef_dp):
+                    numpyro.deterministic(f"beta_dprime[{j+1}]", beta_dp[j])
 
                 param_values["dprime"] = X_dp @ beta_dp
                 param_values["dprime2"] = X_dp2 @ beta_dp2
@@ -4701,27 +4713,30 @@ def sdt_model(config):
 
         if varying_source:
             pv2 = config.get("prior_vary2") or {}
-            v2_mid = pv2.get("mid", prior_thresh_mid2)
-            v2_gaps = pv2.get("gaps", [prior_log_gaps2] * n_gaps2)
-            if isinstance(v2_gaps, str):
-                v2_gaps = [v2_gaps]
             vbin = config.get("vbin")
             n_vbin = int(config.get("n_vbin", K))
-            beta_thresh_mid_2 = numpyro.sample(
-                "beta_thresh_mid_2_varying",
-                parse_prior(v2_mid).expand([n_vbin]))
+            n_vcell = int(config.get("n_vcell", 1))
+            n_vset = n_vbin * n_vcell
+            v2_mid = pv2.get("mid", prior_thresh_mid2)
+            v2_mid = [v2_mid] * n_vset if isinstance(v2_mid, str) else list(v2_mid)
+            v2_gaps = pv2.get("gaps", [[prior_log_gaps2] * n_gaps2] * n_vset)
+            v2_gaps = [[g] if isinstance(g, str) else list(g) for g in v2_gaps]
+            beta_thresh_mid_2 = _grid_sample("beta_thresh_mid_2_varying", v2_mid, (n_vset,))
 
             if n_gaps2 > 0:
                 gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
-                beta_log_gaps_2 = _grid_sample(gap2_name, [list(v2_gaps) for _ in range(n_vbin)], (n_vbin, n_gaps2))
+                beta_log_gaps_2 = _grid_sample(gap2_name, v2_gaps, (n_vset, n_gaps2))
             else:
                 beta_log_gaps_2 = None
 
             y1_idx = y - 1 if vbin is None else jnp.asarray(np.asarray(vbin, dtype=np.int32).reshape(-1) - 1)[y - 1]
+            set_idx = y1_idx
+            if n_vcell > 1:
+                set_idx = y1_idx + n_vbin * (jnp.asarray(np.asarray(config["vcell"], dtype=np.int32).reshape(-1)) - 1)
 
-            thresh2_mid_per_obs = beta_thresh_mid_2[y1_idx]
+            thresh2_mid_per_obs = beta_thresh_mid_2[set_idx]
             if beta_log_gaps_2 is not None:
-                log_gaps2_per_obs = beta_log_gaps_2[y1_idx].T
+                log_gaps2_per_obs = beta_log_gaps_2[set_idx].T
             else:
                 log_gaps2_per_obs = jnp.zeros((0, N))
 
@@ -4759,30 +4774,6 @@ def sdt_model(config):
             thresh2 = build_thresholds_vectorized(thresh2_mid_per_obs, log_gaps2_per_obs, n_thresh2, gap_link=gap_link)
             _t2_mid_fused = thresh2_mid_per_obs
             _t2_gaps_fused = log_gaps2_per_obs
-
-            new_source_mode = config.get("new_source_criteria")
-            if new_source_mode == "shared":
-                c2_new_mid = numpyro.sample("beta_thresh_mid_2_new",
-                                            parse_prior(v2_mid))
-                if n_gaps2 > 0:
-                    gap2_new_name = "beta_raw_gaps_2_new" if gap_link == "softplus" else "beta_log_gaps_2_new"
-                    c2_new_gaps = _grid_sample(gap2_new_name, list(v2_gaps), (n_gaps2,))
-                else:
-                    c2_new_gaps = jnp.zeros(0)
-                thresh2_new = build_thresholds(c2_new_mid, c2_new_gaps, n_thresh2, gap_link=gap_link)
-
-                is_new_response_arr = jnp.array(config["is_new_response"], dtype=jnp.int32)
-                is_new_resp = (is_new_response_arr[y - 1] == 1)
-                thresh2 = jnp.where(is_new_resp[:, None],
-                                    jnp.broadcast_to(thresh2_new[None, :], (N, n_thresh2)),
-                                    thresh2)
-                if _t2_mid_fused is not None:
-                    _t2_mid_fused = jnp.where(is_new_resp, c2_new_mid, _t2_mid_fused)
-                    if n_gaps2 > 0:
-                        _t2_gaps_fused = jnp.where(
-                            is_new_resp[None, :],
-                            jnp.broadcast_to(c2_new_gaps[:, None], (n_gaps2, N)),
-                            _t2_gaps_fused)
 
         elif "criterion2" in params_config:
             c2_conf = params_config["criterion2"]

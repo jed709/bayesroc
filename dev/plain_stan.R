@@ -824,68 +824,6 @@
       }
     }
 
-    if (identical(model_data$new_source_criteria, "shared")) {
-      if (!isTRUE(model_data$bounded)) {
-        lines <- c(lines, '
-  // Varying source criteria with shared new-response thresholds
-  real bivariate_sdt_varying_new_shared_lpmf_custom(int y1, int y2, int item_type, int K1, int K2,
-                          real dprime_A, real dprime_B, real discrim_A, real discrim_B,
-                          real sigma1_A, real sigma1_B, real sigma2_A, real sigma2_B,
-                          real rho_A, real rho_B, real rho_N,
-                          vector c1, matrix c2_varying, vector c2_new,
-                          array[] int is_new_response) {
-    real mu1; real mu2; real sigma1; real sigma2; real rho;
-    if (item_type == 1) {
-      mu1 = 0; mu2 = 0; sigma1 = 1; sigma2 = 1; rho = rho_N;
-    } else if (item_type == 2) {
-      mu1 = dprime_A; mu2 = discrim_A; sigma1 = sigma1_A; sigma2 = sigma2_A; rho = rho_A;
-    } else {
-      mu1 = dprime_B; mu2 = discrim_B; sigma1 = sigma1_B; sigma2 = sigma2_B; rho = rho_B;
-    }
-    vector[K2-1] c2;
-    if (is_new_response[y1] == 1) {
-      c2 = c2_new;
-    } else {
-      c2 = to_vector(c2_varying[y1, ]);
-    }
-    real p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    return log(fmax(p, 1e-300));
-  }')
-      } else {
-        lines <- c(lines, '
-  // Bounded varying source criteria with shared new-response thresholds
-  real bivariate_sdt_varying_bounded_new_shared_lpmf_custom(int y1, int y2, int item_type, int K1, int K2,
-                          real dprime_A, real dprime_B, real discrim_A, real discrim_B,
-                          real sigma1_A, real sigma1_B, real sigma2_A, real sigma2_B,
-                          real rho_A, real rho_B, real rho_N,
-                          vector c1, matrix c2_varying, vector c2_new,
-                          array[] int is_new_response) {
-    real mu1; real mu2; real sigma1; real sigma2; real rho;
-    if (item_type == 1) {
-      mu1 = 0; mu2 = 0; sigma1 = 1; sigma2 = 1; rho = rho_N;
-    } else if (item_type == 2) {
-      // Source A on negative source axis; bounded convention.
-      mu1 = dprime_A; mu2 = -discrim_A; sigma1 = sigma1_A; sigma2 = sigma2_A; rho = -rho_A;
-    } else {
-      // Source B on positive source axis.
-      mu1 = dprime_B; mu2 = discrim_B; sigma1 = sigma1_B; sigma2 = sigma2_B; rho = rho_B;
-    }
-    vector[K2-1] c2;
-    if (is_new_response[y1] == 1) {
-      c2 = c2_new;
-    } else {
-      c2 = to_vector(c2_varying[y1, ]);
-    }
-    real p;
-    if (item_type == 1) {
-      p = compute_bivariate_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    } else {
-      p = compute_bounded_prob(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-    }
-    return log(fmax(p, 1e-300));
-  }')
-      }
-    }
   }
 
   if (family_name == "bivariate_dp") {
@@ -1026,62 +964,6 @@
       }))
     }
 
-    if (identical(model_data$new_source_criteria, "shared")) {
-      lines <- c(lines, sprintf('
-  // Bivariate DP with varying source criteria + shared new-response thresholds
-  real bivariate_dp_varying_new_shared_lpmf_custom(int y1, int y2, int item_type, int K1, int K2,
-                          real dprime_A, real dprime_B, real discrim_A, real discrim_B,
-                          real sigma1_A, real sigma1_B, real sigma2_A, real sigma2_B,
-                          real rho_A, real rho_B, real rho_N,
-                          real R_I, real R_S, real R_I_B, real R_S_B,
-                          vector c1, matrix c2_varying, vector c2_new,
-                          array[] int is_new_response) {
-    // Select source thresholds based on detection RESPONSE (not item type)
-    vector[K2-1] c2;
-    if (is_new_response[y1] == 1) {
-      c2 = c2_new;
-    } else {
-      c2 = to_vector(c2_varying[y1, ]);
-    }
-
-    if (item_type == 1) {
-      real p = compute_bivariate_prob(y1, y2, K1, K2, 0.0, 0.0, 1.0, 1.0, c1, c2, rho_N);
-      return log(fmax(p, 1e-300));
-    }
-
-    real mu1; real mu2; real sigma1; real sigma2; real rho;
-    real R_I_eff; real R_S_eff;
-    if (item_type == 2) {
-      %s
-      R_I_eff = R_I; R_S_eff = R_S;
-    } else {
-      %s
-      R_I_eff = R_I_B; R_S_eff = R_S_B;
-    }
-
-    real p1 = (1.0 - R_I_eff) * %s(y1, y2, K1, K2, mu1, mu2, sigma1, sigma2, c1, c2, rho);
-
-    real p2 = 0.0;
-    if (y1 == K1) {%s
-    }
-
-    real p3 = 0.0;
-    if (y1 == K1) {
-      // Recollection success cells (new convention): Source A items at the
-      // low end of the source axis (y2 = 1, "sure A"); Source B items at the
-      // high end (y2 = K2, "sure B").
-      if (item_type == 2 && y2 == 1) p3 = R_I_eff * R_S_eff;
-      else if (item_type == 3 && y2 == K2) p3 = R_I_eff * R_S_eff;
-    }
-
-    return log(fmax(p1 + p2 + p3, 1e-300));
-  }', dp_src_A, dp_src_B, biv_fn,
-      if (bounded) {
-        '\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);'
-      } else {
-        '\n      p2 = R_I_eff * (1.0 - R_S_eff) * univariate_cell_prob(y2, K2, mu2, sigma2, c2);'
-      }))
-    }
   }
 
   if (family_name == "bivariate_cumulative") {
@@ -1513,15 +1395,12 @@ build_reduce_sum_args <- function(model_data, family) {
       add("vector beta_thresh_mid_2_varying", "beta_thresh_mid_2_varying")
       add("matrix beta_log_gaps_2_varying", "beta_log_gaps_2_varying")
       add("data array[] int vbin", "vbin")
+      add("data int n_vbin", "n_vbin")
+      add("data array[] int vcell", "vcell")
       if (.has_crit2_cov(model_data)) {
         add("data matrix X_criterion2_cov", "X_criterion2_cov")
         add("vector beta_thresh_mid_2_cov", "beta_thresh_mid_2_cov")
         add("matrix beta_log_gaps_2_cov", "beta_log_gaps_2_cov")
-      }
-      if (identical(model_data$new_source_criteria, "shared")) {
-        add("real beta_thresh_mid_2_new", "beta_thresh_mid_2_new")
-        add("vector beta_log_gaps_2_new", "beta_log_gaps_2_new")
-        add("data array[] int is_new_response", "is_new_response")
       }
     } else {
       add("data matrix X_criterion2", "X_criterion2")
@@ -1695,11 +1574,11 @@ generate_likelihood_code <- function(model_data, family_name) {
 generate_bivariate_cumulative_likelihood_code <- function(model_data) {
   lines <- character(0)
 
-  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
+  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
 
-  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
+  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random, model_data$smooth_data[["discrim"]]))
 
-  lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random))
+  lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random, model_data$smooth_data[["rho"]]))
   lines <- c(lines, "    real rho_val = tanh(rho_n);  // Fisher z to correlation")
 
   lines <- c(lines, generate_thresh_code_bivariate(model_data, 1))
@@ -1722,19 +1601,19 @@ generate_bivariate_cumulative_likelihood_code <- function(model_data) {
 generate_bivariate_likelihood_code <- function(model_data) {
   lines <- character(0)
   
-  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
+  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
   
   if (isTRUE(model_data$has_dprime_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("dprime_B", model_data$dprime_B_fixed, model_data$dprime_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("dprime_B", model_data$dprime_B_fixed, model_data$dprime_B_random, model_data$smooth_data[["dprime_B"]]))
     lines <- c(lines, "    real dprime_B_val = dprime_B_n;")
   } else {
     lines <- c(lines, "    real dprime_B_val = dprime_n;  // constrained equal to dprime")
   }
   
-  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
+  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random, model_data$smooth_data[["discrim"]]))
   
   if (isTRUE(model_data$has_discrim_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random, model_data$smooth_data[["discrim_B"]]))
     lines <- c(lines, "    real discrim_B_val = discrim_B_n;")
   } else if (isTRUE(model_data$bounded)) {
     lines <- c(lines, "    real discrim_B_val = discrim_n;  // bounded symmetric: same magnitude")
@@ -1743,14 +1622,14 @@ generate_bivariate_likelihood_code <- function(model_data) {
   }
   
   if (isTRUE(model_data$has_sigma)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random, model_data$smooth_data[["sigma"]]))
     lines <- c(lines, "    real sigma1_A_val = exp(sigma_n);")
   } else {
     lines <- c(lines, "    real sigma1_A_val = 1;  // fixed")
   }
   
   if (isTRUE(model_data$has_sigma_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma_B", model_data$sigma_B_fixed, model_data$sigma_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma_B", model_data$sigma_B_fixed, model_data$sigma_B_random, model_data$smooth_data[["sigma_B"]]))
     lines <- c(lines, "    real sigma1_B_val = exp(sigma_B_n);")
   } else if (isTRUE(model_data$has_sigma)) {
     lines <- c(lines, "    real sigma1_B_val = sigma1_A_val;  // constrained equal to sigma")
@@ -1759,14 +1638,14 @@ generate_bivariate_likelihood_code <- function(model_data) {
   }
   
   if (isTRUE(model_data$has_sigma2)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random, model_data$smooth_data[["sigma2"]]))
     lines <- c(lines, "    real sigma2_A_val = exp(sigma2_n);")
   } else {
     lines <- c(lines, "    real sigma2_A_val = 1;  // fixed")
   }
   
   if (isTRUE(model_data$has_sigma2_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma2_B", model_data$sigma2_B_fixed, model_data$sigma2_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma2_B", model_data$sigma2_B_fixed, model_data$sigma2_B_random, model_data$smooth_data[["sigma2_B"]]))
     lines <- c(lines, "    real sigma2_B_val = exp(sigma2_B_n);")
   } else if (isTRUE(model_data$has_sigma2)) {
     lines <- c(lines, "    real sigma2_B_val = sigma2_A_val;  // constrained equal to sigma2")
@@ -1774,11 +1653,11 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, "    real sigma2_B_val = 1;  // fixed")
   }
   
-  lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random))
+  lines <- c(lines, generate_param_lp_bivariate("rho", model_data$rho_fixed, model_data$rho_random, model_data$smooth_data[["rho"]]))
   lines <- c(lines, "    real rho_A_val = tanh(rho_n);  // Fisher z to correlation")
   
   if (isTRUE(model_data$has_rho_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("rho_B", model_data$rho_B_fixed, model_data$rho_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("rho_B", model_data$rho_B_fixed, model_data$rho_B_random, model_data$smooth_data[["rho_B"]]))
     lines <- c(lines, "    real rho_B_val = tanh(rho_B_n);")
   } else if (isTRUE(model_data$bounded)) {
     lines <- c(lines, "    real rho_B_val = rho_A_val;  // bounded symmetric: same magnitude")
@@ -1787,7 +1666,7 @@ generate_bivariate_likelihood_code <- function(model_data) {
   }
   
   if (isTRUE(model_data$has_rho_N)) {
-    lines <- c(lines, generate_param_lp_bivariate("rho_N", model_data$rho_N_fixed, model_data$rho_N_random))
+    lines <- c(lines, generate_param_lp_bivariate("rho_N", model_data$rho_N_fixed, model_data$rho_N_random, model_data$smooth_data[["rho_N"]]))
     lines <- c(lines, "    real rho_N_val = tanh(rho_N_n);")
   } else {
     lines <- c(lines, "    real rho_N_val = 0;  // fixed at 0 for new items")
@@ -1803,21 +1682,7 @@ generate_bivariate_likelihood_code <- function(model_data) {
     lines <- c(lines, generate_thresh_code_bivariate(model_data, 2))
   }
 
-  new_shared <- identical(model_data$new_source_criteria, "shared")
 
-  if (new_shared) {
-    lines <- c(lines,
-      "    // Shared source thresholds for new items (mid-anchor)",
-      "    vector[K2-1] thresh2_new;",
-      "    thresh2_new[mid_thresh2] = beta_thresh_mid_2_new;",
-      "    for (k2 in (mid_thresh2+1):(K2-1)) {",
-      "      thresh2_new[k2] = thresh2_new[k2-1] + exp(beta_log_gaps_2_new[k2 - mid_thresh2]);",
-      "    }",
-      "    for (k2_down in 1:(mid_thresh2-1)) {",
-      "      int k2 = mid_thresh2 - k2_down;",
-      "      thresh2_new[k2] = thresh2_new[k2+1] - exp(beta_log_gaps_2_new[K2 - 1 - mid_thresh2 + k2_down]);",
-      "    }")
-  }
 
   has_counts <- isTRUE(model_data$has_counts)
   bounded <- isTRUE(model_data$bounded)
@@ -1859,13 +1724,7 @@ generate_bivariate_likelihood_code <- function(model_data) {
     }
   }
 
-  if (new_shared && bounded) {
-    lpmf_name <- "bivariate_sdt_varying_bounded_new_shared_lpmf_custom"
-    thresh_arg <- "thresh1, thresh2_varying, thresh2_new, is_new_response"
-  } else if (new_shared) {
-    lpmf_name <- "bivariate_sdt_varying_new_shared_lpmf_custom"
-    thresh_arg <- "thresh1, thresh2_varying, thresh2_new, is_new_response"
-  } else if (varying_source_criteria && bounded) {
+  if (varying_source_criteria && bounded) {
     lpmf_name <- "bivariate_sdt_varying_bounded_lpmf_custom"
     thresh_arg <- "thresh1, thresh2_varying"
   } else if (varying_source_criteria) {
@@ -1907,21 +1766,21 @@ generate_bivariate_dp_likelihood_code <- function(model_data) {
     lines <- lines[1:(remove_start - 1)]
   }
 
-  lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random))
+  lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random, model_data$smooth_data[["lambda"]]))
   lines <- c(lines, "    real R_I = inv_logit(lambda_n);")
 
   if (isTRUE(model_data$has_lambda_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("lambda_B", model_data$lambda_B_fixed, model_data$lambda_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("lambda_B", model_data$lambda_B_fixed, model_data$lambda_B_random, model_data$smooth_data[["lambda_B"]]))
     lines <- c(lines, "    real R_I_B = inv_logit(lambda_B_n);")
   } else {
     lines <- c(lines, "    real R_I_B = R_I;  // constrained equal to lambda")
   }
 
-  lines <- c(lines, generate_param_lp_bivariate("lambda2", model_data$lambda2_fixed, model_data$lambda2_random))
+  lines <- c(lines, generate_param_lp_bivariate("lambda2", model_data$lambda2_fixed, model_data$lambda2_random, model_data$smooth_data[["lambda2"]]))
   lines <- c(lines, "    real R_S = inv_logit(lambda2_n);")
 
   if (isTRUE(model_data$has_lambda2_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("lambda2_B", model_data$lambda2_B_fixed, model_data$lambda2_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("lambda2_B", model_data$lambda2_B_fixed, model_data$lambda2_B_random, model_data$smooth_data[["lambda2_B"]]))
     lines <- c(lines, "    real R_S_B = inv_logit(lambda2_B_n);")
   } else {
     lines <- c(lines, "    real R_S_B = R_S;  // constrained equal to lambda2")
@@ -1929,12 +1788,8 @@ generate_bivariate_dp_likelihood_code <- function(model_data) {
 
   has_counts <- isTRUE(model_data$has_counts)
   varying <- isTRUE(model_data$varying_source_criteria)
-  new_shared <- identical(model_data$new_source_criteria, "shared")
 
-  if (new_shared) {
-    lpmf_name <- "bivariate_dp_varying_new_shared_lpmf_custom"
-    thresh_arg <- "thresh1, thresh2_varying, thresh2_new, is_new_response"
-  } else if (varying) {
+  if (varying) {
     lpmf_name <- "bivariate_dp_varying_lpmf_custom"
     thresh_arg <- "thresh1, thresh2_varying"
   } else {
@@ -2065,34 +1920,34 @@ generate_vrdp2d_likelihood_code <- function(model_data) {
   
   varying_source_criteria <- isTRUE(model_data$varying_source_criteria)
   
-  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random))
+  lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
   lines <- c(lines, "    real dprime_F = dprime_n;")
   
-  lines <- c(lines, generate_param_lp_bivariate("dprime2", model_data$dprime2_fixed, model_data$dprime2_random))
+  lines <- c(lines, generate_param_lp_bivariate("dprime2", model_data$dprime2_fixed, model_data$dprime2_random, model_data$smooth_data[["dprime2"]]))
   lines <- c(lines, "    real dprime_R = dprime2_n;")
   
-  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random))
+  lines <- c(lines, generate_param_lp_bivariate("discrim", model_data$discrim_fixed, model_data$discrim_random, model_data$smooth_data[["discrim"]]))
   lines <- c(lines, "    real dprime_S = discrim_n;")
   
   if (isTRUE(model_data$has_discrim_B)) {
-    lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random))
+    lines <- c(lines, generate_param_lp_bivariate("discrim_B", model_data$discrim_B_fixed, model_data$discrim_B_random, model_data$smooth_data[["discrim_B"]]))
     lines <- c(lines, "    real dprime_S_B = discrim_B_n;")
   } else {
     lines <- c(lines, "    real dprime_S_B = -dprime_S;  // symmetric: d'_S_B = -d'_S")
   }
   
-  lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random))
+  lines <- c(lines, generate_param_lp_bivariate("lambda", model_data$lambda_fixed, model_data$lambda_random, model_data$smooth_data[["lambda"]]))
   lines <- c(lines, "    real R = inv_logit(lambda_n);")
   
   if (isTRUE(model_data$has_sigma)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma", model_data$sigma_fixed, model_data$sigma_random, model_data$smooth_data[["sigma"]]))
     lines <- c(lines, "    real sigma_item = exp(sigma_n);")
   } else {
     lines <- c(lines, "    real sigma_item = 1;  // fixed")
   }
   
   if (isTRUE(model_data$has_sigma2)) {
-    lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random))
+    lines <- c(lines, generate_param_lp_bivariate("sigma2", model_data$sigma2_fixed, model_data$sigma2_random, model_data$smooth_data[["sigma2"]]))
     lines <- c(lines, "    real sigma_S = exp(sigma2_n);")
   } else {
     lines <- c(lines, "    real sigma_S = 1;  // fixed")
@@ -2196,15 +2051,15 @@ generate_thresh_code_vrdp2d_varying <- function(model_data) {
     "    // Source thresholds varying by item response (mid-anchor)",
     "    matrix[K1, K2-1] thresh2_varying;",
     "    for (k1 in 1:K1) {",
-    sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[vbin[k1]]%s;",
+    sprintf("      thresh2_varying[k1, mid_thresh2] = beta_thresh_mid_2_varying[vbin[k1] + n_vbin * (vcell[n] - 1)]%s;",
             plus(mid_terms)),
     "      for (k2 in (mid_thresh2+1):(K2-1)) {",
-    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[vbin[k1], k2-mid_thresh2]%s);",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2-1] + exp(beta_log_gaps_2_varying[vbin[k1] + n_vbin * (vcell[n] - 1), k2-mid_thresh2]%s);",
             plus(up_terms)),
     "      }",
     "      for (k2_down in 1:(mid_thresh2-1)) {",
     "        int k2 = mid_thresh2 - k2_down;",
-    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[vbin[k1], K2-1-mid_thresh2+k2_down]%s);",
+    sprintf("        thresh2_varying[k1, k2] = thresh2_varying[k1, k2+1] - exp(beta_log_gaps_2_varying[vbin[k1] + n_vbin * (vcell[n] - 1), K2-1-mid_thresh2+k2_down]%s);",
             plus(down_terms)),
     "      }",
     "    }"
@@ -2345,7 +2200,7 @@ generate_thresh_code_bivariate <- function(model_data, dimension) {
 
 #' Generate parameter linear predictor for bivariate SDT (no is_old branching)
 #' @noRd
-generate_param_lp_bivariate <- function(param_name, fixed_info, random_info) {
+generate_param_lp_bivariate <- function(param_name, fixed_info, random_info, smooth_info = NULL) {
   lines <- character(0)
   
   has_fixed <- !is.null(fixed_info) && fixed_info$n_coef > 0
@@ -2383,6 +2238,15 @@ generate_param_lp_bivariate <- function(param_name, fixed_info, random_info) {
     }
   }
 
+
+  for (sm in smooth_info) {
+    for (comp in sm$components) {
+      for (k in seq_along(comp$Zs_list)) {
+        lines <- c(lines, sprintf("    %s_n += Zs_%s_%s_%d[n, ] * s_%s_%s_%d;", param_name, param_name,
+                                  comp$san_label, k, param_name, comp$san_label, k))
+      }
+    }
+  }
   lines
 }
 

@@ -56,7 +56,7 @@
 #'
 #' @examples
 #' # Prior on all d' fixed effects
-#' broc_prior("normal(1, 1)", class = "b", dpar = "dprime")
+#' broc_prior("normal(1.5, 0.75)", class = "b", dpar = "dprime")
 #' 
 #' # Prior on specific d' coefficient
 #' broc_prior("normal(2, 0.5)", class = "b", dpar = "dprime", coef = "conditionread")
@@ -228,51 +228,6 @@ print.broc_prior_list <- function(x, ...) {
   invisible(x)
 }
 
-#' @noRd
-get_default_broc_priors <- function() {
-  data.frame(
-    class = c("b", "b", "b", "b", "b", "b", "b", "b", "b",
-              "b", "b", "b", "b", "b", "b", "b", "b",
-              "b", "b", "b",
-              "sd", "sd", "sd", "sd", "sd", "sd", "sd", "sd",
-              "sd", "sd", "sd", "sd", "sd", "sd", "sd", "sd",
-              "sd", "sd", "sd",
-              "cor"),
-    dpar = c("dprime", "sigma", "lambda", "dprime2", "sigma2", 
-             "dprime_B", "lambda_B",
-             "thresh_mid", "log_gaps",
-             "discrim", "discrim_B", "sigma_B", "sigma2_B",
-             "rho", "rho_B", "rho_N", "criterion2",
-             "dprime_L", "sigma_L", "lambda_L",
-             "dprime", "sigma", "lambda", "dprime2", "sigma2", 
-             "dprime_B", "lambda_B", "criterion",
-             "discrim", "discrim_B", "sigma_B", "sigma2_B",
-             "rho", "rho_B", "rho_N", "criterion2",
-             "dprime_L", "sigma_L", "lambda_L",
-             NA),
-    prior = c("normal(1, 1)", "normal(0, 0.5)", "normal(0, 1.5)", 
-              "normal(0, 1)", "normal(0, 0.5)", 
-              "normal(-1, 1)", "normal(0, 1.5)",
-              "normal(0, 1.5)", "normal(0, 1)",
-              "normal(0, 1)", "normal(0, 1)",
-              "normal(0, 0.5)", "normal(0, 0.5)",
-              "normal(0, 0.5)", "normal(0, 0.5)", "normal(0, 0.5)",
-              "normal(0, 1.5)",
-              "normal(0, 1)", "normal(0, 0.5)", "normal(0, 1.5)",
-              "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 0.5)", 
-              "normal(0, 0.5)", "normal(0, 0.3)", 
-              "normal(0, 0.5)", "normal(0, 0.5)",
-              "normal(0, 0.5)",
-              "normal(0, 0.5)", "normal(0, 0.5)",
-              "normal(0, 0.3)", "normal(0, 0.3)",
-              "normal(0, 0.3)", "normal(0, 0.3)", "normal(0, 0.3)",
-              "normal(0, 0.5)",
-              "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 0.5)",
-              "lkj_corr_cholesky(1)"),
-    stringsAsFactors = FALSE
-  )
-}
-
 #' Build Prior Lookup Structure
 #'
 #' Converts user priors into a lookup structure keyed by specificity; more
@@ -285,7 +240,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
   
   lookup <- list(
     b = list(
-      dprime = "normal(1, 1)",
+      dprime = "normal(1.5, 0.75)",
       sigma = "normal(0, 0.5)",
       lambda = "normal(0, 1.5)",
       dprime2 = "normal(0, 1)",
@@ -301,17 +256,13 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.5)",
       rho_B = "normal(0, 0.5)",
       rho_N = "normal(0, 0.5)",
-      rec = "normal(1, 1)",
-      fam = "normal(0, 1)",
-      sigma_R = "normal(0, 0.5)",
-      sigma_F = "normal(0, 0.5)",
       rec_crit = "normal(1.5, 1)",
       know_crit = "normal(1.0, 1)",
       dprime_L = "normal(0, 1)",
       sigma_L = "normal(0, 0.5)",
       lambda_L = "normal(0, 1.5)",
-      thresh_mid = "normal(0, 1.5)",
-      log_gaps = "normal(0, 1)",
+      thresh_mid = "normal(0.5, 0.75)",
+      log_gaps = "normal(-0.5, 0.5)",
       thresh_mid2 = "normal(0, 1.5)",
       log_gaps2 = "normal(0, 1)",
       criterion_scale = "normal(0, 0.5)",
@@ -337,10 +288,6 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.3)",
       rho_B = "normal(0, 0.3)",
       rho_N = "normal(0, 0.3)",
-      rec = "normal(0, 0.5)",
-      fam = "normal(0, 0.5)",
-      sigma_R = "normal(0, 0.3)",
-      sigma_F = "normal(0, 0.3)",
       rec_crit = "normal(0, 0.5)",
       know_crit = "normal(0, 0.3)",
       dprime_L = "normal(0, 0.5)",
@@ -355,6 +302,8 @@ build_prior_lookup <- function(user_priors, family = NULL) {
     sd_dpar_group = list(),
     sd_dpar_coef = list(),
     sd_dpar_group_coef = list(),
+    sd_group_coef = list(),
+    sd_coef = list(),
     
     cor = "lkj_corr_cholesky(1)",
     cor_dpar = list(),
@@ -363,7 +312,8 @@ build_prior_lookup <- function(user_priors, family = NULL) {
 
     sds = "student_t(3, 0, 2.5)",
     sds_dpar = list(),
-    sds_coef = list()
+    sds_coef = list(),
+    sds_label = list()
   )
   
   lookup$user_set <- list(
@@ -400,6 +350,10 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       } else if (!is.null(p$dpar) && !is.null(p$group)) {
         key <- paste0(p$dpar, "_", p$group)
         lookup$sd_dpar_group[[key]] <- p$prior
+      } else if (!is.null(p$group) && !is.null(p$coef)) {
+        lookup$sd_group_coef[[paste0(p$group, "_", p$coef)]] <- p$prior
+      } else if (!is.null(p$coef)) {
+        lookup$sd_coef[[p$coef]] <- p$prior
       } else if (!is.null(p$group)) {
         lookup$sd_group[[p$group]] <- p$prior
       } else if (!is.null(p$dpar)) {
@@ -424,13 +378,20 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       }
 
     } else if (p$class == "sds") {
-      if (!is.null(p$dpar) && !is.null(p$coef)) {
+      if (!is.null(p$group)) {
+        stop("class = \"sds\" priors (smooth penalty SDs) cannot take a group: smooths have no grouping factor.",
+             call. = FALSE)
+      }
+      if (is.null(p$dpar) && !is.null(p$coef)) {
+        lookup$sds_label[[p$coef]] <- p$prior
+      } else if (!is.null(p$dpar) && !is.null(p$coef)) {
         key <- paste0(p$dpar, "_", p$coef)
         lookup$sds_coef[[key]] <- p$prior
       } else if (!is.null(p$dpar)) {
         lookup$sds_dpar[[p$dpar]] <- p$prior
       } else {
         lookup$sds <- p$prior
+        lookup$user_set$sds <- TRUE
       }
     }
   }
@@ -443,6 +404,13 @@ build_prior_lookup <- function(user_priors, family = NULL) {
     for (k in setdiff(names(lookup$sd_dpar), lookup$user_set$sd_dpar)) lookup$sd_dpar[[k]] <- lookup$sd
     lookup$user_set$sd_dpar <- names(lookup$sd_dpar)
   }
+
+  fam_defaults <- switch(family$family %||% "",
+    source_mixture = list(dprime = "normal(-1, 1)", dprime_B = "normal(1, 1)", thresh_mid = "normal(0, 1.5)"),
+    cumulative = ,
+    bivariate_cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)"),
+    list())
+  for (pname in setdiff(names(fam_defaults), lookup$user_set$b)) lookup$b[[pname]] <- fam_defaults[[pname]]
 
   if (!is.null(family) && inherits(family, "broc_family") && !is.null(family$params)) {
     for (pname in names(family$params)) {
@@ -494,11 +462,40 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
     return("normal(0, 1)")
   }
 
-  if (!is.null(lookup$b[[dpar]])) {
-    return(lookup$b[[dpar]])
-  }
+  prior <- lookup$b[[dpar]] %||% "normal(0, 1)"
+  if (!is.null(coef) && !(dpar %in% lookup$user_set$b) && coef %in% lookup$coefs[[dpar]] &&
+      !(coef %in% lookup$location[[dpar]])) prior <- .zero_centre_prior(prior)
+  prior
+}
 
-  "normal(0, 1)"
+.zero_centre_prior <- function(prior) {
+  sub("^\\s*normal\\(\\s*[^,]+,", "normal(0,", prior)
+}
+
+.location_dpars <- c(dprime = "dprime", sigma = "sigma", lambda = "lambda", dprime2 = "dprime2",
+                     sigma2 = "sigma2", dprime_B = "dprime_B", lambda_B = "lambda_B", lambda2 = "lambda2",
+                     lambda2_B = "lambda2_B", discrim = "discrim", discrim_B = "discrim_B",
+                     sigma_B = "sigma_B", sigma2_B = "sigma2_B", rho = "rho", rho_B = "rho_B", rho_N = "rho_N",
+                     rec_crit = "rec_crit", know_crit = "know_crit", dprime_L = "dprime_L", sigma_L = "sigma_L",
+                     lambda_L = "lambda_L", thresh_mid = "criterion", thresh_mid2 = "criterion2",
+                     criterion_scale = "criterion_scale", criterion2_scale = "criterion2_scale")
+
+.finish_prior_lookup <- function(pl, model_data) {
+  pl$location <- list()
+  pl$coefs <- list()
+  for (dp in names(.location_dpars)) {
+    st <- model_data[[paste0(.location_dpars[[dp]], if (dp %in% c("thresh_mid", "thresh_mid2")) "" else "_fixed")]]
+    if (is.null(st$coef_names)) next
+    pl$coefs[[dp]] <- st$coef_names
+    pl$location[[dp]] <- st$location_coefs %||% intersect("(Intercept)", st$coef_names)
+  }
+  for (g in c("", "2")) {
+    pl$coefs[[paste0("log_gaps", g)]] <- pl$coefs[[paste0("thresh_mid", g)]]
+    pl$location[[paste0("log_gaps", g)]] <- pl$location[[paste0("thresh_mid", g)]]
+  }
+  if (isTRUE(model_data$centered_coding) && !("thresh_mid" %in% pl$user_set$b))
+    pl$b$thresh_mid <- "normal(0, 0.5)"
+  pl
 }
 
 #' Get Prior for Random Effect SD
@@ -519,6 +516,12 @@ get_sd_prior <- function(lookup, dpar, group, coef = NULL) {
     key <- paste0(dpar, "_", coef)
     if (!is.null(lookup$sd_dpar_coef[[key]])) {
       return(lookup$sd_dpar_coef[[key]])
+    }
+    if (!is.null(lookup$sd_group_coef[[paste0(group, "_", coef)]])) {
+      return(lookup$sd_group_coef[[paste0(group, "_", coef)]])
+    }
+    if (!is.null(lookup$sd_coef[[coef]])) {
+      return(lookup$sd_coef[[coef]])
     }
   }
   
@@ -577,6 +580,9 @@ get_sds_prior <- function(lookup, dpar, smooth_label = NULL) {
     key <- paste0(dpar, "_", smooth_label)
     if (!is.null(lookup$sds_coef[[key]])) {
       return(lookup$sds_coef[[key]])
+    }
+    if (!is.null(lookup$sds_label[[smooth_label]])) {
+      return(lookup$sds_label[[smooth_label]])
     }
   }
 
@@ -708,7 +714,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   }
 
   pl <- if (!is.null(priors)) {
-    build_prior_lookup(priors)
+    .finish_prior_lookup(build_prior_lookup(priors, family = model$family), model$model_data)
   } else if (!is.null(model$prior_lookup)) {
     model$prior_lookup
   } else {
@@ -770,6 +776,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
       for (p in gap_cols) {
         cf <- paste0("gap", k, "_", tg$coefs[p])
         user <- is_user_b(gap_key) || !is.null(pl$b_coef[[paste0(gap_key, "_", cf)]]) ||
+          !is.null(pl$b_coef[[paste0(gap_key, "_gap", k)]]) ||
           !is.null(pl$b_coef[[paste0(gap_key, "_[", k, "]")]])
         add_prior("b", gap_key, cf, NA, tg$gaps[k, p], if (user) "user" else "default")
       }
@@ -835,7 +842,9 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   label <- function(p) name_map[[p]] %||% p
   user_sd <- function(p, group, coef) {
     !is.null(pl$sd_dpar_group_coef[[paste0(p, "_", group, "_", coef)]]) ||
-      !is.null(pl$sd_dpar_coef[[paste0(p, "_", coef)]]) || is_user_sd_prior(pl, p, group)
+      !is.null(pl$sd_dpar_coef[[paste0(p, "_", coef)]]) ||
+      !is.null(pl$sd_group_coef[[paste0(group, "_", coef)]]) || !is.null(pl$sd_coef[[coef]]) ||
+      is_user_sd_prior(pl, p, group)
   }
   add_crit_sd <- function(p, group, re) {
     r <- .crit_re_sd_resolve(pl, p, group, re)
@@ -887,8 +896,8 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   sm_data <- model$model_data$smooth_data
   if (!is.null(sm_data) && length(sm_data) > 0) {
     is_user_sds <- function(dpar_, key_) {
-      !is.null(pl$sds_coef[[paste0(dpar_, "_", key_)]]) ||
-      !is.null(pl$sds_dpar[[dpar_]])
+      !is.null(pl$sds_coef[[paste0(dpar_, "_", key_)]]) || !is.null(pl$sds_label[[key_]]) ||
+      !is.null(pl$sds_dpar[[dpar_]]) || isTRUE(pl$user_set$sds)
     }
     for (pname in names(sm_data)) {
       display_pname <- if (is_cumulative && pname == "dprime") "mu"
@@ -1023,6 +1032,8 @@ print.broc_prior_table <- function(x, ...) {
                          pl$sd_dpar_group_coef[[paste0(dpar, "_", group, "_", cf)]],
                          pl$sd_dpar_coef[paste0(cd, "_", cc)],
                          pl$sd_dpar_coef[[paste0(dpar, "_", cf)]],
+                         pl$sd_group_coef[paste0(group, "_", cc)],
+                         pl$sd_coef[cc],
                          pl$sd_dpar_group[[paste0(cd, "_", group)]],
                          pl$sd_dpar_group[[paste0(dpar, "_", group)]],
                          pl$sd_group[[group]],
@@ -1033,6 +1044,42 @@ print.broc_prior_table <- function(x, ...) {
   data.frame(comp = comp, term = terms, dpar = ifelse(comp == 0L, paste0("thresh_mid", sfx), paste0("log_gaps", sfx)),
              prior = vapply(out, `[[`, "", "prior"), user = vapply(out, `[[`, TRUE, "user"),
              stringsAsFactors = FALSE)
+}
+
+.check_priors_matched <- function(model, priors) {
+  if (is.null(priors)) return(invisible(NULL))
+  ps <- if (inherits(priors, "broc_prior")) list(priors) else unclass(priors)
+  all_tab <- NULL
+  unused <- character(0)
+  for (p in ps) {
+    tab <- get_broc_prior(model, priors = p)
+    if (any(tab$source == "user")) next
+    if (is.null(all_tab)) all_tab <- get_broc_prior(model)
+    cand <- all_tab[all_tab$class == p$class & (is.null(p$dpar) | all_tab$dpar == (p$dpar %||% "")), , drop = FALSE]
+    spec <- paste0("class = \"", p$class, "\"",
+                   if (!is.null(p$dpar)) paste0(", dpar = \"", p$dpar, "\""),
+                   if (!is.null(p$coef)) paste0(", coef = \"", p$coef, "\""),
+                   if (!is.null(p$group)) paste0(", group = \"", p$group, "\""))
+    if (!nrow(cand)) {
+      hint <- if (identical(p$class, "b") && isTRUE(p$dpar %in% c("criterion", "cutpoints", "criterion2", "cutpoints2")))
+        paste0(" (threshold effects take priors through dpar = \"thresh_mid", if (grepl("2$", p$dpar)) "2",
+               "\" and \"log_gaps", if (grepl("2$", p$dpar)) "2", "\")") else ""
+      unused <- c(unused, paste0(p$prior, " (", spec, ")", hint))
+      next
+    }
+    lab <- unique(paste0(ifelse(nzchar(cand$coef) & !is.na(cand$coef), paste0("coef = \"", cand$coef, "\""), ""),
+                         ifelse(nzchar(cand$group) & !is.na(cand$group),
+                                paste0(ifelse(nzchar(cand$coef) & !is.na(cand$coef), ", ", ""), "group = \"", cand$group, "\""), "")))
+    lab <- lab[nzchar(lab)]
+    stop("Prior ", p$prior, " (", spec, ") matches no parameter in this model.",
+         if (length(lab)) paste0(" Valid targets: ", paste(utils::head(lab, 12), collapse = "; "),
+                                 if (length(lab) > 12) "; ..." else "", "."),
+         " See get_broc_prior(model).", call. = FALSE)
+  }
+  if (length(unused)) {
+    message("Priors for parameters this model does not have (not used): ", paste(unused, collapse = "; "), ".")
+  }
+  invisible(NULL)
 }
 
 .crit_re_sd_priors <- function(pl, dpar, group, re) {
@@ -1047,7 +1094,8 @@ print.broc_prior_table <- function(x, ...) {
   for (k in seq_len(max(0L, n_gaps))) {
     for (p in seq_along(coefs)) {
       gaps[k, p] <- pl$b_coef[[paste0(gap_key, "_gap", k, "_", coefs[p])]] %||%
-        pl$b_coef[[paste0(gap_key, "_[", k, "]")]] %||% base
+        pl$b_coef[[paste0(gap_key, "_gap", k)]] %||%
+        pl$b_coef[[paste0(gap_key, "_[", k, "]")]] %||% get_fixed_prior(pl, gap_key, coefs[p])
     }
   }
   list(mid = mid, gaps = gaps, coefs = coefs)
@@ -1056,11 +1104,20 @@ print.broc_prior_table <- function(x, ...) {
 .crit2_vary_prior_grid <- function(pl, model_data) {
   g <- .thresh_prior_grid(pl, "thresh_mid2", "log_gaps2", model_data$criterion2$coef_names,
                           model_data$K2 - 2L)
-  ic <- match("(Intercept)", g$coefs)
-  if (is.na(ic)) ic <- 1L
-  cov <- setdiff(seq_along(g$coefs), ic)
-  list(mid = g$mid[ic], gaps = g$gaps[, ic], cov_mid = g$mid[cov],
-       cov_gaps = g$gaps[, cov, drop = FALSE])
+  cells <- model_data$criterion2$vcell_names %||% "(Intercept)"
+  cov <- match(model_data$criterion2$cov_names %||% setdiff(g$coefs, "(Intercept)"), g$coefs)
+  ic <- match(cells, g$coefs)
+  base_mid <- if ("(Intercept)" %in% g$coefs) g$mid[match("(Intercept)", g$coefs)] else get_fixed_prior(pl, "thresh_mid2")
+  base_gaps <- if ("(Intercept)" %in% g$coefs) g$gaps[, match("(Intercept)", g$coefs)]
+               else vapply(seq_len(nrow(g$gaps)), function(k)
+                 pl$b_coef[[paste0("log_gaps2_gap", k)]] %||% pl$b_coef[[paste0("log_gaps2_[", k, "]")]] %||%
+                   get_fixed_prior(pl, "log_gaps2"), "")
+  n_bin <- max(.vbin_of(model_data))
+  mid <- rep(ifelse(is.na(ic), base_mid, g$mid[ic]), each = n_bin)
+  gaps <- matrix(base_gaps, nrow(g$gaps), length(cells))
+  gaps[, !is.na(ic)] <- g$gaps[, ic[!is.na(ic)]]
+  list(mid = mid, gaps = gaps[, rep(seq_along(cells), each = n_bin), drop = FALSE],
+       cov_mid = g$mid[cov], cov_gaps = g$gaps[, cov, drop = FALSE])
 }
 
 .stan_prior_vec <- function(name, priors) {

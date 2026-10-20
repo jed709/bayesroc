@@ -40,10 +40,9 @@
     if (!is.null(md$criterion2)) {
       expand[[.gap_param(gl, "_2")]] <- grid(.gap_param(gl, "_2"), seq_len(n_gaps2), seq_len(md$criterion2$n_coef))
     }
-    expand[[.gap_param(gl, "_2_varying")]] <- grid(.gap_param(gl, "_2_varying"), seq_len(md$stan_data$n_vbin %||% md$K), seq_len(n_gaps2))
+    expand[[.gap_param(gl, "_2_varying")]] <- grid(.gap_param(gl, "_2_varying"), seq_len((md$stan_data$n_vbin %||% md$K) * .n_vcell(md)), seq_len(n_gaps2))
     expand[[.gap_param(gl, "_2_cov")]] <- grid(.gap_param(gl, "_2_cov"), seq_len(n_gaps2),
                                                seq_len(md$stan_data$P_criterion2_cov %||% 0L))
-    expand[[.gap_param(gl, "_2_new")]] <- paste0(.gap_param(gl, "_2_new"), "[", seq_len(n_gaps2), "]")
   }
   unlist(lapply(vars, function(v) if (!is.null(expand[[v]])) expand[[v]] else v), use.names = FALSE)
 }
@@ -55,7 +54,7 @@
   K <- md$K
   n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else K
   tp <- compute_trial_params(draws, model, data_src, re_formula, S, N)
-  th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = tp$criterion_scale)
+  th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = tp[["criterion_scale"]])
   bivariate <- fam$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
   th2 <- if (bivariate) compute_thresholds_2(draws, model, data_src, re_formula, S, N)
   pr <- compute_category_probs(tp, th, data_src, model, fam$link$name, S, N, K, thresh2 = th2)

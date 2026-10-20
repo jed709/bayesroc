@@ -117,3 +117,92 @@ test_that("shared new-response criteria: JAX log_lik matches predict() cell prob
   est <- suppressWarnings(estimates(fit, pars = "criterion2"))
   expect_setequal(unique(sub(", c[0-9]+$", "", est$criterion)), c("new", "bin 3", "bin 4"))
 })
+
+.sim_varying_cells <- function(...) {
+  d <- .sim_varying_cov(...)
+  d$g <- factor(ifelse(as.integer(d$sub) %% 2 == 0, "E1", "E2"))
+  d
+}
+
+test_that("varying source criteria: a cell-means criterion2 formula gives each cell its own sets, not one set plus a shift", {
+  d <- .sim_varying_cells()
+  cm <- suppressMessages(.varying_model(d, criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")))
+  sd <- cm$stan_data
+  expect_equal(c(sd$n_vbin, sd$n_vcell, sd$n_vset), c(4L, 2L, 8L))
+  expect_identical(cm$model_data$criterion2$coef_names, c("gE1", "gE2", "x"))
+  expect_identical(cm$model_data$criterion2$cov_names, "x")
+  expect_equal(as.integer(sd$vcell), as.integer(d$g))
+  expect_identical(.vset_labels(cm$model_data)[c(1, 5, 8)], c("1:gE1", "1:gE2", "4:gE2"))
+  expect_match(cm$stan_code, "vector[n_vset] beta_thresh_mid_2_varying", fixed = TRUE)
+  expect_length(build_numpyro_config(cm)$prior_vary2$mid, 8L)
+  tr <- suppressMessages(.varying_model(d, criterion2 ~ 1 + g + x, bivariate_gaussian(source_criteria = "varying")))
+  expect_equal(c(tr$stan_data$n_vcell, tr$stan_data$n_vset), c(1L, 4L))
+  expect_identical(tr$model_data$criterion2$cov_names, c("gE2", "x"))
+  sn <- suppressMessages(.varying_model(d, criterion2 ~ 0 + g,
+                                        bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)))
+  expect_equal(c(sn$stan_data$n_vbin, sn$stan_data$n_vset), c(3L, 6L))
+})
+
+test_that("varying source criteria with cell means: batch and plain Stan agree", {
+  skip_if_no_cmdstan()
+  d <- .sim_varying_cells()
+  cases <- list(
+    list(criterion2 ~ 0 + g, bivariate_gaussian(source_criteria = "varying")),
+    list(criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")),
+    list(criterion2 ~ 0 + g + (1 | sub), bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4))
+  )
+  for (cs in cases) {
+    mp <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = FALSE))
+    mb <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = TRUE))
+    modp <- .compile_broc_stan(mp)
+    modb <- .compile_broc_stan(mb)
+    fp <- modp$sample(data = mp$stan_data, chains = 1, iter_warmup = 100, iter_sampling = 5,
+                      init = 0, sig_figs = 18, refresh = 50, seed = 1, show_messages = FALSE)
+    a <- .cmdstan_log_prob(modp, mp$stan_data, fp$output_files()[1])
+    b <- .cmdstan_log_prob(modb, mb$stan_data, fp$output_files()[1])
+    expect_equal(dim(a), dim(b))
+    expect_lt(max(abs(a[, 1] - b[, 1])), 1e-8)
+    expect_lt(max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))), 1e-8)
+  }
+})
+
+test_that("varying source criteria with cell means: predict() matches the Stan log_lik", {
+  skip_if_no_cmdstan()
+  d <- .sim_varying_cells()
+  m <- suppressMessages(.varying_model(d, criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")))
+  fit <- fit_broc(m, backend = "stan", refresh = 50, chains = 1, iter_warmup = 150, iter_sampling = 50, seed = 3)
+  sd <- attr(fit, "broc_model")$stan_data
+  ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))
+  pr <- predict(fit, type = "response", summary = FALSE)
+  obs <- vapply(seq_len(ncol(ll)), function(n) pr[, n, sd$y[n], sd$y2[n]], numeric(nrow(ll)))
+  expect_lt(max(abs(obs - exp(ll))), 1e-4)
+})
+
+test_that("varying source criteria with cell means: R reproduces the JAX log-likelihood", {
+  skip_if_no_jax()
+  d <- .sim_varying_cells()
+  cases <- list(
+    list(criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")),
+    list(criterion2 ~ 0 + g, bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)),
+    list(criterion2 ~ 0 + g + s(x, k = 5), bivariate_gaussian(source_criteria = "varying"))
+  )
+  for (cs in cases) {
+    m <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]]))
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
+                                   iter_sampling = 10, seed = 1, progress_bar = FALSE))
+    expect_equal(sum(startsWith(posterior::variables(f$draws()), "beta_thresh_mid_2_varying[")), m$stan_data$n_vset)
+    ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
+    expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)
+  }
+})
+
+test_that("varying source criteria: a criterion2 smooth gets its own curve in each set", {
+  d <- .sim_varying_cells()
+  m <- suppressMessages(.varying_model(d, criterion2 ~ 1 + s(w, k = 5), bivariate_gaussian(source_criteria = "varying")))
+  sm <- m$model_data$smooth_data$criterion2
+  expect_length(sm, 1L)
+  expect_identical(sm[[1]]$by, ".c2bin")
+  expect_length(sm[[1]]$components, m$stan_data$n_vbin)
+  expect_error(suppressMessages(.varying_model(d, criterion2 ~ 1 + s(w, by = g, k = 5),
+                                               bivariate_gaussian(source_criteria = "varying"))), "by=")
+})

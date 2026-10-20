@@ -122,3 +122,17 @@ test_that("criterion2_scale: plain and batch Stan agree and match R", {
     expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, mb$model_data$N))), 1e-5, label = nm)
   }
 })
+
+test_that("criterion2_scale with cell-means varying source criteria: R reproduces the JAX log-likelihood", {
+  skip_if_no_jax()
+  bv <- .ls2_cases()$varying[[2]]
+  bv$g <- factor(ifelse(as.integer(bv$sub) %% 2 == 0, "E1", "E2"))
+  m <- suppressMessages(broc(brf(resp(y1, y2) | item_type ~ 1, dprime2 ~ 1, discrim ~ 1, lambda ~ 1, criterion ~ 1,
+                                 criterion2 ~ 0 + g + (1 | sub), criterion2_scale ~ x,
+                                 family = vrdp2d(source_criteria = "varying")), bv))
+  expect_equal(m$stan_data$n_vcell, 2L)
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
+                                 iter_sampling = 10, seed = 1, progress_bar = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)
+})

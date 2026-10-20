@@ -64,11 +64,13 @@ names the parameter it applies to (e.g. \code{criterion}, \code{sigma}, \code{la
 \section{Random effects}{
 
 Group-level terms follow lme4/brms syntax. \code{(1 + x | g)} estimates every
-correlation among the term's effects; \code{(1 + x || g)} keeps the effects of
-different terms uncorrelated (it is shorthand for \code{(1 | g) + (0 + x | g)}).
+correlation among the term's effects; \code{(1 + x || g)} makes every effect
+uncorrelated, including each contrast column of a factor.
 Several terms for one grouping factor may be given; their effects are
 correlated within a term and uncorrelated across terms. \code{(1 | id | g)} in
-several parameter formulas correlates those parameters' effects.
+several parameter formulas correlates those parameters' effects. A grouping
+factor may be an interaction (\code{(1 | a:b)}) or a nesting (\code{(1 | a/b)}, i.e.
+\code{(1 | a) + (1 | a:b)}).
 
 On the thresholds (\code{criterion}, \code{criterion2}) every term has one effect per
 threshold component (the middle threshold and each gap), and by default those

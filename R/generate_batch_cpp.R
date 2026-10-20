@@ -25,7 +25,7 @@ generate_batch_cpp <- function(model_data, family) {
   params <- collect_batch_params(model_data, family_name)
 
   link_name <- if (is.list(family) && !is.null(family$link)) family$link$name else "probit"
-  params$.link_name <- link_name
+  params[[".link_name"]] <- link_name
 
   sig <- build_batch_signature(model_data, family_name, params)
 
@@ -56,7 +56,7 @@ generate_batch_cpp <- function(model_data, family) {
 collect_batch_params <- function(model_data, family_name) {
   params <- list()
 
-  params$dprime <- list(
+  params[["dprime"]] <- list(
     fixed  = model_data$dprime_fixed,
     random = model_data$dprime_random,
     link   = "identity"
@@ -66,7 +66,7 @@ collect_batch_params <- function(model_data, family_name) {
   is_cdp <- family_name %in% c("cdp")
 
   if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp") && isTRUE(model_data$has_sigma)) {
-    params$sigma <- list(
+    params[["sigma"]] <- list(
       fixed  = model_data$sigma_fixed,
       random = model_data$sigma_random,
       link   = "exp"
@@ -74,7 +74,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d") && isTRUE(model_data$has_lambda)) {
-    params$lambda <- list(
+    params[["lambda"]] <- list(
       fixed  = model_data$lambda_fixed,
       random = model_data$lambda_random,
       link   = "inv_logit"
@@ -82,7 +82,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name %in% c("mixture", "vrdp2d", "cdp") && (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime))) {
-    params$dprime2 <- list(
+    params[["dprime2"]] <- list(
       fixed  = model_data$dprime2_fixed,
       random = model_data$dprime2_random,
       link   = "identity"
@@ -90,7 +90,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name %in% c("mixture", "vrdp2d", "cdp") && isTRUE(model_data$has_sigma2)) {
-    params$sigma2 <- list(
+    params[["sigma2"]] <- list(
       fixed  = model_data$sigma2_fixed,
       random = model_data$sigma2_random,
       link   = "exp"
@@ -98,7 +98,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if ((family_name == "vrdp2d" || is_bivariate) && isTRUE(model_data$has_discrim)) {
-    params$discrim <- list(
+    params[["discrim"]] <- list(
       fixed  = model_data$discrim_fixed,
       random = model_data$discrim_random,
       link   = "identity"
@@ -106,7 +106,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if ((family_name == "vrdp2d" || is_bivariate) && isTRUE(model_data$has_discrim_B)) {
-    params$discrim_B <- list(
+    params[["discrim_B"]] <- list(
       fixed  = model_data$discrim_B_fixed,
       random = model_data$discrim_B_random,
       link   = "identity"
@@ -114,7 +114,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if ((family_name == "source_mixture" || is_bivariate) && isTRUE(model_data$has_dprime_B)) {
-    params$dprime_B <- list(
+    params[["dprime_B"]] <- list(
       fixed  = model_data$dprime_B_fixed,
       random = model_data$dprime_B_random,
       link   = "identity"
@@ -122,7 +122,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name %in% c("source_mixture", "bivariate_dp") && isTRUE(model_data$has_lambda_B)) {
-    params$lambda_B <- list(
+    params[["lambda_B"]] <- list(
       fixed  = model_data$lambda_B_fixed,
       random = model_data$lambda_B_random,
       link   = "inv_logit"
@@ -130,7 +130,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "mixture" && isTRUE(model_data$has_lure_mixture)) {
-    params$dprime_L <- list(
+    params[["dprime_L"]] <- list(
       fixed  = model_data$dprime_L_fixed,
       random = model_data$dprime_L_random,
       link   = "identity"
@@ -138,7 +138,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "mixture" && isTRUE(model_data$has_sigma_L)) {
-    params$sigma_L <- list(
+    params[["sigma_L"]] <- list(
       fixed  = model_data$sigma_L_fixed,
       random = model_data$sigma_L_random,
       link   = "exp"
@@ -146,7 +146,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "mixture" && isTRUE(model_data$has_lambda_L)) {
-    params$lambda_L <- list(
+    params[["lambda_L"]] <- list(
       fixed  = model_data$lambda_L_fixed,
       random = model_data$lambda_L_random,
       link   = "inv_logit"
@@ -156,7 +156,7 @@ collect_batch_params <- function(model_data, family_name) {
   # --- Bivariate-specific parameters ---
 
   if (is_bivariate && isTRUE(model_data$has_sigma_B)) {
-    params$sigma_B <- list(
+    params[["sigma_B"]] <- list(
       fixed  = model_data$sigma_B_fixed,
       random = model_data$sigma_B_random,
       link   = "exp"
@@ -164,7 +164,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_bivariate && isTRUE(model_data$has_sigma2)) {
-    params$sigma2 <- list(
+    params[["sigma2"]] <- list(
       fixed  = model_data$sigma2_fixed,
       random = model_data$sigma2_random,
       link   = "exp"
@@ -172,7 +172,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_bivariate && isTRUE(model_data$has_sigma2_B)) {
-    params$sigma2_B <- list(
+    params[["sigma2_B"]] <- list(
       fixed  = model_data$sigma2_B_fixed,
       random = model_data$sigma2_B_random,
       link   = "exp"
@@ -180,7 +180,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_bivariate && isTRUE(model_data$has_rho)) {
-    params$rho <- list(
+    params[["rho"]] <- list(
       fixed  = model_data$rho_fixed,
       random = model_data$rho_random,
       link   = "tanh"
@@ -188,7 +188,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_bivariate && isTRUE(model_data$has_rho_B)) {
-    params$rho_B <- list(
+    params[["rho_B"]] <- list(
       fixed  = model_data$rho_B_fixed,
       random = model_data$rho_B_random,
       link   = "tanh"
@@ -196,7 +196,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_bivariate && isTRUE(model_data$has_rho_N)) {
-    params$rho_N <- list(
+    params[["rho_N"]] <- list(
       fixed  = model_data$rho_N_fixed,
       random = model_data$rho_N_random,
       link   = "tanh"
@@ -204,7 +204,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda)) {
-    params$lambda <- list(
+    params[["lambda"]] <- list(
       fixed  = model_data$lambda_fixed,
       random = model_data$lambda_random,
       link   = "inv_logit"
@@ -212,7 +212,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda2)) {
-    params$lambda2 <- list(
+    params[["lambda2"]] <- list(
       fixed  = model_data$lambda2_fixed,
       random = model_data$lambda2_random,
       link   = "inv_logit"
@@ -220,7 +220,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (family_name == "bivariate_dp" && isTRUE(model_data$has_lambda2_B)) {
-    params$lambda2_B <- list(
+    params[["lambda2_B"]] <- list(
       fixed  = model_data$lambda2_B_fixed,
       random = model_data$lambda2_B_random,
       link   = "inv_logit"
@@ -228,7 +228,7 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_cdp && isTRUE(model_data$has_rec_crit)) {
-    params$rec_crit <- list(
+    params[["rec_crit"]] <- list(
       fixed  = model_data$rec_crit_fixed,
       random = model_data$rec_crit_random,
       link   = "identity"
@@ -236,67 +236,66 @@ collect_batch_params <- function(model_data, family_name) {
   }
 
   if (is_cdp && isTRUE(model_data$has_know_crit)) {
-    params$know_crit <- list(
+    params[["know_crit"]] <- list(
       fixed  = model_data$know_crit_fixed,
       random = model_data$know_crit_random,
       link   = "identity"
     )
   }
 
-  params$criterion <- list(
+  params[["criterion"]] <- list(
     fixed  = model_data$criterion,
     random = model_data$criterion$random
   )
 
   if (family_name == "vrdp2d" || is_bivariate) {
-    params$criterion2 <- list(
+    params[["criterion2"]] <- list(
       fixed  = model_data$criterion2,
       random = model_data$criterion2$random
     )
   }
 
-  params$.family      <- family_name
-  params$.has_counts  <- isTRUE(model_data$has_counts)
-  params$.has_sigma   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
-  params$.has_lambda  <- isTRUE(model_data$has_lambda) && family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
-  params$.has_dprime2 <- (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime)) && family_name %in% c("mixture", "vrdp2d", "cdp")
-  params$.has_sigma2  <- isTRUE(model_data$has_sigma2) && family_name %in% c("mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
-  params$.has_dprime_B <- isTRUE(model_data$has_dprime_B) && (family_name == "source_mixture" || is_bivariate)
-  params$.has_lambda_B <- isTRUE(model_data$has_lambda_B) &&
+  params[[".family"]]      <- family_name
+  params[[".has_counts"]]  <- isTRUE(model_data$has_counts)
+  params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
+  params[[".has_lambda"]]  <- isTRUE(model_data$has_lambda) && family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
+  params[[".has_dprime2"]] <- (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime)) && family_name %in% c("mixture", "vrdp2d", "cdp")
+  params[[".has_sigma2"]]  <- isTRUE(model_data$has_sigma2) && family_name %in% c("mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
+  params[[".has_dprime_B"]] <- isTRUE(model_data$has_dprime_B) && (family_name == "source_mixture" || is_bivariate)
+  params[[".has_lambda_B"]] <- isTRUE(model_data$has_lambda_B) &&
     family_name %in% c("source_mixture", "bivariate_dp")
-  params$.has_lambda_B_dp <- isTRUE(model_data$has_lambda_B) && family_name == "bivariate_dp"
-  params$.has_lure_mixture <- isTRUE(model_data$has_lure_mixture) && family_name == "mixture"
-  params$.has_dprime_L <- isTRUE(model_data$has_dprime_L) && family_name == "mixture"
-  params$.has_sigma_L  <- isTRUE(model_data$has_sigma_L) && family_name == "mixture"
-  params$.has_lambda_L <- isTRUE(model_data$has_lambda_L) && family_name == "mixture"
-  params$.is_cumulative <- family_name == "cumulative"
-  params$.has_dp_fixed <- !is.null(model_data$dprime_fixed) && model_data$dprime_fixed$n_coef > 0
-  params$.is_source_mixture <- family_name == "source_mixture"
-  params$.is_vrdp2d   <- family_name == "vrdp2d"
-  params$.is_bivariate <- is_bivariate
-  params$.is_bivariate_dp <- family_name == "bivariate_dp"
-  params$.has_discrim  <- isTRUE(model_data$has_discrim) && (family_name == "vrdp2d" || is_bivariate)
-  params$.has_disc_fixed <- isTRUE(model_data$has_discrim) && !is.null(model_data$discrim_fixed) && model_data$discrim_fixed$n_coef > 0
-  params$.has_discrim_B <- isTRUE(model_data$has_discrim_B) && (family_name == "vrdp2d" || is_bivariate)
-  params$.has_sigma_B  <- isTRUE(model_data$has_sigma_B) && is_bivariate
-  params$.has_sigma2_B <- isTRUE(model_data$has_sigma2_B) && is_bivariate
-  params$.has_rho      <- isTRUE(model_data$has_rho) && is_bivariate
-  params$.has_rho_B    <- isTRUE(model_data$has_rho_B) && is_bivariate
-  params$.has_rho_N    <- isTRUE(model_data$has_rho_N) && is_bivariate
-  params$.has_lambda2  <- isTRUE(model_data$has_lambda2) && family_name == "bivariate_dp"
-  params$.has_lambda2_B <- isTRUE(model_data$has_lambda2_B) && family_name == "bivariate_dp"
-  params$.is_cdp       <- family_name == "cdp"
-  params$.is_cdp_family <- is_cdp
-  params$.has_rec_crit <- isTRUE(model_data$has_rec_crit) && is_cdp
-  params$.has_know_crit <- isTRUE(model_data$has_know_crit) && is_cdp
-  params$.n_rkg        <- if (is_cdp) model_data$stan_data$n_rkg else NULL
-  params$.K           <- model_data$K
-  params$.K2          <- model_data$K2
-  params$.gap_link    <- if (!is.null(model_data$gap_link)) model_data$gap_link else "log"
-  params$.varying_source_criteria <- isTRUE(model_data$varying_source_criteria)
-  params$.new_source_criteria <- model_data$new_source_criteria
-  params$.bounded     <- isTRUE(model_data$bounded)
-  params$.smooth_data <- model_data$smooth_data
+  params[[".has_lambda_B_dp"]] <- isTRUE(model_data$has_lambda_B) && family_name == "bivariate_dp"
+  params[[".has_lure_mixture"]] <- isTRUE(model_data$has_lure_mixture) && family_name == "mixture"
+  params[[".has_dprime_L"]] <- isTRUE(model_data$has_dprime_L) && family_name == "mixture"
+  params[[".has_sigma_L"]]  <- isTRUE(model_data$has_sigma_L) && family_name == "mixture"
+  params[[".has_lambda_L"]] <- isTRUE(model_data$has_lambda_L) && family_name == "mixture"
+  params[[".is_cumulative"]] <- family_name == "cumulative"
+  params[[".has_dp_fixed"]] <- !is.null(model_data$dprime_fixed) && model_data$dprime_fixed$n_coef > 0
+  params[[".is_source_mixture"]] <- family_name == "source_mixture"
+  params[[".is_vrdp2d"]]   <- family_name == "vrdp2d"
+  params[[".is_bivariate"]] <- is_bivariate
+  params[[".is_bivariate_dp"]] <- family_name == "bivariate_dp"
+  params[[".has_discrim"]]  <- isTRUE(model_data$has_discrim) && (family_name == "vrdp2d" || is_bivariate)
+  params[[".has_disc_fixed"]] <- isTRUE(model_data$has_discrim) && !is.null(model_data$discrim_fixed) && model_data$discrim_fixed$n_coef > 0
+  params[[".has_discrim_B"]] <- isTRUE(model_data$has_discrim_B) && (family_name == "vrdp2d" || is_bivariate)
+  params[[".has_sigma_B"]]  <- isTRUE(model_data$has_sigma_B) && is_bivariate
+  params[[".has_sigma2_B"]] <- isTRUE(model_data$has_sigma2_B) && is_bivariate
+  params[[".has_rho"]]      <- isTRUE(model_data$has_rho) && is_bivariate
+  params[[".has_rho_B"]]    <- isTRUE(model_data$has_rho_B) && is_bivariate
+  params[[".has_rho_N"]]    <- isTRUE(model_data$has_rho_N) && is_bivariate
+  params[[".has_lambda2"]]  <- isTRUE(model_data$has_lambda2) && family_name == "bivariate_dp"
+  params[[".has_lambda2_B"]] <- isTRUE(model_data$has_lambda2_B) && family_name == "bivariate_dp"
+  params[[".is_cdp"]]       <- family_name == "cdp"
+  params[[".is_cdp_family"]] <- is_cdp
+  params[[".has_rec_crit"]] <- isTRUE(model_data$has_rec_crit) && is_cdp
+  params[[".has_know_crit"]] <- isTRUE(model_data$has_know_crit) && is_cdp
+  params[[".n_rkg"]]        <- if (is_cdp) model_data$stan_data$n_rkg else NULL
+  params[[".K"]]           <- model_data$K
+  params[[".K2"]]          <- model_data$K2
+  params[[".gap_link"]]    <- if (!is.null(model_data$gap_link)) model_data$gap_link else "log"
+  params[[".varying_source_criteria"]] <- isTRUE(model_data$varying_source_criteria)
+  params[[".bounded"]]     <- isTRUE(model_data$bounded)
+  params[[".smooth_data"]] <- model_data$smooth_data
 
   params
 }
@@ -365,8 +364,8 @@ build_batch_signature <- function(model_data, family_name, params) {
     }
   }
 
-  has_two_responses <- isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)
-  is_cdp_family <- isTRUE(params$.is_cdp_family)
+  has_two_responses <- isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])
+  is_cdp_family <- isTRUE(params[[".is_cdp_family"]])
 
   # ---- Standard data ----
   add_data("const std::vector<int>&",    "array[] int",  "y")
@@ -377,17 +376,14 @@ build_batch_signature <- function(model_data, family_name, params) {
     add_data("const int&",               "int",          "K2")
     add_data("const int&",               "int",          "mid_thresh1")
     add_data("const int&",               "int",          "mid_thresh2")
-    if (identical(params$.new_source_criteria, "shared")) {
-      add_data("const std::vector<int>&",  "array[] int",  "is_new_response")
-    }
-  } else if (isTRUE(params$.is_source_mixture)) {
+  } else if (isTRUE(params[[".is_source_mixture"]])) {
     add_data("const std::vector<int>&",  "array[] int",  "source")
-  } else if (!isTRUE(params$.is_cumulative)) {
+  } else if (!isTRUE(params[[".is_cumulative"]])) {
     add_data("const std::vector<double>&", "array[] real", "is_old_d")
   }
   if (is_cdp_family) {
     add_data("const std::vector<int>&",  "array[] int",  "rk")
-    if (isTRUE(params$.is_cdp)) {
+    if (isTRUE(params[[".is_cdp"]])) {
       add_data("const int&",             "int",          "J")
       add_data("const int&",             "int",          "n_rkg")
       add_data("const std::vector<int>&","array[] int",  "old_level_map")
@@ -396,19 +392,19 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
   if (!has_two_responses) {
     add_data("const int&",               "int",          "K")
-    if (!isTRUE(params$.is_cdp)) {
+    if (!isTRUE(params[[".is_cdp"]])) {
       add_data("const int&",             "int",          "mid_thresh")
     }
   }
   add_data("const int&",                 "int",          "start_idx")
   add_data("const int&",                 "int",          "end_idx")
 
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     add_data("const std::vector<int>&", "array[] int", "counts_d")
   }
 
   # ---- dprime fixed ----
-  has_dp_fixed <- !is.null(params$dprime$fixed) && params$dprime$fixed$n_coef > 0
+  has_dp_fixed <- !is.null(params[["dprime"]]$fixed) && params[["dprime"]]$fixed$n_coef > 0
   if (has_dp_fixed) {
     add_data_tpl("matrix", "X_dprime")
     add_param("vector", "beta_dprime")
@@ -416,10 +412,10 @@ build_batch_signature <- function(model_data, family_name, params) {
 
   # ---- dprime REs ----
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       add_group_idx(group)
       if (isTRUE(re$use_z_matrix)) {
         add_data_tpl("matrix", sprintf("Z_dprime_%s", group))
@@ -439,15 +435,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- sigma fixed + REs (UVSDT) ----
-  if (isTRUE(params$.has_sigma)) {
+  if (isTRUE(params[[".has_sigma"]])) {
     add_data_tpl("matrix", "X_sigma")
     add_param("vector", "beta_sigma")
 
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_sigma_%s", group))
@@ -468,15 +464,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- lambda fixed + REs (dpsdt, mixture) ----
-  if (isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".has_lambda"]])) {
     add_data_tpl("matrix", "X_lambda")
     add_param("vector", "beta_lambda")
 
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_lambda_%s", group))
@@ -497,15 +493,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- dprime2 fixed + REs (mixture) ----
-  if (isTRUE(params$.has_dprime2)) {
+  if (isTRUE(params[[".has_dprime2"]])) {
     add_data_tpl("matrix", "X_dprime2")
     add_param("vector", "beta_dprime2")
 
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_dprime2_%s", group))
@@ -526,15 +522,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- sigma2 fixed + REs (mixture) ----
-  if (isTRUE(params$.has_sigma2)) {
+  if (isTRUE(params[[".has_sigma2"]])) {
     add_data_tpl("matrix", "X_sigma2")
     add_param("vector", "beta_sigma2")
 
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_sigma2_%s", group))
@@ -555,15 +551,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- dprime_B fixed + REs (source_mixture) ----
-  if (isTRUE(params$.has_dprime_B)) {
+  if (isTRUE(params[[".has_dprime_B"]])) {
     add_data_tpl("matrix", "X_dprime_B")
     add_param("vector", "beta_dprime_B")
 
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_dprime_B_%s", group))
@@ -584,15 +580,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- lambda_B fixed + REs (source_mixture) ----
-  if (isTRUE(params$.has_lambda_B)) {
+  if (isTRUE(params[[".has_lambda_B"]])) {
     add_data_tpl("matrix", "X_lambda_B")
     add_param("vector", "beta_lambda_B")
 
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_lambda_B_%s", group))
@@ -613,17 +609,17 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- discrim fixed + REs (vrdp2d / bivariate) ----
-  has_disc_fixed <- isTRUE(params$.has_discrim) && !is.null(params$discrim$fixed) && params$discrim$fixed$n_coef > 0
+  has_disc_fixed <- isTRUE(params[[".has_discrim"]]) && !is.null(params[["discrim"]]$fixed) && params[["discrim"]]$fixed$n_coef > 0
   if (has_disc_fixed) {
     add_data_tpl("matrix", "X_discrim")
     add_param("vector", "beta_discrim")
   }
-  if (isTRUE(params$.has_discrim)) {
+  if (isTRUE(params[[".has_discrim"]])) {
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_discrim_%s", group))
@@ -644,15 +640,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- discrim_B fixed + REs (vrdp2d) ----
-  if (isTRUE(params$.has_discrim_B)) {
+  if (isTRUE(params[[".has_discrim_B"]])) {
     add_data_tpl("matrix", "X_discrim_B")
     add_param("vector", "beta_discrim_B")
 
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_discrim_B_%s", group))
@@ -673,15 +669,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- dprime_L fixed + REs (lure mixture) ----
-  if (isTRUE(params$.has_dprime_L)) {
+  if (isTRUE(params[[".has_dprime_L"]])) {
     add_data_tpl("matrix", "X_dprime_L")
     add_param("vector", "beta_dprime_L")
 
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_dprime_L_%s", group))
@@ -702,15 +698,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- sigma_L fixed + REs (lure mixture) ----
-  if (isTRUE(params$.has_sigma_L)) {
+  if (isTRUE(params[[".has_sigma_L"]])) {
     add_data_tpl("matrix", "X_sigma_L")
     add_param("vector", "beta_sigma_L")
 
     sigL_re_idx <- 0
-    if (!is.null(params$sigma_L$random)) {
-      for (group in names(params$sigma_L$random)) {
+    if (!is.null(params[["sigma_L"]]$random)) {
+      for (group in names(params[["sigma_L"]]$random)) {
         sigL_re_idx <- sigL_re_idx + 1
-        re <- params$sigma_L$random[[group]]
+        re <- params[["sigma_L"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_sigma_L_%s", group))
@@ -731,15 +727,15 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- lambda_L fixed + REs (lure mixture) ----
-  if (isTRUE(params$.has_lambda_L)) {
+  if (isTRUE(params[[".has_lambda_L"]])) {
     add_data_tpl("matrix", "X_lambda_L")
     add_param("vector", "beta_lambda_L")
 
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) {
           add_data_tpl("matrix", sprintf("Z_lambda_L_%s", group))
@@ -760,12 +756,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- sigma_B fixed + REs (bivariate) ----
-  if (isTRUE(params$.has_sigma_B)) {
+  if (isTRUE(params[[".has_sigma_B"]])) {
     add_data_tpl("matrix", "X_sigma_B")
     add_param("vector", "beta_sigma_B")
-    if (!is.null(params$sigma_B$random)) {
-      for (group in names(params$sigma_B$random)) {
-        re <- params$sigma_B$random[[group]]
+    if (!is.null(params[["sigma_B"]]$random)) {
+      for (group in names(params[["sigma_B"]]$random)) {
+        re <- params[["sigma_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_sigma_B_%s", group))
         var_name <- re_var_name("sigma_B", group, re$cor_id)
@@ -776,12 +772,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- sigma2_B fixed + REs (bivariate) ----
-  if (isTRUE(params$.has_sigma2_B)) {
+  if (isTRUE(params[[".has_sigma2_B"]])) {
     add_data_tpl("matrix", "X_sigma2_B")
     add_param("vector", "beta_sigma2_B")
-    if (!is.null(params$sigma2_B$random)) {
-      for (group in names(params$sigma2_B$random)) {
-        re <- params$sigma2_B$random[[group]]
+    if (!is.null(params[["sigma2_B"]]$random)) {
+      for (group in names(params[["sigma2_B"]]$random)) {
+        re <- params[["sigma2_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_sigma2_B_%s", group))
         var_name <- re_var_name("sigma2_B", group, re$cor_id)
@@ -792,12 +788,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- rho fixed + REs (bivariate) ----
-  if (isTRUE(params$.has_rho)) {
+  if (isTRUE(params[[".has_rho"]])) {
     add_data_tpl("matrix", "X_rho")
     add_param("vector", "beta_rho")
-    if (!is.null(params$rho$random)) {
-      for (group in names(params$rho$random)) {
-        re <- params$rho$random[[group]]
+    if (!is.null(params[["rho"]]$random)) {
+      for (group in names(params[["rho"]]$random)) {
+        re <- params[["rho"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_rho_%s", group))
         var_name <- re_var_name("rho", group, re$cor_id)
@@ -808,12 +804,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- rho_B fixed + REs (bivariate) ----
-  if (isTRUE(params$.has_rho_B)) {
+  if (isTRUE(params[[".has_rho_B"]])) {
     add_data_tpl("matrix", "X_rho_B")
     add_param("vector", "beta_rho_B")
-    if (!is.null(params$rho_B$random)) {
-      for (group in names(params$rho_B$random)) {
-        re <- params$rho_B$random[[group]]
+    if (!is.null(params[["rho_B"]]$random)) {
+      for (group in names(params[["rho_B"]]$random)) {
+        re <- params[["rho_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_rho_B_%s", group))
         var_name <- re_var_name("rho_B", group, re$cor_id)
@@ -824,12 +820,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- rho_N fixed + REs (bivariate) ----
-  if (isTRUE(params$.has_rho_N)) {
+  if (isTRUE(params[[".has_rho_N"]])) {
     add_data_tpl("matrix", "X_rho_N")
     add_param("vector", "beta_rho_N")
-    if (!is.null(params$rho_N$random)) {
-      for (group in names(params$rho_N$random)) {
-        re <- params$rho_N$random[[group]]
+    if (!is.null(params[["rho_N"]]$random)) {
+      for (group in names(params[["rho_N"]]$random)) {
+        re <- params[["rho_N"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_rho_N_%s", group))
         var_name <- re_var_name("rho_N", group, re$cor_id)
@@ -840,12 +836,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- lambda2 fixed + REs (bivariate_dp) ----
-  if (isTRUE(params$.has_lambda2)) {
+  if (isTRUE(params[[".has_lambda2"]])) {
     add_data_tpl("matrix", "X_lambda2")
     add_param("vector", "beta_lambda2")
-    if (!is.null(params$lambda2$random)) {
-      for (group in names(params$lambda2$random)) {
-        re <- params$lambda2$random[[group]]
+    if (!is.null(params[["lambda2"]]$random)) {
+      for (group in names(params[["lambda2"]]$random)) {
+        re <- params[["lambda2"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_lambda2_%s", group))
         var_name <- re_var_name("lambda2", group, re$cor_id)
@@ -856,12 +852,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- lambda2_B fixed + REs (bivariate_dp Source B; optional) ----
-  if (isTRUE(params$.has_lambda2_B)) {
+  if (isTRUE(params[[".has_lambda2_B"]])) {
     add_data_tpl("matrix", "X_lambda2_B")
     add_param("vector", "beta_lambda2_B")
-    if (!is.null(params$lambda2_B$random)) {
-      for (group in names(params$lambda2_B$random)) {
-        re <- params$lambda2_B$random[[group]]
+    if (!is.null(params[["lambda2_B"]]$random)) {
+      for (group in names(params[["lambda2_B"]]$random)) {
+        re <- params[["lambda2_B"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_lambda2_B_%s", group))
         var_name <- re_var_name("lambda2_B", group, re$cor_id)
@@ -872,12 +868,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- rec_crit fixed + REs (cdp) ----
-  if (isTRUE(params$.has_rec_crit)) {
+  if (isTRUE(params[[".has_rec_crit"]])) {
     add_data_tpl("matrix", "X_rec_crit")
     add_param("vector", "beta_rec_crit")
-    if (!is.null(params$rec_crit$random)) {
-      for (group in names(params$rec_crit$random)) {
-        re <- params$rec_crit$random[[group]]
+    if (!is.null(params[["rec_crit"]]$random)) {
+      for (group in names(params[["rec_crit"]]$random)) {
+        re <- params[["rec_crit"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_rec_crit_%s", group))
         var_name <- re_var_name("rec_crit", group, re$cor_id)
@@ -888,12 +884,12 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- know_crit fixed + REs (cdp) ----
-  if (isTRUE(params$.has_know_crit)) {
+  if (isTRUE(params[[".has_know_crit"]])) {
     add_data_tpl("matrix", "X_know_crit")
     add_param("vector", "beta_know_crit")
-    if (!is.null(params$know_crit$random)) {
-      for (group in names(params$know_crit$random)) {
-        re <- params$know_crit$random[[group]]
+    if (!is.null(params[["know_crit"]]$random)) {
+      for (group in names(params[["know_crit"]]$random)) {
+        re <- params[["know_crit"]]$random[[group]]
         add_group_idx(group)
         if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_know_crit_%s", group))
         var_name <- re_var_name("know_crit", group, re$cor_id)
@@ -907,7 +903,7 @@ build_batch_signature <- function(model_data, family_name, params) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   K_for_crit <- if (has_two_responses) model_data$stan_data$K1
-                else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1
+                else if (isTRUE(params[[".is_cdp"]])) model_data$stan_data$J + 1
                 else model_data$K
   if (!is_crit_intercept_only) {
     add_data_tpl("matrix", "X_criterion")
@@ -918,9 +914,9 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
 
   # ---- Criterion REs ----
-  if (!is.null(params$criterion$random)) {
-    for (group in names(params$criterion$random)) {
-      re <- params$criterion$random[[group]]
+  if (!is.null(params[["criterion"]]$random)) {
+    for (group in names(params[["criterion"]]$random)) {
+      re <- params[["criterion"]]$random[[group]]
       add_group_idx(group)
       var_name <- re_var_name("criterion", group, re$cor_id)
       add_param("matrix", var_name)
@@ -939,27 +935,22 @@ build_batch_signature <- function(model_data, family_name, params) {
 
   # ---- Criterion2 population (vrdp2d/bivariate -- source dimension thresholds) ----
   if (has_two_responses) {
-    varying_sc <- isTRUE(params$.varying_source_criteria)
+    varying_sc <- isTRUE(params[[".varying_source_criteria"]])
     if (varying_sc) {
       add_param("vector", "beta_thresh_mid_2_varying")
       K2_val <- model_data$stan_data$K2
       if (K2_val > 2) {
         add_param("matrix", "beta_log_gaps_2_varying")
       }
+      if (.n_vcell(model_data) > 1L) add_data("const std::vector<int>&", "array[] int", "vcell")
       if (.crit2_has_cov(model_data)) {
         add_data_tpl("matrix", "X_criterion2_cov")
         add_param("vector", "beta_thresh_mid_2_cov")
         if (K2_val > 2) add_param("matrix", "beta_log_gaps_2_cov")
       }
-      if (identical(params$.new_source_criteria, "shared")) {
-        add_param("real", "beta_thresh_mid_2_new")
-        if (K2_val > 2) {
-          add_param("vector", "beta_log_gaps_2_new")
-        }
-      }
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
-          re <- params$criterion2$random[[group]]
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
+          re <- params[["criterion2"]]$random[[group]]
           add_group_idx(group)
           var_name <- re_var_name("criterion2", group, re$cor_id)
           crit2_re_type <- if (re$dim == 1) "vector" else "matrix"
@@ -982,9 +973,9 @@ build_batch_signature <- function(model_data, family_name, params) {
       }
 
       # ---- Criterion2 REs ----
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
-          re <- params$criterion2$random[[group]]
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
+          re <- params[["criterion2"]]$random[[group]]
           add_group_idx(group)
           var_name <- re_var_name("criterion2", group, re$cor_id)
           crit2_re_type <- if (re$dim == 1) "vector" else "matrix"
@@ -1220,7 +1211,7 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   # --- Dimension constants ---
   L$add("  const int n_start = start_idx - 1;  // 0-based")
   L$add("  const int n_end = end_idx;            // exclusive upper bound")
-  has_two_responses <- isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)
+  has_two_responses <- isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])
   if (has_two_responses) {
     L$add("  const int n_thresh1 = K1 - 1;")
     L$add("  const int n_gaps1 = n_thresh1 - 1;")
@@ -1234,7 +1225,7 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("  const int n_gaps = n_gaps1;")
     L$add("  const int mid = mid1;")
     L$add("  const int n_upper = n_upper1;")
-  } else if (isTRUE(params$.is_cdp)) {
+  } else if (isTRUE(params[[".is_cdp"]])) {
     L$add("  const int n_thresh = J;")
     L$add("  const int n_gaps = n_thresh - 1;")
     L$add("  const int mid = mid_thresh_cdp - 1;")
@@ -1256,8 +1247,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L$add("")
 
   # --- Criterion RE: gap-to-column mapping ---
-  has_crit_re <- !is.null(params$criterion$random) && length(params$criterion$random) > 0
-  has_crit2_re <- has_two_responses && !is.null(params$criterion2$random) && length(params$criterion2$random) > 0
+  has_crit_re <- !is.null(params[["criterion"]]$random) && length(params[["criterion"]]$random) > 0
+  has_crit2_re <- has_two_responses && !is.null(params[["criterion2"]]$random) && length(params[["criterion2"]]$random) > 0
   if (has_crit_re) {
     L$add("  // Gap index -> threshold column mapping")
     L$add("  Eigen::VectorXi gap_to_col(n_gaps);")
@@ -1289,19 +1280,19 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     .dgap_decl(L, params, "exp_eff_gaps", "Eigen::VectorXd", "n_gaps")
   } else {
     L$add("  Eigen::VectorXd pop_exp_gaps(n_gaps);")
-    gap_fn <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap_d(g)))" else "std::exp(pop_gap_d(g))"
+    gap_fn <- if (identical(params[[".gap_link"]], "softplus")) "std::log1p(std::exp(pop_gap_d(g)))" else "std::exp(pop_gap_d(g))"
     L$add(sprintf("  for (int g = 0; g < n_gaps; ++g) pop_exp_gaps(g) = %s;", gap_fn))
     .dgap_decl(L, params, "pop_exp_gaps", "Eigen::VectorXd", "n_gaps")
     .dgap_set(L, params, "  for (int g = 0; g < n_gaps; ++g) ", "pop_exp_gaps(g)", "pop_gap_d(g)")
-    if (!is_crit_intercept_only_early || !is.null(params$.smooth_data[["criterion"]])) {
+    if (!is_crit_intercept_only_early || !is.null(params[[".smooth_data"]][["criterion"]])) {
       L$add("  Eigen::VectorXd obs_exp_gaps(n_gaps);  // per-obs exp(gap) for multi-predictor or smooth")
       .dgap_decl(L, params, "obs_exp_gaps", "Eigen::VectorXd", "n_gaps")
     }
   }
   if (has_two_responses) {
-    varying_sc <- isTRUE(params$.varying_source_criteria)
+    varying_sc <- isTRUE(params[[".varying_source_criteria"]])
     if (varying_sc) {
-      gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
+      gap_fn2 <- if (identical(params[[".gap_link"]], "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
       vb <- .vbin_cpp(model_data)
       L$add("  // Pre-compute varying source thresholds, one row per set: thresh2_all[set][k2]")
       L$add(paste0("  ", vb$decl))
@@ -1318,23 +1309,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
       L$add(sprintf("      thresh2_all(k1, k) = thresh2_all(k1, k + 1) - %s;", gap_fn2))
       L$add("    }")
       L$add("  }")
-      if (identical(params$.new_source_criteria, "shared")) {
-        gap_fn_new <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(new_gaps2_d(g)))" else "std::exp(new_gaps2_d(g))"
-        L$add("  // Pre-compute shared new-item source thresholds")
-        L$add("  Eigen::VectorXd thresh2_new_vec(n_thresh2);")
-        L$add("  thresh2_new_vec(mid2) = new_mid2_d;")
-        L$add("  for (int k = mid2 + 1; k < n_thresh2; ++k) {")
-        L$add("    int g = k - mid2 - 1;")
-        L$add(sprintf("    thresh2_new_vec(k) = thresh2_new_vec(k - 1) + %s;", gap_fn_new))
-        L$add("  }")
-        L$add("  for (int kd = 1; kd <= mid2; ++kd) {")
-        L$add("    int k = mid2 - kd;")
-        L$add("    int g = n_upper2 + kd - 1;")
-        L$add(sprintf("    thresh2_new_vec(k) = thresh2_new_vec(k + 1) - %s;", gap_fn_new))
-        L$add("  }")
-      }
       L$add(sprintf("  Eigen::MatrixXd vary_exp_gaps2(%d, n_gaps2);", vb$n))
-      gap_fn2_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
+      gap_fn2_raw <- if (identical(params[[".gap_link"]], "softplus")) "std::log1p(std::exp(vary_gaps2_d(k1, g)))" else "std::exp(vary_gaps2_d(k1, g))"
       L$add(sprintf("  for (int k1 = 0; k1 < %d; ++k1)", vb$n))
       L$add(sprintf("    for (int g = 0; g < n_gaps2; ++g) vary_exp_gaps2(k1, g) = %s;", gap_fn2_raw))
       .dgap_decl(L, params, "vary_exp_gaps2", "Eigen::MatrixXd", sprintf("%d, n_gaps2", vb$n))
@@ -1344,26 +1320,19 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
       }
       .dgap_set(L, params, sprintf("  for (int k1 = 0; k1 < %d; ++k1) for (int g = 0; g < n_gaps2; ++g) ", vb$n),
                 "vary_exp_gaps2(k1, g)", "vary_gaps2_d(k1, g)")
-      if (identical(params$.new_source_criteria, "shared")) {
-        gap_fn_new_raw <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(new_gaps2_d(g)))" else "std::exp(new_gaps2_d(g))"
-        L$add("  Eigen::VectorXd new_exp_gaps2(n_gaps2);")
-        L$add(sprintf("  for (int g = 0; g < n_gaps2; ++g) new_exp_gaps2(g) = %s;", gap_fn_new_raw))
-        .dgap_decl(L, params, "new_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
-        .dgap_set(L, params, "  for (int g = 0; g < n_gaps2; ++g) ", "new_exp_gaps2(g)", "new_gaps2_d(g)")
-      }
     } else if (has_crit2_re) {
       L$add("  Eigen::VectorXd exp_eff_gaps2(n_gaps2);")
       .dgap_decl(L, params, "exp_eff_gaps2", "Eigen::VectorXd", "n_gaps2")
     } else {
       L$add("  Eigen::VectorXd pop_exp_gaps2(n_gaps2);")
-      gap_fn2 <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(pop_gap2_d(g)))" else "std::exp(pop_gap2_d(g))"
+      gap_fn2 <- if (identical(params[[".gap_link"]], "softplus")) "std::log1p(std::exp(pop_gap2_d(g)))" else "std::exp(pop_gap2_d(g))"
       L$add(sprintf("  for (int g = 0; g < n_gaps2; ++g) pop_exp_gaps2(g) = %s;", gap_fn2))
       .dgap_decl(L, params, "pop_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
       .dgap_set(L, params, "  for (int g = 0; g < n_gaps2; ++g) ", "pop_exp_gaps2(g)", "pop_gap2_d(g)")
       crit2_early <- model_data$criterion2
       is_crit2_int_only_early <- is.null(crit2_early) ||
         isTRUE(crit2_early$is_intercept_only) || crit2_early$n_coef == 1
-      if (!is_crit2_int_only_early || !is.null(params$.smooth_data[["criterion2"]])) {
+      if (!is_crit2_int_only_early || !is.null(params[[".smooth_data"]][["criterion2"]])) {
         L$add("  Eigen::VectorXd obs_exp_gaps2(n_gaps2);  // per-obs exp(gap): multi-predictor or smooth")
         .dgap_decl(L, params, "obs_exp_gaps2", "Eigen::VectorXd", "n_gaps2")
       }
@@ -1377,15 +1346,15 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   if (has_two_responses) {
     L$add("    int yn2 = y2[n];")
     L$add("    int item_type_n = item_type[n];")
-  } else if (isTRUE(params$.is_source_mixture)) {
+  } else if (isTRUE(params[[".is_source_mixture"]])) {
     L$add("    int source_n = source[n];")
-  } else if (!isTRUE(params$.is_cumulative)) {
+  } else if (!isTRUE(params[[".is_cumulative"]])) {
     L$add("    double is_old_n = is_old_d[n];")
   }
-  if (isTRUE(params$.is_cdp_family)) {
+  if (isTRUE(params[[".is_cdp_family"]])) {
     L$add("    int rk_n = rk[n];")
   }
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     L$add("    double count_n = counts_d[n];")
   }
   L$add("")
@@ -1401,18 +1370,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("")
     if (.varying_per_obs(model_data, params)) {
       emit_thresh2_varying_obs(L, model_data, params)
-    } else if (isTRUE(params$.varying_source_criteria)) {
-      if (identical(params$.new_source_criteria, "shared")) {
-        L$add("    // Varying source thresholds: use shared new-response thresholds for 'new' responses, yn-based for 'old' responses")
-        L$add("    if (is_new_response[yn - 1] == 1) {")
-        L$add("      thresh2_n = thresh2_new_vec;")
-        L$add("    } else {")
-        L$add("      thresh2_n = thresh2_all.row(vbin0_[yn - 1]).transpose();")
-        L$add("    }")
-      } else {
-        L$add("    // Varying source thresholds: index by detection response yn")
-        L$add("    thresh2_n = thresh2_all.row(vbin0_[yn - 1]).transpose();")
-      }
+    } else if (isTRUE(params[[".varying_source_criteria"]])) {
+      L$add("    // Varying source thresholds: index by detection response yn")
+      L$add("    thresh2_n = thresh2_all.row(vbin0_[yn - 1]).transpose();")
     } else {
       emit_thresh2_computation(L, model_data, params, has_crit2_re)
     }
@@ -1421,9 +1381,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
 
   if (family_name == "vrdp2d") {
     emit_likelihood_vrdp2d(L, params)
-  } else if (isTRUE(params$.is_bivariate)) {
+  } else if (isTRUE(params[[".is_bivariate"]])) {
     emit_likelihood_bivariate(L, params)
-  } else if (isTRUE(params$.is_cdp_family)) {
+  } else if (isTRUE(params[[".is_cdp_family"]])) {
     emit_likelihood_cdp(L, params)
   } else {
     emit_likelihood(L, family_name, params)
@@ -1433,14 +1393,14 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L$add("    if constexpr (is_autodiff) {")
   if (family_name == "vrdp2d") {
     emit_gradient_accumulation_vrdp2d(L, model_data, params, has_crit_re, has_crit2_re)
-  } else if (isTRUE(params$.is_bivariate)) {
+  } else if (isTRUE(params[[".is_bivariate"]])) {
     emit_gradient_accumulation_bivariate(L, model_data, params, has_crit_re, has_crit2_re)
-  } else if (isTRUE(params$.is_cdp_family)) {
+  } else if (isTRUE(params[[".is_cdp_family"]])) {
     emit_gradient_accumulation_cdp(L, model_data, params, has_crit_re)
   } else {
     emit_gradient_accumulation(L, model_data, family_name, params, has_crit_re)
   }
-    if (!is.null(params$.smooth_data)) {
+    if (!is.null(params[[".smooth_data"]])) {
       smooth_d_vars <- c(dprime = "d_dprime_n", sigma = "d_sigma_n", lambda = "d_lambda_n",
                          dprime2 = "d_dprime2_n", sigma2 = "d_sigma2_n",
                          dprime_B = "d_dprime_B_n", lambda_B = "d_lambda_B_n",
@@ -1448,12 +1408,13 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
                          discrim = "d_discrim_n", discrim_B = "d_discrim_B_n",
                          sigma_B = "d_sigma_B_n", sigma2_B = "d_sigma2_B_n",
                          rho = "d_rho_n", rho_B = "d_rho_B_n", rho_N = "d_rho_N_n",
-                         lambda2 = "d_lambda2_n", rec_crit = "d_rec_crit_n", know_crit = "d_know_crit_n")
-      for (pname in names(params$.smooth_data)) {
+                         lambda2 = "d_lambda2_n", lambda2_B = "d_lambda2_B_n",
+                         rec_crit = "d_rec_crit_n", know_crit = "d_know_crit_n")
+      for (pname in names(params[[".smooth_data"]])) {
         if (pname %in% c("criterion", "criterion2")) next
         d_var <- smooth_d_vars[[pname]]
         if (!is.null(d_var)) {
-          emit_smooth_gradient(L, params$.smooth_data, pname, d_var)
+          emit_smooth_gradient(L, params[[".smooth_data"]], pname, d_var)
         }
       }
     }
@@ -1511,7 +1472,7 @@ new_line_builder <- function() {
 emit_value_extractions <- function(L, model_data, family_name, params) {
   L$add("  // Extract double values from autodiff types")
 
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   if (has_dp_fixed) {
     L$add("  const Eigen::MatrixXd X_dp_d = value_of(X_dprime);")
     L$add("  const Eigen::VectorXd beta_dp_d = value_of(beta_dprime);")
@@ -1519,10 +1480,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       if (re$dim == 1) {
         L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1538,16 +1499,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma)) {
+  if (isTRUE(params[[".has_sigma"]])) {
     L$add("  const Eigen::MatrixXd X_sig_d = value_of(X_sigma);")
     L$add("  const Eigen::VectorXd beta_sig_d = value_of(beta_sigma);")
     L$add("  const int P_sig = beta_sig_d.size();")
 
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1564,16 +1525,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".has_lambda"]])) {
     L$add("  const Eigen::MatrixXd X_lam_d = value_of(X_lambda);")
     L$add("  const Eigen::VectorXd beta_lam_d = value_of(beta_lambda);")
     L$add("  const int P_lam = beta_lam_d.size();")
 
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         tag <- lam_re_tag(lam_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1590,16 +1551,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime2)) {
+  if (isTRUE(params[[".has_dprime2"]])) {
     L$add("  const Eigen::MatrixXd X_dp2_d = value_of(X_dprime2);")
     L$add("  const Eigen::VectorXd beta_dp2_d = value_of(beta_dprime2);")
     L$add("  const int P_dp2 = beta_dp2_d.size();")
 
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1616,16 +1577,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma2)) {
+  if (isTRUE(params[[".has_sigma2"]])) {
     L$add("  const Eigen::MatrixXd X_sig2_d = value_of(X_sigma2);")
     L$add("  const Eigen::VectorXd beta_sig2_d = value_of(beta_sigma2);")
     L$add("  const int P_sig2 = beta_sig2_d.size();")
 
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1642,16 +1603,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_B)) {
+  if (isTRUE(params[[".has_dprime_B"]])) {
     L$add("  const Eigen::MatrixXd X_dpB_d = value_of(X_dprime_B);")
     L$add("  const Eigen::VectorXd beta_dpB_d = value_of(beta_dprime_B);")
     L$add("  const int P_dpB = beta_dpB_d.size();")
 
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         tag <- dpB_re_tag(dpB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1668,16 +1629,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_B)) {
+  if (isTRUE(params[[".has_lambda_B"]])) {
     L$add("  const Eigen::MatrixXd X_lamB_d = value_of(X_lambda_B);")
     L$add("  const Eigen::VectorXd beta_lamB_d = value_of(beta_lambda_B);")
     L$add("  const int P_lamB = beta_lamB_d.size();")
 
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         tag <- lamB_re_tag(lamB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1694,16 +1655,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_L)) {
+  if (isTRUE(params[[".has_dprime_L"]])) {
     L$add("  const Eigen::MatrixXd X_dpL_d = value_of(X_dprime_L);")
     L$add("  const Eigen::VectorXd beta_dpL_d = value_of(beta_dprime_L);")
     L$add("  const int P_dpL = beta_dpL_d.size();")
 
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         tag <- dpL_re_tag(dpL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1720,16 +1681,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma_L)) {
+  if (isTRUE(params[[".has_sigma_L"]])) {
     L$add("  const Eigen::MatrixXd X_sigL_d = value_of(X_sigma_L);")
     L$add("  const Eigen::VectorXd beta_sigL_d = value_of(beta_sigma_L);")
     L$add("  const int P_sigL = beta_sigL_d.size();")
 
     sigL_re_idx <- 0
-    if (!is.null(params$sigma_L$random)) {
-      for (group in names(params$sigma_L$random)) {
+    if (!is.null(params[["sigma_L"]]$random)) {
+      for (group in names(params[["sigma_L"]]$random)) {
         sigL_re_idx <- sigL_re_idx + 1
-        re <- params$sigma_L$random[[group]]
+        re <- params[["sigma_L"]]$random[[group]]
         tag <- sigL_re_tag(sigL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1746,16 +1707,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_L)) {
+  if (isTRUE(params[[".has_lambda_L"]])) {
     L$add("  const Eigen::MatrixXd X_lamL_d = value_of(X_lambda_L);")
     L$add("  const Eigen::VectorXd beta_lamL_d = value_of(beta_lambda_L);")
     L$add("  const int P_lamL = beta_lamL_d.size();")
 
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         tag <- lamL_re_tag(lamL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1772,8 +1733,8 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
-  if (isTRUE(params$.has_discrim)) {
+  has_disc_fixed_cpp <- isTRUE(params[[".has_disc_fixed"]])
+  if (isTRUE(params[[".has_discrim"]])) {
     if (has_disc_fixed_cpp) {
       L$add("  const Eigen::MatrixXd X_disc_d = value_of(X_discrim);")
       L$add("  const Eigen::VectorXd beta_disc_d = value_of(beta_discrim);")
@@ -1781,10 +1742,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
 
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1801,16 +1762,16 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_discrim_B)) {
+  if (isTRUE(params[[".has_discrim_B"]])) {
     L$add("  const Eigen::MatrixXd X_discB_d = value_of(X_discrim_B);")
     L$add("  const Eigen::VectorXd beta_discB_d = value_of(beta_discrim_B);")
     L$add("  const int P_discB = beta_discB_d.size();")
 
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         tag <- discB_re_tag(discB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  const Eigen::VectorXd %s_d = value_of(%s);",
@@ -1827,43 +1788,43 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma_B)) {
-    emit_param_value_extraction(L, "sigma_B", "sigB", params$sigma_B$random, "sigma_B")
+  if (isTRUE(params[[".has_sigma_B"]])) {
+    emit_param_value_extraction(L, "sigma_B", "sigB", params[["sigma_B"]]$random, "sigma_B")
   }
 
-  if (isTRUE(params$.has_sigma2_B)) {
-    emit_param_value_extraction(L, "sigma2_B", "sig2B", params$sigma2_B$random, "sigma2_B")
+  if (isTRUE(params[[".has_sigma2_B"]])) {
+    emit_param_value_extraction(L, "sigma2_B", "sig2B", params[["sigma2_B"]]$random, "sigma2_B")
   }
 
-  if (isTRUE(params$.has_rho)) {
-    emit_param_value_extraction(L, "rho", "rho", params$rho$random, "rho")
+  if (isTRUE(params[[".has_rho"]])) {
+    emit_param_value_extraction(L, "rho", "rho", params[["rho"]]$random, "rho")
   }
 
-  if (isTRUE(params$.has_rho_B)) {
-    emit_param_value_extraction(L, "rho_B", "rhoB", params$rho_B$random, "rho_B")
+  if (isTRUE(params[[".has_rho_B"]])) {
+    emit_param_value_extraction(L, "rho_B", "rhoB", params[["rho_B"]]$random, "rho_B")
   }
 
-  if (isTRUE(params$.has_rho_N)) {
-    emit_param_value_extraction(L, "rho_N", "rhoN", params$rho_N$random, "rho_N")
+  if (isTRUE(params[[".has_rho_N"]])) {
+    emit_param_value_extraction(L, "rho_N", "rhoN", params[["rho_N"]]$random, "rho_N")
   }
 
-  if (isTRUE(params$.has_lambda2)) {
-    emit_param_value_extraction(L, "lambda2", "lam2", params$lambda2$random, "lambda2")
+  if (isTRUE(params[[".has_lambda2"]])) {
+    emit_param_value_extraction(L, "lambda2", "lam2", params[["lambda2"]]$random, "lambda2")
   }
 
-  if (isTRUE(params$.has_lambda2_B)) {
-    emit_param_value_extraction(L, "lambda2_B", "lam2B", params$lambda2_B$random, "lambda2_B")
+  if (isTRUE(params[[".has_lambda2_B"]])) {
+    emit_param_value_extraction(L, "lambda2_B", "lam2B", params[["lambda2_B"]]$random, "lambda2_B")
   }
 
-  if (isTRUE(params$.has_rec_crit)) {
-    emit_param_value_extraction(L, "rec_crit", "rc", params$rec_crit$random, "rec_crit")
+  if (isTRUE(params[[".has_rec_crit"]])) {
+    emit_param_value_extraction(L, "rec_crit", "rc", params[["rec_crit"]]$random, "rec_crit")
   }
 
-  if (isTRUE(params$.has_know_crit)) {
-    emit_param_value_extraction(L, "know_crit", "kc", params$know_crit$random, "know_crit")
+  if (isTRUE(params[[".has_know_crit"]])) {
+    emit_param_value_extraction(L, "know_crit", "kc", params[["know_crit"]]$random, "know_crit")
   }
 
-  if (isTRUE(params$.is_cdp)) {
+  if (isTRUE(params[[".is_cdp"]])) {
     L$add("  // CDP old_level_map (already int)")
   }
 
@@ -1875,11 +1836,11 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
   }
   L$add("  const Eigen::VectorXd thresh_mid_d_vec = value_of(beta_thresh_mid);")
 
-  has_two_responses <- isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)
+  has_two_responses <- isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])
   L$add("  Eigen::VectorXd pop_gap_d(n_gaps);")
   if (is_crit_intercept_only) {
     K_for_crit <- if (has_two_responses) model_data$stan_data$K1
-                  else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1
+                  else if (isTRUE(params[[".is_cdp"]])) model_data$stan_data$J + 1
                   else model_data$K
     if (K_for_crit > 2) {
       L$add("  {")
@@ -1892,10 +1853,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
   }
 
   crit_re_idx <- 0
-  if (!is.null(params$criterion$random)) {
-    for (group in names(params$criterion$random)) {
+  if (!is.null(params[["criterion"]]$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
-      re <- params$criterion$random[[group]]
+      re <- params[["criterion"]]$random[[group]]
       L$add(sprintf("  const Eigen::MatrixXd u_crit%d_d = value_of(%s);",
                      crit_re_idx, re_var_name("criterion", group, re$cor_id)))
       if (isTRUE(re$use_z_matrix)) {
@@ -1905,8 +1866,8 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
-    varying_sc <- isTRUE(params$.varying_source_criteria)
+  if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) {
+    varying_sc <- isTRUE(params[[".varying_source_criteria"]])
 
     if (varying_sc) {
       L$add("  // Varying source criteria: K1 sets of thresholds")
@@ -1921,17 +1882,11 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
         L$add("  const Eigen::VectorXd cov_mid2_d = value_of(beta_thresh_mid_2_cov);")
         if (K2_val > 2) L$add("  const Eigen::MatrixXd cov_gaps2_d = value_of(beta_log_gaps_2_cov);")
       }
-      if (identical(params$.new_source_criteria, "shared")) {
-        L$add("  const double new_mid2_d = value_of(beta_thresh_mid_2_new);")
-        if (K2_val > 2) {
-          L$add("  const Eigen::VectorXd new_gaps2_d = value_of(beta_log_gaps_2_new);")
-        }
-      }
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
-          re <- params$criterion2$random[[group]]
+          re <- params[["criterion2"]]$random[[group]]
           L$add(sprintf("  const Eigen::MatrixXd u_crit2_%d_d = value_of(%s);",
                          crit2_re_idx, re_var_name("criterion2", group, re$cor_id)))
           if (isTRUE(re$use_z_matrix)) {
@@ -1963,10 +1918,10 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
       }
 
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
-          re <- params$criterion2$random[[group]]
+          re <- params[["criterion2"]]$random[[group]]
           L$add(sprintf("  const Eigen::MatrixXd u_crit2_%d_d = value_of(%s);",
                          crit2_re_idx, re_var_name("criterion2", group, re$cor_id)))
           if (isTRUE(re$use_z_matrix)) {
@@ -1978,9 +1933,9 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (!is.null(params$.smooth_data)) {
-    for (pname in names(params$.smooth_data)) {
-      for (sm in params$.smooth_data[[pname]]) {
+  if (!is.null(params[[".smooth_data"]])) {
+    for (pname in names(params[[".smooth_data"]])) {
+      for (sm in params[[".smooth_data"]][[pname]]) {
         n_thresh_sm <- if (!is.null(sm$n_thresh)) sm$n_thresh else 0L
         for (comp in sm$components) {
           for (k in seq_along(comp$Zs_list)) {
@@ -2008,17 +1963,17 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
 emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   L$add("  // Gradient accumulators")
 
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_disc_fixed_cpp <- isTRUE(params[[".has_disc_fixed"]])
   if (has_dp_fixed) {
     L$add("  Eigen::VectorXd grad_beta_dp = Eigen::VectorXd::Zero(P_dp);")
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       if (re$dim == 1) {
         L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2028,13 +1983,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma)) {
+  if (isTRUE(params[[".has_sigma"]])) {
     L$add("  Eigen::VectorXd grad_beta_sig = Eigen::VectorXd::Zero(P_sig);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2045,13 +2000,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".has_lambda"]])) {
     L$add("  Eigen::VectorXd grad_beta_lam = Eigen::VectorXd::Zero(P_lam);")
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         tag <- lam_re_tag(lam_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2062,13 +2017,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime2)) {
+  if (isTRUE(params[[".has_dprime2"]])) {
     L$add("  Eigen::VectorXd grad_beta_dp2 = Eigen::VectorXd::Zero(P_dp2);")
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2079,13 +2034,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma2)) {
+  if (isTRUE(params[[".has_sigma2"]])) {
     L$add("  Eigen::VectorXd grad_beta_sig2 = Eigen::VectorXd::Zero(P_sig2);")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2096,13 +2051,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_B)) {
+  if (isTRUE(params[[".has_dprime_B"]])) {
     L$add("  Eigen::VectorXd grad_beta_dpB = Eigen::VectorXd::Zero(P_dpB);")
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         tag <- dpB_re_tag(dpB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2113,13 +2068,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_B)) {
+  if (isTRUE(params[[".has_lambda_B"]])) {
     L$add("  Eigen::VectorXd grad_beta_lamB = Eigen::VectorXd::Zero(P_lamB);")
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         tag <- lamB_re_tag(lamB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2130,13 +2085,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_L)) {
+  if (isTRUE(params[[".has_dprime_L"]])) {
     L$add("  Eigen::VectorXd grad_beta_dpL = Eigen::VectorXd::Zero(P_dpL);")
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         tag <- dpL_re_tag(dpL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2147,13 +2102,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma_L)) {
+  if (isTRUE(params[[".has_sigma_L"]])) {
     L$add("  Eigen::VectorXd grad_beta_sigL = Eigen::VectorXd::Zero(P_sigL);")
     sigL_re_idx <- 0
-    if (!is.null(params$sigma_L$random)) {
-      for (group in names(params$sigma_L$random)) {
+    if (!is.null(params[["sigma_L"]]$random)) {
+      for (group in names(params[["sigma_L"]]$random)) {
         sigL_re_idx <- sigL_re_idx + 1
-        re <- params$sigma_L$random[[group]]
+        re <- params[["sigma_L"]]$random[[group]]
         tag <- sigL_re_tag(sigL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2164,13 +2119,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_L)) {
+  if (isTRUE(params[[".has_lambda_L"]])) {
     L$add("  Eigen::VectorXd grad_beta_lamL = Eigen::VectorXd::Zero(P_lamL);")
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         tag <- lamL_re_tag(lamL_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2181,15 +2136,15 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_discrim)) {
+  if (isTRUE(params[[".has_discrim"]])) {
     if (has_disc_fixed_cpp) {
       L$add("  Eigen::VectorXd grad_beta_disc = Eigen::VectorXd::Zero(P_disc);")
     }
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2200,13 +2155,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_discrim_B)) {
+  if (isTRUE(params[[".has_discrim_B"]])) {
     L$add("  Eigen::VectorXd grad_beta_discB = Eigen::VectorXd::Zero(P_discB);")
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         tag <- discB_re_tag(discB_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2217,13 +2172,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_rec_crit)) {
+  if (isTRUE(params[[".has_rec_crit"]])) {
     L$add("  Eigen::VectorXd grad_beta_rc = Eigen::VectorXd::Zero(P_rc);")
     rc_re_idx <- 0
-    if (!is.null(params$rec_crit$random)) {
-      for (group in names(params$rec_crit$random)) {
+    if (!is.null(params[["rec_crit"]]$random)) {
+      for (group in names(params[["rec_crit"]]$random)) {
         rc_re_idx <- rc_re_idx + 1
-        re <- params$rec_crit$random[[group]]
+        re <- params[["rec_crit"]]$random[[group]]
         tag <- rc_re_tag(rc_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2234,13 +2189,13 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_know_crit)) {
+  if (isTRUE(params[[".has_know_crit"]])) {
     L$add("  Eigen::VectorXd grad_beta_kc = Eigen::VectorXd::Zero(P_kc);")
     kc_re_idx <- 0
-    if (!is.null(params$know_crit$random)) {
-      for (group in names(params$know_crit$random)) {
+    if (!is.null(params[["know_crit"]]$random)) {
+      for (group in names(params[["know_crit"]]$random)) {
         kc_re_idx <- kc_re_idx + 1
-        re <- params$know_crit$random[[group]]
+        re <- params[["know_crit"]]$random[[group]]
         tag <- kc_re_tag(kc_re_idx)
         if (re$dim == 1) {
           L$add(sprintf("  Eigen::VectorXd grad_%s = Eigen::VectorXd::Zero(%s_d.size());", tag, tag))
@@ -2262,39 +2217,35 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
   }
 
   crit_re_idx <- 0
-  if (!is.null(params$criterion$random)) {
-    for (group in names(params$criterion$random)) {
+  if (!is.null(params[["criterion"]]$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
       L$add(sprintf("  Eigen::MatrixXd grad_u_crit%d = Eigen::MatrixXd::Zero(u_crit%d_d.rows(), u_crit%d_d.cols());",
                      crit_re_idx, crit_re_idx, crit_re_idx))
     }
   }
 
-  if (isTRUE(params$.has_sigma_B)) emit_param_grad_accum(L, "sigma_B", "sigB", params$sigma_B$random, "sigma_B")
-  if (isTRUE(params$.has_sigma2_B)) emit_param_grad_accum(L, "sigma2_B", "sig2B", params$sigma2_B$random, "sigma2_B")
-  if (isTRUE(params$.has_rho)) emit_param_grad_accum(L, "rho", "rho", params$rho$random, "rho")
-  if (isTRUE(params$.has_rho_B)) emit_param_grad_accum(L, "rho_B", "rhoB", params$rho_B$random, "rho_B")
-  if (isTRUE(params$.has_rho_N)) emit_param_grad_accum(L, "rho_N", "rhoN", params$rho_N$random, "rho_N")
-  if (isTRUE(params$.has_lambda2)) emit_param_grad_accum(L, "lambda2", "lam2", params$lambda2$random, "lambda2")
-  if (isTRUE(params$.has_lambda2_B)) emit_param_grad_accum(L, "lambda2_B", "lam2B", params$lambda2_B$random, "lambda2_B")
+  if (isTRUE(params[[".has_sigma_B"]])) emit_param_grad_accum(L, "sigma_B", "sigB", params[["sigma_B"]]$random, "sigma_B")
+  if (isTRUE(params[[".has_sigma2_B"]])) emit_param_grad_accum(L, "sigma2_B", "sig2B", params[["sigma2_B"]]$random, "sigma2_B")
+  if (isTRUE(params[[".has_rho"]])) emit_param_grad_accum(L, "rho", "rho", params[["rho"]]$random, "rho")
+  if (isTRUE(params[[".has_rho_B"]])) emit_param_grad_accum(L, "rho_B", "rhoB", params[["rho_B"]]$random, "rho_B")
+  if (isTRUE(params[[".has_rho_N"]])) emit_param_grad_accum(L, "rho_N", "rhoN", params[["rho_N"]]$random, "rho_N")
+  if (isTRUE(params[[".has_lambda2"]])) emit_param_grad_accum(L, "lambda2", "lam2", params[["lambda2"]]$random, "lambda2")
+  if (isTRUE(params[[".has_lambda2_B"]])) emit_param_grad_accum(L, "lambda2_B", "lam2B", params[["lambda2_B"]]$random, "lambda2_B")
 
-  if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
-    varying_sc <- isTRUE(params$.varying_source_criteria)
+  if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) {
+    varying_sc <- isTRUE(params[[".varying_source_criteria"]])
     if (varying_sc) {
       vb <- .vbin_cpp(model_data)
-      L$add(sprintf("  Eigen::VectorXd grad_vary_mid2 = Eigen::VectorXd::Zero(%d);", vb$n))
-      L$add(sprintf("  Eigen::MatrixXd grad_vary_gaps2 = Eigen::MatrixXd::Zero(%d, n_gaps2);", vb$n))
-      if (identical(params$.new_source_criteria, "shared")) {
-        L$add("  double grad_new_mid2 = 0.0;")
-        L$add("  Eigen::VectorXd grad_new_gaps2 = Eigen::VectorXd::Zero(n_gaps2);")
-      }
+      L$add(sprintf("  Eigen::VectorXd grad_vary_mid2 = Eigen::VectorXd::Zero(%d);", vb$n_set))
+      L$add(sprintf("  Eigen::MatrixXd grad_vary_gaps2 = Eigen::MatrixXd::Zero(%d, n_gaps2);", vb$n_set))
       if (.crit2_has_cov(model_data)) {
         L$add("  Eigen::VectorXd grad_cov_mid2 = Eigen::VectorXd::Zero(P_cov2);")
         L$add("  Eigen::MatrixXd grad_cov_gaps2 = Eigen::MatrixXd::Zero(n_gaps2, P_cov2);")
       }
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
           L$add(sprintf("  Eigen::MatrixXd grad_u_crit2_%d = Eigen::MatrixXd::Zero(u_crit2_%d_d.rows(), u_crit2_%d_d.cols());",
                          crit2_re_idx, crit2_re_idx, crit2_re_idx))
@@ -2312,8 +2263,8 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
       }
 
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
           L$add(sprintf("  Eigen::MatrixXd grad_u_crit2_%d = Eigen::MatrixXd::Zero(u_crit2_%d_d.rows(), u_crit2_%d_d.cols());",
                          crit2_re_idx, crit2_re_idx, crit2_re_idx))
@@ -2322,9 +2273,9 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (!is.null(params$.smooth_data)) {
-    for (pname in names(params$.smooth_data)) {
-      for (sm in params$.smooth_data[[pname]]) {
+  if (!is.null(params[[".smooth_data"]])) {
+    for (pname in names(params[[".smooth_data"]])) {
+      for (sm in params[[".smooth_data"]][[pname]]) {
         n_thresh_sm <- if (!is.null(sm$n_thresh)) sm$n_thresh else 0L
         for (comp in sm$components) {
           for (k in seq_along(comp$Zs_list)) {
@@ -2418,8 +2369,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
   emitted <- character(0)
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
@@ -2428,8 +2379,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma) && !is.null(params$sigma$random)) {
-    for (group in names(params$sigma$random)) {
+  if (isTRUE(params[[".has_sigma"]]) && !is.null(params[["sigma"]]$random)) {
+    for (group in names(params[["sigma"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2437,8 +2388,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda) && !is.null(params$lambda$random)) {
-    for (group in names(params$lambda$random)) {
+  if (isTRUE(params[[".has_lambda"]]) && !is.null(params[["lambda"]]$random)) {
+    for (group in names(params[["lambda"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2446,8 +2397,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime2) && !is.null(params$dprime2$random)) {
-    for (group in names(params$dprime2$random)) {
+  if (isTRUE(params[[".has_dprime2"]]) && !is.null(params[["dprime2"]]$random)) {
+    for (group in names(params[["dprime2"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2455,8 +2406,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma2) && !is.null(params$sigma2$random)) {
-    for (group in names(params$sigma2$random)) {
+  if (isTRUE(params[[".has_sigma2"]]) && !is.null(params[["sigma2"]]$random)) {
+    for (group in names(params[["sigma2"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2464,8 +2415,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_B) && !is.null(params$dprime_B$random)) {
-    for (group in names(params$dprime_B$random)) {
+  if (isTRUE(params[[".has_dprime_B"]]) && !is.null(params[["dprime_B"]]$random)) {
+    for (group in names(params[["dprime_B"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2473,8 +2424,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_B) && !is.null(params$lambda_B$random)) {
-    for (group in names(params$lambda_B$random)) {
+  if (isTRUE(params[[".has_lambda_B"]]) && !is.null(params[["lambda_B"]]$random)) {
+    for (group in names(params[["lambda_B"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2482,8 +2433,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_dprime_L) && !is.null(params$dprime_L$random)) {
-    for (group in names(params$dprime_L$random)) {
+  if (isTRUE(params[[".has_dprime_L"]]) && !is.null(params[["dprime_L"]]$random)) {
+    for (group in names(params[["dprime_L"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2491,8 +2442,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_sigma_L) && !is.null(params$sigma_L$random)) {
-    for (group in names(params$sigma_L$random)) {
+  if (isTRUE(params[[".has_sigma_L"]]) && !is.null(params[["sigma_L"]]$random)) {
+    for (group in names(params[["sigma_L"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2500,8 +2451,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_lambda_L) && !is.null(params$lambda_L$random)) {
-    for (group in names(params$lambda_L$random)) {
+  if (isTRUE(params[[".has_lambda_L"]]) && !is.null(params[["lambda_L"]]$random)) {
+    for (group in names(params[["lambda_L"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2509,8 +2460,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_discrim) && !is.null(params$discrim$random)) {
-    for (group in names(params$discrim$random)) {
+  if (isTRUE(params[[".has_discrim"]]) && !is.null(params[["discrim"]]$random)) {
+    for (group in names(params[["discrim"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2518,8 +2469,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (isTRUE(params$.has_discrim_B) && !is.null(params$discrim_B$random)) {
-    for (group in names(params$discrim_B$random)) {
+  if (isTRUE(params[[".has_discrim_B"]]) && !is.null(params[["discrim_B"]]$random)) {
+    for (group in names(params[["discrim_B"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2527,8 +2478,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if (!is.null(params$criterion$random)) {
-    for (group in names(params$criterion$random)) {
+  if (!is.null(params[["criterion"]]$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2536,8 +2487,8 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
-  if ((isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) && !is.null(params$criterion2$random)) {
-    for (group in names(params$criterion2$random)) {
+  if ((isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) && !is.null(params[["criterion2"]]$random)) {
+    for (group in names(params[["criterion2"]]$random)) {
       if (!(group %in% emitted)) {
         L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
         emitted <- c(emitted, group)
@@ -2578,9 +2529,9 @@ emit_group_indices <- function(L, model_data, family_name, params) {
 #' @noRd
 emit_param_computation <- function(L, model_data, family_name, params) {
   # --- dprime ---
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
-  has_encoding_dp <- isTRUE(params$dprime$fixed$has_encoding)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_disc_fixed_cpp <- isTRUE(params[[".has_disc_fixed"]])
+  has_encoding_dp <- isTRUE(params[["dprime"]]$fixed$has_encoding)
   L$add("    double dprime_n = 0.0;")
   if (has_dp_fixed) {
     if (has_encoding_dp) {
@@ -2593,27 +2544,27 @@ emit_param_computation <- function(L, model_data, family_name, params) {
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_contribution(L, tag, re, group, "dprime_n", "dprime", dp_re_idx, "dp")
     }
   }
 
-  emit_smooth_contribution(L, params$.smooth_data, "dprime", "dprime_n")
+  emit_smooth_contribution(L, params[[".smooth_data"]], "dprime", "dprime_n")
 
-  if (isTRUE(params$.is_cdp_family)) {
-  } else if (isTRUE(params$.is_cumulative) || isTRUE(params$.is_source_mixture) || isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)) {
+  if (isTRUE(params[[".is_cdp_family"]])) {
+  } else if (isTRUE(params[[".is_cumulative"]]) || isTRUE(params[[".is_source_mixture"]]) || isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) {
     L$add("    double mu = dprime_n;")
   } else {
     L$add("    double mu = is_old_n * dprime_n;")
   }
 
   # --- sigma (UVSDT, dpsdt, mixture) ---
-  if (isTRUE(params$.has_sigma)) {
-    has_encoding_sig <- isTRUE(params$sigma$fixed$has_encoding)
+  if (isTRUE(params[[".has_sigma"]])) {
+    has_encoding_sig <- isTRUE(params[["sigma"]]$fixed$has_encoding)
     if (has_encoding_sig) {
       L$add("    double sigma_n = 0.0;")
       L$add("    if (is_old_n > 0) {")
@@ -2625,26 +2576,26 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
 
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_contribution(L, tag, re, group, "sigma_n", "sigma", sig_re_idx, "sig")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "sigma", "sigma_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "sigma", "sigma_n")
     L$add("    double sigma_val = std::exp(sigma_n);")
-    if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate) || isTRUE(params$.is_cdp_family)) {
+    if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]]) || isTRUE(params[[".is_cdp_family"]])) {
     } else {
       L$add("    double s = is_old_n > 0 ? sigma_val : 1.0;")
     }
   }
 
   # --- lambda (dpsdt, mixture) ---
-  if (isTRUE(params$.has_lambda)) {
-    has_encoding_lam <- isTRUE(params$lambda$fixed$has_encoding)
+  if (isTRUE(params[[".has_lambda"]])) {
+    has_encoding_lam <- isTRUE(params[["lambda"]]$fixed$has_encoding)
     if (has_encoding_lam) {
       L$add("    double lambda_n = 0.0;")
       L$add("    if (is_old_n > 0) {")
@@ -2656,22 +2607,22 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
 
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         tag <- lam_re_tag(lam_re_idx)
         emit_re_contribution(L, tag, re, group, "lambda_n", "lambda", lam_re_idx, "lam")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "lambda", "lambda_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "lambda", "lambda_n")
     L$add("    double lambda_val = 1.0 / (1.0 + std::exp(-lambda_n));")
   }
 
   # --- dprime2 (mixture) ---
-  if (isTRUE(params$.has_dprime2)) {
-    has_encoding_dp2 <- isTRUE(params$dprime2$fixed$has_encoding)
+  if (isTRUE(params[[".has_dprime2"]])) {
+    has_encoding_dp2 <- isTRUE(params[["dprime2"]]$fixed$has_encoding)
     if (has_encoding_dp2) {
       L$add("    double dprime2_n = 0.0;")
       L$add("    if (is_old_n > 0) {")
@@ -2683,20 +2634,20 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
 
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         emit_re_contribution(L, tag, re, group, "dprime2_n", "dprime2", dp2_re_idx, "dp2")
       }
     }
-    emit_smooth_contribution(L, params$.smooth_data, "dprime2", "dprime2_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "dprime2", "dprime2_n")
   }
 
   # --- sigma2 (mixture) ---
-  if (isTRUE(params$.has_sigma2)) {
-    has_encoding_sig2 <- isTRUE(params$sigma2$fixed$has_encoding)
+  if (isTRUE(params[[".has_sigma2"]])) {
+    has_encoding_sig2 <- isTRUE(params[["sigma2"]]$fixed$has_encoding)
     if (has_encoding_sig2) {
       L$add("    double sigma2_n = 0.0;")
       L$add("    if (is_old_n > 0) {")
@@ -2708,179 +2659,179 @@ emit_param_computation <- function(L, model_data, family_name, params) {
     }
 
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_contribution(L, tag, re, group, "sigma2_n", "sigma2", sig2_re_idx, "sig2")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "sigma2", "sigma2_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "sigma2", "sigma2_n")
     L$add("    double sigma2_val = std::exp(sigma2_n);")
-    if (isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate) || isTRUE(params$.is_cdp_family)) {
+    if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]]) || isTRUE(params[[".is_cdp_family"]])) {
     } else {
       L$add("    double s2 = is_old_n > 0 ? sigma2_val : 1.0;")
     }
   }
 
   # --- dprime_B (source_mixture) ---
-  if (isTRUE(params$.has_dprime_B)) {
+  if (isTRUE(params[[".has_dprime_B"]])) {
     L$add("    double dprime_B_n = 0.0;")
     L$add("    for (int p = 0; p < P_dpB; ++p) dprime_B_n += X_dpB_d(n, p) * beta_dpB_d(p);")
 
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         tag <- dpB_re_tag(dpB_re_idx)
         emit_re_contribution(L, tag, re, group, "dprime_B_n", "dprime_B", dpB_re_idx, "dpB")
       }
     }
-    emit_smooth_contribution(L, params$.smooth_data, "dprime_B", "dprime_B_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "dprime_B", "dprime_B_n")
   }
 
   # --- lambda_B (source_mixture) ---
-  if (isTRUE(params$.has_lambda_B)) {
+  if (isTRUE(params[[".has_lambda_B"]])) {
     L$add("    double lambda_B_n = 0.0;")
     L$add("    for (int p = 0; p < P_lamB; ++p) lambda_B_n += X_lamB_d(n, p) * beta_lamB_d(p);")
 
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         tag <- lamB_re_tag(lamB_re_idx)
         emit_re_contribution(L, tag, re, group, "lambda_B_n", "lambda_B", lamB_re_idx, "lamB")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "lambda_B", "lambda_B_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "lambda_B", "lambda_B_n")
     L$add("    double lambda_B_val = 1.0 / (1.0 + std::exp(-lambda_B_n));")
   }
 
   # --- dprime_L (lure mixture) ---
-  if (isTRUE(params$.has_dprime_L)) {
+  if (isTRUE(params[[".has_dprime_L"]])) {
     L$add("    double dprime_L_n = 0.0;")
     L$add("    for (int p = 0; p < P_dpL; ++p) dprime_L_n += X_dpL_d(n, p) * beta_dpL_d(p);")
 
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         tag <- dpL_re_tag(dpL_re_idx)
         emit_re_contribution(L, tag, re, group, "dprime_L_n", "dprime_L", dpL_re_idx, "dpL")
       }
     }
-    emit_smooth_contribution(L, params$.smooth_data, "dprime_L", "dprime_L_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "dprime_L", "dprime_L_n")
   }
 
   # --- sigma_L (lure mixture) ---
-  if (isTRUE(params$.has_sigma_L)) {
+  if (isTRUE(params[[".has_sigma_L"]])) {
     L$add("    double sigma_L_n = 0.0;")
     L$add("    for (int p = 0; p < P_sigL; ++p) sigma_L_n += X_sigL_d(n, p) * beta_sigL_d(p);")
 
     sigL_re_idx <- 0
-    if (!is.null(params$sigma_L$random)) {
-      for (group in names(params$sigma_L$random)) {
+    if (!is.null(params[["sigma_L"]]$random)) {
+      for (group in names(params[["sigma_L"]]$random)) {
         sigL_re_idx <- sigL_re_idx + 1
-        re <- params$sigma_L$random[[group]]
+        re <- params[["sigma_L"]]$random[[group]]
         tag <- sigL_re_tag(sigL_re_idx)
         emit_re_contribution(L, tag, re, group, "sigma_L_n", "sigma_L", sigL_re_idx, "sigL")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "sigma_L", "sigma_L_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "sigma_L", "sigma_L_n")
     L$add("    double sigma_L_val = std::exp(sigma_L_n);")
   }
 
   # --- lambda_L (lure mixture) ---
-  if (isTRUE(params$.has_lambda_L)) {
+  if (isTRUE(params[[".has_lambda_L"]])) {
     L$add("    double lambda_L_n = 0.0;")
     L$add("    for (int p = 0; p < P_lamL; ++p) lambda_L_n += X_lamL_d(n, p) * beta_lamL_d(p);")
 
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         tag <- lamL_re_tag(lamL_re_idx)
         emit_re_contribution(L, tag, re, group, "lambda_L_n", "lambda_L", lamL_re_idx, "lamL")
       }
     }
 
-    emit_smooth_contribution(L, params$.smooth_data, "lambda_L", "lambda_L_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "lambda_L", "lambda_L_n")
     L$add("    double lambda_L_val = 1.0 / (1.0 + std::exp(-lambda_L_n));")
   }
 
   # --- discrim (vrdp2d / bivariate -- source A discriminability) ---
-  if (isTRUE(params$.has_discrim)) {
+  if (isTRUE(params[[".has_discrim"]])) {
     L$add("    double discrim_n = 0.0;")
     if (has_disc_fixed_cpp) {
       L$add("    for (int p = 0; p < P_disc; ++p) discrim_n += X_disc_d(n, p) * beta_disc_d(p);")
     }
 
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         emit_re_contribution(L, tag, re, group, "discrim_n", "discrim", disc_re_idx, "disc")
       }
     }
-    emit_smooth_contribution(L, params$.smooth_data, "discrim", "discrim_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "discrim", "discrim_n")
   }
 
   # --- discrim_B (vrdp2d/bivariate -- source B discriminability, optional) ---
-  if (isTRUE(params$.has_discrim_B)) {
+  if (isTRUE(params[[".has_discrim_B"]])) {
     L$add("    double discrim_B_n = 0.0;")
     L$add("    for (int p = 0; p < P_discB; ++p) discrim_B_n += X_discB_d(n, p) * beta_discB_d(p);")
 
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         tag <- discB_re_tag(discB_re_idx)
         emit_re_contribution(L, tag, re, group, "discrim_B_n", "discrim_B", discB_re_idx, "discB")
       }
     }
-    emit_smooth_contribution(L, params$.smooth_data, "discrim_B", "discrim_B_n")
+    emit_smooth_contribution(L, params[[".smooth_data"]], "discrim_B", "discrim_B_n")
   }
 
   # --- Bivariate-specific parameters ---
   emit_generic_param_computation(L, params, "sigma_B", "sigB", "has_sigma_B", link = "exp", val_name = "sigma_B_val")
   emit_generic_param_computation(L, params, "sigma2_B", "sig2B", "has_sigma2_B", link = "exp", val_name = "sigma2_B_val")
-  rho_link <- if (isTRUE(params$.bounded)) "inv_logit" else "tanh"
+  rho_link <- if (isTRUE(params[[".bounded"]])) "inv_logit" else "tanh"
   emit_generic_param_computation(L, params, "rho", "rho", "has_rho", link = rho_link, val_name = "rho_val")
   emit_generic_param_computation(L, params, "rho_B", "rhoB", "has_rho_B", link = rho_link, val_name = "rho_B_val")
   emit_generic_param_computation(L, params, "rho_N", "rhoN", "has_rho_N", link = "tanh", val_name = "rho_N_val")
   emit_generic_param_computation(L, params, "lambda2", "lam2", "has_lambda2", link = "inv_logit", val_name = "R_S_val")
   emit_generic_param_computation(L, params, "lambda2_B", "lam2B", "has_lambda2_B", link = "inv_logit", val_name = "R_S_B_val")
 
-  if (isTRUE(params$.is_bivariate_dp) && isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".is_bivariate_dp"]]) && isTRUE(params[[".has_lambda"]])) {
     L$add("    double R_I_val = lambda_val;")
-    if (isTRUE(params$.has_lambda_B_dp)) {
+    if (isTRUE(params[[".has_lambda_B_dp"]])) {
       L$add("    double R_I_B_val = lambda_B_val;")
     } else {
       L$add("    double R_I_B_val = lambda_val;  // constrained equal to lambda")
     }
-    if (!isTRUE(params$.has_lambda2_B)) {
+    if (!isTRUE(params[[".has_lambda2_B"]])) {
       L$add("    double R_S_B_val = R_S_val;  // constrained equal to lambda2")
     }
   }
 
   # --- CDP-specific: rec_crit and know_crit ---
-  if (isTRUE(params$.has_rec_crit)) {
+  if (isTRUE(params[[".has_rec_crit"]])) {
     emit_generic_param_computation(L, params, "rec_crit", "rc", "has_rec_crit")
     L$add("    double rec_crit_val = rec_crit_n;")
   }
 
-  if (isTRUE(params$.has_know_crit)) {
+  if (isTRUE(params[[".has_know_crit"]])) {
     emit_generic_param_computation(L, params, "know_crit", "kc", "has_know_crit")
     L$add("    double know_crit_val = know_crit_n;")
   }
@@ -2907,7 +2858,7 @@ emit_generic_param_computation <- function(L, params, full_name, short, flag_nam
     }
   }
 
-  emit_smooth_contribution(L, params$.smooth_data, full_name, sprintf("%s_n", full_name))
+  emit_smooth_contribution(L, params[[".smooth_data"]], full_name, sprintf("%s_n", full_name))
 
   if (!is.null(val_name)) {
     if (link == "exp") {
@@ -2949,7 +2900,7 @@ emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_i
 # Derivative of the gap link at the raw gap: exp for "log" (equal to the gap value,
 # so d_<vec> aliases <vec>), sigmoid for "softplus".
 .dgap_decl <- function(L, params, name, type, dims) {
-  if (identical(params$.gap_link, "softplus")) {
+  if (identical(params[[".gap_link"]], "softplus")) {
     L$add(sprintf("  %s d_%s(%s);", type, name, dims))
   } else {
     L$add(sprintf("  const %s& d_%s = %s;", type, name, name))
@@ -2957,7 +2908,7 @@ emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_i
 }
 
 .dgap_set <- function(L, params, prefix, lhs, raw) {
-  if (identical(params$.gap_link, "softplus")) {
+  if (identical(params[[".gap_link"]], "softplus")) {
     L$add(sprintf("%sd_%s = 1.0 / (1.0 + std::exp(-(%s)));", prefix, lhs, raw))
   }
 }
@@ -2971,7 +2922,7 @@ emit_re_contribution <- function(L, tag, re, group, target_var, param_name, re_i
 emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
-  gap_link <- if (!is.null(params$.gap_link)) params$.gap_link else "log"
+  gap_link <- if (!is.null(params[[".gap_link"]])) params[[".gap_link"]] else "log"
   gap_fn <- if (identical(gap_link, "softplus")) "std::log1p(std::exp(%s))" else "std::exp(%s)"
 
   if (has_crit_re) {
@@ -2984,12 +2935,12 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
     }
 
     crit_re_idx <- 0
-    for (group in names(params$criterion$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
-      re <- params$criterion$random[[group]]
+      re <- params[["criterion"]]$random[[group]]
       emit_crit_re_mid(L, crit_re_idx, re, group, "thresh_mid_val")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh_mid_val", "0")
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "thresh_mid_val", "0")
     L$add("    thresh_n(mid) = thresh_mid_val;")
 
     L$add("    for (int k = mid + 1; k < n_thresh; ++k) {")
@@ -3001,12 +2952,12 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add("      for (int p = 0; p < P_crit; ++p) eff_gap += X_crit_d(n, p) * gaps_mat_d(gi, p);")
     }
     crit_re_idx <- 0
-    for (group in names(params$criterion$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
-      re <- params$criterion$random[[group]]
+      re <- params[["criterion"]]$random[[group]]
       emit_crit_re_gap(L, crit_re_idx, re, group, "eff_gap", "k + 1")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
     .dgap_set(L, params, "      ", "exp_eff_gaps(gi)", "eff_gap")
     L$add("      thresh_n(k) = thresh_n(k - 1) + exp_eff_gaps(gi);")
@@ -3022,12 +2973,12 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       L$add("      for (int p = 0; p < P_crit; ++p) eff_gap += X_crit_d(n, p) * gaps_mat_d(gi, p);")
     }
     crit_re_idx <- 0
-    for (group in names(params$criterion$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
-      re <- params$criterion$random[[group]]
+      re <- params[["criterion"]]$random[[group]]
       emit_crit_re_gap(L, crit_re_idx, re, group, "eff_gap", "k + 1")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap", "1 + gi")
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "eff_gap", "1 + gi")
     L$add(sprintf("      exp_eff_gaps(gi) = %s;", sprintf(gap_fn, "eff_gap")))
     .dgap_set(L, params, "      ", "exp_eff_gaps(gi)", "eff_gap")
     L$add("      thresh_n(k) = thresh_n(k + 1) - exp_eff_gaps(gi);")
@@ -3035,17 +2986,17 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
 
   } else {
     # --- Population-only thresholds (precomputed exp_gaps) ---
-    has_crit_smooth <- !is.null(params$.smooth_data[["criterion"]])
+    has_crit_smooth <- !is.null(params[[".smooth_data"]][["criterion"]])
     if (is_crit_intercept_only && !has_crit_smooth) {
       L$add("    thresh_n(mid) = thresh_mid_d_vec(0);")
     } else if (is_crit_intercept_only && has_crit_smooth) {
       L$add("    double thresh_mid_val = thresh_mid_d_vec(0);")
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh_mid_val", "0")
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "thresh_mid_val", "0")
       L$add("    thresh_n(mid) = thresh_mid_val;")
     } else {
       L$add("    double thresh_mid_val = 0.0;")
       L$add("    for (int p = 0; p < P_crit; ++p) thresh_mid_val += X_crit_d(n, p) * thresh_mid_d_vec(p);")
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh_mid_val", "0")
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "thresh_mid_val", "0")
       L$add("    thresh_n(mid) = thresh_mid_val;")
     }
     L$add("    for (int k = mid + 1; k < n_thresh; ++k) {")
@@ -3057,7 +3008,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       } else {
         L$add("      double gval = pop_gap_d(gi);")
       }
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval", "1 + gi")
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "gval", "1 + gi")
       L$add(sprintf("      double egval = %s;", sprintf(gap_fn, "gval")))
       L$add("      thresh_n(k) = thresh_n(k - 1) + egval;")
       L$add("      obs_exp_gaps(gi) = egval;")
@@ -3076,7 +3027,7 @@ emit_thresh_computation <- function(L, model_data, params, has_crit_re) {
       } else {
         L$add("      double gval = pop_gap_d(gi);")
       }
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval", "1 + gi")
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "gval", "1 + gi")
       L$add(sprintf("      double egval = %s;", sprintf(gap_fn, "gval")))
       L$add("      thresh_n(k) = thresh_n(k + 1) - egval;")
       L$add("      obs_exp_gaps(gi) = egval;")
@@ -3154,13 +3105,13 @@ emit_likelihood <- function(L, family_name, params) {
 #' Link suffix for C++ helper calls ("" for probit)
 #' @noRd
 link_suffix <- function(params) {
-  if (params$.link_name %in% c("logit", "cloglog")) paste0("_", params$.link_name) else ""
+  if (params[[".link_name"]] %in% c("logit", "cloglog")) paste0("_", params[[".link_name"]]) else ""
 }
 
 #' Emit standard likelihood (EVSDT, UVSDT, cumulative)
 #' @noRd
 emit_likelihood_standard <- function(L, family_name, params) {
-  has_sigma <- isTRUE(params$.has_sigma)
+  has_sigma <- isTRUE(params[[".has_sigma"]])
   lsuf <- link_suffix(params)
 
   z_expr <- if (has_sigma) {
@@ -3184,7 +3135,7 @@ emit_likelihood_standard <- function(L, family_name, params) {
   L$add("      k_hi = yn - 1;")
   L$add("    }")
 
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     L$add("    total_lp += res.lp * count_n;")
     L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = res.lp;")
   } else {
@@ -3196,7 +3147,7 @@ emit_likelihood_standard <- function(L, family_name, params) {
 #' Emit DPSDT likelihood
 #' @noRd
 emit_likelihood_dpsdt <- function(L, params) {
-  has_sigma <- isTRUE(params$.has_sigma)
+  has_sigma <- isTRUE(params[[".has_sigma"]])
   lsuf <- link_suffix(params)
 
   L$add("    // DPSDT likelihood")
@@ -3265,7 +3216,7 @@ emit_likelihood_dpsdt <- function(L, params) {
   L$add("      d_lambda_raw = 0.0;")
   L$add("    }")
 
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     L$add("    total_lp += obs_lp * count_n;")
     L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
@@ -3277,11 +3228,11 @@ emit_likelihood_dpsdt <- function(L, params) {
 #' Emit mixture SDT likelihood
 #' @noRd
 emit_likelihood_mixture <- function(L, params) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_dprime2 <- isTRUE(params$.has_dprime2)
-  has_lure <- isTRUE(params$.has_lure_mixture)
-  has_sigma_L <- isTRUE(params$.has_sigma_L)
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_dprime2 <- isTRUE(params[[".has_dprime2"]])
+  has_lure <- isTRUE(params[[".has_lure_mixture"]])
+  has_sigma_L <- isTRUE(params[[".has_sigma_L"]])
   lsuf <- link_suffix(params)
 
   s1 <- if (has_sigma) "s" else "1.0"
@@ -3309,7 +3260,7 @@ emit_likelihood_mixture <- function(L, params) {
   L$add("    int k_lo = -1, k_hi = -1;")
   L$add("")
 
-  has_lambda <- isTRUE(params$.has_lambda)
+  has_lambda <- isTRUE(params[[".has_lambda"]])
 
   L$add("    if (is_old_n > 0) {")
 
@@ -3452,7 +3403,7 @@ emit_likelihood_mixture <- function(L, params) {
 
   L$add("    }")
 
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     L$add("    total_lp += obs_lp * count_n;")
     L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
@@ -3464,8 +3415,8 @@ emit_likelihood_mixture <- function(L, params) {
 #' Emit source mixture SDT likelihood
 #' @noRd
 emit_likelihood_source_mixture <- function(L, params) {
-  has_dprime_B <- isTRUE(params$.has_dprime_B)
-  has_lambda_B <- isTRUE(params$.has_lambda_B)
+  has_dprime_B <- isTRUE(params[[".has_dprime_B"]])
+  has_lambda_B <- isTRUE(params[[".has_lambda_B"]])
   lsuf <- link_suffix(params)
 
   L$add("    // Source mixture SDT likelihood")
@@ -3542,7 +3493,7 @@ emit_likelihood_source_mixture <- function(L, params) {
   L$add("    d_thresh_lo = sr.d_z1_lo + sr.d_z2_lo;")
   L$add("    d_thresh_hi = sr.d_z1_hi + sr.d_z2_hi;")
 
-  if (params$.has_counts) {
+  if (params[[".has_counts"]]) {
     L$add("    total_lp += obs_lp * count_n;")
     L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = obs_lp;")
   } else {
@@ -3561,7 +3512,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
   crit2 <- model_data$criterion2
   if (is.null(crit2)) return()
   is_crit2_intercept_only <- isTRUE(crit2$is_intercept_only) || crit2$n_coef == 1
-  gap_link <- if (!is.null(params$.gap_link)) params$.gap_link else "log"
+  gap_link <- if (!is.null(params[[".gap_link"]])) params[[".gap_link"]] else "log"
   gap_fn <- if (identical(gap_link, "softplus")) "std::log1p(std::exp(%s))" else "std::exp(%s)"
 
   if (has_crit2_re) {
@@ -3574,12 +3525,12 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
     }
 
     crit2_re_idx <- 0
-    for (group in names(params$criterion2$random)) {
+    for (group in names(params[["criterion2"]]$random)) {
       crit2_re_idx <- crit2_re_idx + 1
-      re <- params$criterion2$random[[group]]
+      re <- params[["criterion2"]]$random[[group]]
       emit_crit2_re_mid(L, crit2_re_idx, re, group, "thresh2_mid_val")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh2_mid_val", "0",
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "thresh2_mid_val", "0",
                                        pname = "criterion2")
     L$add("    thresh2_n(mid2) = thresh2_mid_val;")
 
@@ -3592,12 +3543,12 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       L$add("      for (int p = 0; p < P_crit2; ++p) eff_gap2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
     }
     crit2_re_idx <- 0
-    for (group in names(params$criterion2$random)) {
+    for (group in names(params[["criterion2"]]$random)) {
       crit2_re_idx <- crit2_re_idx + 1
-      re <- params$criterion2$random[[group]]
+      re <- params[["criterion2"]]$random[[group]]
       emit_crit2_re_gap(L, crit2_re_idx, re, group, "eff_gap2", "k + 1")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "eff_gap2", "1 + gi",
                                        pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
     .dgap_set(L, params, "      ", "exp_eff_gaps2(gi)", "eff_gap2")
@@ -3614,12 +3565,12 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
       L$add("      for (int p = 0; p < P_crit2; ++p) eff_gap2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
     }
     crit2_re_idx <- 0
-    for (group in names(params$criterion2$random)) {
+    for (group in names(params[["criterion2"]]$random)) {
       crit2_re_idx <- crit2_re_idx + 1
-      re <- params$criterion2$random[[group]]
+      re <- params[["criterion2"]]$random[[group]]
       emit_crit2_re_gap(L, crit2_re_idx, re, group, "eff_gap2", "k + 1")
     }
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "eff_gap2", "1 + gi",
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "eff_gap2", "1 + gi",
                                        pname = "criterion2")
     L$add(sprintf("      exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eff_gap2")))
     .dgap_set(L, params, "      ", "exp_eff_gaps2(gi)", "eff_gap2")
@@ -3628,7 +3579,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
 
   } else {
     # --- Population-only thresholds ---
-    has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+    has_crit2_smooth <- !is.null(params[[".smooth_data"]][["criterion2"]])
     if (is_crit2_intercept_only && !has_crit2_smooth) {
       L$add("    thresh2_n(mid2) = thresh_mid2_d_vec(0);")
     } else {
@@ -3638,7 +3589,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
         L$add("    double thresh2_mid_val = 0.0;")
         L$add("    for (int p = 0; p < P_crit2; ++p) thresh2_mid_val += X_crit2_d(n, p) * thresh_mid2_d_vec(p);")
       }
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "thresh2_mid_val", "0",
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "thresh2_mid_val", "0",
                                          pname = "criterion2")
       L$add("    thresh2_n(mid2) = thresh2_mid_val;")
     }
@@ -3651,7 +3602,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
         L$add("      double gval2 = 0.0;")
         L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
       }
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval2", "1 + gi",
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "gval2", "1 + gi",
                                          pname = "criterion2")
       L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
       L$add("      thresh2_n(k) = thresh2_n(k - 1) + egval2;")
@@ -3671,7 +3622,7 @@ emit_thresh2_computation <- function(L, model_data, params, has_crit2_re) {
         L$add("      double gval2 = 0.0;")
         L$add("      for (int p = 0; p < P_crit2; ++p) gval2 += X_crit2_d(n, p) * gaps2_mat_d(gi, p);")
       }
-      emit_criterion_smooth_contribution(L, params$.smooth_data, "gval2", "1 + gi",
+      emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "gval2", "1 + gi",
                                          pname = "criterion2")
       L$add(sprintf("      double egval2 = %s;", sprintf(gap_fn, "gval2")))
       L$add("      thresh2_n(k) = thresh2_n(k + 1) - egval2;")
@@ -3727,10 +3678,10 @@ emit_crit2_re_gap <- function(L, crit2_re_idx, re, group, target, thresh_k_1base
 #' Emit VRDP2D likelihood -- 2D mixture with analytic gradients
 #' @noRd
 emit_likelihood_vrdp2d <- function(L, params) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_discrim_B <- isTRUE(params$.has_discrim_B)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_discrim_B <- isTRUE(params[[".has_discrim_B"]])
+  has_counts <- params[[".has_counts"]]
 
   L$add("    // VRDP2D likelihood")
   L$add("    // Compute source_d and effective parameters")
@@ -3774,38 +3725,38 @@ emit_likelihood_vrdp2d <- function(L, params) {
 #' Emit VRDP2D gradient accumulation
 #' @noRd
 emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re, has_crit2_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_discrim_B <- isTRUE(params$.has_discrim_B)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_discrim_B <- isTRUE(params[[".has_discrim_B"]])
+  has_counts <- params[[".has_counts"]]
   count_mult <- if (has_counts) " * count_n" else ""
 
   # ---- dprime (d'_F familiarity) gradient ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   L$add(sprintf("    double d_dprime_n = vr.d_dprime_F%s;", count_mult))
   if (has_dp_fixed) {
     L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
   }
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
   }
 
   # ---- dprime2 (d'_R recollection boost) gradient ----
-  if (isTRUE(params$.has_dprime2)) {
+  if (isTRUE(params[[".has_dprime2"]])) {
     L$add("")
     L$add(sprintf("    double d_dprime2_n = vr.d_dprime_R%s;", count_mult))
     L$add("    for (int p = 0; p < P_dp2; ++p) grad_beta_dp2(p) += d_dprime2_n * X_dp2_d(n, p);")
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime2_n", "dprime2", dp2_re_idx, "dp2")
       }
@@ -3819,10 +3770,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     L$add(sprintf("      double d_discrim_n = vr.d_source_d%s;", count_mult))
     L$add("      for (int p = 0; p < P_disc; ++p) grad_beta_disc(p) += d_discrim_n * X_disc_d(n, p);")
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_n", "discrim", disc_re_idx, "disc", indent = "      ")
       }
@@ -3831,10 +3782,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     L$add(sprintf("      double d_discrim_B_n = vr.d_source_d%s;", count_mult))
     L$add("      for (int p = 0; p < P_discB; ++p) grad_beta_discB(p) += d_discrim_B_n * X_discB_d(n, p);")
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         tag <- discB_re_tag(discB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_B_n", "discrim_B", discB_re_idx, "discB", indent = "      ")
       }
@@ -3845,10 +3796,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     L$add(sprintf("      double d_discrim_n = (item_type_n == 2 ? vr.d_source_d : -vr.d_source_d)%s;", count_mult))
     L$add("      for (int p = 0; p < P_disc; ++p) grad_beta_disc(p) += d_discrim_n * X_disc_d(n, p);")
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_n", "discrim", disc_re_idx, "disc", indent = "      ")
       }
@@ -3861,10 +3812,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
   L$add(sprintf("    double d_lambda_n = vr.d_lambda * lambda_val * (1.0 - lambda_val)%s;", count_mult))
   L$add("    for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
   lam_re_idx <- 0
-  if (!is.null(params$lambda$random)) {
-    for (group in names(params$lambda$random)) {
+  if (!is.null(params[["lambda"]]$random)) {
+    for (group in names(params[["lambda"]]$random)) {
       lam_re_idx <- lam_re_idx + 1
-      re <- params$lambda$random[[group]]
+      re <- params[["lambda"]]$random[[group]]
       tag <- lam_re_tag(lam_re_idx)
       emit_re_gradient(L, tag, re, group, "d_lambda_n", "lambda", lam_re_idx, "lam")
     }
@@ -3876,10 +3827,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     L$add(sprintf("    double d_sigma_n = vr.d_sigma_item * sigma_val%s;", count_mult))
     L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig")
       }
@@ -3892,10 +3843,10 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     L$add(sprintf("    double d_sigma2_n = vr.d_sigma_S * sigma2_val%s;", count_mult))
     L$add("    for (int p = 0; p < P_sig2; ++p) grad_beta_sig2(p) += d_sigma2_n * X_sig2_d(n, p);")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_n", "sigma2", sig2_re_idx, "sig2")
       }
@@ -3934,7 +3885,7 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
     d_hi2 <- "vr.d_thresh2_hi"
   }
 
-  varying_sc <- isTRUE(params$.varying_source_criteria)
+  varying_sc <- isTRUE(params[[".varying_source_criteria"]])
 
   if (.varying_per_obs(model_data, params)) {
     emit_grad_thresh2_varying_obs(L, model_data, params, "vr.k2_lo", "vr.k2_hi", d_lo2, d_hi2)
@@ -3991,11 +3942,11 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add(sprintf("    if (vr.k2_hi >= 0) propagate_mp2(vr.k2_hi, %s);", d_hi2))
       }
 
-      if (!is.null(params$.smooth_data[["criterion2"]])) {
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0",
+      if (!is.null(params[[".smooth_data"]][["criterion2"]])) {
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_mid", "0",
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_gaps(gi)", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
       }
@@ -4003,7 +3954,7 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
       emit_crit2_re_grad_scatter(L, model_data, params)
 
     } else {
-      has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+      has_crit2_smooth <- !is.null(params[[".smooth_data"]][["criterion2"]])
       gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "d_obs_exp_gaps2" else "d_pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (vr.k2_lo >= 0) {")
@@ -4035,7 +3986,7 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
       if (has_crit2_smooth) {
         L$add(sprintf("    double g_sm2_mid = (vr.k2_lo >= 0 ? %s : 0.0) + (vr.k2_hi >= 0 ? %s : 0.0);",
                       d_lo2, d_hi2))
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_mid", "0",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm2_mid", "0",
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
         L$add("      double g_sm2_gap = 0.0;")
@@ -4043,7 +3994,7 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
         L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi > mid2 && gi <= vr.k2_hi - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_hi2))
         L$add(sprintf("      if (vr.k2_lo >= 0 && vr.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_lo - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_lo2))
         L$add(sprintf("      if (vr.k2_hi >= 0 && vr.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - vr.k2_hi - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_hi2))
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm2_gap", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
       }
@@ -4054,12 +4005,12 @@ emit_gradient_accumulation_vrdp2d <- function(L, model_data, params, has_crit_re
 #' Emit criterion2 RE gradient scatter (from g_crit2_mid/g_crit2_gaps to grad_u_crit2)
 #' @noRd
 emit_crit2_re_grad_scatter <- function(L, model_data, params) {
-  if (is.null(params$criterion2$random)) return()
+  if (is.null(params[["criterion2"]]$random)) return()
 
   crit2_re_idx <- 0
-  for (group in names(params$criterion2$random)) {
+  for (group in names(params[["criterion2"]]$random)) {
     crit2_re_idx <- crit2_re_idx + 1
-    re <- params$criterion2$random[[group]]
+    re <- params[["criterion2"]]$random[[group]]
     g_var <- sprintf("g_%s", group)
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
@@ -4112,9 +4063,9 @@ emit_gradient_accumulation <- function(L, model_data, family_name, params, has_c
 #' Emit standard gradient accumulation (EVSDT, UVSDT, cumulative)
 #' @noRd
 emit_gradient_accumulation_standard <- function(L, model_data, family_name, params, has_crit_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_counts <- params$.has_counts
-  is_cumulative <- isTRUE(params$.is_cumulative)
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_counts <- params[[".has_counts"]]
+  is_cumulative <- isTRUE(params[[".is_cumulative"]])
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
@@ -4132,8 +4083,8 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
   }
 
   # ---- dprime gradient ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_encoding_dp <- isTRUE(params$dprime$fixed$has_encoding)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_encoding_dp <- isTRUE(params[["dprime"]]$fixed$has_encoding)
   if (is_cumulative) {
     L$add("    double d_dprime_n = d_mu;")
   } else {
@@ -4151,10 +4102,10 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -4176,10 +4127,10 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
     L$add("      for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
 
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig", indent = "      ")
       }
@@ -4194,14 +4145,14 @@ emit_gradient_accumulation_standard <- function(L, model_data, family_name, para
 #' Emit DPSDT gradient accumulation
 #' @noRd
 emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_counts <- params[[".has_counts"]]
 
   count_mult <- if (has_counts) " * count_n" else ""
 
   # ---- dprime gradient ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_encoding_dp <- isTRUE(params$dprime$fixed$has_encoding)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_encoding_dp <- isTRUE(params[["dprime"]]$fixed$has_encoding)
   L$add(sprintf("    double d_dprime_n = d_mu_raw * is_old_n%s;", count_mult))
 
   if (has_dp_fixed) {
@@ -4215,10 +4166,10 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -4231,10 +4182,10 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
     L$add(sprintf("      double d_sigma_n = d_sigma_raw%s;", count_mult))
     L$add("      for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig", indent = "      ")
       }
@@ -4248,10 +4199,10 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
   L$add(sprintf("      double d_lambda_n = d_lambda_raw * lambda_val * (1.0 - lambda_val)%s;", count_mult))
   L$add("      for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
   lam_re_idx <- 0
-  if (!is.null(params$lambda$random)) {
-    for (group in names(params$lambda$random)) {
+  if (!is.null(params[["lambda"]]$random)) {
+    for (group in names(params[["lambda"]]$random)) {
       lam_re_idx <- lam_re_idx + 1
-      re <- params$lambda$random[[group]]
+      re <- params[["lambda"]]$random[[group]]
       tag <- lam_re_tag(lam_re_idx)
       emit_re_gradient(L, tag, re, group, "d_lambda_n", "lambda", lam_re_idx, "lam", indent = "      ")
     }
@@ -4265,16 +4216,16 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
 #' Emit mixture gradient accumulation
 #' @noRd
 emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_dprime2 <- isTRUE(params$.has_dprime2)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_dprime2 <- isTRUE(params[[".has_dprime2"]])
+  has_counts <- params[[".has_counts"]]
 
   count_mult <- if (has_counts) " * count_n" else ""
 
   # ---- dprime (component 1) gradient ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_encoding_dp <- isTRUE(params$dprime$fixed$has_encoding)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_encoding_dp <- isTRUE(params[["dprime"]]$fixed$has_encoding)
   L$add(sprintf("    double d_dprime_n = (d_mu1_raw * is_old_n - d_mu2_raw * (1.0 - is_old_n))%s;", count_mult))
 
   if (has_dp_fixed) {
@@ -4288,10 +4239,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -4304,10 +4255,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     L$add(sprintf("      double d_sigma_n = d_sigma_raw%s;", count_mult))
     L$add("      for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig", indent = "      ")
       }
@@ -4316,16 +4267,16 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   }
 
   # ---- lambda gradient (only when signal mixture is active) ----
-  if (isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".has_lambda"]])) {
     L$add("")
     L$add("    if (is_old_n > 0) {")
     L$add(sprintf("      double d_lambda_n = d_lambda_raw * lambda_val * (1.0 - lambda_val)%s;", count_mult))
     L$add("      for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         tag <- lam_re_tag(lam_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda_n", "lambda", lam_re_idx, "lam", indent = "      ")
       }
@@ -4336,7 +4287,7 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   # ---- dprime2 (component 2) gradient ----
   if (has_dprime2) {
     L$add("")
-    has_encoding_dp2 <- isTRUE(params$dprime2$fixed$has_encoding)
+    has_encoding_dp2 <- isTRUE(params[["dprime2"]]$fixed$has_encoding)
     L$add(sprintf("    double d_dprime2_n = d_mu2_raw%s;", count_mult))
 
     if (has_encoding_dp2) {
@@ -4348,10 +4299,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     }
 
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime2_n", "dprime2", dp2_re_idx, "dp2")
       }
@@ -4365,10 +4316,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     L$add(sprintf("      double d_sigma2_n = d_sigma2_raw%s;", count_mult))
     L$add("      for (int p = 0; p < P_sig2; ++p) grad_beta_sig2(p) += d_sigma2_n * X_sig2_d(n, p);")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_n", "sigma2", sig2_re_idx, "sig2", indent = "      ")
       }
@@ -4377,9 +4328,9 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
   }
 
   # ---- Lure mixture gradient (dprime_L, sigma_L, lambda_L) ----
-  has_lure <- isTRUE(params$.has_lure_mixture)
+  has_lure <- isTRUE(params[[".has_lure_mixture"]])
   if (has_lure) {
-    has_sigma_L <- isTRUE(params$.has_sigma_L)
+    has_sigma_L <- isTRUE(params[[".has_sigma_L"]])
 
     L$add("")
     L$add("    if (is_old_n <= 0) {")
@@ -4387,10 +4338,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     L$add(sprintf("      double d_dprime_L_n = d_dprime_L_raw%s;", count_mult))
     L$add("      for (int p = 0; p < P_dpL; ++p) grad_beta_dpL(p) += d_dprime_L_n * X_dpL_d(n, p);")
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         tag <- dpL_re_tag(dpL_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime_L_n", "dprime_L", dpL_re_idx, "dpL", indent = "      ")
       }
@@ -4400,10 +4351,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
       L$add(sprintf("      double d_sigma_L_n = d_sigma_L_raw%s;", count_mult))
       L$add("      for (int p = 0; p < P_sigL; ++p) grad_beta_sigL(p) += d_sigma_L_n * X_sigL_d(n, p);")
       sigL_re_idx <- 0
-      if (!is.null(params$sigma_L$random)) {
-        for (group in names(params$sigma_L$random)) {
+      if (!is.null(params[["sigma_L"]]$random)) {
+        for (group in names(params[["sigma_L"]]$random)) {
           sigL_re_idx <- sigL_re_idx + 1
-          re <- params$sigma_L$random[[group]]
+          re <- params[["sigma_L"]]$random[[group]]
           tag <- sigL_re_tag(sigL_re_idx)
           emit_re_gradient(L, tag, re, group, "d_sigma_L_n", "sigma_L", sigL_re_idx, "sigL", indent = "      ")
         }
@@ -4413,10 +4364,10 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
     L$add(sprintf("      double d_lambda_L_n = d_lambda_L_raw * lambda_L_val * (1.0 - lambda_L_val)%s;", count_mult))
     L$add("      for (int p = 0; p < P_lamL; ++p) grad_beta_lamL(p) += d_lambda_L_n * X_lamL_d(n, p);")
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         tag <- lamL_re_tag(lamL_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda_L_n", "lambda_L", lamL_re_idx, "lamL", indent = "      ")
       }
@@ -4432,23 +4383,23 @@ emit_gradient_accumulation_mixture <- function(L, model_data, params, has_crit_r
 #' Emit source mixture gradient accumulation
 #' @noRd
 emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has_crit_re) {
-  has_dprime_B <- isTRUE(params$.has_dprime_B)
-  has_lambda_B <- isTRUE(params$.has_lambda_B)
-  has_counts <- params$.has_counts
+  has_dprime_B <- isTRUE(params[[".has_dprime_B"]])
+  has_lambda_B <- isTRUE(params[[".has_lambda_B"]])
+  has_counts <- params[[".has_counts"]]
   count_mult <- if (has_counts) " * count_n" else ""
 
   # ---- dprime gradient (source A or symmetric) ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   L$add(sprintf("    double d_dprime_n = d_mu_raw%s;", count_mult))
   if (has_dp_fixed) {
     L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -4461,10 +4412,10 @@ emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has
     L$add("    for (int p = 0; p < P_dpB; ++p) grad_beta_dpB(p) += d_dprime_B_n * X_dpB_d(n, p);")
 
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         tag <- dpB_re_tag(dpB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime_B_n", "dprime_B", dpB_re_idx, "dpB")
       }
@@ -4476,10 +4427,10 @@ emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has
   L$add(sprintf("    double d_lambda_n = d_lambda_raw * lambda_val * (1.0 - lambda_val)%s;", count_mult))
   L$add("    for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
   lam_re_idx <- 0
-  if (!is.null(params$lambda$random)) {
-    for (group in names(params$lambda$random)) {
+  if (!is.null(params[["lambda"]]$random)) {
+    for (group in names(params[["lambda"]]$random)) {
       lam_re_idx <- lam_re_idx + 1
-      re <- params$lambda$random[[group]]
+      re <- params[["lambda"]]$random[[group]]
       tag <- lam_re_tag(lam_re_idx)
       emit_re_gradient(L, tag, re, group, "d_lambda_n", "lambda", lam_re_idx, "lam")
     }
@@ -4491,10 +4442,10 @@ emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has
     L$add(sprintf("    double d_lambda_B_n = d_lambda_B_raw * lambda_B_val * (1.0 - lambda_B_val)%s;", count_mult))
     L$add("    for (int p = 0; p < P_lamB; ++p) grad_beta_lamB(p) += d_lambda_B_n * X_lamB_d(n, p);")
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         tag <- lamB_re_tag(lamB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda_B_n", "lambda_B", lamB_re_idx, "lamB")
       }
@@ -4508,8 +4459,8 @@ emit_gradient_accumulation_source_mixture <- function(L, model_data, params, has
 #' Emit standard threshold gradient (uses res.d_z_lo / res.d_z_hi)
 #' @noRd
 emit_thresh_gradient_standard <- function(L, model_data, params, has_crit_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_counts <- params[[".has_counts"]]
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
@@ -4535,7 +4486,7 @@ emit_thresh_gradient_standard <- function(L, model_data, params, has_crit_re) {
 #' Emit threshold gradient for dpsdt/mixture (uses pre-computed d_thresh_lo/d_thresh_hi)
 #' @noRd
 emit_thresh_gradient_extended <- function(L, model_data, params, has_crit_re) {
-  has_counts <- params$.has_counts
+  has_counts <- params[[".has_counts"]]
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
 
@@ -4573,7 +4524,7 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
       emit_multi_predictor_thresh_grad_with_re(L, d_lo, d_hi, params)
     }
 
-    if (!is.null(params$.smooth_data[["criterion"]])) {
+    if (!is.null(params[[".smooth_data"]][["criterion"]])) {
       L$add("    double g_sm_mid = 0.0;")
       L$add("    Eigen::VectorXd g_sm_gaps = Eigen::VectorXd::Zero(n_gaps);")
       L$add("    {")
@@ -4588,9 +4539,9 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
       L$add(sprintf("      if (k_lo >= 0) scatter_sm(k_lo, %s);", d_lo))
       L$add(sprintf("      if (k_hi >= 0) scatter_sm(k_hi, %s);", d_hi))
       L$add("    }")
-      emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_mid", "0")
+      emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm_mid", "0")
       L$add("    for (int gi = 0; gi < n_gaps; ++gi) {")
-      emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_gaps(gi)", "1 + gi")
+      emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm_gaps(gi)", "1 + gi")
       L$add("    }")
     }
 
@@ -4598,7 +4549,7 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
 
   } else {
     if (is_crit_intercept_only) {
-      gaps_vec <- if (is.null(params$.smooth_data[["criterion"]])) "d_pop_exp_gaps" else "d_obs_exp_gaps"
+      gaps_vec <- if (is.null(params[[".smooth_data"]][["criterion"]])) "d_pop_exp_gaps" else "d_obs_exp_gaps"
       L$add("    if (k_lo >= 0) {")
       L$add(sprintf("      batch_sdt::propagate_thresh_grad(k_lo, %s, mid, n_thresh, n_upper,", d_lo))
       L$add(sprintf("          %s, grad_thresh_mid_pop, grad_log_gaps_pop);", gaps_vec))
@@ -4610,16 +4561,16 @@ emit_thresh_propagation <- function(L, model_data, params, has_crit_re, d_lo, d_
     } else {
       emit_multi_predictor_thresh_grad_no_re(L, d_lo, d_hi, params)
     }
-    if (!is.null(params$.smooth_data[["criterion"]])) {
+    if (!is.null(params[[".smooth_data"]][["criterion"]])) {
       L$add(sprintf("    double g_sm_mid = (k_lo >= 0 ? %s : 0.0) + (k_hi >= 0 ? %s : 0.0);", d_lo, d_hi))
-      emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_mid", "0")
+      emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm_mid", "0")
       L$add("    for (int gi = 0; gi < n_gaps; ++gi) {")
       L$add("      double g_sm_gap = 0.0;")
       L$add(sprintf("      if (k_lo >= 0 && k_lo > mid && gi <= k_lo - mid - 1) g_sm_gap += %s * d_obs_exp_gaps(gi);", d_lo))
       L$add(sprintf("      if (k_hi >= 0 && k_hi > mid && gi <= k_hi - mid - 1) g_sm_gap += %s * d_obs_exp_gaps(gi);", d_hi))
       L$add(sprintf("      if (k_lo >= 0 && k_lo < mid && gi >= n_upper && gi <= n_upper + (mid - k_lo - 1)) g_sm_gap += %s * (-d_obs_exp_gaps(gi));", d_lo))
       L$add(sprintf("      if (k_hi >= 0 && k_hi < mid && gi >= n_upper && gi <= n_upper + (mid - k_hi - 1)) g_sm_gap += %s * (-d_obs_exp_gaps(gi));", d_hi))
-      emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm_gap", "1 + gi")
+      emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm_gap", "1 + gi")
       L$add("    }")
     }
   }
@@ -4705,11 +4656,11 @@ emit_multi_predictor_thresh_grad_no_re <- function(L, d_lo, d_hi, params = list(
 #' @noRd
 emit_crit_re_grad_scatter <- function(L, model_data, params) {
   crit_re_idx <- 0
-  if (is.null(params$criterion$random)) return()
+  if (is.null(params[["criterion"]]$random)) return()
 
-  for (group in names(params$criterion$random)) {
+  for (group in names(params[["criterion"]]$random)) {
     crit_re_idx <- crit_re_idx + 1
-    re <- params$criterion$random[[group]]
+    re <- params[["criterion"]]$random[[group]]
     g_var <- sprintf("g_%s", group)
     n_re_terms <- if (!is.null(re$n_re_terms)) re$n_re_terms else 1
 
@@ -4750,24 +4701,24 @@ emit_crit_re_grad_scatter <- function(L, model_data, params) {
 emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re, has_crit2_re = FALSE) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
-  has_disc_fixed_cpp <- isTRUE(params$.has_disc_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
+  has_disc_fixed_cpp <- isTRUE(params[[".has_disc_fixed"]])
 
   L$add("  if constexpr (is_autodiff) {")
   L$add("    std::vector<var> operands;")
   L$add("    std::vector<double> gradients;")
   L$add("")
 
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   if (has_dp_fixed) {
     emit_pack_vec(L, "beta_dprime", "grad_beta_dp")
   }
 
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       stan_name <- re_var_name("dprime", group, re$cor_id)
       tag <- dp_re_tag(dp_re_idx)
       if (re$dim == 1) {
@@ -4778,13 +4729,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_sigma)) {
+  if (isTRUE(params[[".has_sigma"]])) {
     emit_pack_vec(L, "beta_sigma", "grad_beta_sig")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         stan_name <- re_var_name("sigma", group, re$cor_id)
         tag <- sig_re_tag(sig_re_idx)
         if (re$dim == 1) {
@@ -4796,13 +4747,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_lambda)) {
+  if (isTRUE(params[[".has_lambda"]])) {
     emit_pack_vec(L, "beta_lambda", "grad_beta_lam")
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         stan_name <- re_var_name("lambda", group, re$cor_id)
         tag <- lam_re_tag(lam_re_idx)
         if (re$dim == 1) {
@@ -4814,13 +4765,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_dprime2)) {
+  if (isTRUE(params[[".has_dprime2"]])) {
     emit_pack_vec(L, "beta_dprime2", "grad_beta_dp2")
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         stan_name <- re_var_name("dprime2", group, re$cor_id)
         tag <- dp2_re_tag(dp2_re_idx)
         if (re$dim == 1) {
@@ -4832,13 +4783,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_sigma2)) {
+  if (isTRUE(params[[".has_sigma2"]])) {
     emit_pack_vec(L, "beta_sigma2", "grad_beta_sig2")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         stan_name <- re_var_name("sigma2", group, re$cor_id)
         tag <- sig2_re_tag(sig2_re_idx)
         if (re$dim == 1) {
@@ -4850,13 +4801,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_dprime_B)) {
+  if (isTRUE(params[[".has_dprime_B"]])) {
     emit_pack_vec(L, "beta_dprime_B", "grad_beta_dpB")
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         stan_name <- re_var_name("dprime_B", group, re$cor_id)
         tag <- dpB_re_tag(dpB_re_idx)
         if (re$dim == 1) {
@@ -4868,13 +4819,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_lambda_B)) {
+  if (isTRUE(params[[".has_lambda_B"]])) {
     emit_pack_vec(L, "beta_lambda_B", "grad_beta_lamB")
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         stan_name <- re_var_name("lambda_B", group, re$cor_id)
         tag <- lamB_re_tag(lamB_re_idx)
         if (re$dim == 1) {
@@ -4886,13 +4837,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_dprime_L)) {
+  if (isTRUE(params[[".has_dprime_L"]])) {
     emit_pack_vec(L, "beta_dprime_L", "grad_beta_dpL")
     dpL_re_idx <- 0
-    if (!is.null(params$dprime_L$random)) {
-      for (group in names(params$dprime_L$random)) {
+    if (!is.null(params[["dprime_L"]]$random)) {
+      for (group in names(params[["dprime_L"]]$random)) {
         dpL_re_idx <- dpL_re_idx + 1
-        re <- params$dprime_L$random[[group]]
+        re <- params[["dprime_L"]]$random[[group]]
         stan_name <- re_var_name("dprime_L", group, re$cor_id)
         tag <- dpL_re_tag(dpL_re_idx)
         if (re$dim == 1) {
@@ -4904,13 +4855,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_sigma_L)) {
+  if (isTRUE(params[[".has_sigma_L"]])) {
     emit_pack_vec(L, "beta_sigma_L", "grad_beta_sigL")
     sigL_re_idx <- 0
-    if (!is.null(params$sigma_L$random)) {
-      for (group in names(params$sigma_L$random)) {
+    if (!is.null(params[["sigma_L"]]$random)) {
+      for (group in names(params[["sigma_L"]]$random)) {
         sigL_re_idx <- sigL_re_idx + 1
-        re <- params$sigma_L$random[[group]]
+        re <- params[["sigma_L"]]$random[[group]]
         stan_name <- re_var_name("sigma_L", group, re$cor_id)
         tag <- sigL_re_tag(sigL_re_idx)
         if (re$dim == 1) {
@@ -4922,13 +4873,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_lambda_L)) {
+  if (isTRUE(params[[".has_lambda_L"]])) {
     emit_pack_vec(L, "beta_lambda_L", "grad_beta_lamL")
     lamL_re_idx <- 0
-    if (!is.null(params$lambda_L$random)) {
-      for (group in names(params$lambda_L$random)) {
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
         lamL_re_idx <- lamL_re_idx + 1
-        re <- params$lambda_L$random[[group]]
+        re <- params[["lambda_L"]]$random[[group]]
         stan_name <- re_var_name("lambda_L", group, re$cor_id)
         tag <- lamL_re_tag(lamL_re_idx)
         if (re$dim == 1) {
@@ -4940,15 +4891,15 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_discrim)) {
+  if (isTRUE(params[[".has_discrim"]])) {
     if (has_disc_fixed_cpp) {
       emit_pack_vec(L, "beta_discrim", "grad_beta_disc")
     }
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         stan_name <- re_var_name("discrim", group, re$cor_id)
         tag <- disc_re_tag(disc_re_idx)
         if (re$dim == 1) {
@@ -4960,13 +4911,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_discrim_B)) {
+  if (isTRUE(params[[".has_discrim_B"]])) {
     emit_pack_vec(L, "beta_discrim_B", "grad_beta_discB")
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         stan_name <- re_var_name("discrim_B", group, re$cor_id)
         tag <- discB_re_tag(discB_re_idx)
         if (re$dim == 1) {
@@ -4986,13 +4937,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   emit_generic_operand_packing(L, params, "lambda2", "lam2", "has_lambda2")
   emit_generic_operand_packing(L, params, "lambda2_B", "lam2B", "has_lambda2_B")
 
-  if (isTRUE(params$.has_rec_crit)) {
+  if (isTRUE(params[[".has_rec_crit"]])) {
     emit_pack_vec(L, "beta_rec_crit", "grad_beta_rc")
     rc_re_idx <- 0
-    if (!is.null(params$rec_crit$random)) {
-      for (group in names(params$rec_crit$random)) {
+    if (!is.null(params[["rec_crit"]]$random)) {
+      for (group in names(params[["rec_crit"]]$random)) {
         rc_re_idx <- rc_re_idx + 1
-        re <- params$rec_crit$random[[group]]
+        re <- params[["rec_crit"]]$random[[group]]
         stan_name <- re_var_name("rec_crit", group, re$cor_id)
         tag <- rc_re_tag(rc_re_idx)
         if (re$dim == 1) {
@@ -5004,13 +4955,13 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
-  if (isTRUE(params$.has_know_crit)) {
+  if (isTRUE(params[[".has_know_crit"]])) {
     emit_pack_vec(L, "beta_know_crit", "grad_beta_kc")
     kc_re_idx <- 0
-    if (!is.null(params$know_crit$random)) {
-      for (group in names(params$know_crit$random)) {
+    if (!is.null(params[["know_crit"]]$random)) {
+      for (group in names(params[["know_crit"]]$random)) {
         kc_re_idx <- kc_re_idx + 1
-        re <- params$know_crit$random[[group]]
+        re <- params[["know_crit"]]$random[[group]]
         stan_name <- re_var_name("know_crit", group, re$cor_id)
         tag <- kc_re_tag(kc_re_idx)
         if (re$dim == 1) {
@@ -5029,9 +4980,9 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     emit_pack_vec(L, "beta_thresh_mid", "grad_thresh_mid_pop")
   }
 
-  has_two_responses <- isTRUE(params$.is_vrdp2d) || isTRUE(params$.is_bivariate)
+  has_two_responses <- isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])
   K_for_crit <- if (has_two_responses) model_data$stan_data$K1
-                else if (isTRUE(params$.is_cdp)) model_data$stan_data$J + 1
+                else if (isTRUE(params[[".is_cdp"]])) model_data$stan_data$J + 1
                 else model_data$K
   if (K_for_crit > 2) {
     if (is_crit_intercept_only) {
@@ -5045,16 +4996,16 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
   }
 
   crit_re_idx <- 0
-  if (!is.null(params$criterion$random)) {
-    for (group in names(params$criterion$random)) {
+  if (!is.null(params[["criterion"]]$random)) {
+    for (group in names(params[["criterion"]]$random)) {
       crit_re_idx <- crit_re_idx + 1
-      stan_name <- re_var_name("criterion", group, params$criterion$random[[group]]$cor_id)
+      stan_name <- re_var_name("criterion", group, params[["criterion"]]$random[[group]]$cor_id)
       emit_pack_mat(L, stan_name, sprintf("grad_u_crit%d", crit_re_idx))
     }
   }
 
   if (has_two_responses) {
-    varying_sc <- isTRUE(params$.varying_source_criteria)
+    varying_sc <- isTRUE(params[[".varying_source_criteria"]])
     K2_val <- model_data$stan_data$K2
 
     if (varying_sc) {
@@ -5066,18 +5017,11 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
         emit_pack_vec(L, "beta_thresh_mid_2_cov", "grad_cov_mid2")
         if (K2_val > 2) emit_pack_mat(L, "beta_log_gaps_2_cov", "grad_cov_gaps2")
       }
-      if (identical(params$.new_source_criteria, "shared")) {
-        L$add("    operands.push_back(beta_thresh_mid_2_new);")
-        L$add("    gradients.push_back(grad_new_mid2);")
-        if (K2_val > 2) {
-          emit_pack_vec(L, "beta_log_gaps_2_new", "grad_new_gaps2")
-        }
-      }
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
-          stan_name <- re_var_name("criterion2", group, params$criterion2$random[[group]]$cor_id)
+          stan_name <- re_var_name("criterion2", group, params[["criterion2"]]$random[[group]]$cor_id)
           emit_pack_mat(L, stan_name, sprintf("grad_u_crit2_%d", crit2_re_idx))
         }
       }
@@ -5104,19 +5048,19 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
       }
 
       crit2_re_idx <- 0
-      if (!is.null(params$criterion2$random)) {
-        for (group in names(params$criterion2$random)) {
+      if (!is.null(params[["criterion2"]]$random)) {
+        for (group in names(params[["criterion2"]]$random)) {
           crit2_re_idx <- crit2_re_idx + 1
-          stan_name <- re_var_name("criterion2", group, params$criterion2$random[[group]]$cor_id)
+          stan_name <- re_var_name("criterion2", group, params[["criterion2"]]$random[[group]]$cor_id)
           emit_pack_mat(L, stan_name, sprintf("grad_u_crit2_%d", crit2_re_idx))
         }
       }
     }
   }
 
-  if (!is.null(params$.smooth_data)) {
-    for (pname in names(params$.smooth_data)) {
-      for (sm in params$.smooth_data[[pname]]) {
+  if (!is.null(params[[".smooth_data"]])) {
+    for (pname in names(params[[".smooth_data"]])) {
+      for (sm in params[[".smooth_data"]][[pname]]) {
         n_thresh_sm <- if (!is.null(sm$n_thresh)) sm$n_thresh else 0L
         for (comp in sm$components) {
           for (k in seq_along(comp$Zs_list)) {
@@ -5267,13 +5211,13 @@ lam2B_re_tag <- function(idx) sprintf("u_lam2B_%d", idx)
 #' Emit CDP likelihood computation
 #' @noRd
 emit_likelihood_cdp <- function(L, params) {
-  is_cdp <- isTRUE(params$.is_cdp)
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_dprime2 <- isTRUE(params$.has_dprime2)
-  has_know_crit <- isTRUE(params$.has_know_crit)
-  has_counts <- params$.has_counts
-  n_rkg <- params$.n_rkg
+  is_cdp <- isTRUE(params[[".is_cdp"]])
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_dprime2 <- isTRUE(params[[".has_dprime2"]])
+  has_know_crit <- isTRUE(params[[".has_know_crit"]])
+  has_counts <- params[[".has_counts"]]
+  n_rkg <- params[[".n_rkg"]]
 
   sigma_R_expr <- if (has_sigma) "sigma_val" else "1.0"
   sigma_F_expr <- if (has_sigma2) "sigma2_val" else "1.0"
@@ -5285,7 +5229,7 @@ emit_likelihood_cdp <- function(L, params) {
   L$add(sprintf("    double mu_F_n = %s;", dprime2_expr))
   L$add(sprintf("    double sigma_F_n = %s;", sigma_F_expr))
 
-  if (isTRUE(params$.is_cdp)) {
+  if (isTRUE(params[[".is_cdp"]])) {
     L$add("    double c_R_val = rec_crit_val;")
 
     if (isTRUE(n_rkg == 3) && has_know_crit) {
@@ -5328,26 +5272,26 @@ emit_likelihood_cdp <- function(L, params) {
 #' Emit CDP gradient accumulation
 #' @noRd
 emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_dprime2 <- isTRUE(params$.has_dprime2)
-  has_know_crit <- isTRUE(params$.has_know_crit)
-  has_rec_crit <- isTRUE(params$.has_rec_crit)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_dprime2 <- isTRUE(params[[".has_dprime2"]])
+  has_know_crit <- isTRUE(params[[".has_know_crit"]])
+  has_rec_crit <- isTRUE(params[[".has_rec_crit"]])
+  has_counts <- params[[".has_counts"]]
   count_mult <- if (has_counts) " * count_n" else ""
 
   # ---- dprime gradient (recollection mean mu_R) ----
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   L$add("")
   L$add(sprintf("    double d_dprime_n = cdp_res.d_dprime%s;", count_mult))
   if (has_dp_fixed) {
     L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
   }
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -5359,10 +5303,10 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
     L$add(sprintf("    double d_dprime2_n = cdp_res.d_dprime2%s;", count_mult))
     L$add("    for (int p = 0; p < P_dp2; ++p) grad_beta_dp2(p) += d_dprime2_n * X_dp2_d(n, p);")
     dp2_re_idx <- 0
-    if (!is.null(params$dprime2$random)) {
-      for (group in names(params$dprime2$random)) {
+    if (!is.null(params[["dprime2"]]$random)) {
+      for (group in names(params[["dprime2"]]$random)) {
         dp2_re_idx <- dp2_re_idx + 1
-        re <- params$dprime2$random[[group]]
+        re <- params[["dprime2"]]$random[[group]]
         tag <- dp2_re_tag(dp2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime2_n", "dprime2", dp2_re_idx, "dp2")
       }
@@ -5375,10 +5319,10 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
     L$add(sprintf("    double d_sigma_n = cdp_res.d_sigma%s;", count_mult))
     L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig")
       }
@@ -5391,10 +5335,10 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
     L$add(sprintf("    double d_sigma2_n = cdp_res.d_sigma2%s;", count_mult))
     L$add("    for (int p = 0; p < P_sig2; ++p) grad_beta_sig2(p) += d_sigma2_n * X_sig2_d(n, p);")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_n", "sigma2", sig2_re_idx, "sig2")
       }
@@ -5407,10 +5351,10 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
     L$add(sprintf("    double d_rec_crit_n = cdp_res.d_rec_crit%s;", count_mult))
     L$add("    for (int p = 0; p < P_rc; ++p) grad_beta_rc(p) += d_rec_crit_n * X_rc_d(n, p);")
     rc_re_idx <- 0
-    if (!is.null(params$rec_crit$random)) {
-      for (group in names(params$rec_crit$random)) {
+    if (!is.null(params[["rec_crit"]]$random)) {
+      for (group in names(params[["rec_crit"]]$random)) {
         rc_re_idx <- rc_re_idx + 1
-        re <- params$rec_crit$random[[group]]
+        re <- params[["rec_crit"]]$random[[group]]
         tag <- rc_re_tag(rc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_rec_crit_n", "rec_crit", rc_re_idx, "rc")
       }
@@ -5423,10 +5367,10 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
     L$add(sprintf("    double d_know_crit_n = cdp_res.d_know_crit%s;", count_mult))
     L$add("    for (int p = 0; p < P_kc; ++p) grad_beta_kc(p) += d_know_crit_n * X_kc_d(n, p);")
     kc_re_idx <- 0
-    if (!is.null(params$know_crit$random)) {
-      for (group in names(params$know_crit$random)) {
+    if (!is.null(params[["know_crit"]]$random)) {
+      for (group in names(params[["know_crit"]]$random)) {
         kc_re_idx <- kc_re_idx + 1
-        re <- params$know_crit$random[[group]]
+        re <- params[["know_crit"]]$random[[group]]
         tag <- kc_re_tag(kc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_know_crit_n", "know_crit", kc_re_idx, "kc")
       }
@@ -5496,18 +5440,18 @@ emit_param_grad_accum <- function(L, param_name, short, random, full_name) {
 #' Emit bivariate SDT/DP likelihood
 #' @noRd
 emit_likelihood_bivariate <- function(L, params) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma_B <- isTRUE(params$.has_sigma_B)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_sigma2_B <- isTRUE(params$.has_sigma2_B)
-  has_rho <- isTRUE(params$.has_rho)
-  has_rho_B <- isTRUE(params$.has_rho_B)
-  has_rho_N <- isTRUE(params$.has_rho_N)
-  has_dprime_B <- isTRUE(params$.has_dprime_B)
-  has_discrim_B <- isTRUE(params$.has_discrim_B)
-  is_dp <- isTRUE(params$.is_bivariate_dp)
-  bounded <- isTRUE(params$.bounded)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma_B <- isTRUE(params[[".has_sigma_B"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_sigma2_B <- isTRUE(params[[".has_sigma2_B"]])
+  has_rho <- isTRUE(params[[".has_rho"]])
+  has_rho_B <- isTRUE(params[[".has_rho_B"]])
+  has_rho_N <- isTRUE(params[[".has_rho_N"]])
+  has_dprime_B <- isTRUE(params[[".has_dprime_B"]])
+  has_discrim_B <- isTRUE(params[[".has_discrim_B"]])
+  is_dp <- isTRUE(params[[".is_bivariate_dp"]])
+  bounded <- isTRUE(params[[".bounded"]])
+  has_counts <- params[[".has_counts"]]
 
   L$add("    // Bivariate SDT likelihood: resolve per-source parameters")
 
@@ -5625,20 +5569,20 @@ emit_likelihood_bivariate <- function(L, params) {
 #' Emit bivariate gradient accumulation
 #' @noRd
 emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit_re, has_crit2_re) {
-  has_sigma <- isTRUE(params$.has_sigma)
-  has_sigma_B <- isTRUE(params$.has_sigma_B)
-  has_sigma2 <- isTRUE(params$.has_sigma2)
-  has_sigma2_B <- isTRUE(params$.has_sigma2_B)
-  has_rho <- isTRUE(params$.has_rho)
-  has_rho_B <- isTRUE(params$.has_rho_B)
-  has_rho_N <- isTRUE(params$.has_rho_N)
-  has_dprime_B <- isTRUE(params$.has_dprime_B)
-  has_discrim_B <- isTRUE(params$.has_discrim_B)
-  has_dp_fixed <- !is.null(params$dprime$fixed) && params$dprime$fixed$n_coef > 0
-  has_disc_fixed <- isTRUE(params$.has_discrim) && !is.null(params$discrim$fixed) && params$discrim$fixed$n_coef > 0
-  is_dp <- isTRUE(params$.is_bivariate_dp)
-  bounded <- isTRUE(params$.bounded)
-  has_counts <- params$.has_counts
+  has_sigma <- isTRUE(params[[".has_sigma"]])
+  has_sigma_B <- isTRUE(params[[".has_sigma_B"]])
+  has_sigma2 <- isTRUE(params[[".has_sigma2"]])
+  has_sigma2_B <- isTRUE(params[[".has_sigma2_B"]])
+  has_rho <- isTRUE(params[[".has_rho"]])
+  has_rho_B <- isTRUE(params[[".has_rho_B"]])
+  has_rho_N <- isTRUE(params[[".has_rho_N"]])
+  has_dprime_B <- isTRUE(params[[".has_dprime_B"]])
+  has_discrim_B <- isTRUE(params[[".has_discrim_B"]])
+  has_dp_fixed <- !is.null(params[["dprime"]]$fixed) && params[["dprime"]]$fixed$n_coef > 0
+  has_disc_fixed <- isTRUE(params[[".has_discrim"]]) && !is.null(params[["discrim"]]$fixed) && params[["discrim"]]$fixed$n_coef > 0
+  is_dp <- isTRUE(params[[".is_bivariate_dp"]])
+  bounded <- isTRUE(params[[".bounded"]])
+  has_counts <- params[[".has_counts"]]
   count_mult <- if (has_counts) " * count_n" else ""
 
   needs_exp <- bounded
@@ -5656,15 +5600,15 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add("    // dprime gradient (from source A and B, new items contribute 0)")
     L$add(sprintf("    double d_dprime_n = (item_type_n != 1) ? bv.d_dprime%s%s : 0.0;", bounded_dp_mult, count_mult))
   }
-  has_dp_fixed <- isTRUE(params$.has_dp_fixed)
+  has_dp_fixed <- isTRUE(params[[".has_dp_fixed"]])
   if (has_dp_fixed) {
     L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
   }
   dp_re_idx <- 0
-  if (!is.null(params$dprime$random)) {
-    for (group in names(params$dprime$random)) {
+  if (!is.null(params[["dprime"]]$random)) {
+    for (group in names(params[["dprime"]]$random)) {
       dp_re_idx <- dp_re_idx + 1
-      re <- params$dprime$random[[group]]
+      re <- params[["dprime"]]$random[[group]]
       tag <- dp_re_tag(dp_re_idx)
       emit_re_gradient(L, tag, re, group, "d_dprime_n", "dprime", dp_re_idx, "dp")
     }
@@ -5677,10 +5621,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("    double d_dprime_B_n = (item_type_n == 3) ? bv.d_dprime%s%s : 0.0;", bounded_dpB_mult, count_mult))
     L$add("    for (int p = 0; p < P_dpB; ++p) grad_beta_dpB(p) += d_dprime_B_n * X_dpB_d(n, p);")
     dpB_re_idx <- 0
-    if (!is.null(params$dprime_B$random)) {
-      for (group in names(params$dprime_B$random)) {
+    if (!is.null(params[["dprime_B"]]$random)) {
+      for (group in names(params[["dprime_B"]]$random)) {
         dpB_re_idx <- dpB_re_idx + 1
-        re <- params$dprime_B$random[[group]]
+        re <- params[["dprime_B"]]$random[[group]]
         tag <- dpB_re_tag(dpB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_dprime_B_n", "dprime_B", dpB_re_idx, "dpB")
       }
@@ -5696,10 +5640,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       L$add("      for (int p = 0; p < P_disc; ++p) grad_beta_disc(p) += d_discrim_n * X_disc_d(n, p);")
     }
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_n", "discrim", disc_re_idx, "disc", indent = "      ")
       }
@@ -5709,10 +5653,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("      double d_discrim_B_n = bv.d_discrim%s%s;", bounded_discB_mult, count_mult))
     L$add("      for (int p = 0; p < P_discB; ++p) grad_beta_discB(p) += d_discrim_B_n * X_discB_d(n, p);")
     discB_re_idx <- 0
-    if (!is.null(params$discrim_B$random)) {
-      for (group in names(params$discrim_B$random)) {
+    if (!is.null(params[["discrim_B"]]$random)) {
+      for (group in names(params[["discrim_B"]]$random)) {
         discB_re_idx <- discB_re_idx + 1
-        re <- params$discrim_B$random[[group]]
+        re <- params[["discrim_B"]]$random[[group]]
         tag <- discB_re_tag(discB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_B_n", "discrim_B", discB_re_idx, "discB", indent = "      ")
       }
@@ -5730,10 +5674,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       L$add("        for (int p = 0; p < P_disc; ++p) grad_beta_disc(p) += d_discrim_n * X_disc_d(n, p);")
     }
     disc_re_idx <- 0
-    if (!is.null(params$discrim$random)) {
-      for (group in names(params$discrim$random)) {
+    if (!is.null(params[["discrim"]]$random)) {
+      for (group in names(params[["discrim"]]$random)) {
         disc_re_idx <- disc_re_idx + 1
-        re <- params$discrim$random[[group]]
+        re <- params[["discrim"]]$random[[group]]
         tag <- disc_re_tag(disc_re_idx)
         emit_re_gradient(L, tag, re, group, "d_discrim_n", "discrim", disc_re_idx, "disc", indent = "        ")
       }
@@ -5752,10 +5696,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
     L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
     sig_re_idx <- 0
-    if (!is.null(params$sigma$random)) {
-      for (group in names(params$sigma$random)) {
+    if (!is.null(params[["sigma"]]$random)) {
+      for (group in names(params[["sigma"]]$random)) {
         sig_re_idx <- sig_re_idx + 1
-        re <- params$sigma$random[[group]]
+        re <- params[["sigma"]]$random[[group]]
         tag <- sig_re_tag(sig_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_n", "sigma", sig_re_idx, "sig")
       }
@@ -5768,10 +5712,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("    double d_sigma_B_n = (item_type_n == 3) ? bv.d_sigma1 * sigma_B_val%s : 0.0;", count_mult))
     L$add("    for (int p = 0; p < P_sigB; ++p) grad_beta_sigB(p) += d_sigma_B_n * X_sigB_d(n, p);")
     sigB_re_idx <- 0
-    if (!is.null(params$sigma_B$random)) {
-      for (group in names(params$sigma_B$random)) {
+    if (!is.null(params[["sigma_B"]]$random)) {
+      for (group in names(params[["sigma_B"]]$random)) {
         sigB_re_idx <- sigB_re_idx + 1
-        re <- params$sigma_B$random[[group]]
+        re <- params[["sigma_B"]]$random[[group]]
         tag <- sigB_re_tag(sigB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma_B_n", "sigma_B", sigB_re_idx, "sigB")
       }
@@ -5788,10 +5732,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
     L$add("    for (int p = 0; p < P_sig2; ++p) grad_beta_sig2(p) += d_sigma2_n * X_sig2_d(n, p);")
     sig2_re_idx <- 0
-    if (!is.null(params$sigma2$random)) {
-      for (group in names(params$sigma2$random)) {
+    if (!is.null(params[["sigma2"]]$random)) {
+      for (group in names(params[["sigma2"]]$random)) {
         sig2_re_idx <- sig2_re_idx + 1
-        re <- params$sigma2$random[[group]]
+        re <- params[["sigma2"]]$random[[group]]
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_n", "sigma2", sig2_re_idx, "sig2")
       }
@@ -5804,10 +5748,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("    double d_sigma2_B_n = (item_type_n == 3) ? bv.d_sigma2 * sigma2_B_val%s : 0.0;", count_mult))
     L$add("    for (int p = 0; p < P_sig2B; ++p) grad_beta_sig2B(p) += d_sigma2_B_n * X_sig2B_d(n, p);")
     sig2B_re_idx <- 0
-    if (!is.null(params$sigma2_B$random)) {
-      for (group in names(params$sigma2_B$random)) {
+    if (!is.null(params[["sigma2_B"]]$random)) {
+      for (group in names(params[["sigma2_B"]]$random)) {
         sig2B_re_idx <- sig2B_re_idx + 1
-        re <- params$sigma2_B$random[[group]]
+        re <- params[["sigma2_B"]]$random[[group]]
         tag <- sig2B_re_tag(sig2B_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_B_n", "sigma2_B", sig2B_re_idx, "sig2B")
       }
@@ -5835,10 +5779,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
     L$add("    for (int p = 0; p < P_rho; ++p) grad_beta_rho(p) += d_rho_n * X_rho_d(n, p);")
     rho_re_idx <- 0
-    if (!is.null(params$rho$random)) {
-      for (group in names(params$rho$random)) {
+    if (!is.null(params[["rho"]]$random)) {
+      for (group in names(params[["rho"]]$random)) {
         rho_re_idx <- rho_re_idx + 1
-        re <- params$rho$random[[group]]
+        re <- params[["rho"]]$random[[group]]
         tag <- rho_re_tag(rho_re_idx)
         emit_re_gradient(L, tag, re, group, "d_rho_n", "rho", rho_re_idx, "rho")
       }
@@ -5856,10 +5800,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("    double d_rho_B_n = (item_type_n == 3) ? bv.d_rho * %s%s : 0.0;", rho_B_chain, count_mult))
     L$add("    for (int p = 0; p < P_rhoB; ++p) grad_beta_rhoB(p) += d_rho_B_n * X_rhoB_d(n, p);")
     rhoB_re_idx <- 0
-    if (!is.null(params$rho_B$random)) {
-      for (group in names(params$rho_B$random)) {
+    if (!is.null(params[["rho_B"]]$random)) {
+      for (group in names(params[["rho_B"]]$random)) {
         rhoB_re_idx <- rhoB_re_idx + 1
-        re <- params$rho_B$random[[group]]
+        re <- params[["rho_B"]]$random[[group]]
         tag <- rhoB_re_tag(rhoB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_rho_B_n", "rho_B", rhoB_re_idx, "rhoB")
       }
@@ -5872,10 +5816,10 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     L$add(sprintf("    double d_rho_N_n = (item_type_n == 1) ? bv.d_rho * (1.0 - rho_N_val * rho_N_val)%s : 0.0;", count_mult))
     L$add("    for (int p = 0; p < P_rhoN; ++p) grad_beta_rhoN(p) += d_rho_N_n * X_rhoN_d(n, p);")
     rhoN_re_idx <- 0
-    if (!is.null(params$rho_N$random)) {
-      for (group in names(params$rho_N$random)) {
+    if (!is.null(params[["rho_N"]]$random)) {
+      for (group in names(params[["rho_N"]]$random)) {
         rhoN_re_idx <- rhoN_re_idx + 1
-        re <- params$rho_N$random[[group]]
+        re <- params[["rho_N"]]$random[[group]]
         tag <- rhoN_re_tag(rhoN_re_idx)
         emit_re_gradient(L, tag, re, group, "d_rho_N_n", "rho_N", rhoN_re_idx, "rhoN")
       }
@@ -5883,19 +5827,19 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda gradient (bivariate_dp: R_I -- Source A R_I) ----
-  if (is_dp && isTRUE(params$.has_lambda)) {
+  if (is_dp && isTRUE(params[[".has_lambda"]])) {
     L$add("")
-    if (!isTRUE(params$.has_lambda_B_dp)) {
+    if (!isTRUE(params[[".has_lambda_B_dp"]])) {
       L$add(sprintf("    double d_lambda_n = (bv.d_lambda + bv.d_lambda_B) * R_I_val * (1.0 - R_I_val)%s;", count_mult))
     } else {
       L$add(sprintf("    double d_lambda_n = bv.d_lambda * R_I_val * (1.0 - R_I_val)%s;", count_mult))
     }
     L$add("    for (int p = 0; p < P_lam; ++p) grad_beta_lam(p) += d_lambda_n * X_lam_d(n, p);")
     lam_re_idx <- 0
-    if (!is.null(params$lambda$random)) {
-      for (group in names(params$lambda$random)) {
+    if (!is.null(params[["lambda"]]$random)) {
+      for (group in names(params[["lambda"]]$random)) {
         lam_re_idx <- lam_re_idx + 1
-        re <- params$lambda$random[[group]]
+        re <- params[["lambda"]]$random[[group]]
         tag <- lam_re_tag(lam_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda_n", "lambda", lam_re_idx, "lam")
       }
@@ -5903,15 +5847,15 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda_B gradient (bivariate_dp: R_I_B -- Source B R_I) ----
-  if (is_dp && isTRUE(params$.has_lambda_B_dp)) {
+  if (is_dp && isTRUE(params[[".has_lambda_B_dp"]])) {
     L$add("")
     L$add(sprintf("    double d_lambda_B_n = bv.d_lambda_B * R_I_B_val * (1.0 - R_I_B_val)%s;", count_mult))
     L$add("    for (int p = 0; p < P_lamB; ++p) grad_beta_lamB(p) += d_lambda_B_n * X_lamB_d(n, p);")
     lamB_re_idx <- 0
-    if (!is.null(params$lambda_B$random)) {
-      for (group in names(params$lambda_B$random)) {
+    if (!is.null(params[["lambda_B"]]$random)) {
+      for (group in names(params[["lambda_B"]]$random)) {
         lamB_re_idx <- lamB_re_idx + 1
-        re <- params$lambda_B$random[[group]]
+        re <- params[["lambda_B"]]$random[[group]]
         tag <- lamB_re_tag(lamB_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda_B_n", "lambda_B", lamB_re_idx, "lamB")
       }
@@ -5919,19 +5863,19 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda2 gradient (bivariate_dp: R_S -- Source A R_S) ----
-  if (is_dp && isTRUE(params$.has_lambda2)) {
+  if (is_dp && isTRUE(params[[".has_lambda2"]])) {
     L$add("")
-    if (!isTRUE(params$.has_lambda2_B)) {
+    if (!isTRUE(params[[".has_lambda2_B"]])) {
       L$add(sprintf("    double d_lambda2_n = (bv.d_lambda2 + bv.d_lambda2_B) * R_S_val * (1.0 - R_S_val)%s;", count_mult))
     } else {
       L$add(sprintf("    double d_lambda2_n = bv.d_lambda2 * R_S_val * (1.0 - R_S_val)%s;", count_mult))
     }
     L$add("    for (int p = 0; p < P_lam2; ++p) grad_beta_lam2(p) += d_lambda2_n * X_lam2_d(n, p);")
     lam2_re_idx <- 0
-    if (!is.null(params$lambda2$random)) {
-      for (group in names(params$lambda2$random)) {
+    if (!is.null(params[["lambda2"]]$random)) {
+      for (group in names(params[["lambda2"]]$random)) {
         lam2_re_idx <- lam2_re_idx + 1
-        re <- params$lambda2$random[[group]]
+        re <- params[["lambda2"]]$random[[group]]
         tag <- lam2_re_tag(lam2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda2_n", "lambda2", lam2_re_idx, "lam2")
       }
@@ -5939,15 +5883,15 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
   }
 
   # ---- lambda2_B gradient (bivariate_dp: R_S_B -- Source B R_S) ----
-  if (is_dp && isTRUE(params$.has_lambda2_B)) {
+  if (is_dp && isTRUE(params[[".has_lambda2_B"]])) {
     L$add("")
     L$add(sprintf("    double d_lambda2_B_n = bv.d_lambda2_B * R_S_B_val * (1.0 - R_S_B_val)%s;", count_mult))
     L$add("    for (int p = 0; p < P_lam2B; ++p) grad_beta_lam2B(p) += d_lambda2_B_n * X_lam2B_d(n, p);")
     lam2B_re_idx <- 0
-    if (!is.null(params$lambda2_B$random)) {
-      for (group in names(params$lambda2_B$random)) {
+    if (!is.null(params[["lambda2_B"]]$random)) {
+      for (group in names(params[["lambda2_B"]]$random)) {
         lam2B_re_idx <- lam2B_re_idx + 1
-        re <- params$lambda2_B$random[[group]]
+        re <- params[["lambda2_B"]]$random[[group]]
         tag <- lam2B_re_tag(lam2B_re_idx)
         emit_re_gradient(L, tag, re, group, "d_lambda2_B_n", "lambda2_B", lam2B_re_idx, "lam2B")
       }
@@ -5986,46 +5930,25 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     d_hi2 <- "bv.d_thresh2_hi"
   }
 
-  varying_sc <- isTRUE(params$.varying_source_criteria)
+  varying_sc <- isTRUE(params[[".varying_source_criteria"]])
 
   if (.varying_per_obs(model_data, params)) {
     emit_grad_thresh2_varying_obs(L, model_data, params, "bv.k2_lo", "bv.k2_hi", d_lo2, d_hi2)
   } else if (varying_sc) {
-    new_shared <- identical(params$.new_source_criteria, "shared")
-    if (new_shared) {
-      L$add("    if (is_new_response[yn - 1] == 1) {")
-      L$add("      // New response: propagate to shared new-response thresholds")
-      L$add(sprintf("      if (bv.k2_lo >= 0) batch_sdt::propagate_thresh_grad(bv.k2_lo, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_lo2))
-      L$add(sprintf("      if (bv.k2_hi >= 0) batch_sdt::propagate_thresh_grad(bv.k2_hi, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", d_hi2))
-      L$add("    } else {")
-      L$add("      // Old response: propagate to varying thresholds for this detection bin")
-      L$add(paste0("      ", .vbin_cpp(model_data)$decl))
-      L$add("      int bin = vbin0_[yn - 1];")
-      L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
-      L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
-      L$add("      auto propagate_vary = [&](int k, double d) {")
-      L$add("        mid_ref += d;")
-      L$add("        if (k > mid2) { for (int j = 0; j <= k-mid2-1; ++j) grad_vary_gaps2(bin, j) += d * bin_exp_gaps(j); }")
-      L$add("        else if (k < mid2) { for (int j = n_upper2; j <= n_upper2+(mid2-k-1); ++j) grad_vary_gaps2(bin, j) += d * (-bin_exp_gaps(j)); }")
-      L$add("      };")
-      L$add(sprintf("      if (bv.k2_lo >= 0) propagate_vary(bv.k2_lo, %s);", d_lo2))
-      L$add(sprintf("      if (bv.k2_hi >= 0) propagate_vary(bv.k2_hi, %s);", d_hi2))
-      L$add("    }")
-    } else {
-      L$add("    {")
-      L$add(paste0("      ", .vbin_cpp(model_data)$decl))
-      L$add("      int bin = vbin0_[yn - 1];")
-      L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
-      L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
-      L$add("      auto propagate_vary = [&](int k, double d) {")
-      L$add("        mid_ref += d;")
-      L$add("        if (k > mid2) { for (int j = 0; j <= k-mid2-1; ++j) grad_vary_gaps2(bin, j) += d * bin_exp_gaps(j); }")
-      L$add("        else if (k < mid2) { for (int j = n_upper2; j <= n_upper2+(mid2-k-1); ++j) grad_vary_gaps2(bin, j) += d * (-bin_exp_gaps(j)); }")
-      L$add("      };")
-      L$add(sprintf("      if (bv.k2_lo >= 0) propagate_vary(bv.k2_lo, %s);", d_lo2))
-      L$add(sprintf("      if (bv.k2_hi >= 0) propagate_vary(bv.k2_hi, %s);", d_hi2))
-      L$add("    }")
-    }
+    L$add("    {")
+    L$add(paste0("      ", .vbin_cpp(model_data)$decl))
+    L$add("      int bin = vbin0_[yn - 1];")
+    L$add("      Eigen::VectorXd bin_exp_gaps = d_vary_exp_gaps2.row(bin).transpose();")
+    L$add(sprintf("      double& mid_ref = grad_vary_mid2(bin);"))
+    L$add("      auto propagate_vary = [&](int k, double d) {")
+    L$add("        mid_ref += d;")
+    L$add("        if (k > mid2) { for (int j = 0; j <= k-mid2-1; ++j) grad_vary_gaps2(bin, j) += d * bin_exp_gaps(j); }")
+    L$add("        else if (k < mid2) { for (int j = n_upper2; j <= n_upper2+(mid2-k-1); ++j) grad_vary_gaps2(bin, j) += d * (-bin_exp_gaps(j)); }")
+    L$add("      };")
+    L$add(sprintf("      if (bv.k2_lo >= 0) propagate_vary(bv.k2_lo, %s);", d_lo2))
+    L$add(sprintf("      if (bv.k2_hi >= 0) propagate_vary(bv.k2_hi, %s);", d_hi2))
+    L$add("    }")
+    
   } else {
     crit2 <- model_data$criterion2
     is_crit2_intercept_only <- is.null(crit2) || isTRUE(crit2$is_intercept_only) || crit2$n_coef == 1
@@ -6064,17 +5987,17 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
         L$add(sprintf("    if (bv.k2_lo >= 0) propagate_mp2(bv.k2_lo, %s);", d_lo2))
         L$add(sprintf("    if (bv.k2_hi >= 0) propagate_mp2(bv.k2_hi, %s);", d_hi2))
       }
-      if (!is.null(params$.smooth_data[["criterion2"]])) {
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0",
+      if (!is.null(params[[".smooth_data"]][["criterion2"]])) {
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_mid", "0",
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_gaps(gi)", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
       }
       emit_crit2_re_grad_scatter(L, model_data, params)
     } else {
-      has_crit2_smooth <- !is.null(params$.smooth_data[["criterion2"]])
+      has_crit2_smooth <- !is.null(params[[".smooth_data"]][["criterion2"]])
       gaps2_vec <- if (has_crit2_smooth || !is_crit2_intercept_only) "d_obs_exp_gaps2" else "d_pop_exp_gaps2"
       if (is_crit2_intercept_only) {
         L$add("    if (bv.k2_lo >= 0) {")
@@ -6106,7 +6029,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
       if (has_crit2_smooth) {
         L$add(sprintf("    double g_sm2_mid = (bv.k2_lo >= 0 ? %s : 0.0) + (bv.k2_hi >= 0 ? %s : 0.0);",
                       d_lo2, d_hi2))
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_mid", "0",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm2_mid", "0",
                                        pname = "criterion2")
         L$add("    for (int gi = 0; gi < n_gaps2; ++gi) {")
         L$add("      double g_sm2_gap = 0.0;")
@@ -6114,7 +6037,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
         L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi > mid2 && gi <= bv.k2_hi - mid2 - 1) g_sm2_gap += %s * d_obs_exp_gaps2(gi);", d_hi2))
         L$add(sprintf("      if (bv.k2_lo >= 0 && bv.k2_lo < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_lo - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_lo2))
         L$add(sprintf("      if (bv.k2_hi >= 0 && bv.k2_hi < mid2 && gi >= n_upper2 && gi <= n_upper2 + (mid2 - bv.k2_hi - 1)) g_sm2_gap += %s * (-d_obs_exp_gaps2(gi));", d_hi2))
-        emit_criterion_smooth_gradient(L, params$.smooth_data, "g_sm2_gap", "1 + gi",
+        emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_sm2_gap", "1 + gi",
                                        pname = "criterion2")
         L$add("    }")
       }
@@ -6132,17 +6055,20 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
 }
 
 .varying_per_obs <- function(model_data, params) {
-  isTRUE(params$.varying_source_criteria) &&
-    (.crit2_has_cov(model_data) ||
-       length(params$criterion2$random) > 0 ||
-       !is.null(params$.smooth_data[["criterion2"]]))
+  isTRUE(params[[".varying_source_criteria"]]) &&
+    (.crit2_has_cov(model_data) || .n_vcell(model_data) > 1L ||
+       length(params[["criterion2"]]$random) > 0 ||
+       !is.null(params[[".smooth_data"]][["criterion2"]]))
 }
 
 # The set of varying source criteria a detection response reads, as a 0-based C++ table
 # indexed by yn - 1 (see .varying_bins()), and the number of sets.
 .vbin_cpp <- function(model_data) {
   vb <- as.integer(model_data$stan_data$vbin %||% seq_len(model_data$stan_data$K1))
-  list(n = max(vb), decl = sprintf("static const int vbin0_[%d] = {%s};", length(vb), paste(vb - 1L, collapse = ", ")))
+  list(n = max(vb), n_set = max(vb) * .n_vcell(model_data),
+       decl = sprintf("static const int vbin0_[%d] = {%s};", length(vb), paste(vb - 1L, collapse = ", ")),
+       set = if (.n_vcell(model_data) > 1L) sprintf("const int set = bin + %d * (vcell[n] - 1);", max(vb))
+             else "const int set = bin;")
 }
 
 .varying_re_cols <- function(model_data, re) {
@@ -6157,10 +6083,9 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
 }
 
 emit_thresh2_varying_obs <- function(L, model_data, params) {
-  gap_fn <- if (identical(params$.gap_link, "softplus")) "std::log1p(std::exp(%s))" else "std::exp(%s)"
+  gap_fn <- if (identical(params[[".gap_link"]], "softplus")) "std::log1p(std::exp(%s))" else "std::exp(%s)"
   has_cov <- .crit2_has_cov(model_data)
-  new_shared <- identical(params$.new_source_criteria, "shared")
-  res <- params$criterion2$random
+  res <- params[["criterion2"]]$random
   re_lines <- function(target, which, k_expr) {
     i <- 0
     for (group in names(res)) {
@@ -6187,10 +6112,10 @@ emit_thresh2_varying_obs <- function(L, model_data, params) {
       L$add("        int k = mid2 - kd;")
       L$add("        int gi = n_upper2 + kd - 1;")
     }
-    L$add("        double eg = vary_gaps2_d(bin, gi);")
+    L$add("        double eg = vary_gaps2_d(set, gi);")
     if (has_cov) L$add("        for (int p = 0; p < P_cov2; ++p) eg += Xc2_d(n, p) * cov_gaps2_d(gi, p);")
     re_lines("  eg", "gap", "k")
-    emit_criterion_smooth_contribution(L, params$.smooth_data, "eg", "1 + gi", pname = "criterion2")
+    emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "eg", "1 + gi", pname = "criterion2")
     L$add(sprintf("        exp_eff_gaps2(gi) = %s;", sprintf(gap_fn, "eg")))
     .dgap_set(L, params, "        ", "exp_eff_gaps2(gi)", "eg")
     L$add(if (upper) "        thresh2_n(k) = thresh2_n(k - 1) + exp_eff_gaps2(gi);"
@@ -6200,35 +6125,24 @@ emit_thresh2_varying_obs <- function(L, model_data, params) {
   L$add("    {")
   L$add(paste0("      ", .vbin_cpp(model_data)$decl))
   L$add("      const int bin = vbin0_[yn - 1];")
-  if (new_shared) {
-    L$add("      if (is_new_response[yn - 1] == 1) {")
-    L$add("        thresh2_n = thresh2_new_vec;")
-    L$add("      } else {")
-  }
-  L$add("      double m2 = vary_mid2_d(bin);")
+  L$add(paste0("      ", .vbin_cpp(model_data)$set))
+  L$add("      double m2 = vary_mid2_d(set);")
   if (has_cov) L$add("      for (int p = 0; p < P_cov2; ++p) m2 += Xc2_d(n, p) * cov_mid2_d(p);")
   re_lines("m2", "mid", NULL)
-  emit_criterion_smooth_contribution(L, params$.smooth_data, "m2", "0", pname = "criterion2")
+  emit_criterion_smooth_contribution(L, params[[".smooth_data"]], "m2", "0", pname = "criterion2")
   L$add("      thresh2_n(mid2) = m2;")
   side(TRUE)
   side(FALSE)
-  if (new_shared) L$add("      }")
   L$add("    }")
 }
 
 emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, d_hi2) {
   has_cov <- .crit2_has_cov(model_data)
-  new_shared <- identical(params$.new_source_criteria, "shared")
-  res <- params$criterion2$random
+  res <- params[["criterion2"]]$random
   L$add("    {")
   L$add(paste0("      ", .vbin_cpp(model_data)$decl))
   L$add("      const int bin = vbin0_[yn - 1];")
-  if (new_shared) {
-    L$add("      if (is_new_response[yn - 1] == 1) {")
-    L$add(sprintf("        if (%s >= 0) batch_sdt::propagate_thresh_grad(%s, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", lo, lo, d_lo2))
-    L$add(sprintf("        if (%s >= 0) batch_sdt::propagate_thresh_grad(%s, %s, mid2, n_thresh2, n_upper2, d_new_exp_gaps2, grad_new_mid2, grad_new_gaps2);", hi, hi, d_hi2))
-    L$add("      } else {")
-  }
+  L$add(paste0("      ", .vbin_cpp(model_data)$set))
   L$add("      double g_crit2_mid = 0.0;")
   L$add("      Eigen::VectorXd g_crit2_gaps = Eigen::VectorXd::Zero(n_gaps2);")
   L$add("      auto prop2 = [&](int k, double d) {")
@@ -6238,8 +6152,8 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
   L$add("      };")
   L$add(sprintf("      if (%s >= 0) prop2(%s, %s);", lo, lo, d_lo2))
   L$add(sprintf("      if (%s >= 0) prop2(%s, %s);", hi, hi, d_hi2))
-  L$add("      grad_vary_mid2(bin) += g_crit2_mid;")
-  L$add("      for (int j = 0; j < n_gaps2; ++j) grad_vary_gaps2(bin, j) += g_crit2_gaps(j);")
+  L$add("      grad_vary_mid2(set) += g_crit2_mid;")
+  L$add("      for (int j = 0; j < n_gaps2; ++j) grad_vary_gaps2(set, j) += g_crit2_gaps(j);")
   if (has_cov) {
     L$add("      for (int p = 0; p < P_cov2; ++p) {")
     L$add("        const double x = Xc2_d(n, p);")
@@ -6247,10 +6161,10 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
     L$add("        for (int j = 0; j < n_gaps2; ++j) grad_cov_gaps2(j, p) += g_crit2_gaps(j) * x;")
     L$add("      }")
   }
-  if (!is.null(params$.smooth_data[["criterion2"]])) {
-    emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_mid", "0", pname = "criterion2")
+  if (!is.null(params[[".smooth_data"]][["criterion2"]])) {
+    emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_mid", "0", pname = "criterion2")
     L$add("      for (int gi = 0; gi < n_gaps2; ++gi) {")
-    emit_criterion_smooth_gradient(L, params$.smooth_data, "g_crit2_gaps(gi)", "1 + gi",
+    emit_criterion_smooth_gradient(L, params[[".smooth_data"]], "g_crit2_gaps(gi)", "1 + gi",
                                    pname = "criterion2")
     L$add("      }")
   }
@@ -6276,6 +6190,5 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
       L$add("      }")
     }
   }
-  if (new_shared) L$add("      }")
   L$add("    }")
 }

@@ -617,16 +617,9 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
     }
     out[[k]] <- arr
   }
-  lg <- grep("^beta_dprime_loggap\\[[0-9]+\\]$", names(out), value = TRUE)
-  if (length(lg)) {
-    lo <- out[[sprintf("beta_dprime2[%d]", 1L)]]
-    ord <- array(NA_real_, c(dim(as.array(lo))[1:2], length(lg), 2L))
-    for (p in seq_along(lg)) {
-      ord[, , p, 1] <- out[[sprintf("beta_dprime2[%d]", p)]]
-      ord[, , p, 2] <- out[[sprintf("beta_dprime[%d]", p)]]
-    }
-    out[lg] <- NULL
-    out$beta_dprime_ordered <- ord
+  if (!is.null(out$dprime_order_loggap)) {
+    out$dprime_order_gap <- exp(out$dprime_order_loggap)
+    out$dprime_order_loggap <- NULL
   }
   if (inherits(model, "bivariate_cumulative_model")) {
     names(out) <- gsub("criterion", "cutpoints", gsub("criterion2", "cutpoints2",

@@ -1,5 +1,5 @@
 .rand_bivariate_case <- function(seed, S = 7, N = 9, K1 = 4, K2 = 5, bounded = FALSE, varying = FALSE,
-                                 shared = FALSE, dp = FALSE, extras = TRUE) {
+                                 dp = FALSE, extras = TRUE) {
   set.seed(seed)
   mat <- function(f) matrix(f(S * N), S, N)
   params <- list(dprime = mat(function(n) runif(n, 0.2, 2)), discrim = mat(function(n) runif(n, 0.05, 1.5)),
@@ -16,25 +16,20 @@
   thresh2 <- if (varying) aperm(array(vapply(seq_len(K1), function(j) ord(K2), matrix(0, S * N, K2 - 1)),
                                         c(S, N, K2 - 1, K1)), c(1, 2, 4, 3))
              else array(ord(K2), c(S, N, K2 - 1))
-  if (shared) attr(thresh2, "thresh2_new") <- t(apply(matrix(rnorm(S * (K2 - 1)), S), 1, sort))
-  md <- list(has_dprime_B = extras, has_discrim_B = extras, varying_source_criteria = varying, bounded = bounded,
-             new_source_criteria = if (shared) "shared" else "full", old_levels = if (shared) 3:4 else NULL)
+  md <- list(has_dprime_B = extras, has_discrim_B = extras, varying_source_criteria = varying, bounded = bounded)
   list(params = params, thresh = thresh, thresh2 = thresh2, item_type = sample(rep_len(1:3, N)), S = S, N = N,
        K1 = K1, K2 = K2, model = list(model_data = md))
 }
 
 test_that("vectorised bivariate cell probabilities equal the per-row, per-draw reference", {
-  grid <- expand.grid(bounded = c(FALSE, TRUE), varying = c(FALSE, TRUE), shared = c(FALSE, TRUE),
-                      dp = c(FALSE, TRUE), extras = c(FALSE, TRUE))
-  grid <- grid[!(grid$shared & !grid$varying), ]
+  grid <- expand.grid(bounded = c(FALSE, TRUE), varying = c(FALSE, TRUE), dp = c(FALSE, TRUE), extras = c(FALSE, TRUE))
   for (native in c(FALSE, TRUE)) {
     withr::local_options(bayesroc.native_predict = native)
     .bvn_native$ok <- NULL
     if (native && !.bvn_native_ready()) next
     for (r in seq_len(nrow(grid))) {
       g <- grid[r, ]
-      cs <- .rand_bivariate_case(100 + r, bounded = g$bounded, varying = g$varying, shared = g$shared,
-                                 dp = g$dp, extras = g$extras)
+      cs <- .rand_bivariate_case(100 + r, bounded = g$bounded, varying = g$varying, dp = g$dp, extras = g$extras)
       new <- if (g$dp) probs_bivariate_dp else probs_bivariate_sdt
       old <- if (g$dp) .ref_probs_bivariate_dp else .ref_probs_bivariate_sdt
       a <- do.call(new, cs[c("params", "thresh", "thresh2", "item_type", "S", "N", "K1", "K2", "model")])

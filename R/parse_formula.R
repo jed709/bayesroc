@@ -147,16 +147,53 @@ detect_smooth_term <- function(term_str) {
  grepl("^\\s*(s|t2)\\s*\\(", term_str)
 }
 
+.top_level_spans <- function(x, pattern) {
+  m <- gregexpr(pattern, x, perl = TRUE)[[1]]
+  if (m[1] == -1) return(data.frame(start = integer(0), len = integer(0)))
+  ch <- strsplit(x, "")[[1]]
+  depth <- c(0L, cumsum((ch == "(") - (ch == ")")))
+  keep <- depth[m] == 0
+  data.frame(start = as.integer(m[keep]), len = attr(m, "match.length")[keep])
+}
+
+.merge_group_terms <- function(random, pname) {
+  groups <- sapply(random, `[[`, "group")
+  for (g in unique(groups[duplicated(groups)])) {
+    parts <- random[groups == g]
+    if (any(vapply(parts, function(re) !is.null(re$cor_id), logical(1)))) {
+      stop(sprintf(paste0("Parameter '%s' has several random-effects terms for grouping factor '%s', ",
+                          "one of them in a cross-parameter correlation group (| id |). A term in a ",
+                          "correlation group must be the only term for its grouping factor in that ",
+                          "parameter."), pname, g), call. = FALSE)
+    }
+    labs <- unlist(lapply(parts, function(re) c(if (isTRUE(re$intercept)) "1", re$terms)))
+    if (anyDuplicated(labs)) {
+      stop(sprintf("Parameter '%s' has the random effect '%s' for grouping factor '%s' more than once.",
+                   pname, labs[anyDuplicated(labs)], g), call. = FALSE)
+    }
+    merged <- list(group = g, parts = unname(parts),
+                   terms = unique(unlist(lapply(parts, `[[`, "terms"))),
+                   term_info = unlist(lapply(parts, `[[`, "term_info"), recursive = FALSE),
+                   intercept = any(vapply(parts, function(re) isTRUE(re$intercept), logical(1))),
+                   correlated = TRUE, cor_id = NULL, cor_thresholds = TRUE,
+                   encoding_vars = unique(unlist(lapply(parts, `[[`, "encoding_vars"))))
+    keep <- which(groups == g)
+    random[[keep[1]]] <- merged
+    random <- random[-keep[-1]]
+    groups <- groups[-keep[-1]]
+  }
+  random
+}
+
 parse_fixed_effects <- function(fixed_str) {
-  has_minus_one <- grepl("-\\s*1", fixed_str)
-  has_zero_plus <- grepl("^\\s*0\\s*\\+", fixed_str)
-  has_just_zero <- grepl("^\\s*0\\s*$", fixed_str)
-  no_intercept <- has_minus_one || has_zero_plus || has_just_zero
-  
-  fixed_str <- gsub("-\\s*1", "", fixed_str)
-  fixed_str <- gsub("^\\s*0\\s*\\+", "", fixed_str)
-  fixed_str <- gsub("^\\s*0\\s*$", "", fixed_str)
-  
+  spans <- rbind(.top_level_spans(fixed_str, "-\\s*1(?![0-9.A-Za-z_])"),
+                 .top_level_spans(fixed_str, "(?:^|(?<=\\+))\\s*0\\s*(?=\\+|$)"))
+  no_intercept <- nrow(spans) > 0
+  for (i in rev(order(spans$start))) {
+    fixed_str <- paste0(substr(fixed_str, 1, spans$start[i] - 1),
+                        substr(fixed_str, spans$start[i] + spans$len[i], nchar(fixed_str)))
+  }
+
   terms <- split_on_plus(fixed_str)
   terms <- trimws(terms)
   terms <- terms[terms != "" & terms != "1"]
@@ -201,22 +238,16 @@ parse_fixed_effects <- function(fixed_str) {
       }
     }
 
-    if (grepl("\\*", unwrapped_term)) {
-      factors <- trimws(strsplit(unwrapped_term, "\\*")[[1]])
-      for (f in factors) {
+    if (grepl("\\*|\\^", unwrapped_term)) {
+      for (lab in attr(stats::terms(stats::as.formula(paste("~", unwrapped_term))), "term.labels")) {
+        factors <- trimws(strsplit(lab, ":")[[1]])
         processed_terms[[length(processed_terms) + 1]] <- list(
-          term = f,
-          type = "main",
-          factors = f,
-          is_encoding = f %in% encoding_vars
+          term = lab,
+          type = if (length(factors) > 1) "interaction" else "main",
+          factors = factors,
+          is_encoding = any(factors %in% encoding_vars)
         )
       }
-      processed_terms[[length(processed_terms) + 1]] <- list(
-        term = paste(factors, collapse = ":"),
-        type = "interaction",
-        factors = factors,
-        is_encoding = any(factors %in% encoding_vars)
-      )
     } else if (grepl(":", unwrapped_term)) {
       factors <- trimws(strsplit(unwrapped_term, ":")[[1]])
       processed_terms[[length(processed_terms) + 1]] <- list(
@@ -238,8 +269,8 @@ parse_fixed_effects <- function(fixed_str) {
   seen_terms <- character(0)
   unique_terms <- list()
   for (pt in processed_terms) {
-    if (!(pt$term %in% seen_terms)) {
-      seen_terms <- c(seen_terms, pt$term)
+    if (!(pt[["term"]] %in% seen_terms)) {
+      seen_terms <- c(seen_terms, pt[["term"]])
       unique_terms[[length(unique_terms) + 1]] <- pt
     }
   }
@@ -305,7 +336,17 @@ parse_random_effect <- function(re_str) {
 }
 
 .parse_re_group <- function(group) {
-  if (!grepl("^gr\\s*\\(", group)) return(list(group = group, cor_thresholds = TRUE))
+  if (!grepl("^gr\\s*\\(", group)) {
+    if (grepl("\\|", group)) {
+      stop("Invalid grouping term '", group, "': a correlation label (| id |) cannot be combined with ||, ",
+           "which declares the effects uncorrelated.", call. = FALSE)
+    }
+    if (!grepl("^[A-Za-z.][A-Za-z0-9._]*$", group)) {
+      stop("Invalid grouping term '", group, "': group by a column of the data, an interaction of columns ",
+           "(a:b) or a nesting (a/b).", call. = FALSE)
+    }
+    return(list(group = group, cor_thresholds = TRUE))
+  }
   call <- tryCatch(str2lang(group), error = function(e) NULL)
   if (is.null(call) || !is.call(call) || !identical(call[[1]], as.name("gr")) || length(call) < 2 ||
       !is.symbol(call[[2]]) || (!is.null(names(call)) && nzchar(names(call)[2]))) {
@@ -631,27 +672,8 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
   all_groups <- character(0)
   for (pname in all_param_names_with_crit) {
     if (!is.null(parsed[[pname]]) && !is.null(parsed[[pname]]$random)) {
-      groups <- sapply(parsed[[pname]]$random, `[[`, "group")
-      for (g in unique(groups[duplicated(groups)])) {
-        parts <- parsed[[pname]]$random[groups == g]
-        if (any(vapply(parts, function(re) !is.null(re$cor_id), logical(1)))) {
-          stop(sprintf(paste0("Parameter '%s' has several random-effects terms for grouping factor '%s', ",
-                              "one of them in a cross-parameter correlation group (| id |). A term in a ",
-                              "correlation group must be the only term for its grouping factor in that ",
-                              "parameter."), pname, g), call. = FALSE)
-        }
-        merged <- list(group = g, parts = unname(parts),
-                       terms = unique(unlist(lapply(parts, `[[`, "terms"))),
-                       term_info = unlist(lapply(parts, `[[`, "term_info"), recursive = FALSE),
-                       intercept = any(vapply(parts, function(re) isTRUE(re$intercept), logical(1))),
-                       correlated = TRUE, cor_id = NULL, cor_thresholds = TRUE,
-                       encoding_vars = unique(unlist(lapply(parts, `[[`, "encoding_vars"))))
-        keep <- which(groups == g)
-        parsed[[pname]]$random[[keep[1]]] <- merged
-        parsed[[pname]]$random <- parsed[[pname]]$random[-keep[-1]]
-        groups <- groups[-keep[-1]]
-      }
-      all_groups <- c(all_groups, groups)
+      parsed[[pname]]$random <- .merge_group_terms(parsed[[pname]]$random, pname)
+      all_groups <- c(all_groups, sapply(parsed[[pname]]$random, `[[`, "group"))
     }
   }
   parsed$grouping_factors <- unique(all_groups)
