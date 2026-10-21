@@ -1149,6 +1149,9 @@ cdp <- function(old_levels = NULL) {
 #' item-source recognition, with recollection-gated source discrimination
 #' (Onyper, Zhang & Howard, 2010).
 #'
+#' Same source labeling convention as [bivariate_gaussian()]: source A is the
+#' source associated with low source ratings, source B with high ratings.
+#'
 #'
 #' @param source_criteria How the source criteria are structured across
 #'   detection responses. `"common"` (default): one set of source criteria for
@@ -1173,8 +1176,9 @@ cdp <- function(old_levels = NULL) {
 #'       (1 - \lambda)\,\Phi\!\Big(\tfrac{c1_j - d'_F}{\sigma_1}\Big)\Phi(c2_k)
 #'       + \lambda\,\Phi\!\Big(\tfrac{c1_j - d'_F - d'_R}{\sigma_1}\Big)
 #'         \Phi\!\Big(\tfrac{c2_k - \psi_X}{\sigma_2}\Big)}
-#' where \eqn{\psi_A = +d'_S, \psi_B = -d'_S} (the recollection-conditional
-#' source location for A vs B), and lambda is the recollection probability
+#' where \eqn{\psi_A = d'_S, \psi_B = -d'_S} (the recollection-conditional
+#' source location for A vs B; a negative \eqn{d'_S} places A on the low side),
+#' and lambda is the recollection probability
 #' (`lambda`). The non-recollected component has zero source mean (no source
 #' info); the recollected component carries source discriminability.
 #'
@@ -1184,9 +1188,9 @@ cdp <- function(old_levels = NULL) {
 #'     dimension. Identity link.}
 #'   \item{dprime2}{(required) \eqn{d'_R}: recollection boost on the item
 #'     dimension. Identity link.}
-#'   \item{discrim}{(required) \eqn{d'_S}: source discriminability for
-#'     recollected items only (non-recollected items center at 0 on source).
-#'     Identity link.}
+#'   \item{discrim}{(required) \eqn{d'_S}: signed source-axis position of
+#'     recollected A items (non-recollected items center at 0 on source);
+#'     negative when A items get low source ratings. Identity link.}
 #'   \item{lambda}{(required) Recollection probability. Logit link.}
 #'   \item{criterion}{(required) K1-1 item-dimension thresholds. Identity link.}
 #'   \item{criterion2}{(required) K2-1 source-dimension thresholds. Identity link.}
@@ -1194,7 +1198,8 @@ cdp <- function(old_levels = NULL) {
 #'     Log link.}
 #'   \item{sigma2}{(optional) SD on the source dimension for recollected items.
 #'     If omitted, fixed at 1. Log link.}
-#'   \item{discrim_B}{(optional) Source discriminability for B items. If omitted,
+#'   \item{discrim_B}{(optional) Signed source-axis position of recollected B
+#'     items. If omitted,
 #'     constrained to mirror A: `discrim_B = -discrim`.}
 #' }
 #'
@@ -1239,12 +1244,12 @@ vrdp2d <- function(source_criteria = c("common", "varying", "varying_shared_new"
                        description = "Recollection strength boost on item dimension"),
         
         discrim = list(required = TRUE, default = NULL, link = "identity",
-                       description = "Source discriminability for Source A (only for recollected items)"),
+                       description = "Signed source-axis position of recollected Source A items"),
         
         discrim_B = list(required = FALSE, default = NULL, link = "identity",
                          null_value = "symmetric",
                          null_description = "constrained to -discrim (symmetric sources)",
-                         description = "Source discriminability for Source B"),
+                         description = "Signed source-axis position of recollected Source B items"),
         
         lambda = list(required = TRUE, default = NULL, link = "logit",
                       description = "R: Probability of recollection for old items"),

@@ -42,7 +42,7 @@
 #' @param dpar Distributional parameter the prior applies to, e.g. `"dprime"`,
 #'   `"sigma"`, `"lambda"`. For criterion priors use `"thresh_mid"` / `"log_gaps"`
 #'   (`"thresh_mid2"` / `"log_gaps2"` for the second response axis in bivariate
-#'   and CDP families). Family-specific aliases (`cutpoints`, `cutpoints1`,
+#'   families). Family-specific aliases (`cutpoints`, `cutpoints1`,
 #'   `cutpoints2`, `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
 #'   accepted. The correlation prior of a cross-parameter group `(... | id | g)` is
 #'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
@@ -256,15 +256,15 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.5)",
       rho_B = "normal(0, 0.5)",
       rho_N = "normal(0, 0.5)",
-      rec_crit = "normal(1.5, 1)",
-      know_crit = "normal(1.0, 1)",
+      rec_crit = "normal(2, 1)",
+      know_crit = "normal(0, 1)",
       dprime_L = "normal(0, 1)",
       sigma_L = "normal(0, 0.5)",
       lambda_L = "normal(0, 1.5)",
       thresh_mid = "normal(0.5, 0.75)",
       log_gaps = "normal(-0.5, 0.5)",
-      thresh_mid2 = "normal(0, 1.5)",
-      log_gaps2 = "normal(0, 1)",
+      thresh_mid2 = "normal(0, 0.75)",
+      log_gaps2 = "normal(0, 0.75)",
       criterion_scale = "normal(0, 0.5)",
       criterion2_scale = "normal(0, 0.5)"
     ),
@@ -406,9 +406,14 @@ build_prior_lookup <- function(user_priors, family = NULL) {
   }
 
   fam_defaults <- switch(family$family %||% "",
-    source_mixture = list(dprime = "normal(-1, 1)", dprime_B = "normal(1, 1)", thresh_mid = "normal(0, 1.5)"),
-    cumulative = ,
-    bivariate_cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)"),
+    source_mixture = list(dprime = "normal(-1, 1)", dprime_B = "normal(1, 1)", thresh_mid = "normal(0, 0.75)"),
+    cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)"),
+    bivariate_cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)",
+                                thresh_mid2 = "normal(0, 1.5)", log_gaps2 = "normal(-0.5, 0.5)"),
+    bivariate_sdt = list(discrim = "normal(-1, 1)", discrim_B = "normal(1, 1)", dprime_B = "normal(1.5, 0.75)",
+                         rho = "normal(-0.5, 0.5)", rho_B = "normal(0.5, 0.5)"),
+    bivariate_dp = list(discrim = "normal(-1, 1)", discrim_B = "normal(1, 1)", dprime_B = "normal(1.5, 0.75)"),
+    vrdp2d = list(discrim = "normal(-1, 1)", discrim_B = "normal(1, 1)", dprime2 = "normal(2, 1)"),
     list())
   for (pname in setdiff(names(fam_defaults), lookup$user_set$b)) lookup$b[[pname]] <- fam_defaults[[pname]]
 
@@ -416,16 +421,20 @@ build_prior_lookup <- function(user_priors, family = NULL) {
     for (pname in names(family$params)) {
       plink <- family$params[[pname]]$link
       if (is.null(plink)) next
-      if (pname %in% lookup$user_set$b) next
 
-      if (plink == "log" && pname %in% c("dprime", "dprime_B", "discrim", "discrim_B")) {
-        lookup$b[[pname]] <- "normal(0, 0.5)"
-      }
-      if (plink == "logis" && pname %in% c("rho", "rho_B")) {
-        lookup$b[[pname]] <- "normal(0, 1)"
-      }
-      if (plink == "logit" && pname %in% c("lambda", "lambda2", "lambda_B", "lambda2_B")) {
-        lookup$b[[pname]] <- "normal(0, 1.5)"
+      if (!(pname %in% lookup$user_set$b)) {
+        if (plink == "log" && pname %in% c("dprime", "dprime_B")) {
+          lookup$b[[pname]] <- "normal(0, 0.5)"
+        }
+        if (plink == "log" && pname %in% c("discrim", "discrim_B")) {
+          lookup$b[[pname]] <- "normal(-1.5, 0.75)"
+        }
+        if (plink == "logis" && pname %in% c("rho", "rho_B")) {
+          lookup$b[[pname]] <- "normal(0, 1)"
+        }
+        if (plink == "logit" && pname %in% c("lambda", "lambda2", "lambda_B", "lambda2_B")) {
+          lookup$b[[pname]] <- "normal(0, 1.5)"
+        }
       }
 
       if (!(pname %in% lookup$user_set$sd_dpar)) {
@@ -495,6 +504,9 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
   }
   if (isTRUE(model_data$centered_coding) && !("thresh_mid" %in% pl$user_set$b))
     pl$b$thresh_mid <- "normal(0, 0.5)"
+  if (isTRUE(model_data$K2 %% 2L == 1L) && !("thresh_mid2" %in% pl$user_set$b) &&
+      isTRUE(model_data$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d")))
+    pl$b$thresh_mid2 <- "normal(-0.5, 0.75)"
   pl
 }
 

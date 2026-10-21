@@ -33,6 +33,8 @@ item-source recognition, with recollection-gated source discrimination
 (Onyper, Zhang & Howard, 2010).
 }
 \details{
+Same source labeling convention as \code{\link[=bivariate_gaussian]{bivariate_gaussian()}}: source A is the
+source associated with low source ratings, source B with high ratings.
 \subsection{Likelihood}{
 
 Both states have diagonal covariance (zero detection-source correlation),
@@ -44,8 +46,9 @@ is a 2-component mixture over recollection:
       (1 - \lambda)\,\Phi\!\Big(\tfrac{c1_j - d'_F}{\sigma_1}\Big)\Phi(c2_k)
       + \lambda\,\Phi\!\Big(\tfrac{c1_j - d'_F - d'_R}{\sigma_1}\Big)
         \Phi\!\Big(\tfrac{c2_k - \psi_X}{\sigma_2}\Big)}
-where \eqn{\psi_A = +d'_S, \psi_B = -d'_S} (the recollection-conditional
-source location for A vs B), and lambda is the recollection probability
+where \eqn{\psi_A = d'_S, \psi_B = -d'_S} (the recollection-conditional
+source location for A vs B; a negative \eqn{d'_S} places A on the low side),
+and lambda is the recollection probability
 (\code{lambda}). The non-recollected component has zero source mean (no source
 info); the recollected component carries source discriminability.
 }
@@ -57,9 +60,9 @@ info); the recollected component carries source discriminability.
 dimension. Identity link.}
 \item{dprime2}{(required) \eqn{d'_R}: recollection boost on the item
 dimension. Identity link.}
-\item{discrim}{(required) \eqn{d'_S}: source discriminability for
-recollected items only (non-recollected items center at 0 on source).
-Identity link.}
+\item{discrim}{(required) \eqn{d'_S}: signed source-axis position of
+recollected A items (non-recollected items center at 0 on source);
+negative when A items get low source ratings. Identity link.}
 \item{lambda}{(required) Recollection probability. Logit link.}
 \item{criterion}{(required) K1-1 item-dimension thresholds. Identity link.}
 \item{criterion2}{(required) K2-1 source-dimension thresholds. Identity link.}
@@ -67,7 +70,8 @@ Identity link.}
 Log link.}
 \item{sigma2}{(optional) SD on the source dimension for recollected items.
 If omitted, fixed at 1. Log link.}
-\item{discrim_B}{(optional) Source discriminability for B items. If omitted,
+\item{discrim_B}{(optional) Signed source-axis position of recollected B
+items. If omitted,
 constrained to mirror A: \code{discrim_B = -discrim}.}
 }
 }

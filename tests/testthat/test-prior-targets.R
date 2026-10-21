@@ -104,5 +104,89 @@ test_that("source-mixture defaults put source A on the negative side and B on th
                                                 family = source_mixture()), d)))
   expect_equal(t$prior[t$dpar == "dprime"], "normal(-1, 1)")
   expect_equal(t$prior[t$dpar == "dprime_B"], "normal(1, 1)")
-  expect_equal(t$prior[t$dpar == "thresh_mid"], "normal(0, 1.5)")
+  expect_equal(t$prior[t$dpar == "thresh_mid"], "normal(0, 0.75)")
 })
+
+test_that("source-axis defaults centre on the new-item baseline and follow the A = low convention", {
+  set.seed(2)
+  n <- 240
+  d <- data.frame(subj = factor(rep(1:6, each = n / 6)),
+                  type = factor(sample(c("new", "A", "B"), n, TRUE), levels = c("new", "A", "B")),
+                  det = sample(1:6, n, TRUE), src = sample(1:6, n, TRUE), src3 = sample(1:3, n, TRUE))
+  pr <- function(m, dp) { t <- get_broc_prior(m); t$prior[t$dpar == dp & t$class == "b"][1] }
+  vr <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime2 ~ 1, discrim ~ 1, lambda ~ 1,
+                                  criterion ~ 1, criterion2 ~ 1, family = vrdp2d()), d))
+  expect_equal(pr(vr, "discrim"), "normal(-1, 1)")
+  expect_equal(pr(vr, "thresh_mid2"), "normal(0, 0.75)")
+  expect_equal(pr(vr, "log_gaps2"), "normal(0, 0.75)")
+  bg <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+                                  family = bivariate_gaussian()), d))
+  expect_equal(pr(bg, "discrim"), "normal(-1, 1)")
+  bb <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+                                  family = bivariate_gaussian(bounded = TRUE)), d))
+  expect_equal(pr(bb, "discrim"), "normal(-1.5, 0.75)")
+  expect_equal(pr(vr, "dprime2"), "normal(2, 1)")
+  bgB <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime_B ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
+                                   criterion2 ~ 1, family = bivariate_gaussian()), d))
+  expect_equal(pr(bgB, "dprime_B"), pr(bgB, "dprime"))
+  bdB <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime_B ~ 1, discrim ~ 1, rho ~ 1, lambda ~ 1, lambda2 ~ 1,
+                                   criterion ~ 1, criterion2 ~ 1, family = bivariate_dp()), d))
+  expect_equal(pr(bdB, "dprime_B"), pr(bdB, "dprime"))
+  odd <- suppressMessages(broc(brf(resp(det, src3) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+                                   family = bivariate_gaussian()), d))
+  expect_equal(pr(odd, "thresh_mid2"), "normal(-0.5, 0.75)")
+  odd_user <- suppressMessages(broc(brf(resp(det, src3) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+                                        family = bivariate_gaussian()), d,
+                                    priors = broc_prior("normal(0, 1)", class = "b", dpar = "thresh_mid2")))
+  expect_equal(pr(odd_user, "thresh_mid2"), "normal(0, 1)")
+  bc <- suppressMessages(broc(brf(resp(det, src) ~ 1, mu2 ~ 1, cutpoints ~ 1, cutpoints2 ~ 1,
+                                  family = bivariate_cumulative()), d))
+  expect_equal(pr(bc, "thresh_mid2"), "normal(0, 1.5)")
+  expect_equal(pr(bc, "log_gaps2"), "normal(-0.5, 0.5)")
+})
+
+test_that("a user population prior on a parameter leaves its default random-effect SD prior alone", {
+  set.seed(3)
+  n <- 240
+  d <- data.frame(subj = factor(rep(1:6, each = n / 6)),
+                  type = factor(sample(c("new", "A", "B"), n, TRUE), levels = c("new", "A", "B")),
+                  det = sample(1:6, n, TRUE), src = sample(1:6, n, TRUE))
+  f <- brf(resp(det, src) | type ~ 1, discrim ~ 1 + (1 | subj), rho ~ 1 + (1 | subj), criterion ~ 1, criterion2 ~ 1,
+           family = bivariate_gaussian(bounded = TRUE))
+  sdp <- function(m, dp) { t <- get_broc_prior(m); t$prior[t$dpar == dp & t$class == "sd"][1] }
+  base <- suppressMessages(broc(f, d))
+  for (pri in list(broc_prior("normal(-1, 0.5)", class = "b", dpar = "discrim"),
+                   broc_prior("normal(0, 0.8)", class = "b", dpar = "rho"),
+                   broc_prior("normal(0, 2)", class = "b"))) {
+    m <- suppressMessages(broc(f, d, priors = pri))
+    expect_equal(sdp(m, "discrim"), sdp(base, "discrim"))
+    expect_equal(sdp(m, "rho"), sdp(base, "rho"))
+  }
+})
+
+test_that("rho defaults: directional only for the unbounded bivariate Gaussian, every symmetry and coding", {
+  base <- expand.grid(det = 1:6, src = 1:6, type = c("new", "A", "B"))
+  d <- rbind(transform(base, cond = "c1"), transform(base, cond = "c2"))
+  d$type <- factor(d$type, levels = c("new", "A", "B")); d$cond <- factor(d$cond)
+  pri <- function(fam, sym, rhs) {
+    args <- list(resp(det, src) | type ~ 1, discrim ~ 1, criterion ~ 1, criterion2 ~ 1, as.formula(paste("rho ~", rhs)))
+    if (sym) args <- c(args, list(as.formula(paste("rho_B ~", rhs))))
+    if (identical(fam$family, "bivariate_dp")) args <- c(args, list(lambda ~ 1, lambda2 ~ 1))
+    t <- get_broc_prior(suppressMessages(broc(do.call(brf, c(args, list(family = fam))), d)))
+    t <- t[t$class == "b" & t$dpar %in% c("rho", "rho_B"), ]
+    setNames(t$prior, paste(t$dpar, t$coef))
+  }
+  for (asym in c(FALSE, TRUE)) {
+    p <- pri(bivariate_gaussian(), asym, "0 + cond")
+    expect_true(all(p[startsWith(names(p), "rho cond")] == "normal(-0.5, 0.5)"))
+    if (asym) expect_true(all(p[startsWith(names(p), "rho_B cond")] == "normal(0.5, 0.5)"))
+    p <- pri(bivariate_gaussian(), asym, "1 + cond")
+    expect_equal(unname(p["rho (Intercept)"]), "normal(-0.5, 0.5)")
+    expect_equal(unname(p["rho condc2"]), "normal(0, 0.5)")
+    if (asym) expect_equal(unname(p[c("rho_B (Intercept)", "rho_B condc2")]), c("normal(0.5, 0.5)", "normal(0, 0.5)"))
+    for (fam in list(bivariate_gaussian(bounded = TRUE), bivariate_dp(bounded = TRUE)))
+      expect_true(all(pri(fam, asym, "1 + cond") == "normal(0, 1)"))
+    expect_true(all(pri(bivariate_dp(), asym, "1 + cond") == "normal(0, 0.5)"))
+  }
+})
+
