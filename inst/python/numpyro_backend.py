@@ -231,6 +231,7 @@ def parse_prior(prior_str, dim=None):
         "cauchy": lambda a: dist.Cauchy(a[0], a[1]),
         "half_cauchy": lambda a: dist.HalfCauchy(a[0] if len(a) == 1 else a[1]),
         "student_t": lambda a: dist.StudentT(a[0], a[1], a[2]) if len(a) == 3 else dist.StudentT(a[0]),
+        "half_student_t": lambda a: dist.StudentT(a[0], 0.0, a[1]),
         "exponential": lambda a: dist.Exponential(a[0]),
         "beta": lambda a: dist.Beta(a[0], a[1]),
         "gamma": lambda a: dist.Gamma(a[0], a[1]),
@@ -3805,18 +3806,48 @@ def _positive_dist(d):
     Stan uses <lower=0> on SD parameters; NumPyro needs an explicit
     positive distribution to match.
     """
-    if isinstance(d, (dist.HalfNormal, dist.HalfCauchy, dist.LogNormal,
-                      dist.Exponential, dist.Gamma)):
-        return d
+    low = getattr(d.support, "lower_bound", None)
+    high = getattr(d.support, "upper_bound", None)
+    if low is not None and bool(np.all(np.asarray(low) >= 0.0)):
+        return d if high is None else _PositivePart(d)
     loc = getattr(d, "loc", None)
     zero_loc = loc is None or bool(np.all(np.asarray(loc) == 0.0))
     if isinstance(d, dist.Normal):
         if zero_loc:
             return dist.HalfNormal(d.scale)
         return dist.TruncatedNormal(d.loc, d.scale, low=0.0)
-    if not zero_loc and isinstance(d, (dist.Cauchy, dist.StudentT, dist.Laplace, dist.Logistic)):
-        return dist.TruncatedDistribution(d, low=0.0)
-    return dist.FoldedDistribution(d)
+    if isinstance(d, (dist.Cauchy, dist.StudentT, dist.Laplace, dist.Logistic)):
+        if zero_loc:
+            return dist.FoldedDistribution(d)
+        return _PositivePart(d) if isinstance(d, dist.StudentT) else dist.TruncatedDistribution(d, low=0.0)
+    return _PositivePart(d)
+
+
+class _PositivePart(dist.Distribution):
+    """A distribution restricted to positive values, as Stan's <lower=0> declaration
+    restricts it: density f(x) / (1 - F(0)) for x > 0. Draws are the first positive of
+    _CANDIDATES base draws, which needs no inverse CDF."""
+    arg_constraints = {}
+    support = dist.constraints.positive
+    _CANDIDATES = 64
+
+    def __init__(self, base, validate_args=None):
+        self.base_dist = base
+        self.low = 0.0
+        self._lo = base.cdf(jnp.zeros(base.batch_shape))
+        super().__init__(base.batch_shape, base.event_shape, validate_args=validate_args)
+
+    def sample(self, key, sample_shape=()):
+        cand = self.base_dist.sample(key, (self._CANDIDATES,) + tuple(sample_shape))
+        ok = cand > 0
+        first = jnp.take_along_axis(cand, jnp.argmax(ok, axis=0)[None], axis=0)[0]
+        x = jnp.where(ok.any(axis=0), first, jnp.abs(cand[0]))
+        return jnp.maximum(x, jnp.finfo(x.dtype).tiny)
+
+    def log_prob(self, value):
+        ok = (value > 0) & self.base_dist.support(value)
+        lp = jnp.where(ok, self.base_dist.log_prob(jnp.where(ok, value, 1.0)), -jnp.inf)
+        return lp - jnp.log1p(-self._lo)
 
 
 def _re_corr_cholesky(prefix, conf, dim):

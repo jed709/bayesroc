@@ -14,8 +14,19 @@ broc_prior(prior, class, dpar = NULL, coef = NULL, group = NULL)
 \code{gamma}, \code{inv_gamma}, \code{weibull}, \code{lognormal}, the half forms \code{half_normal},
 \code{half_cauchy}, \code{half_student_t}, and \code{lkj} (\code{class = "cor"} only). For SD
 priors (\code{class = "sd"}/\code{"sds"}) a symmetric distribution is automatically
-restricted to positive values. The Stan backend additionally accepts any
-distribution in the Stan language.}
+restricted to positive values; the half forms are for SD priors only. The
+Stan backend also accepts \code{skew_normal}, \code{exp_mod_normal},
+\code{skew_double_exponential}, \code{chi_square}, \code{inv_chi_square},
+\code{scaled_inv_chi_square}, \code{frechet}, \code{rayleigh}, \code{loglogistic}, \code{pareto},
+\code{pareto_type_2}, \code{beta_proportion} and \code{von_mises}.
+
+The string is checked and rewritten in a standard form when the prior is
+created: surrounding spaces, quotes and a trailing \verb{;} are dropped, the
+distribution name may be in any case, arguments may be named with Stan's
+names (\code{normal(mu = 0, sigma = 1)}) or common ones (\code{mean}, \code{sd}, \code{df},
+\code{shape}, \code{rate}, \code{scale}), and constant expressions such as \code{sqrt(2)} or
+\code{1/2} are evaluated. Unknown distributions, the wrong number of arguments
+and non-positive scales are errors.}
 
 \item{class}{Parameter class: \code{"b"} (fixed effects), \code{"sd"} (random-effect
 SDs), \code{"cor"} (random-effect correlations), or \code{"sds"} (smooth penalty SDs,

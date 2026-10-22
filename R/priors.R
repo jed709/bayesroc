@@ -34,8 +34,19 @@
 #'   `gamma`, `inv_gamma`, `weibull`, `lognormal`, the half forms `half_normal`,
 #'   `half_cauchy`, `half_student_t`, and `lkj` (`class = "cor"` only). For SD
 #'   priors (`class = "sd"`/`"sds"`) a symmetric distribution is automatically
-#'   restricted to positive values. The Stan backend additionally accepts any
-#'   distribution in the Stan language.
+#'   restricted to positive values; the half forms are for SD priors only. The
+#'   Stan backend also accepts `skew_normal`, `exp_mod_normal`,
+#'   `skew_double_exponential`, `chi_square`, `inv_chi_square`,
+#'   `scaled_inv_chi_square`, `frechet`, `rayleigh`, `loglogistic`, `pareto`,
+#'   `pareto_type_2`, `beta_proportion` and `von_mises`.
+#'
+#'   The string is checked and rewritten in a standard form when the prior is
+#'   created: surrounding spaces, quotes and a trailing `;` are dropped, the
+#'   distribution name may be in any case, arguments may be named with Stan's
+#'   names (`normal(mu = 0, sigma = 1)`) or common ones (`mean`, `sd`, `df`,
+#'   `shape`, `rate`, `scale`), and constant expressions such as `sqrt(2)` or
+#'   `1/2` are evaluated. Unknown distributions, the wrong number of arguments
+#'   and non-positive scales are errors.
 #' @param class Parameter class: `"b"` (fixed effects), `"sd"` (random-effect
 #'   SDs), `"cor"` (random-effect correlations), or `"sds"` (smooth penalty SDs,
 #'   only for models with `s()`/`t2()` smooth terms).
@@ -118,7 +129,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "sigma_F") dpar <- "sigma2"
   }
   
-  if (class == "cor") prior <- sub("^\\s*lkj(_corr)?\\s*\\(", "lkj_corr_cholesky(", prior)
+  prior <- .normalize_prior(prior, class)
 
   if (!is.null(coef) && !class %in% c("b", "sd", "sds")) {
     warning("coef argument is ignored for class '", class, "'")
@@ -178,6 +189,139 @@ parse_prior_string <- function(prior_str) {
   }
   
   list(distribution = distribution, args = args)
+}
+
+.prior_loc <- c("mu", "mean", "loc", "location")
+.prior_scl <- c("sigma", "sd", "scale")
+.prior_dists <- list(
+  normal = list(args = list(.prior_loc, .prior_scl), pos = 2),
+  std_normal = list(args = list(), pos = integer(0)),
+  student_t = list(args = list(c("nu", "df"), .prior_loc, .prior_scl), pos = c(1, 3)),
+  cauchy = list(args = list(.prior_loc, .prior_scl), pos = 2),
+  logistic = list(args = list(.prior_loc, .prior_scl), pos = 2),
+  gumbel = list(args = list(.prior_loc, c("beta", .prior_scl)), pos = 2),
+  double_exponential = list(args = list(.prior_loc, .prior_scl), pos = 2),
+  uniform = list(args = list(c("alpha", "lower", "min", "a"), c("beta", "upper", "max", "b")), pos = integer(0)),
+  beta = list(args = list(c("alpha", "a", "shape1"), c("beta", "b", "shape2")), pos = 1:2),
+  exponential = list(args = list(c("beta", "lambda", "rate")), pos = 1),
+  gamma = list(args = list(c("alpha", "shape"), c("beta", "rate")), pos = 1:2),
+  inv_gamma = list(args = list(c("alpha", "shape"), c("beta", "scale")), pos = 1:2),
+  weibull = list(args = list(c("alpha", "shape"), c("sigma", "scale")), pos = 1:2),
+  lognormal = list(args = list(.prior_loc, .prior_scl), pos = 2),
+  half_normal = list(args = list(.prior_scl), pos = 1, half = TRUE),
+  half_cauchy = list(args = list(.prior_scl), pos = 1, half = TRUE),
+  half_student_t = list(args = list(c("nu", "df"), .prior_scl), pos = 1:2, half = TRUE),
+  lkj_corr_cholesky = list(args = list("eta"), pos = 1)
+)
+.stan_only_dists <- c(skew_normal = 3, exp_mod_normal = 3, skew_double_exponential = 3, chi_square = 1,
+                      inv_chi_square = 1, scaled_inv_chi_square = 2, frechet = 2, rayleigh = 1, loglogistic = 2,
+                      pareto = 2, pareto_type_2 = 3, beta_proportion = 2, von_mises = 2)
+.prior_aliases <- c(laplace = "double_exponential", lkj = "lkj_corr_cholesky", lkj_corr = "lkj_corr_cholesky")
+.prior_suggest <- c(n = "normal", norm = "normal", gaussian = "normal", halfnormal = "half_normal",
+                    halfcauchy = "half_cauchy", t = "student_t", student = "student_t", studentt = "student_t",
+                    half_t = "half_student_t", halfstudentt = "half_student_t", exp = "exponential",
+                    lnorm = "lognormal", log_normal = "lognormal", invgamma = "inv_gamma", inverse_gamma = "inv_gamma")
+.prior_math <- c("+", "-", "*", "/", "^", "(", "sqrt", "exp", "log", "log2", "log10", "log1p", "expm1", "abs", "pi")
+
+.prior_number <- function(e, what) {
+  env <- list2env(mget(.prior_math, envir = baseenv()), parent = emptyenv())
+  v <- tryCatch(eval(e, env), error = function(err) NULL)
+  if (!is.numeric(v) || length(v) != 1L || !is.finite(v)) {
+    stop("Prior argument `", paste(deparse(e), collapse = ""), "` in '", what,
+         "' must be a number or a constant expression such as sqrt(2).", call. = FALSE)
+  }
+  as.numeric(v)
+}
+
+.normalize_prior <- function(prior, class) {
+  if (!is.character(prior) || length(prior) != 1L || is.na(prior)) {
+    stop("`prior` must be a single string such as \"normal(0, 1)\".", call. = FALSE)
+  }
+  s <- gsub("[    ​﻿]", " ", prior)
+  s <- gsub("^\\s+|\\s+$", "", s)
+  s <- gsub("^\\s+|\\s+$", "", sub(";\\s*$", "", s))
+  repeat {
+    q <- regmatches(s, regexec("^([\"'`“‘])(.*)([\"'`”’])$", s))[[1]]
+    if (length(q) != 4) break
+    s <- gsub("^\\s+|\\s+$", "", q[3])
+  }
+  if (!nzchar(s)) stop("`prior` is empty; give a distribution such as \"normal(0, 1)\".", call. = FALSE)
+  if (grepl("^[A-Za-z_][A-Za-z0-9_]*$", s)) s <- paste0(s, "()")
+  m <- regmatches(s, regexec("^([A-Za-z_][A-Za-z0-9_]*)\\s*\\((.*)\\)$", s))[[1]]
+  if (length(m) != 3) {
+    stop("Invalid prior '", prior, "'. Expected a distribution call such as \"normal(0, 1)\".", call. = FALSE)
+  }
+  name <- tolower(m[2])
+  if (name %in% names(.prior_aliases)) name <- .prior_aliases[[name]]
+  call <- tryCatch(str2lang(paste0("f(", m[3], ")")), error = function(e) NULL)
+  if (is.null(call)) {
+    stop("Could not read the arguments of prior '", prior, "'; separate them with commas, e.g. \"normal(0, 1)\".",
+         call. = FALSE)
+  }
+  if (!identical(call[[1]], as.name("f"))) {
+    stop("Invalid prior '", prior, "'. Give a single distribution call such as \"normal(0, 1)\".", call. = FALSE)
+  }
+  raw <- as.list(call)[-1]
+  known <- c(names(.prior_dists), names(.stan_only_dists))
+  if (!name %in% known) {
+    guess <- if (name %in% names(.prior_suggest)) .prior_suggest[[name]] else known[which.min(utils::adist(name, known)[1, ])]
+    if (guess == "lkj_corr_cholesky") guess <- "lkj"
+    stop("Unknown prior distribution '", m[2], "' in '", prior, "'. Did you mean '", guess,
+         "'? Supported: ", paste(names(.prior_dists)[names(.prior_dists) != "lkj_corr_cholesky"], collapse = ", "),
+         ", and lkj for class = \"cor\".", call. = FALSE)
+  }
+  if (class == "cor" && name != "lkj_corr_cholesky") {
+    stop("Correlation priors (class = \"cor\") must be lkj(eta), e.g. \"lkj(2)\"; got '", prior, "'.", call. = FALSE)
+  }
+  if (class != "cor" && name == "lkj_corr_cholesky") {
+    stop("lkj() is a correlation prior; use it with class = \"cor\".", call. = FALSE)
+  }
+  if (name %in% names(.stan_only_dists)) {
+    if (length(raw) != .stan_only_dists[[name]] || any(nzchar(names(raw) %||% ""))) {
+      stop("Prior '", prior, "': ", name, "() takes ", .stan_only_dists[[name]], " unnamed argument(s).", call. = FALSE)
+    }
+  } else {
+    spec <- .prior_dists[[name]]
+    n <- length(spec$args)
+    if (length(raw) != n) {
+      shown <- if (name == "lkj_corr_cholesky") "lkj" else name
+      stop("Prior '", prior, "': ", shown, "() takes ", n, " argument", if (n != 1) "s",
+           if (n) paste0(" (", paste(vapply(spec$args, `[`, "", 1), collapse = ", "), ")"), "; got ",
+           length(raw), ".", call. = FALSE)
+    }
+    nm <- tolower(names(raw) %||% rep("", length(raw)))
+    if (any(nzchar(nm))) {
+      slot <- integer(length(raw))
+      for (i in which(nzchar(nm))) {
+        hit <- which(vapply(spec$args, function(a) nm[i] %in% a, logical(1)))
+        if (length(hit) != 1L) {
+          stop("Prior '", prior, "': unknown argument name '", names(raw)[i], "' for ", name, "().", call. = FALSE)
+        }
+        slot[i] <- hit
+      }
+      slot[!nzchar(nm)] <- setdiff(seq_len(n), slot[nzchar(nm)])[seq_len(sum(!nzchar(nm)))]
+      if (anyDuplicated(slot)) stop("Prior '", prior, "': an argument is given twice.", call. = FALSE)
+      raw <- raw[order(slot)]
+    }
+  }
+  args <- vapply(raw, .prior_number, numeric(1), what = prior)
+  if (name %in% names(.prior_dists)) {
+    spec <- .prior_dists[[name]]
+    bad <- spec$pos[args[spec$pos] <= 0]
+    if (length(bad)) {
+      stop("Prior '", prior, "': the ", paste(vapply(spec$args[bad], `[`, "", 1), collapse = " and "),
+           " argument", if (length(bad) > 1) "s", " must be positive.", call. = FALSE)
+    }
+    if (name == "uniform" && args[1] >= args[2]) {
+      stop("Prior '", prior, "': uniform() needs lower < upper.", call. = FALSE)
+    }
+    if (isTRUE(spec$half) && !class %in% c("sd", "sds")) {
+      stop("Prior '", prior, "': half distributions apply to standard deviations (class = \"sd\" or \"sds\"); ",
+           "use the full distribution for class = \"", class, "\".", call. = FALSE)
+    }
+  }
+  num <- vapply(args, function(x) formatC(x, digits = 15, format = "g"), character(1))
+  paste0(name, "(", paste(trimws(num), collapse = ", "), ")")
 }
 
 #' Combine Multiple Priors

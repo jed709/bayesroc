@@ -246,21 +246,31 @@ prior_init <- function(model, chains = 4, seed = NULL) {
   args <- as.numeric(strsplit(m[3], ",")[[1]])
   switch(fam,
     normal      = rnorm(n, args[1], args[2]),
+    std_normal  = rnorm(n),
     half_normal = abs(rnorm(n, 0, args[1])),
     student_t   = args[2] + args[3] * rt(n, df = args[1]),
+    half_student_t = abs(args[2] * rt(n, df = args[1])),
     cauchy      = rcauchy(n, args[1], args[2]),
+    half_cauchy = abs(rcauchy(n, 0, args[1])),
+    logistic    = rlogis(n, args[1], args[2]),
+    gumbel      = args[1] - args[2] * log(-log(runif(n))),
+    double_exponential = ,
+    laplace     = args[1] + args[2] * (rexp(n) - rexp(n)),
+    lognormal   = rlnorm(n, args[1], args[2]),
     exponential = rexp(n, rate = args[1]),
     gamma       = rgamma(n, shape = args[1], rate = args[2]),
     inv_gamma   = 1 / rgamma(n, shape = args[1], rate = args[2]),
+    weibull     = rweibull(n, shape = args[1], scale = args[2]),
     beta        = rbeta(n, args[1], args[2]),
     uniform     = runif(n, args[1], args[2]),
-    rnorm(n, 0, 1)
+    stop("init = \"prior\" cannot draw starting values from ", fam, "(); use init = 0 or set them yourself.",
+         call. = FALSE)
   )
 }
 
 #' @noRd
 .extract_lkj_eta <- function(prior_str) {
-  m <- regmatches(prior_str, regexec("lkj_corr_cholesky\\(\\s*([0-9.]+)\\s*\\)",
+  m <- regmatches(prior_str, regexec("lkj_corr_cholesky\\(\\s*([0-9.eE+-]+)\\s*\\)",
                                        prior_str))[[1]]
   if (length(m) >= 2) as.numeric(m[2]) else 1.0
 }
