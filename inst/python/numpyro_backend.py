@@ -87,7 +87,7 @@ def _grid_sample(name, strs, shape, transform=None):
     ds = [parse_prior(s) for s in flat]
     cls = type(ds[0])
     if all(type(d) is cls for d in ds):
-        params = {k: jnp.asarray([getattr(d, k) for d in ds], dtype=_FLOAT).reshape(shape)
+        params = {k: np.asarray([getattr(d, k) for d in ds], dtype=np.dtype(_FLOAT)).reshape(shape)
                   for k in cls.arg_constraints}
         return numpyro.sample(name, tf(cls(**params)))
     ds = [tf(d) for d in ds]

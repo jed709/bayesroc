@@ -80,3 +80,22 @@ test_that("component SD priors reach get_broc_prior, Stan and JAX", {
   got <- sub(";.*$", "", sub("^\\s*sigma_criterion2_sub\\[[0-9]+\\] ~ ", "", grep("^\\s*sigma_criterion2_sub\\[[0-9]+\\] ~", st, value = TRUE)))
   expect_equal(got, want)
 })
+
+test_that("DR-G-HMC traces a correlated block whose SD priors differ by component", {
+  skip_if_no_jax()
+  set.seed(2)
+  d <- expand.grid(participant = factor(1:8), words = factor(1:24))
+  d$is_old <- as.integer((as.integer(d$words) + as.integer(d$participant)) %% 2 == 0)
+  d$condition <- factor(c("aloud", "silent")[(as.integer(d$words) %% 2) + 1])
+  d$conf <- sample(1:6, nrow(d), TRUE)
+  m <- broc(brf(conf | is_old ~ condition - 1 + (1 | p | participant),
+                criterion ~ 1 + (1 | p | participant), sigma ~ 1, family = uvsd(),
+                encoding_vars = "condition"), d,
+            priors = broc_prior("normal(0, 0.25)", class = "sd", dpar = "log_gaps"))
+  per <- .crit_re_sd_priors(m$prior_lookup, "criterion", "participant",
+                            .re_list_of(m$model_data, "criterion")[["participant"]])
+  expect_gt(length(unique(per)), 1L)
+  fit <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 300, iter_sampling = 50,
+                  chains = 2, parallel_chains = 2, refresh = 0)
+  expect_true(any(grepl("^sigma_cross_p_participant", fit$metadata()$variables)))
+})
