@@ -257,3 +257,31 @@ test_that("dual-process component d' defaults: mixture low state, cdp recollecti
   expect_equal(pr(cd, "sigma_R"), "normal(0, 0.5)")
 })
 
+
+test_that("an anchor on the lower of two central thresholds is centred half a gap lower", {
+  set.seed(5)
+  n <- 240
+  pr <- function(m, dp) { g <- get_broc_prior(m); g$prior[g$class == "b" & g$dpar == dp & g$coef == "(Intercept)"][1] }
+  mk <- function(K, f) {
+    d <- data.frame(y = sample(1:K, n, TRUE), y2 = sample(1:K, n, TRUE), old = rep(0:1, n / 2),
+                    type = factor(sample(c("new", "A", "B"), n, TRUE), levels = c("new", "A", "B")))
+    suppressMessages(broc(f, d))
+  }
+  for (K in c(5, 6)) {
+    odd <- K %% 2 == 1
+    u <- mk(K, brf(y | old ~ 1, criterion ~ 1, family = evsd()))
+    expect_equal(pr(u, "thresh_mid"), if (odd) "normal(0.2, 0.75)" else "normal(0.5, 0.75)")
+    ls <- mk(K, brf(y | old ~ 1, criterion ~ 1, criterion_scale ~ 1, family = evsd()))
+    expect_equal(pr(ls, "thresh_mid"), "normal(0.5, 0.75)")
+    cu <- mk(K, brf(y ~ 1, cutpoints ~ 1, family = cumulative()))
+    expect_equal(pr(cu, "thresh_mid"), if (odd) "normal(-0.3, 1.5)" else "normal(0, 1.5)")
+    bc <- mk(K, brf(resp(y, y2) ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()))
+    expect_equal(pr(bc, "thresh_mid2"), pr(bc, "thresh_mid"))
+    bg <- mk(K, brf(resp(y, y2) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1, family = bivariate_gaussian()))
+    expect_equal(pr(bg, "thresh_mid2"), if (odd) "normal(-0.5, 0.75)" else "normal(0, 0.75)")
+    user <- suppressMessages(broc(brf(y | old ~ 1, criterion ~ 1, family = evsd()),
+                                  data.frame(y = sample(1:K, n, TRUE), old = rep(0:1, n / 2)),
+                                  priors = broc_prior("normal(1, 1)", class = "b", dpar = "thresh_mid")))
+    expect_equal(pr(user, "thresh_mid"), "normal(1, 1)")
+  }
+})

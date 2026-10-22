@@ -708,10 +708,25 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
   }
   if (isTRUE(model_data$centered_coding) && !("thresh_mid" %in% pl$user_set$b))
     pl$b$thresh_mid <- "normal(0, 0.5)"
-  if (isTRUE(model_data$K2 %% 2L == 1L) && !("thresh_mid2" %in% pl$user_set$b) &&
-      isTRUE(model_data$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d")))
-    pl$b$thresh_mid2 <- "normal(-0.5, 0.75)"
+  n1 <- if (identical(model_data$family, "cdp")) model_data$stan_data$J else model_data$K - 1L
+  if (.lower_central_anchor(n1, model_data$has_criterion_scale) && !("thresh_mid" %in% pl$user_set$b))
+    pl$b$thresh_mid <- .shift_normal(pl$b$thresh_mid, -0.3)
+  if (!is.null(model_data$K2) && .lower_central_anchor(model_data$K2 - 1L, model_data$has_criterion2_scale) &&
+      !("thresh_mid2" %in% pl$user_set$b)) {
+    src <- isTRUE(model_data$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d"))
+    pl$b$thresh_mid2 <- .shift_normal(pl$b$thresh_mid2, if (src) -0.5 else -0.3)
+  }
   .link_scale_priors(pl, model_data)
+}
+
+.lower_central_anchor <- function(n_thresh, location_scale) {
+  length(n_thresh) == 1L && isTRUE(n_thresh >= 2L) && n_thresh %% 2L == 0L && !isTRUE(location_scale)
+}
+
+.shift_normal <- function(prior, d) {
+  m <- regmatches(prior, regexec("^\\s*normal\\(\\s*([^,]+),\\s*([^)]+)\\)\\s*$", prior))[[1]]
+  if (length(m) != 3) return(prior)
+  paste0("normal(", .fmt_num(as.numeric(m[2]) + d), ", ", trimws(m[3]), ")")
 }
 
 #' Get Prior for Random Effect SD
