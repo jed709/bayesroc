@@ -12,7 +12,7 @@ test_that("prior_init draws each element from its own prior", {
   st <- regmatches(L, regexec("sigma_cross_p_participant\\[([0-9]+)\\] ~ normal\\(0, ([0-9.]+)\\)", L))
   st <- st[lengths(st) == 3]
   want <- as.numeric(vapply(st, `[`, "", 3))[order(as.integer(vapply(st, `[`, "", 2)))]
-  expect_equal(want, c(0.5, 0.3, 0.05, 0.05, 0.5, 0.05, 0.05))
+  expect_equal(want, c(1, 0.3, 0.05, 0.05, 1, 0.05, 0.05))
   sds <- t(vapply(prior_init(m, chains = 4000, seed = 4), `[[`, numeric(7), "sigma_cross_p_participant"))
   got <- colMeans(sds) / sqrt(2 / pi)
   expect_true(all(abs(got / want - 1) < 0.06), info = paste(round(got, 3), collapse = " "))

@@ -52,7 +52,7 @@ test_that("criterion SD priors resolve per component, term and bin", {
 
   m0 <- .crit_sd_model(NULL)
   r0 <- .crit_re_sd_resolve(m0$prior_lookup, "criterion2", "sub", .re_list_of(m0$model_data, "criterion2")[["sub"]])
-  expect_true(all(r0$prior == get_sd_prior(m0$prior_lookup, "criterion2", "sub")))
+  expect_equal(r0$prior, ifelse(r0$comp == 0L, "normal(0, 1)", "normal(0, 0.5)"))
   expect_false(any(r0$user))
 
   mc <- .crit_sd_model(broc_prior("normal(0, 0.3)", class = "sd", dpar = "criterion2", group = "sub"))

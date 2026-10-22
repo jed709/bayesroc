@@ -272,32 +272,33 @@ build_prior_lookup <- function(user_priors, family = NULL) {
     
     sd = "normal(0, 0.5)",
     sd_dpar = list(
-      dprime = "normal(0, 0.5)",
+      dprime = "normal(0, 1)",
       sigma = "normal(0, 0.3)",
-      lambda = "normal(0, 0.5)",
-      dprime2 = "normal(0, 0.5)",
+      lambda = "normal(0, 1)",
+      dprime2 = "normal(0, 1)",
       sigma2 = "normal(0, 0.3)",
-      dprime_B = "normal(0, 0.5)",
-      lambda_B = "normal(0, 0.5)",
-      lambda2 = "normal(0, 0.5)",
-      lambda2_B = "normal(0, 0.5)",
-      discrim = "normal(0, 0.5)",
-      discrim_B = "normal(0, 0.5)",
+      dprime_B = "normal(0, 1)",
+      lambda_B = "normal(0, 1)",
+      lambda2 = "normal(0, 1)",
+      lambda2_B = "normal(0, 1)",
+      discrim = "normal(0, 1)",
+      discrim_B = "normal(0, 1)",
       sigma_B = "normal(0, 0.3)",
       sigma2_B = "normal(0, 0.3)",
-      rho = "normal(0, 0.3)",
-      rho_B = "normal(0, 0.3)",
-      rho_N = "normal(0, 0.3)",
-      rec_crit = "normal(0, 0.5)",
-      know_crit = "normal(0, 0.3)",
-      dprime_L = "normal(0, 0.5)",
+      rho = "normal(0, 0.5)",
+      rho_B = "normal(0, 0.5)",
+      rho_N = "normal(0, 0.5)",
+      rec_crit = "normal(0, 1)",
+      know_crit = "normal(0, 1)",
+      dprime_L = "normal(0, 1)",
       sigma_L = "normal(0, 0.3)",
-      lambda_L = "normal(0, 0.5)",
-      criterion = "normal(0, 0.5)",
-      criterion2 = "normal(0, 0.5)",
-      criterion_scale = "normal(0, 0.3)",
-      criterion2_scale = "normal(0, 0.3)"
+      lambda_L = "normal(0, 1)",
+      criterion = "normal(0, 1)",
+      criterion2 = "normal(0, 1)",
+      criterion_scale = "normal(0, 0.5)",
+      criterion2_scale = "normal(0, 0.5)"
     ),
+    sd_gap = "normal(0, 0.5)",
     sd_group = list(),
     sd_dpar_group = list(),
     sd_dpar_coef = list(),
@@ -417,10 +418,13 @@ build_prior_lookup <- function(user_priors, family = NULL) {
     list())
   for (pname in setdiff(names(fam_defaults), lookup$user_set$b)) lookup$b[[pname]] <- fam_defaults[[pname]]
 
+  lookup$link_k <- .family_link_k(family)
+  lookup$param_links <- list()
   if (!is.null(family) && inherits(family, "broc_family") && !is.null(family$params)) {
     for (pname in names(family$params)) {
       plink <- family$params[[pname]]$link
       if (is.null(plink)) next
+      lookup$param_links[[pname]] <- plink
 
       if (!(pname %in% lookup$user_set$b)) {
         if (plink == "log" && pname %in% c("dprime", "dprime_B")) {
@@ -438,12 +442,8 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       }
 
       if (!(pname %in% lookup$user_set$sd_dpar)) {
-        if (plink == "log" && pname %in% c("dprime", "dprime_B", "discrim", "discrim_B")) {
-          lookup$sd_dpar[[pname]] <- "normal(0, 0.3)"
-        }
-        if (plink == "logis" && pname %in% c("rho", "rho_B")) {
-          lookup$sd_dpar[[pname]] <- "normal(0, 0.5)"
-        }
+        rule <- .re_sd_rule(pname, plink, lookup$link_k)
+        if (!is.null(rule)) lookup$sd_dpar[[pname]] <- rule
       }
     }
   }
@@ -489,6 +489,60 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
                      lambda_L = "lambda_L", thresh_mid = "criterion", thresh_mid2 = "criterion2",
                      criterion_scale = "criterion_scale", criterion2_scale = "criterion2_scale")
 
+.noise_sd_dpars <- c("sigma", "sigma2", "sigma_B", "sigma2_B", "sigma_L")
+.latent_log_dpars <- c("dprime", "dprime_B", "discrim", "discrim_B", "log_gaps", "log_gaps2")
+
+.family_link_k <- function(family) {
+  ln <- if (is.list(family) && !is.null(family$link$name)) family$link$name else "probit"
+  switch(ln, logit = pi / sqrt(3), cloglog = pi / sqrt(6), 1)
+}
+
+.fmt_num <- function(x) format(round(x, 2), nsmall = 0, trim = TRUE)
+
+.re_sd_rule <- function(pname, plink, k = 1) {
+  switch(plink,
+    identity = paste0("normal(0, ", .fmt_num(k), ")"),
+    logit = "normal(0, 1)",
+    logis = "normal(0, 1)",
+    fisherz = "normal(0, 0.5)",
+    log = if (pname %in% .noise_sd_dpars) "normal(0, 0.3)" else "normal(0, 0.5)",
+    NULL)
+}
+
+.rescale_normal <- function(prior, mult = 1, shift = 0) {
+  m <- regmatches(prior, regexec("^\\s*normal\\(\\s*([^,]+),\\s*([^)]+)\\)\\s*$", prior))[[1]]
+  if (length(m) != 3L) return(prior)
+  mu <- as.numeric(m[2]); sc <- as.numeric(m[3])
+  if (is.na(mu) || is.na(sc)) return(prior)
+  paste0("normal(", .fmt_num(mu * mult + shift), ", ", .fmt_num(sc * mult), ")")
+}
+
+.softplus_gap_prior <- function(log_prior, k = 1) {
+  if (identical(log_prior, "normal(0, 0.75)")) return("normal(0.5, 1.25)")
+  if (!identical(log_prior, "normal(-0.5, 0.5)")) return(log_prior)
+  if (k > 1.5) "normal(0.7, 0.8)" else if (k > 1.1) "normal(0.15, 0.7)" else "normal(-0.2, 0.7)"
+}
+
+.link_scale_priors <- function(pl, model_data) {
+  k <- pl$link_k %||% 1
+  softplus <- identical(model_data$gap_link, "softplus")
+  for (nm in setdiff(names(pl$b), pl$user_set$b)) {
+    lk <- if (nm %in% c("thresh_mid", "thresh_mid2")) "identity"
+          else if (nm %in% c("log_gaps", "log_gaps2")) "gap"
+          else pl$param_links[[nm]]
+    if (is.null(lk)) next
+    if (lk == "gap" && softplus) {
+      pl$b[[nm]] <- .softplus_gap_prior(pl$b[[nm]], k)
+    } else if (k != 1 && lk == "identity") {
+      pl$b[[nm]] <- .rescale_normal(pl$b[[nm]], mult = k)
+    } else if (k != 1 && lk %in% c("gap", "log") && nm %in% .latent_log_dpars) {
+      pl$b[[nm]] <- .rescale_normal(pl$b[[nm]], shift = log(k))
+    }
+  }
+  if (softplus) pl$sd_gap <- "normal(0, 0.75)"
+  pl
+}
+
 .finish_prior_lookup <- function(pl, model_data) {
   pl$location <- list()
   pl$coefs <- list()
@@ -507,7 +561,7 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
   if (isTRUE(model_data$K2 %% 2L == 1L) && !("thresh_mid2" %in% pl$user_set$b) &&
       isTRUE(model_data$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d")))
     pl$b$thresh_mid2 <- "normal(-0.5, 0.75)"
-  pl
+  .link_scale_priors(pl, model_data)
 }
 
 #' Get Prior for Random Effect SD
@@ -1051,7 +1105,9 @@ print.broc_prior_table <- function(x, ...) {
                          pl$sd_group[[group]],
                          pl$sd_dpar[[cd]])
     if (!is.na(user)) return(list(prior = user, user = TRUE))
-    list(prior = .first_prior(pl$sd_dpar[[dpar]], pl$sd), user = is_user_sd_prior(pl, dpar, group))
+    user_dp <- is_user_sd_prior(pl, dpar, group)
+    fallback <- if (comp[d] == 0L || user_dp) pl$sd_dpar[[dpar]] else pl$sd_gap
+    list(prior = .first_prior(fallback, pl$sd_dpar[[dpar]], pl$sd), user = user_dp)
   })
   data.frame(comp = comp, term = terms, dpar = ifelse(comp == 0L, paste0("thresh_mid", sfx), paste0("log_gaps", sfx)),
              prior = vapply(out, `[[`, "", "prior"), user = vapply(out, `[[`, TRUE, "user"),

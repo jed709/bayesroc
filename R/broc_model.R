@@ -642,6 +642,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = encoding_vars)
+  model_data$gap_link <- gap_link
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$gap_link <- gap_link
@@ -2770,6 +2771,7 @@ fit_cumulative <- function(mu, cutpoints, data, family, priors, counts = NULL,
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = NULL)
+  model_data$gap_link <- gap_link
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$is_cumulative <- TRUE
@@ -3003,6 +3005,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
 
   model_data <- build_model_data(parsed, data, family, counts = counts)
+  model_data$gap_link <- gap_link
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$is_bivariate_cumulative <- TRUE

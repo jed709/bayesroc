@@ -190,3 +190,51 @@ test_that("rho defaults: directional only for the unbounded bivariate Gaussian, 
   }
 })
 
+
+test_that("default priors follow the link rule: RE SDs by parameter link, latent units by family link, softplus gaps matched", {
+  d <- .prior_target_data()
+  tab <- function(m) {
+    t <- get_broc_prior(m)
+    t <- t[t$class %in% c("b", "sd") & (t$coef %in% c("", "(Intercept)", "gap1", "gap1_(Intercept)")), ]
+    t <- t[!duplicated(paste(t$class, t$dpar)), ]
+    setNames(t$prior, paste(t$class, t$dpar))
+  }
+  uv <- function(link, gl) tab(broc(brf(conf | old ~ 1 + (1 | participant), criterion ~ 1 + (1 | participant),
+                                         sigma ~ 1 + (1 | participant), family = uvsd(link = link)), d, gap_link = gl))
+  want <- list(
+    probit  = list(log = c("normal(1.5, 0.75)", "normal(0.5, 0.75)", "normal(-0.5, 0.5)", "normal(0, 1)", "normal(0, 0.5)"),
+                   softplus = c("normal(1.5, 0.75)", "normal(0.5, 0.75)", "normal(-0.2, 0.7)", "normal(0, 1)", "normal(0, 0.75)")),
+    logit   = list(log = c("normal(2.72, 1.36)", "normal(0.91, 1.36)", "normal(0.1, 0.5)", "normal(0, 1.81)", "normal(0, 0.5)"),
+                   softplus = c("normal(2.72, 1.36)", "normal(0.91, 1.36)", "normal(0.7, 0.8)", "normal(0, 1.81)", "normal(0, 0.75)")),
+    cloglog = list(log = c("normal(1.92, 0.96)", "normal(0.64, 0.96)", "normal(-0.25, 0.5)", "normal(0, 1.28)", "normal(0, 0.5)"),
+                   softplus = c("normal(1.92, 0.96)", "normal(0.64, 0.96)", "normal(0.15, 0.7)", "normal(0, 1.28)", "normal(0, 0.75)")))
+  for (lk in names(want)) for (gl in c("log", "softplus")) {
+    p <- uv(get(paste0("link_", lk))(), gl)
+    w <- want[[lk]][[gl]]
+    expect_equal(unname(p[c("b dprime", "b thresh_mid", "b log_gaps", "sd dprime", "sd log_gaps")]), w, info = paste(lk, gl))
+    expect_equal(unname(p[c("sd thresh_mid", "b sigma", "sd sigma")]), c(w[4], "normal(0, 0.5)", "normal(0, 0.3)"), info = paste(lk, gl))
+  }
+  mx <- tab(broc(brf(conf | old ~ 1, criterion ~ 1, lambda ~ 1 + (1 | participant), family = mixture(link = link_logit())), d))
+  expect_equal(unname(mx[c("b lambda", "sd lambda")]), c("normal(0, 1.5)", "normal(0, 1)"))
+
+  set.seed(3)
+  n <- 240
+  b <- data.frame(subj = factor(rep(1:6, each = n / 6)),
+                  type = factor(sample(c("new", "A", "B"), n, TRUE), levels = c("new", "A", "B")),
+                  det = sample(1:6, n, TRUE), src = sample(1:6, n, TRUE))
+  bv <- function(fam, gl = "log", ...) tab(suppressMessages(broc(brf(resp(det, src) | type ~ 1 + (1 | subj),
+    discrim ~ 1 + (1 | subj), rho ~ 1 + (1 | subj), sigma2 ~ 1 + (1 | subj), criterion ~ 1 + (1 | subj),
+    criterion2 ~ 1 + (1 | subj), family = fam), b, gap_link = gl, ...)))
+  u <- bv(bivariate_gaussian())
+  expect_equal(unname(u[c("sd discrim", "sd rho", "sd sigma2", "sd thresh_mid2", "sd log_gaps2", "b log_gaps2")]),
+               c("normal(0, 1)", "normal(0, 0.5)", "normal(0, 0.3)", "normal(0, 1)", "normal(0, 0.5)", "normal(0, 0.75)"))
+  s <- bv(bivariate_gaussian(bounded = TRUE), "softplus")
+  expect_equal(unname(s[c("sd dprime", "sd discrim", "sd rho", "sd sigma2", "b log_gaps", "b log_gaps2", "sd log_gaps2")]),
+               c("normal(0, 0.5)", "normal(0, 0.5)", "normal(0, 1)", "normal(0, 0.3)", "normal(-0.2, 0.7)", "normal(0.5, 1.25)", "normal(0, 0.75)"))
+  cs <- bv(bivariate_gaussian(), priors = broc_prior("normal(0, 0.2)", class = "sd", dpar = "criterion2"))
+  expect_equal(unname(cs[c("sd thresh_mid2", "sd log_gaps2", "sd log_gaps")]), c("normal(0, 0.2)", "normal(0, 0.2)", "normal(0, 0.5)"))
+  gs <- bv(bivariate_gaussian(), priors = broc_prior("normal(0, 0.4)", class = "sd"))
+  expect_true(all(gs[startsWith(names(gs), "sd ")] == "normal(0, 0.4)"))
+  ub <- bv(bivariate_gaussian(), priors = broc_prior("normal(0, 0.3)", class = "b", dpar = "rho"))
+  expect_equal(unname(ub[c("b rho", "sd rho")]), c("normal(0, 0.3)", "normal(0, 0.5)"))
+})
