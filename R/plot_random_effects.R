@@ -27,7 +27,7 @@ plot_random_effects <- function(fit, type = c("sd", "cor"), group = NULL, pars =
   if (!is.null(group)) blocks <- Filter(function(b) b$group %in% group, blocks)
   if (!is.null(pars)) {
     want <- vapply(pars, function(p) {
-      if (p %in% c("criteria", "cutpoints", "cutpoints1")) return("criterion")
+      if (p %in% c("criteria", "cutpoints")) return("criterion")
       if (p %in% c("criteria2", "cutpoints2")) return("criterion2")
       external_to_internal_param(p, fam)
     }, character(1))

@@ -42,7 +42,7 @@ jobs:
           http-user-agent: ${{ matrix.config.http-user-agent }}
           use-public-rspm: true
           # cmdstanr is not on CRAN; add the stan-dev r-universe so the dependency
-          # solve can resolve it. (This is the correct action for extra repos.)
+          # solve can resolve it.
           extra-repositories: 'https://stan-dev.r-universe.dev'
 
       - uses: r-lib/actions/setup-r-dependencies@v2
@@ -129,8 +129,7 @@ jobs:
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true
-          # Skip vignette build (we don't have any yet) and emit notes-as-failure
-          # for newly-introduced check warnings.
+          # The vignette is precomputed (tools/precompile_vignettes.R); check warnings fail the run.
           args: 'c("--no-manual", "--no-vignettes", "--as-cran")'
           error-on: '"warning"'
         env:

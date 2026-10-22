@@ -426,7 +426,7 @@ load_broc_fit <- function(file) {
     return(obj)
   }
   if (!inherits(obj, "broc_fit_saved") ||
-      (is.null(obj$.bayesroc_save_format) && is.null(obj$.ord_save_format))) {
+      is.null(obj$.bayesroc_save_format)) {
     stop("File '", file, "' does not contain a broc_fit_saved bundle ",
          "(got class: ", paste(class(obj), collapse = "/"), ").",
          call. = FALSE)

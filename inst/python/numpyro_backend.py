@@ -1,8 +1,8 @@
 """
 NumPyro backend for the bayesroc SDT package.
 
-Config-driven model: receives a config dict from R, builds the NumPyro model
-dynamically. NOT code-generated.
+Config-driven model: receives a config dict from R and builds the NumPyro model
+dynamically.
 
 Entry point: fit_model(config, chains, warmup, samples, seed)
 """
@@ -1154,7 +1154,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
 
     Operates on entire [N]-shaped arrays directly (no per-observation vmap).
     Thresholds are built via cumsum, and
-    gap gradients use a precomputed contribution mask instead of a Python loop.
+    gap gradients use a precomputed contribution mask.
     """
     n_thresh = K - 1
     n_gaps = n_thresh - 1
@@ -1796,7 +1796,7 @@ def _batch_gap_grads(d_thresh_k_hi, d_thresh_k_lo, k_hi, k_lo,
 def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
     """Fully-vectorized batch log-likelihood for bivariate_sdt.
 
-    Replaces the vmapped per-obs kernel with batch operations:
+    Batch operations over all observations:
     - Threshold construction via cumsum for both dimensions
     - GL10 rectangle quadrature vectorized over [N, 10]
     - Analytic JVP with gap_mask for both dimensions
@@ -5119,7 +5119,7 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
 class FastNUTS(NUTS):
     """NUTS whose model setup comes from one abstract trace (drghmc._model_info) instead
     of numpyro's initialize_model, which runs the model eagerly and compiles every
-    primitive separately (tens of seconds for large models). The potential is still
+    primitive separately. The potential is still
     generated from the model arguments at each call, so a float32 offset swap works as
     with NUTS. Starting points are always passed as init_params. With `coords` (NutsCoords)
     it samples in those coordinates. Trees use Stan's U-turn checks across subtree boundaries

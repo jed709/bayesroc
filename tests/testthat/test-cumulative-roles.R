@@ -46,12 +46,10 @@ test_that("the random-intercept ordinal model fits on both backends and recovers
   expect_s3_class(summary(fj), "broc_summary")
 })
 
-test_that("bivariate_cumulative uses cutpoints names, accepts the old spelling and refuses mu2 predictors", {
+test_that("bivariate_cumulative uses cutpoints names and refuses mu2 predictors", {
   d <- .fixture_bivariate_cumulative()
   m_new <- broc(brf(resp(y1, y2) ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()), d)
-  m_old <- broc(brf(resp(y1, y2) ~ 1, cutpoints1 ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()), d)
-  expect_identical(m_new$stan_code, m_old$stan_code)
-  expect_true(any(grepl("cutpoints", names(m_new$stan_data))) && !any(grepl("cutpoints1", names(m_new$stan_data))))
+  expect_true(any(grepl("cutpoints", names(m_new$stan_data))))
   expect_equal(.param_name_map("bivariate_cumulative")$criterion, "cutpoints")
   expect_error(broc(brf(resp(y1, y2) ~ 1, mu2 ~ cond, family = bivariate_cumulative()), d), "cutpoints2 ~ cond")
   expect_error(broc(brf(resp(y1, y2) ~ cond, family = bivariate_cumulative()), d), "cutpoints ~ cond")

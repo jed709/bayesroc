@@ -397,9 +397,7 @@ parse_resp_args <- function(inner_str) {
     stop("resp() takes exactly two variables: resp(response1, response2)")
   }
   if (grepl("=", args[1]) || grepl("=", args[2])) {
-    stop("resp() now uses positional arguments only: resp(response1, response2)\n",
-         "  Old syntax like resp(conf, src = src_var) or resp(conf, rk = rk_var) ",
-         "is no longer supported.")
+    stop("resp() takes two unnamed variables: resp(response1, response2).")
   }
 
   list(confidence = trimws(args[1]), response2 = trimws(args[2]))
@@ -786,7 +784,6 @@ print.broc_formula <- function(x, ...) {
         mu1       = "Mu1 (dimension 1 location)",
         mu2       = "Mu2 (dimension 2 location)",
         cutpoints = "Cutpoints",
-        cutpoints1 = "Cutpoints1",
         cutpoints2 = "Cutpoints2",
         ext_name
       )

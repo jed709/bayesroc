@@ -841,8 +841,8 @@ class TMap:
         return aux[0, -len(self.sbs):].copy() if aux.shape[1] == self.aux_size else np.zeros(len(self.sbs))
 
     def _complete(self, aux):
-        """[chains, aux_size] from anchors stored before the kept-dimension tiles and flags
-        existed (both derived), or as they are."""
+        """[chains, aux_size] from packed anchors, deriving the kept-dimension tiles and
+        flags when they are absent."""
         aux = np.asarray(aux, dtype=np.float64)
         if aux.shape[1] == self.aux_size:
             return aux

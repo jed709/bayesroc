@@ -33,8 +33,7 @@ predictors. Cell probabilities by 4-corner differencing:
 \describe{
 \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (a midpoint and ordered
 gaps; default \code{~ 1}), one coefficient per cutpoint unless \code{cutpoints_scale} is given,
-as in \code{\link[=cumulative]{cumulative()}}. Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.
-\code{cutpoints1} is accepted as an older spelling.}
+as in \code{\link[=cumulative]{cumulative()}}. Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
 \item{cutpoints_scale}{(optional) Location-scale cutpoints for dimension 1; see
 \code{\link[=cumulative]{cumulative()}}.}
 \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default \code{~ 1}).

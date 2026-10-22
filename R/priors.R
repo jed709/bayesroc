@@ -24,7 +24,7 @@
 #' Gaps are numbered as in the fixed effects: outward from the midpoint, upper
 #' gaps first, then lower ones. With varying source criteria, a component prior
 #' applies to that component in every detection bin. `dpar = "criterion"` (or
-#' `"criterion2"`) still sets every criterion SD at once; component priors
+#' `"criterion2"`) also sets every criterion SD at once; component priors
 #' override it.
 #'
 #' @param prior The prior as a distribution call, e.g. `"normal(0, 1)"`,
@@ -53,8 +53,8 @@
 #' @param dpar Distributional parameter the prior applies to, e.g. `"dprime"`,
 #'   `"sigma"`, `"lambda"`. For criterion priors use `"thresh_mid"` / `"log_gaps"`
 #'   (`"thresh_mid2"` / `"log_gaps2"` for the second response axis in bivariate
-#'   families). Family-specific aliases (`cutpoints`, `cutpoints1`,
-#'   `cutpoints2`, `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
+#'   families). Family-specific aliases (`cutpoints`, `cutpoints2`,
+#'   `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
 #'   accepted. The correlation prior of a cross-parameter group `(... | id | g)` is
 #'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
 #'   `class`. [get_broc_prior()] lists every settable prior with its `dpar` and
@@ -109,7 +109,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
-                     "mu", "mu1", "mu2", "cutpoints", "cutpoints1", "cutpoints2",
+                     "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
                      "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
     if (!dpar %in% valid_dpars && !grepl("^cross_[A-Za-z0-9_.]+$", dpar)) {
       stop("Invalid dpar '", dpar, "'. Valid dpars: ",
@@ -118,7 +118,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
 
     if (dpar == "mu" || dpar == "mu1") dpar <- "dprime"
     if (dpar == "mu2") dpar <- "discrim"
-    if (dpar == "cutpoints" || dpar == "cutpoints1") dpar <- "criterion"
+    if (dpar == "cutpoints") dpar <- "criterion"
     if (dpar == "cutpoints2") dpar <- "criterion2"
     if (dpar == "cutpoints_scale") dpar <- "criterion_scale"
     if (dpar == "cutpoints2_scale") dpar <- "criterion2_scale"

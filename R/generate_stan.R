@@ -50,8 +50,7 @@ generate_functions_block_v2 <- function(model_data, family, batch_info = NULL) {
   env <- .plain_stan_env()
   f <- if (!is.null(env)) get0(name, envir = env, inherits = FALSE)
   if (is.null(f)) {
-    stop("The Stan-language likelihood is a development path (dev/plain_stan.R) and is not ",
-         "part of the installed package.", call. = FALSE)
+    stop("Internal error: no compiled likelihood was generated for this model.", call. = FALSE)
   }
   f
 }

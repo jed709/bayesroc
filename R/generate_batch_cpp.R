@@ -2,8 +2,7 @@
 #'
 #' Generates a model-specific C++ function that computes the entire observation
 #' loop in double arithmetic with analytic gradients, returning a single autodiff
-#' node via stan::math::precomputed_gradients. Eliminates ~15N autodiff tape
-#' entries per gradient evaluation.
+#' node via stan::math::precomputed_gradients.
 #'
 #' The generated function handles all RE patterns (scalar intercept-only, scalar
 #' with term_idx, multi-dim with term_idx, Z-matrix scalar/multi, cross-parameter

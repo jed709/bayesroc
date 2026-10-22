@@ -1,8 +1,9 @@
 """Fit driver shared by one-off fits and the persistent worker behind iter_sampling = "auto".
 
 run_one() executes a fit described by the JSON written by R's fit_jax() and writes
-the results next to it. serve() keeps one process alive across fits so imports,
-the auto-sampling session (autorun.AutoSession) lives in `held` between requests."""
+the results next to it. serve() keeps one process alive across fits so imports and
+compiled programs are reused; the auto-sampling session (autorun.AutoSession) lives in
+`held` between requests."""
 import glob
 import json
 import os

@@ -481,8 +481,7 @@ cumulative <- function(link = link_probit()) {
 #' \describe{
 #'   \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (a midpoint and ordered
 #'     gaps; default `~ 1`), one coefficient per cutpoint unless `cutpoints_scale` is given,
-#'     as in [cumulative()]. Identity link. Set priors via `thresh_mid` and `log_gaps`.
-#'     `cutpoints1` is accepted as an older spelling.}
+#'     as in [cumulative()]. Identity link. Set priors via `thresh_mid` and `log_gaps`.}
 #'   \item{cutpoints_scale}{(optional) Location-scale cutpoints for dimension 1; see
 #'     [cumulative()].}
 #'   \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default `~ 1`).
@@ -1041,8 +1040,7 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #' \eqn{P(\tau_j < M < \tau_{j+1}, \mathrm{judgement})} with the same criteria
 #' \eqn{c_R} and \eqn{c_K}. No parameters are added. A response with a missing
 #' judgement, at any confidence level, contributes its band probability
-#' \eqn{P(\tau_j < M < \tau_{j+1})} alone. Data with judgements on old responses
-#' only are fitted exactly as before.
+#' \eqn{P(\tau_j < M < \tau_{j+1})} alone.
 #'
 #' With two `rk` levels the joint cell is a strip of the \eqn{(R, M)} plane:
 #' \deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad

@@ -264,7 +264,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     valid_names <- c(valid_names,
                      unlist(family$external_aliases, use.names = FALSE))
   }
-  if (family$family == "bivariate_cumulative") valid_names <- c(valid_names, "cutpoints1")   # older spelling
   bad <- setdiff(names(params), valid_names)
   if (length(bad) > 0) {
     stop(sprintf("Parameter%s '%s' not valid for family '%s'. Valid: %s.",
@@ -308,7 +307,6 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 
   if (family$family == "bivariate_cumulative") {
     if (!is.null(params[["mu2"]])) discrim <- params[["mu2"]]
-    if (!is.null(params[["cutpoints1"]])) criterion <- params[["cutpoints1"]]   # old spelling of cutpoints
     if (!is.null(params[["cutpoints2"]])) criterion2 <- params[["cutpoints2"]]
   }
 
@@ -362,7 +360,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (family$family == "bivariate_cumulative") {
     res <- fit_bivariate_cumulative(
       mu1 = dprime, mu2 = discrim,
-      cutpoints1 = criterion, cutpoints2 = criterion2,
+      cutpoints = criterion, cutpoints2 = criterion2,
       rho = rho, data = data, family = family,
       priors = priors, counts = counts,
       gap_link = gap_link, smooth_info = smooth_info,
@@ -934,9 +932,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
         "Found %d row(s) with NA in the source response (`%s`). The ",
         n_na, parsed$response2),
         "source-conditional-on-old paradigm (where source is only rated when ",
-        "a trial is judged old) is not yet supported. For now, either: ",
-        "(a) drop rows with missing source ratings, or (b) impute them. ",
-        "This feature is on the v0.2 roadmap.",
+        "a trial is judged old) is not supported. Either ",
+        "(a) drop rows with missing source ratings, or (b) impute them.",
         call. = FALSE)
     }
     stan_data$y2 <- y2_raw
@@ -1925,7 +1922,7 @@ build_formula_from_parsed <- function(fixed, allow_empty = FALSE) {
   as.formula(formula_str)
 }
 
-#' Build Cross-Correlation Info (updated for new parameters)
+#' Build Cross-Correlation Info
 #' @noRd
 build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random, 
                                     criterion_random, lambda_random = NULL,
@@ -2912,7 +2909,7 @@ drop_reference_level_from_random_slopes <- function(re_list, data) {
 
 #' Fit Bivariate Cumulative Ordinal Model
 #' @noRd
-fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
+fit_bivariate_cumulative <- function(mu1, mu2, cutpoints, cutpoints2, rho,
                                      data, family, priors, counts = NULL,
                                      gap_link = "log", smooth_info = FALSE, cutpoints_scale = NULL,
                                      cutpoints2_scale = NULL) {
@@ -2920,7 +2917,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
   if (is.null(mu1)) {
     stop("The primary formula resp(y1, y2) ~ ... is required for bivariate_cumulative() family")
   }
-  if (is.null(cutpoints1)) cutpoints1 <- ~ 1
+  if (is.null(cutpoints)) cutpoints <- ~ 1
   if (is.null(cutpoints2)) cutpoints2 <- ~ 1
 
   if (is.null(rho)) {
@@ -2973,7 +2970,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints1, cutpoints2, rho,
 
   discrim_formula <- as.formula(paste0("~ ", mu2_rhs), env = environment(mu1))
 
-  criterion_formula <- cutpoints1
+  criterion_formula <- cutpoints
   criterion2_formula <- cutpoints2
 
   parsed <- parse_broc_formula(
@@ -3317,7 +3314,6 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
 .canonical_param_formulas <- function(params, family) {
   params <- params[!vapply(params, identical_to_null_formula, logical(1))]
   m <- .param_name_map(family$family)
-  if (family$family == "bivariate_cumulative") m$criterion <- c(m$criterion, "cutpoints1")
   for (internal in unique(c("dprime", names(m)))) {
     spell <- c(internal, m[[internal]])
     given <- intersect(spell, names(params))

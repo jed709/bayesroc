@@ -72,8 +72,7 @@ build_fixed_effects_matrix <- function(formula, data, encoding_vars = NULL, is_o
 
 #' Build Random Effects Structure
 #'
-#' Parses random effects and builds the necessary structures.
-#' Now supports both:
+#' Parses random effects and builds the necessary structures, in one of two forms:
 #' - Simple categorical: uses index arrays for fast lookup (`beta[idx]`)
 #' - General case: uses full Z matrices (`Z[n,] * u[s,]'`)
 #'
@@ -312,8 +311,8 @@ build_term_index <- function(Z) {
 
 #' Build Criterion (Threshold) Structure
 #'
-#' Thresholds never use encoding variables - all items respond
-#' Now properly handles continuous random slopes using Z matrices.
+#' Thresholds never use encoding variables - all items respond.
+#' Continuous random slopes use Z matrices.
 #'
 #' @param formula One-sided formula for criterion fixed effects
 #' @param re_terms Random effects terms for criterion

@@ -83,7 +83,7 @@
   src <- .bvn_ffi_source_dir()
   if (is.null(src)) return(fail("sources not found", "Reinstall bayesroc."))
   jl <- .jaxlib_ffi_include(python)
-  if (is.null(jl)) return(fail("jax.ffi headers not found", "Update JAX with install_jax()."))
+  if (is.null(jl)) return(fail("jax.ffi headers not found", "Update JAX with install_jax_backend()."))
   cxx <- .cxx17_command()
   if (is.null(cxx)) return(fail("no C++17 compiler", toolchain))
   flags <- .bvn_ffi_flags()

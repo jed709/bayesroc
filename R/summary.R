@@ -335,7 +335,7 @@ print.broc_summary <- function(x, ...) {
 #' For each posterior draw, reconstructs natural-scale thresholds for each
 #' participant by applying the gap->threshold transformation to the per-draw
 #' RE vectors, then computes correlations directly from these natural-scale
-#' draws. This is unbiased (no Jacobian approximation).
+#' draws.
 #'
 #' Only outputs correlations (not SDs) since natural-scale SDs depend on
 #' the specific gap values and are less interpretable.

@@ -97,9 +97,8 @@ See the [vignette](https://jed709.github.io/bayesroc/articles/univariate-recogni
 
 ### Backends and speed
 
-The Stan backend uses a fused C++ likelihood with analytic gradients, which is
-much faster than Stan-language autodiff and needs no extra toolchain beyond
-`cmdstanr`. The Stan backend is single-threaded
+The Stan backend uses a fused C++ likelihood with analytic gradients and needs
+no extra toolchain beyond `cmdstanr`. The Stan backend is single-threaded
 by default; `fit_broc(threads_per_chain = N)` with N > 1 compiles a `reduce_sum`
 version of the model and runs each chain on N threads.
 

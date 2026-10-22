@@ -156,7 +156,7 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
 .pars_internal <- function(pars, fam) {
   if (is.null(pars)) return(NULL)
   vapply(pars, function(p) {
-    if (p %in% c("criteria", "criterion", "cutpoints", "cutpoints1")) return("criterion")
+    if (p %in% c("criteria", "criterion", "cutpoints")) return("criterion")
     if (p %in% c("criteria2", "criterion2", "cutpoints2")) return("criterion2")
     external_to_internal_param(p, fam)
   }, character(1))
@@ -341,7 +341,7 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   if (is.null(f)) return(NULL)
   if (p == "dprime") return(f$primary)
   alias <- model$family$external_aliases[[p]]
-  cand <- c(p, alias, switch(p, criterion = c("cutpoints", "cutpoints1"), criterion2 = "cutpoints2"))
+  cand <- c(p, alias, switch(p, criterion = "cutpoints", criterion2 = "cutpoints2"))
   for (n in cand) if (!is.null(f$params[[n]])) return(f$params[[n]])
   NULL
 }

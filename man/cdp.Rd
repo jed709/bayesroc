@@ -44,8 +44,7 @@ is \eqn{M < \tau_1}, and every response with a judgement contributes the cell
 \eqn{P(\tau_j < M < \tau_{j+1}, \mathrm{judgement})} with the same criteria
 \eqn{c_R} and \eqn{c_K}. No parameters are added. A response with a missing
 judgement, at any confidence level, contributes its band probability
-\eqn{P(\tau_j < M < \tau_{j+1})} alone. Data with judgements on old responses
-only are fitted exactly as before.
+\eqn{P(\tau_j < M < \tau_{j+1})} alone.
 
 With two \code{rk} levels the joint cell is a strip of the \eqn{(R, M)} plane:
 \deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad
