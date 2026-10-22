@@ -13,7 +13,7 @@
   summary = TRUE,
   prob = 0.95,
   cores = 1,
-  response = 1,
+  response = NULL,
   seed = NULL,
   allow_new_levels = FALSE,
   ...
@@ -39,11 +39,13 @@ intervals. If \code{FALSE}, returns the full S x N x K array of draws.}
 
 \item{prob}{Width of credible intervals when \code{summary = TRUE} (default 0.95).}
 
-\item{cores}{Number of cores for parallel probability computation (default 1).}
+\item{cores}{Number of cores for the probability computation (default 1).}
 
-\item{response}{Which response dimension. For bivariate families: \code{1} (detection)
-or \code{2} (source). For CDP: \code{1} (confidence, default) or \code{2} (R/K/G probabilities).
-Ignored for other families.}
+\item{response}{Which response to predict. For bivariate families: \code{NULL}
+(default) gives the joint detection x source cells, \code{1} the detection
+response alone and \code{2} the source response alone, each summed over the
+other response. For CDP: \code{NULL} or \code{1} the confidence response, \code{2} the
+R/K/G judgement. Ignored for other families.}
 
 \item{seed}{Optional integer for reproducibility. Controls the random
 subsampling of \code{ndraws} and (for \code{type = "prediction"}) the categorical

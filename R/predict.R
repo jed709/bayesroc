@@ -63,10 +63,12 @@ link_cdf_r <- function(x, link_name) {
 #' @param summary If `TRUE` (default), returns posterior mean and credible
 #'   intervals. If `FALSE`, returns the full S x N x K array of draws.
 #' @param prob Width of credible intervals when `summary = TRUE` (default 0.95).
-#' @param cores Number of cores for parallel probability computation (default 1).
-#' @param response Which response dimension. For bivariate families: `1` (detection)
-#'   or `2` (source). For CDP: `1` (confidence, default) or `2` (R/K/G probabilities).
-#'   Ignored for other families.
+#' @param cores Number of cores for the probability computation (default 1).
+#' @param response Which response to predict. For bivariate families: `NULL`
+#'   (default) gives the joint detection x source cells, `1` the detection
+#'   response alone and `2` the source response alone, each summed over the
+#'   other response. For CDP: `NULL` or `1` the confidence response, `2` the
+#'   R/K/G judgement. Ignored for other families.
 #' @param seed Optional integer for reproducibility. Controls the random
 #'   subsampling of `ndraws` and (for `type = "prediction"`) the categorical
 #'   draws used to simulate responses. The previous `.Random.seed` is restored
@@ -106,7 +108,7 @@ link_cdf_r <- function(x, link_name) {
 #' @export
 predict.broc_fit <- function(object, newdata = NULL, type = c("response", "prediction"),
                              re_formula = NULL, ndraws = NULL, summary = TRUE,
-                             prob = 0.95, cores = 1, response = 1, seed = NULL,
+                             prob = 0.95, cores = 1, response = NULL, seed = NULL,
                              allow_new_levels = FALSE, ...) {
   out <- .predict_broc(object, newdata = newdata, type = type, re_formula = re_formula, ndraws = ndraws,
                        summary = summary, prob = prob, cores = cores, response = response, seed = seed,
@@ -127,7 +129,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
 
 .predict_broc <- function(object, newdata = NULL, type = c("response", "prediction"),
                           re_formula = NULL, ndraws = NULL, summary = TRUE,
-                          prob = 0.95, cores = 1, response = 1, seed = NULL,
+                          prob = 0.95, cores = 1, response = NULL, seed = NULL,
                           allow_new_levels = FALSE, margin = NULL, ...) {
   fit <- object
   type <- match.arg(type)
@@ -158,6 +160,18 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   link_name <- family$link$name
   K <- model$model_data$K
   K2 <- model$model_data$K2
+
+  if (!is.null(response) && (is_bivariate || is_cdp) &&
+      !(length(response) == 1L && isTRUE(as.integer(response) %in% 1:2))) {
+    stop("`response` must be NULL, 1 or 2.", call. = FALSE)
+  }
+  one_response <- is_bivariate && is.null(margin) && !is.null(response)
+  if (one_response) margin <- as.integer(response)
+  if (cores > 1) {
+    old_threads <- .bvn_native$threads
+    .bvn_native$threads <- as.integer(cores)
+    on.exit(.bvn_native$threads <- old_threads, add = TRUE)
+  }
 
   # ---- Data source ----
   if (!is.null(newdata)) {
@@ -198,18 +212,24 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   # one response's probabilities of a bivariate family, [S, N, K]: margin = 1 detection,
   # 2 source
   if (is_bivariate && identical(as.integer(margin), 1L)) {
-    return(compute_category_probs(trial_params, thresh, data_src, model, link_name, S, N, K, margin = 1L))
-  }
+    probs <- compute_category_probs(trial_params, thresh, data_src, model, link_name, S, N, K,
+                                    cores = cores, margin = 1L)
+    if (!one_response) return(probs)
+  } else {
+    thresh2 <- NULL
+    if (is_bivariate) {
+      thresh2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
+    }
 
-  thresh2 <- NULL
-  if (is_bivariate) {
-    thresh2 <- compute_thresholds_2(draws, model, data_src, re_formula, S, N)
+    # ---- Compute category probabilities ----
+    probs <- compute_category_probs(trial_params, thresh, data_src, model, link_name, S, N, K,
+                                      thresh2 = thresh2, cores = cores, margin = margin)
+    if (is_bivariate && identical(as.integer(margin), 2L) && !one_response) return(probs)
   }
-
-  # ---- Compute category probabilities ----
-  probs <- compute_category_probs(trial_params, thresh, data_src, model, link_name, S, N, K,
-                                    thresh2 = thresh2, cores = cores, margin = margin)
-  if (is_bivariate && identical(as.integer(margin), 2L)) return(probs)
+  if (one_response) {
+    K <- dim(probs)[3]
+    is_bivariate <- FALSE
+  }
 
   # ---- Bivariate output path (4D probs: S x N x K1 x K2) ----
   if (is_bivariate) {
@@ -269,7 +289,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   }
 
   # ---- CDP response=2 path: R/K(/G) probabilities ----
-  if (is_cdp && response == 2) {
+  if (is_cdp && identical(as.integer(response), 2L)) {
     p_remember <- attr(probs, "p_remember")
     p_know <- attr(probs, "p_know")
     old_levels <- if (!is.null(family$rk_levels)) family$rk_levels else family$old_levels

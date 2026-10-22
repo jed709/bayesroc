@@ -38,6 +38,18 @@ test_that("joint displays draw for a bivariate family and agree with the family'
   .jp_renders(plot_roc(fit, type = "joint", ndraws = 10))
   expect_error(plot_distributions(fit, type = "nonsense"))
 
+  joint <- predict(fit, summary = FALSE, ndraws = 20, seed = 5)
+  expect_length(dim(joint), 4L)
+  p1 <- predict(fit, summary = FALSE, ndraws = 20, seed = 5, response = 1)
+  p2 <- predict(fit, summary = FALSE, ndraws = 20, seed = 5, response = 2, cores = 2)
+  expect_equal(p1, rowSums(joint, dims = 3L), tolerance = 1e-8)
+  expect_equal(p2, rowSums(aperm(joint, c(1, 2, 4, 3)), dims = 3L), tolerance = 1e-8)
+  s2 <- predict(fit, ndraws = 20, seed = 5, response = 2)
+  expect_setequal(unique(s2$category), seq_len(dim(p2)[3]))
+  expect_equal(nrow(s2), dim(p2)[2] * dim(p2)[3])
+  expect_equal(dim(predict(fit, type = "prediction", summary = FALSE, ndraws = 20, response = 1)), dim(p1)[1:2])
+  expect_error(predict(fit, response = 3), "NULL, 1 or 2")
+
   # the surface: P(say new | new) is the new-item detection margin, so x = pnorm(c) exactly, the
   # rates lie in [0, 1], and VUS lies between chance and one
   model <- .plot_model(fit)
