@@ -525,27 +525,3 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   list(muF = ifelse(isnew, 0, dF), sig1 = ifelse(isnew, 1, s1), muR = ifelse(isnew, 0, dR),
        lam = ifelse(isnew, 0, lam), mu2 = ifelse(isnew, 0, src), sig2 = ifelse(isnew, 1, s2))
 }
-
-# Native vrdp2d source survival against the R probs_source_survival on rows of a plot setup.
-.parity_src_native <- function(model, setup, rows, u) {
-  acc_r <- function(on) {
-    options(bayesroc.source_survival_native = on)
-    .roc_survival_rows(model, setup, rows, rep(1, length(rows)), 2, length(u), structure(function(th) .criterion_path(th, u), u = u, mode = "path"))
-  }
-  old <- getOption("bayesroc.source_survival_native", TRUE); on.exit(options(bayesroc.source_survival_native = old), add = TRUE)
-  a <- acc_r(TRUE); b <- acc_r(FALSE)
-  c(max_abs_diff = max(abs(a - b)), cells = length(a))
-}
-
-# The same on the absolute criterion grid of the distribution plots.
-.parity_src_native_grid <- function(model, setup, rows, u) {
-  crit <- function(th) array(rep(u, each = dim(th)[1] * dim(th)[2]), c(dim(th)[1:2], length(u)))
-  attr(crit, "u") <- u; attr(crit, "mode") <- "grid"
-  acc_r <- function(on) {
-    options(bayesroc.source_survival_native = on)
-    .roc_survival_rows(model, setup, rows, rep(1, length(rows)), 2, length(u), crit)
-  }
-  old <- getOption("bayesroc.source_survival_native", TRUE); on.exit(options(bayesroc.source_survival_native = old), add = TRUE)
-  a <- acc_r(TRUE); b <- acc_r(FALSE)
-  c(max_abs_diff = max(abs(a - b)), cells = length(a))
-}

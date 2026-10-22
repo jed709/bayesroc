@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Finite-difference verification of every hand-coded kernel gradient in
 # inst/stan/batch_sdt_core.hpp. Config-independent; no Stan/MCMC. This is the
-# cheapest, most complete check for the analytic-gradient class (where the
-# bivariate_dp / bounded gradient bugs lived). Run from the package root.
+# cheapest, most complete check of the analytic gradients. Run from the
+# package root.
 set -e
 TMPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.tmp"   # assembler needs a writable POSIX-style temp dir
 mkdir -p "$TMPDIR"

@@ -1681,7 +1681,7 @@ probs_detection_margin <- function(family_name, params, thresh, item_type, S, N,
 # the detection response is summed out analytically where the source criteria do not depend on
 # it (the margin of a bivariate normal is univariate; the bounded model has its own marginal
 # helper) and by accumulating the existing cells otherwise. options(bayesroc.source_margin_fast =
-# FALSE) restores the joint-then-sum path; .parity_source_margin() compares the two.
+# FALSE) selects the joint-then-sum path.
 # =============================================================================
 
 # Phi2 of a standard bivariate normal at (z1, z2) elementwise; edges may be infinite.
@@ -1867,8 +1867,7 @@ probs_source_margin <- function(family_name, params, thresh, thresh2, item_type,
 # point u the detection response is summed out with the path's source criterion c_j(u) as the lower edge
 # and +Inf as the upper edge, so nothing is formed per bin and no tail sums are needed. `path` is
 # [S, N, K1, U] when the source criteria vary with the detection response, else [S, N, U]. The cell
-# formulas are those of probs_source_margin / the joint functions. .parity_source_survival() checks it
-# against the margin on a (U + 1)-bin grid followed by .tail_by_rows().
+# formulas are those of probs_source_margin / the joint functions.
 probs_source_survival <- function(family_name, params, thresh, path, item_type, S, N, K1, U, model) {
   md <- model$model_data
   bounded <- isTRUE(md$bounded)
@@ -1968,34 +1967,6 @@ probs_source_survival <- function(family_name, params, thresh, path, item_type, 
   pmin(pmax(out, 0), 1)
 }
 
-# The direct source survival against the margin on a (U + 1)-bin grid followed by the tail sums, for a
-# set of rows of a plot setup (same inputs .roc_survival_rows builds).
-.parity_source_survival <- function(model, setup, rows, u) {
-  fam <- model$family$family; S <- setup$S; r <- length(rows)
-  tps <- lapply(setup$tp, function(m) m[, rows, drop = FALSE])
-  ds <- list(N = r, is_old = setup$data_src$is_old[rows], source = setup$data_src$source[rows], item_type = setup$data_src$item_type[rows])
-  crit <- function(th) .criterion_path(th, u)
-  t2 <- .subset_thresh2(setup$th2, rows)
-  t2g <- if (length(dim(t2)) == 4L) { a <- array(0, c(S, r, dim(t2)[3], length(u))); for (b in seq_len(dim(t2)[3])) a[, , b, ] <- crit(array(t2[, , b, ], c(S, r, dim(t2)[4]))); a } else crit(t2)
-  m2 <- model; m2$model_data$K2 <- length(u) + 1L
-  pr <- compute_category_probs(tps, setup$th[, rows, , drop = FALSE], ds, m2, model$family$link$name, S, r, model$model_data$K, thresh2 = t2g, margin = 2L)
-  ref <- .tail_by_rows(pr, rep(1, r))
-  sv <- probs_source_survival(fam, tps, setup$th[, rows, , drop = FALSE], t2g, ds$item_type, S, r, model$model_data$K, length(u), model)
-  new <- apply(sv, c(1, 3), sum)
-  c(max_abs_diff = max(abs(new - ref) / r), cells = length(ref))
-}
-
-# The fast source margin against the joint summed over the detection response, on one fit.
-.parity_source_margin <- function(fit, ndraws = 5, seed = 1) {
-  old <- getOption("bayesroc.source_margin_fast", TRUE)
-  on.exit(options(bayesroc.source_margin_fast = old), add = TRUE)
-  options(bayesroc.source_margin_fast = TRUE)
-  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
-  options(bayesroc.source_margin_fast = FALSE)
-  b <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
-  c(max_abs_diff = max(abs(a - b)), max_rel_diff = max(abs(a - b) / pmax(b, 1e-8)), cells = length(a))
-}
-
 
 # The source margin through the native source-survival kernels (vrdp2d; bivariate_sdt and bivariate_dp,
 # bounded or not): the marginal survival of every trial at each of its source criteria, differenced into the
@@ -2032,17 +2003,6 @@ probs_source_survival <- function(family_name, params, thresh, path, item_type, 
   if (J2 > 1L) for (k in 2:J2) out[, , k] <- sv[, , k - 1L] - sv[, , k]
   out[, , K2] <- sv[, , J2]
   pmax(out, 1e-10)
-}
-
-# Native source margin against the R source margin.
-.parity_source_margin_native <- function(fit, ndraws = 5, seed = 1) {
-  old <- getOption("bayesroc.source_margin_native", TRUE)
-  on.exit(options(bayesroc.source_margin_native = old), add = TRUE)
-  options(bayesroc.source_margin_native = TRUE)
-  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
-  options(bayesroc.source_margin_native = FALSE)
-  b <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, margin = 2L, seed = seed)
-  c(max_abs_diff = max(abs(a - b)), cells = length(a))
 }
 
 # Type-7 quantiles of every column of m at `probs`, as a length(probs) x ncol(m) matrix: one sort per
@@ -2346,7 +2306,7 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
 #' Since rho=0 for all VRDP2D distributions, bivariate normal factors into
 #' products of univariates, making this the simplest bivariate family.
 #' @noRd
-# The per-trial loop version, kept as the reference for .probs_vrdp2d_vec (options(bayesroc.vrdp2d_joint_loop = TRUE)
+# The per-trial loop implementation, the reference for .probs_vrdp2d_vec (options(bayesroc.vrdp2d_joint_loop = TRUE)
 # selects it).
 .probs_vrdp2d_loop <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
   md <- model$model_data
@@ -2758,19 +2718,6 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
   attr(probs, "p_remember") <- array(res$prem, c(S, N, K))
   if (n_rkg == 3) attr(probs, "p_know") <- array(res$pknow, c(S, N, K))
   probs
-}
-
-# Native CDP cells against the R loop on a few draws.
-.parity_cdp_native <- function(fit, ndraws = 3, seed = 1) {
-  old <- getOption("bayesroc.cdp_native", TRUE)
-  on.exit(options(bayesroc.cdp_native = old), add = TRUE)
-  options(bayesroc.cdp_native = TRUE)
-  a <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed)
-  a2 <- .predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed, response = 2)
-  options(bayesroc.cdp_native = FALSE)
-  b <- suppressWarnings(.predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed))
-  b2 <- suppressWarnings(.predict_broc(fit, ndraws = ndraws, summary = FALSE, seed = seed, response = 2))
-  c(confidence = max(abs(a - b)), judgement = max(abs(a2 - b2)), cells = length(a))
 }
 
 # =============================================================================

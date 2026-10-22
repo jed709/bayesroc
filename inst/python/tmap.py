@@ -472,7 +472,7 @@ class _Super:
                 self.gW[i, :, pos[f]] += W[:, c]
         self.links = []
         # one gather / one scatter for the whole [D, n] block: D chained dynamic_update_slices
-        # each copied the full parameter vector, forward and again in the VJP
+        # would each copy the full parameter vector, forward and again in the VJP
         self.pos_np = np.add.outer(np.array(self.starts, int), np.arange(self.n))
         self.pos = jnp.asarray(self.pos_np)
         self.linked = False

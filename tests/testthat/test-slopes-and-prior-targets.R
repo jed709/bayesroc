@@ -131,6 +131,7 @@ test_that("every listed prior can be set, is echoed back, and reaches Stan and t
       broc_prior(want[i], class = pt$class[i], dpar = pt$dpar[i],
                  coef = if (is.na(pt$coef[i])) NULL else pt$coef[i],
                  group = if (is.na(pt$group[i])) NULL else pt$group[i])))
+    want <- vapply(pri, `[[`, "", "prior")
     m <- suppressMessages(broc(f, d, priors = pri))
     pt2 <- get_broc_prior(m)
     expect_identical(norm(pt2$prior), norm(want), label = paste(nm, "listing echo"))

@@ -141,7 +141,7 @@ test_that("broc() errors when a formula names a parameter the family lacks", {
   )
 })
 
-test_that("encoding factor with one surviving level does not crash", {
+test_that("an encoding factor with one surviving level builds without error", {
   d <- .fixture_encoding()
   d <- d[d$condition %in% c("new", "speak"), , drop = FALSE]
   d$condition <- droplevels(d$condition)

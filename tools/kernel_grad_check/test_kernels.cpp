@@ -157,7 +157,7 @@ int main() {
       chk("bivariate_sdt_cell","d_sigma1",r.d_sigma1, cfd([&](double x){return bivariate_sdt_cell(y1,y2,K1,K2,mu1,mu2,x,s2,rho,t1,n1,t2,n2).lp;},s1));
       chk("bivariate_sdt_cell","d_sigma2",r.d_sigma2, cfd([&](double x){return bivariate_sdt_cell(y1,y2,K1,K2,mu1,mu2,s1,x,rho,t1,n1,t2,n2).lp;},s2));
       chk("bivariate_sdt_cell","d_rho",r.d_rho, cfd([&](double x){return bivariate_sdt_cell(y1,y2,K1,K2,mu1,mu2,s1,s2,x,t1,n1,t2,n2).lp;},rho)); } }
-  // ---------- bounded_marginal_source : p wrt mu2,sigma2,rho (re-verify d_rho fix) ----------
+  // ---------- bounded_marginal_source : p wrt mu2,sigma2,rho ----------
   { double t2[5]={-0.9,-0.2,0.3,0.6,1.3}; int K2=6,n2=5;
     for (int y2 : {1,4,6}) for (double rho : {0.3,0.6}) { double mu1=1.0,mu2=0.5,s1=1.1,s2=0.9; auto r=bounded_marginal_source(y2,K2,mu1,mu2,s1,s2,rho,t2,n2);
       chk("bounded_marg_source","d_mu2",r.d_mu2, cfd([&](double x){return bounded_marginal_source(y2,K2,mu1,x,s1,s2,rho,t2,n2).p;},mu2));

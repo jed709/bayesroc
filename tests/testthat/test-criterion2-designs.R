@@ -65,7 +65,7 @@ test_that("criterion2 linear covariate agrees across Stan and JAX", {
   expect_gte(length(common), 8)
   expect_equal(unname(a[common]), unname(b[common]), tolerance = 0.08)
 
-  # the gap intercepts must not collapse to zero (JAX .set() indentation bug)
+  # the gap intercepts must not collapse to zero
   gap_int <- grep("^beta_log_gaps_2\\[[0-9]+,1\\]$", names(b), value = TRUE)
   expect_gt(max(abs(b[gap_int])), 0.1)
 })

@@ -5630,7 +5630,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
   }
 
-  # ---- discrim gradient (NEW convention: A on negative source axis) ----
+  # ---- discrim gradient (A on negative source axis) ----
   L$add("")
   if (has_discrim_B) {
     L$add("    if (item_type_n == 2) {")
@@ -5757,7 +5757,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
   }
 
-  # ---- rho gradient (NEW convention) ----
+  # ---- rho gradient ----
   if (has_rho) {
     L$add("")
     if (bounded) {
@@ -5788,7 +5788,7 @@ emit_gradient_accumulation_bivariate <- function(L, model_data, params, has_crit
     }
   }
 
-  # ---- rho_B gradient (NEW convention) ----
+  # ---- rho_B gradient ----
   if (has_rho_B) {
     L$add("")
     if (bounded) {

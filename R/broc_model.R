@@ -698,7 +698,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
 .rkg_knob_data <- function(stan_data, re_in_bound) {
   # the know-criterion slack transform is used only when the Guess bound is fixed-effects
   # only: with random effects on the thresholds or criteria the bound couples every
-  # effect through a max over trials and sampling collapses (measured, Oct 2026)
+  # effect through a max over trials and sampling collapses
   if (!isTRUE(stan_data$n_rkg == 3) || is.null(stan_data$X_know_crit)) return(stan_data)
   stan_data$kc_knob <- 0L
   if (isTRUE(re_in_bound)) return(stan_data)
@@ -2806,7 +2806,6 @@ rename_cumulative_params <- function(stan_code) {
   stan_code <- gsub("Criterion", "Cutpoints", stan_code)
   
   stan_code <- gsub("// mu fixed effects", "// Mu fixed effects", stan_code)
-  stan_code <- gsub("// Cutpoints fixed effects", "// Cutpoints fixed effects", stan_code)
   
   stan_code
 }
@@ -3275,7 +3274,7 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   paste0(rep(b, times = length(cl)), ":", rep(cl, each = length(b)))
 }
 
-# vbin of a model, including fits saved before the map existed (one set per response)
+# vbin of a model; without a stored map, one set per response
 .vbin_of <- function(md) as.integer(md$stan_data$vbin %||% seq_len(md$K))
 .vbin_labels <- function(md) {
   if (identical(md$source_criteria, "varying_shared_new")) c("new", as.character(sort(unique(as.integer(md$old_levels)))))

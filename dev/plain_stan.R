@@ -899,7 +899,7 @@
     // p3: both recollected -> corner cell
     real p3 = 0.0;
     if (y1 == K1) {
-      // Recollection success cells (new convention): Source A items at the
+      // Recollection success cells: Source A items at the
       // low end of the source axis (y2 = 1, "sure A"); Source B items at the
       // high end (y2 = K2, "sure B").
       if (item_type == 2 && y2 == 1) p3 = R_I_eff * R_S_eff;
@@ -948,7 +948,7 @@
 
     real p3 = 0.0;
     if (y1 == K1) {
-      // Recollection success cells (new convention): Source A items at the
+      // Recollection success cells: Source A items at the
       // low end of the source axis (y2 = 1, "sure A"); Source B items at the
       // high end (y2 = K2, "sure B").
       if (item_type == 2 && y2 == 1) p3 = R_I_eff * R_S_eff;
@@ -1075,7 +1075,7 @@
   // Since rho=0 for all distributions, bivariate normal factors into product of univariates:
   // P(X <= x, Y <= y | rho=0) = Phi(x) * Phi(y)
   //
-  // This is MUCH more efficient than computing bivariate CDFs!
+  // so no bivariate CDF is needed.
   //
   // item_type: 1=new, 2=source A, 3=source B
   // dprime_F: familiarity strength 

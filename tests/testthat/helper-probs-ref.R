@@ -1,5 +1,5 @@
-# The per-row, per-draw implementations the vectorised probability functions replaced, kept as
-# the reference they are tested against.
+# Per-row, per-draw reference implementations of the cell probabilities, against which the
+# vectorised probability functions are tested.
 
 .ref_probs_bivariate_sdt <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
   md <- model$model_data

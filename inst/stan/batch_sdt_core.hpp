@@ -803,9 +803,9 @@ inline BivariateDpResult bivariate_dp_cell(
     return res;
   }
 
-  // Per-source effective recollection probabilities. Default behavior
-  // (R_I_B = R_I, R_S_B = R_S, supplied by the caller) reproduces the
-  // pre-asymmetric-lambda likelihood exactly. When item_type == 2 the
+  // Per-source effective recollection probabilities. With R_I_B = R_I and
+  // R_S_B = R_S (supplied by the caller) both sources share one pair of
+  // recollection parameters. When item_type == 2 the
   // gradient flows back into R_I/R_S (lambda); when item_type == 3 it
   // flows into R_I_B/R_S_B (lambda_B). The result struct keeps the four
   // gradient slots separate so the caller can route them to the correct
@@ -869,14 +869,14 @@ inline BivariateDpResult bivariate_dp_cell(
     return res;
   }
 
-  // Slow path: y1 == K1 — full mixture. Compute uni_cell ONCE (was called 3x).
+  // Slow path: y1 == K1 — full mixture; uni_cell is evaluated once.
   double biv_prob = std::exp(bc.lp);
   double p1 = (1.0 - R_I_eff) * biv_prob;
 
   auto uc = uni_cell(y2, K2, mu2, sigma2, thresh2, n_thresh2);
   double p2 = R_I_eff * (1.0 - R_S_eff) * uc.p;
 
-  // Recollection success cells (new convention): Source A items at the low
+  // Recollection success cells: Source A items at the low
   // end of the source axis (y2 = 1, "sure A"); Source B items at the high
   // end (y2 = K2, "sure B").
   bool is_corner = (item_type == 2 && y2 == 1) || (item_type == 3 && y2 == K2);
@@ -1148,9 +1148,7 @@ struct CdpRkgResult {
 //   Remember: R > c_R
 //   Know:     R <= c_R  AND  F > c_K
 //   Guess:    R <= c_R  AND  F <= c_K
-// where c_K is a criterion on F (not a second criterion on R). Previously
-// this function used c_K as a lower criterion on R, giving a materially
-// different model and disagreeing with JAX on n_rkg=3 fits.
+// where c_K is a criterion on F (not a second criterion on R).
 //
 // Probabilities within a confidence band (tau_lo < M < tau_hi):
 //   p_R = P(R > c_R, tau_lo < M < tau_hi)  -- binormal strip on (R, M)
@@ -1321,8 +1319,8 @@ inline CdpRkgResult cdp_rkg_cell(
 
 // G_cdp gradient computation reusing pre-computed Phi2(z_cR, z_c, rho).
 // In cdp_rkg_cell, bv_cR (= binormal_cdf_grad(z_cR, z_c, rho)) is already
-// computed for the Remember term. Passing it here eliminates up to 2 redundant
-// Owen's-T evaluations per threshold boundary (4 total for hi+lo).
+// computed for the Remember term. Passing it here saves up to 2 bivariate-normal
+// CDF evaluations per threshold boundary (4 total for hi+lo).
 inline GCdpResult G_cdp_grad_reuse(
     double c, double mu_R, double sigma_R, double mu_F, double sigma_F,
     double c_R, double c_K,
@@ -1546,7 +1544,6 @@ inline BivariateResult bounded_bivariate_sdt_cell(
   // From below-cp: d_P/d_z_ylo_b = -phi(z_ylo_b) * p_src_below
   // d_z_ylo_b / d_thresh1_lo = inv_s1
   if (!is_lo1) {
-    d_t1_lo = (-phi(z_ylo_b) * p_src_below * inv_s1 + prob_above * bc_above.d_z1_lo * 0.0) * inv_P;
     // Above-cp: z1_lo = z_cp (not a function of thresh1_lo for the above region)
     // Only below-cp contributes to thresh1_lo gradient
     d_t1_lo = -phi(z_ylo_b) * p_src_below * inv_s1 * inv_P;
@@ -1574,35 +1571,17 @@ inline BivariateResult bounded_bivariate_sdt_cell(
   d_t2_hi = (d_below_t2_hi + d_above_t2_hi) * inv_P;
 
   // d_logP/d_mu1 (dprime): from below and above regions
-  // Below: d/d_mu1 of p_det_below * p_src_below
-  //   = (-phi(z_cp)*(-inv_s1) + phi(z_ylo_b)*inv_s1) * p_src_below  [through z's]
-  //   BUT z_cp depends on mu1 through cp = mu1 - sigma1*mu2/(rho*sigma2)
-  //   d_z_cp/d_mu1 = (d_cp/d_mu1 - 1) * inv_s1 = (1 - 1)*inv_s1 = 0
-  //   Wait: d_cp/d_mu1 = 1, so d_z_cp/d_mu1 = (1 - 1) / sigma1 = 0
-  //   Actually z_cp = (cp - mu1)/sigma1 = (mu1 - sigma1*mu2/(rho*sigma2) - mu1)/sigma1
-  //                 = -mu2/(rho*sigma2), which does NOT depend on mu1!
-  //   So d(p_det_below)/d(mu1) = phi(z_ylo_b) * inv_s1 * p_src_below  (only through z_ylo_b)
-  //   BUT z_ylo_b = (thresh1_lo - mu1)/sigma1, so d_z_ylo_b/d_mu1 = -inv_s1
-  //   => d(p_det_below)/d(mu1) = phi(z_ylo_b) * inv_s1  (from -d/d(mu1) of Phi(z_ylo_b))
-  //   Hmm, p_det_below = Phi(z_cp) - Phi(z_ylo_b)
-  //   d(p_det_below)/d(mu1) = 0 - phi(z_ylo_b)*(-inv_s1) = phi(z_ylo_b)*inv_s1 (if not lo edge)
+  // z_cp = (cp - mu1)/sigma1 = -mu2/(rho*sigma2) does not depend on mu1.
+  // Below: p_det_below = Phi(z_cp) - Phi(z_ylo_b), z_ylo_b = (thresh1_lo - mu1)/sigma1, so
+  //   d(p_det_below)/d(mu1) = phi(z_ylo_b)*inv_s1 (0 at the lo edge); p_src_below does not
+  //   depend on mu1.
   double d_Pbelow_dmu1 = 0.0;
   if (!is_lo1) {
     d_Pbelow_dmu1 = phi(z_ylo_b) * inv_s1 * p_src_below;
   }
-  // Above: d_prob_above/d_mu1 through z_yhi_a (=-(bc_above.d_z1_hi)*inv_s1 if not hi edge)
-  //   and through z_cp (d_z_cp/d_mu1 = 0 as shown above, so z_cp contribution = 0 for mu1)
-  //   Wait: z_cp = -mu2/(rho*sigma2) does NOT depend on mu1, but the upper bound z_yhi depends on mu1
-  //   d_prob_above/d_mu1 = prob_above * (bc_above.d_z1_lo * 0 + bc_above.d_z1_hi * (-inv_s1))
-  //                       + prob_above * (bc_above.d_z2_lo * (-inv_s2) * 0 + ...)
-  //   Hmm, this is getting complex. Let me use a simpler approach.
-  //
-  // Actually, the clean approach is: for above-cp, we have a bivariate cell with
-  // z1_lo = z_cp (constant w.r.t. mu1!), z1_hi = (thresh1_hi - mu1)/sigma1
-  // So d_prob_above/d_mu1 = prob_above * bc_above.d_z1_hi * (-inv_s1)  [from z1_hi]
-  //                        + prob_above * (bc_above.d_z2_lo + bc_above.d_z2_hi) * (-inv_s2) * 0
-  //   (z2 depends on mu2, not mu1)
-  // For the above region z2 thresholds don't depend on mu1, so:
+  // Above: a bivariate cell with z1_lo = z_cp (constant in mu1) and
+  //   z1_hi = (thresh1_hi - mu1)/sigma1; the z2 edges depend on mu2 only, so
+  //   d_prob_above/d_mu1 = prob_above * bc_above.d_z1_hi * (-inv_s1) (0 at the hi edge).
   double d_Pabove_dmu1 = 0.0;
   if (!is_hi1) {
     d_Pabove_dmu1 = prob_above * bc_above.d_z1_hi * (-inv_s1);
@@ -1611,8 +1590,7 @@ inline BivariateResult bounded_bivariate_sdt_cell(
 
   // d_logP/d_mu2 (discrim)
   // Below: p_src_below doesn't depend on mu2 (source ~ N(0, sigma_cond))
-  //   BUT z_cp = -mu2/(rho*sigma2), so p_det_below depends on mu2 through z_cp
-  //   d_z_cp/d_mu2 = -1/(rho*sigma2) * 1/sigma1... wait
+  //   but p_det_below depends on mu2 through z_cp = -mu2/(rho*sigma2):
   //   cp = mu1 - sigma1*mu2/(rho*sigma2)
   //   d_cp/d_mu2 = -sigma1/(rho*sigma2)
   //   d_z_cp/d_mu2 = d_cp/d_mu2 * inv_s1 = -1/(rho*sigma2)
@@ -1817,8 +1795,7 @@ inline BoundedMarginalResult bounded_marginal_source(
 
   // d_rho: the marginal source depends on rho through z_cp = -mu2/(rho*sigma2),
   // sigma_cond = sigma2*sqrt(1-rho^2) (so dzs/drho = zs * rho/(1-rho^2)), and the
-  // binormal_cdf terms (direct r.d_rho + chain through z_cp). Dropping this term
-  // halves/biases the rho gradient for bounded DP (item-recollected component).
+  // binormal_cdf terms (direct r.d_rho + chain through z_cp).
   double dz_cp_drho = mu2 / (rho * rho * sigma2);
   double zs_rho_factor = rho / (1.0 - rho * rho);
   double dp_below_det_drho = phi_zcp * dz_cp_drho;
@@ -1923,7 +1900,7 @@ inline BivariateDpResult bounded_bivariate_dp_cell(
   double p2 = R_I_eff * (1.0 - R_S_eff) * bm.p;
 
   double p3 = 0.0;
-  // Recollection success cells (new convention): Source A items at the low
+  // Recollection success cells: Source A items at the low
   // end of the source axis (y2 = 1, "sure A"); Source B items at the high
   // end (y2 = K2, "sure B").
   bool is_corner = (item_type == 2 && y2 == 1) || (item_type == 3 && y2 == K2);

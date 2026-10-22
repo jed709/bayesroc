@@ -605,7 +605,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     )
   )
 
-  # matrices go through jsonlite's own row-major encoding (a list of rows takes seconds)
+  # matrices go through jsonlite's own row-major encoding, which is much faster than a list of rows
   jsonlite::write_json(fit_args, config_file, auto_unbox = TRUE,
                        digits = 17, null = "null")
 

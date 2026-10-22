@@ -2975,7 +2975,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2):
 _fused_cache = {}
 
 
-# --- Vectorized fused wrappers for new families ---
+# --- Vectorized fused wrappers ---
 
 def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
                          lambda_val, sigma_item, sigma_S,
@@ -3920,7 +3920,7 @@ def _rkg_knob(config):
     if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
         return None
     # fixed-effects bounds only: with random effects on the thresholds or criteria the bound
-    # couples every effect through a max over trials and sampling collapses (measured)
+    # couples every effect through a max over trials and sampling collapses
     if any(rc.get("param") in ("criterion", "rec_crit", "know_crit") for rc in config.get("random_effects") or []):
         return None
     pconf = config.get("params", {}).get("know_crit")
