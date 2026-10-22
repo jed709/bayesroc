@@ -206,3 +206,16 @@ test_that("resume refuses a fit made on a different model or data", {
   expect_error(fit_broc(m2, iter_sampling = 100, resume = f1, progress_bar = FALSE), "different model or data")
   expect_identical(.model_fingerprint(m), attr(f1, "model_fingerprint"))
 })
+
+test_that("auto monitors the ordered mixture gap through its log-scale sampler column", {
+  skip_if_no_jax()
+  set.seed(2)
+  d <- expand.grid(participant = factor(1:10), words = factor(1:24))
+  d$is_old <- as.integer((as.integer(d$words) + as.integer(d$participant)) %% 2 == 0)
+  d$conf <- sample(1:6, nrow(d), TRUE)
+  m <- broc(brf(conf | is_old ~ 1 + (1 | participant), lambda ~ 1, dprime2 ~ 1, family = mixture()), d)
+  f <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_sampling = "auto", chains = 2, parallel_chains = 2,
+                control = list(max_draws = 1000), progress_bar = FALSE)
+  expect_true("dprime_order_gap" %in% f$metadata()$variables)
+  expect_true(all(f$draws(variables = "dprime_order_gap") > 0))
+})

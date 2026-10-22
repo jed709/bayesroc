@@ -67,6 +67,7 @@
     s <- as.integer(unlist(shapes[[k]]))
     n <- if (length(s)) prod(s) else 1L
     ids <- off + seq_len(n)
+    if (k == "dprime_order_loggap") ids <- log(ids)
     samples[[k]] <- if (!length(s)) array(ids, c(1L, 1L))
                     else if (length(s) == 1L) array(ids, c(1L, 1L, s))
                     else array(aperm(array(ids, rev(s)), rev(seq_along(s))), c(1L, 1L, s))
@@ -74,7 +75,9 @@
   }
   a <- .as_iter_chain_var(samples, model, 1L, 1L)
   v <- .monitored(dimnames(a)[[3]])
-  list(cols = as.integer(a[1, 1, v]) - 1L, names = v, classes = .ess_class(v))
+  cols <- round(as.numeric(a[1, 1, v]))
+  if (anyNA(cols)) stop("Internal error: no sampler column for ", paste(v[is.na(cols)], collapse = ", "), call. = FALSE)
+  list(cols = as.integer(cols) - 1L, names = v, classes = .ess_class(v))
 }
 
 .model_fingerprint <- function(model) {
