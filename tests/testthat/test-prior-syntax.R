@@ -121,3 +121,10 @@ test_that("JAX SD priors are their distribution restricted to positive values, a
     expect_true(r$positive, label = p)
   }
 })
+
+test_that("messages about unused priors use the dpar spelling the user gave", {
+  d <- .fixture_bivariate_cumulative()
+  expect_message(broc(brf(resp(y1, y2) ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()), d,
+                      priors = broc_prior("normal(0, 2)", class = "b", dpar = "cutpoints2")),
+                 "dpar = \"cutpoints2\"", fixed = TRUE)
+})

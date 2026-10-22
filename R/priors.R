@@ -116,6 +116,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
            paste(valid_dpars, collapse = ", "))
     }
 
+    dpar_input <- dpar
     if (dpar == "mu" || dpar == "mu1") dpar <- "dprime"
     if (dpar == "mu2") dpar <- "discrim"
     if (dpar == "cutpoints") dpar <- "criterion"
@@ -148,6 +149,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
       prior = prior,
       class = class,
       dpar = dpar,
+      dpar_input = if (!is.null(dpar)) dpar_input,
       coef = coef,
       group = group,
       distribution = prior_info$distribution,
@@ -1273,7 +1275,7 @@ print.broc_prior_table <- function(x, ...) {
     if (is.null(all_tab)) all_tab <- get_broc_prior(model)
     cand <- all_tab[all_tab$class == p$class & (is.null(p$dpar) | all_tab$dpar == (p$dpar %||% "")), , drop = FALSE]
     spec <- paste0("class = \"", p$class, "\"",
-                   if (!is.null(p$dpar)) paste0(", dpar = \"", p$dpar, "\""),
+                   if (!is.null(p$dpar)) paste0(", dpar = \"", p$dpar_input %||% p$dpar, "\""),
                    if (!is.null(p$coef)) paste0(", coef = \"", p$coef, "\""),
                    if (!is.null(p$group)) paste0(", group = \"", p$group, "\""))
     if (!nrow(cand)) {
