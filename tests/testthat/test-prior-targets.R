@@ -132,6 +132,8 @@ test_that("source-axis defaults centre on the new-item baseline and follow the A
   bdB <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime_B ~ 1, discrim ~ 1, rho ~ 1, lambda ~ 1, lambda2 ~ 1,
                                    criterion ~ 1, criterion2 ~ 1, family = bivariate_dp()), d))
   expect_equal(pr(bdB, "dprime_B"), pr(bdB, "dprime"))
+  expect_equal(pr(bdB, "dprime"), "normal(1, 0.75)")
+  expect_equal(pr(vr, "dprime"), "normal(1, 0.75)")
   odd <- suppressMessages(broc(brf(resp(det, src3) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
                                    family = bivariate_gaussian()), d))
   expect_equal(pr(odd, "thresh_mid2"), "normal(-0.5, 0.75)")
@@ -238,3 +240,20 @@ test_that("default priors follow the link rule: RE SDs by parameter link, latent
   ub <- bv(bivariate_gaussian(), priors = broc_prior("normal(0, 0.3)", class = "b", dpar = "rho"))
   expect_equal(unname(ub[c("b rho", "sd rho")]), c("normal(0, 0.3)", "normal(0, 0.5)"))
 })
+
+test_that("dual-process component d' defaults: mixture low state, cdp recollection and familiarity", {
+  set.seed(4)
+  n <- 240
+  d <- data.frame(old = rep(0:1, n / 2), conf = sample(1:4, n, TRUE))
+  d$rk <- ifelse(d$conf >= 2, sample(1:2, n, TRUE), NA)
+  pr <- function(m, dp) { t <- get_broc_prior(m); t$prior[t$dpar == dp & t$class == "b"][1] }
+  mx <- suppressMessages(broc(brf(conf | old ~ 1, dprime2 ~ 1, lambda ~ 1, criterion ~ 1, family = mixture()), d))
+  expect_equal(pr(mx, "dprime2"), "normal(0.5, 0.5)")
+  expect_equal(pr(mx, "dprime"), "normal(1.5, 0.75)")
+  cd <- suppressMessages(broc(brf(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1, sigma_R ~ 1,
+                                  family = cdp(old_levels = 2:4)), d))
+  expect_equal(pr(cd, "rec"), "normal(1, 0.75)")
+  expect_equal(pr(cd, "fam"), "normal(1, 0.75)")
+  expect_equal(pr(cd, "sigma_R"), "normal(0, 0.5)")
+})
+
