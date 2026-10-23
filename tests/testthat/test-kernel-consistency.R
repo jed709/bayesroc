@@ -51,7 +51,7 @@ test_that("f32 mode agrees with f64 to single-precision rounding", {
   expect_lt(res$rel_err$probit_diff, 1e-4, label = "f32 probit cells vs f64 (single-precision cancellation)")
 })
 
-test_that("bivariate normal rectangle and CDF are accurate at every |rho| including 0.9, 0.99 and 0.999 and in the far tails, native and JAX paths agree", {
+test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0.9 to 0.99999 and in the far tails, native and JAX paths agree", {
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()
   res <- .run_py_check("bvn_check.py", c(lib,
@@ -62,6 +62,7 @@ test_that("bivariate normal rectangle and CDF are accurate at every |rho| includ
   expect_lt(res$rect_rel_err, 1e-6)
   expect_lt(res$hi_rho_rect_rel_err, 1e-6)
   expect_lt(res$hi_rho_cdf_abs_err, 1e-9)
+  expect_lt(res$hi_rho_point_abs_err, 5e-10)
   expect_lt(res$hi_rho_tail_rel_err, 1e-8)
   expect_lt(res$hi_rho_tail_rel_err_999, 1e-5)
   expect_lt(res$hi_rho_ffi_vs_jax, 1e-8)

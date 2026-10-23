@@ -960,6 +960,12 @@ inline CdpStripResult cdp_strip_upper(double z_cR, double z_lo, double z_hi, dou
   return {std::fmax(r.p, kPFloor), r.d1l, r.d2l, r.d2h, r.drho};
 }
 
+inline CdpStripResult cdp_strip_lower(double z_cR, double z_lo, double z_hi, double rho) {
+  const double inf = std::numeric_limits<double>::infinity();
+  bvn_tail::Rect r = bvn_tail::rect_full(-inf, z_cR, z_lo, z_hi, rho, dw_cache());
+  return {std::fmax(r.p, kPFloor), r.d1h, r.d2l, r.d2h, r.drho};
+}
+
 inline CdpStripResult cdp_strip_upper_lo_edge(double z_cR, double z_hi, double rho) {
   return cdp_strip_upper(z_cR, -std::numeric_limits<double>::infinity(), z_hi, rho);
 }
@@ -1047,20 +1053,12 @@ inline CdpResult cdp_rk_cell(
     d_prob_dzlo = -phi_lo;
     d_prob_dzhi = phi_hi;
   } else {
-    CdpStripResult strip = cdp_strip_upper(z_cR, z_lo, z_hi, rho);
-    if (rk_n == 1) {
-      prob = strip.p;
-      d_prob_dzcR = strip.d_z_cR;
-      d_prob_dzlo = strip.d_z_lo;
-      d_prob_dzhi = strip.d_z_hi;
-      d_prob_drho = strip.d_rho;
-    } else {
-      prob = p_band - strip.p;
-      d_prob_dzlo = -phi_lo - strip.d_z_lo;
-      d_prob_dzhi = phi_hi - strip.d_z_hi;
-      d_prob_dzcR = -strip.d_z_cR;
-      d_prob_drho = -strip.d_rho;
-    }
+    CdpStripResult strip = rk_n == 1 ? cdp_strip_upper(z_cR, z_lo, z_hi, rho) : cdp_strip_lower(z_cR, z_lo, z_hi, rho);
+    prob = strip.p;
+    d_prob_dzcR = strip.d_z_cR;
+    d_prob_dzlo = strip.d_z_lo;
+    d_prob_dzhi = strip.d_z_hi;
+    d_prob_drho = strip.d_rho;
   }
   if (is_lo_edge) d_prob_dzlo = 0.0;
   if (is_hi_edge) d_prob_dzhi = 0.0;

@@ -534,10 +534,10 @@ def _asin(x):
     return jnp.sign(x) * jnp.where(a > 0.625, big, small)
 
 
-_DW_RULES = {m: np.polynomial.legendre.leggauss(m) for m in (8, 10, 12, 14, 16, 20, 28, 32, 48)}
+_DW_RULES = {m: np.polynomial.legendre.leggauss(m) for m in (8, 10, 12, 14, 16, 20, 28, 32, 40, 48, 64, 80, 96, 128)}
 _RHO_MAX = 0.999999
-_DW_TIER_EDGES = (0.7, 0.85, 0.9, 0.925, 0.97, 0.98, 0.995, 0.999)
-_DW_TIER_NODES = (8, 10, 12, 14, 16, 20, 28, 32, 48)
+_DW_TIER_EDGES = (0.7, 0.85, 0.9, 0.925, 0.97, 0.98, 0.995, 0.997, 0.9988, 0.9995, 0.9998, 0.99995, 0.99999)
+_DW_TIER_NODES = (8, 10, 12, 14, 16, 20, 28, 32, 40, 48, 64, 80, 96, 128)
 
 
 def _dw_nodes(rho, m):
