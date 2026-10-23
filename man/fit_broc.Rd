@@ -16,6 +16,7 @@ fit_broc(
   init = 0,
   refresh = 100,
   threads_per_chain = NULL,
+  total_cores = NULL,
   backend = c("stan", "jax"),
   python = NULL,
   progress_bar = TRUE,
@@ -91,6 +92,15 @@ U(-x, x) initialization radius; or a function or list of per-chain init lists.}
 \item{threads_per_chain}{Number of threads per chain for within-chain parallelism
 via \code{reduce_sum} (Stan backend). When greater than 1 the model is compiled with
 a \code{reduce_sum} likelihood; \code{NULL} (default) or 1 runs each chain on one thread.}
+
+\item{total_cores}{JAX backend: the number of logical CPUs the whole fit may use,
+shared by all its chains. \code{NULL} (default) uses every CPU. The fit is restricted to
+the most performant CPUs first (P-cores before E-cores on hybrid processors, one
+logical CPU per physical core before a second hyperthread). JAX gives no control
+over the threads of each chain, so this limits the fit as a whole, through the
+process's CPU affinity; the draws are the same whatever the limit. Supported on
+Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
+fit uses every CPU, with a warning.}
 
 \item{backend}{Inference backend: \code{"stan"} (default, via cmdstanr) or \code{"jax"}
 (via NumPyro). The JAX backend requires a configured Python environment

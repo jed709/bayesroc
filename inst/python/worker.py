@@ -62,6 +62,14 @@ def _warnings(ef, sampler, max_treedepth):
     return out
 
 
+def _limit_cpus(n, announce):
+    """Apply fit_broc(total_cores =) to this process, or restore every CPU when it is NULL."""
+    import cpus
+    chosen = cpus.limit(n)
+    if n is not None and chosen is not None and announce:
+        print(f"[bayesroc worker] limited to {len(chosen)} logical CPUs: {','.join(map(str, chosen))}", flush=True)
+
+
 def run_one(config_path, out_dir):
     from numpyro_backend import fit_model
 
@@ -69,7 +77,8 @@ def run_one(config_path, out_dir):
         args = json.load(fh)
     config = args["config"]
     _convert_matrices(config)
-    kw = args["fit_kwargs"]
+    kw = dict(args["fit_kwargs"])
+    _limit_cpus(kw.pop("total_cores", None), kw.get("progress_bar", True))
     result = fit_model(config=config, **kw)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -99,6 +108,7 @@ def run_auto(op, args_path, out_dir, held, token):
     os.makedirs(out_dir, exist_ok=True)
     if op == "auto_start":
         from numpyro_backend import sdt_model
+        _limit_cpus(args["kwargs"].get("total_cores"), args["kwargs"].get("progress_bar", True))
         config = args["config"]
         _convert_matrices(config)
         old = held.pop(("auto", token), None)

@@ -556,7 +556,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
                     sampler = "nuts", control = list(), save_loglik = TRUE,
                     chain_method = "parallel", python = NULL,
                     progress_bar = TRUE, loglik_precision = "f32",
-                    keep_re = FALSE, save_state = TRUE, init_values = NULL) {
+                    keep_re = FALSE, save_state = TRUE, init_values = NULL, total_cores = NULL) {
 
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
     stop("Package 'jsonlite' is required for the JAX backend.")
@@ -601,7 +601,8 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
       save_loglik = isTRUE(save_loglik),
       keep_re = isTRUE(keep_re),
       save_state = isTRUE(save_state),
-      init_values = init_values
+      init_values = init_values,
+      total_cores = total_cores
     )
   )
 

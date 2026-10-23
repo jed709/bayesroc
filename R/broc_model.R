@@ -2131,6 +2131,26 @@ get_numpyro_config <- function(x, json = FALSE) {
   structure(as.character(js), class = "json")
 }
 
+.check_total_cores <- function(total_cores) {
+  if (is.null(total_cores)) return(NULL)
+  n <- parallel::detectCores(logical = TRUE)
+  if (!is.numeric(total_cores) || length(total_cores) != 1L || is.na(total_cores) ||
+      total_cores < 1 || total_cores != round(total_cores)) {
+    stop("`total_cores` must be NULL or a whole number of logical CPUs.", call. = FALSE)
+  }
+  if (!is.na(n) && total_cores > n) {
+    stop(sprintf("`total_cores = %d` exceeds the %d logical CPUs of this machine.", as.integer(total_cores), n),
+         call. = FALSE)
+  }
+  if (identical(Sys.info()[["sysname"]], "Darwin")) {
+    warning("macOS cannot restrict a process to a set of CPUs; `total_cores` is ignored and the fit uses every CPU.",
+            call. = FALSE)
+    return(NULL)
+  }
+  as.integer(total_cores)
+}
+
+
 #' Compile and Fit a Bayesian ROC Model
 #'
 #' Takes a `broc_model` object (from [broc()]) and runs MCMC sampling via
@@ -2184,6 +2204,14 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param threads_per_chain Number of threads per chain for within-chain parallelism
 #'   via `reduce_sum` (Stan backend). When greater than 1 the model is compiled with
 #'   a `reduce_sum` likelihood; `NULL` (default) or 1 runs each chain on one thread.
+#' @param total_cores JAX backend: the number of logical CPUs the whole fit may use,
+#'   shared by all its chains. `NULL` (default) uses every CPU. The fit is restricted to
+#'   the most performant CPUs first (P-cores before E-cores on hybrid processors, one
+#'   logical CPU per physical core before a second hyperthread). JAX gives no control
+#'   over the threads of each chain, so this limits the fit as a whole, through the
+#'   process's CPU affinity; the draws are the same whatever the limit. Supported on
+#'   Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
+#'   fit uses every CPU, with a warning.
 #' @param backend Inference backend: `"stan"` (default, via cmdstanr) or `"jax"`
 #'   (via NumPyro). The JAX backend requires a configured Python environment
 #'   (see [install_jax_backend()]). It caches compiled XLA programs under
@@ -2312,6 +2340,7 @@ fit_broc <- function(model,
                     init = 0,
                     refresh = 100,
                     threads_per_chain = NULL,
+                    total_cores = NULL,
                     backend = c("stan", "jax"),
                     python = NULL,
                     progress_bar = TRUE,
@@ -2481,6 +2510,7 @@ fit_broc <- function(model,
 
   if (backend == "jax") {
     # ---- JAX/NumPyro backend ----
+    total_cores <- .check_total_cores(total_cores)
     if (length(list(...)) > 0) {
       warning("Arguments in `...` are forwarded to cmdstanr (Stan backend) only ",
               "and are ignored by the JAX backend.", call. = FALSE)
@@ -2496,7 +2526,7 @@ fit_broc <- function(model,
                        save_loglik = save_loglik || isTRUE(loo),
                        loglik_precision = loglik_precision, keep_re = keep_re,
                        adapt_delta = adapt_delta, max_treedepth = max_treedepth,
-                       step_size = step_size, resume = resume)
+                       step_size = step_size, resume = resume, total_cores = total_cores)
       return(.save_if_requested(.finalise_loglik(fit, loo = loo, loo_cores = loo_cores,
                                                  save_loglik = save_loglik,
                                                  state_path = fit$.state_path)))
@@ -2522,7 +2552,8 @@ fit_broc <- function(model,
       loglik_precision = loglik_precision,
       keep_re = keep_re,
       init_values = init_values_jax,
-      save_state = TRUE
+      save_state = TRUE,
+      total_cores = total_cores
     )
     elapsed <- as.numeric(proc.time()["elapsed"] - t0)
 
@@ -2561,6 +2592,10 @@ fit_broc <- function(model,
   # ---- Stan backend (default) ----
   if (!requireNamespace("cmdstanr", quietly = TRUE)) {
     stop("Package 'cmdstanr' is required.")
+  }
+  if (!is.null(total_cores)) {
+    warning("`total_cores` applies to the JAX backend; with backend = \"stan\" use `parallel_chains` and ",
+            "`threads_per_chain`.", call. = FALSE)
   }
 
   t0 <- proc.time()["elapsed"]

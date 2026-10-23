@@ -223,7 +223,7 @@
 .fit_auto <- function(model, chains, chain_method, iter_warmup, sampler, ctrl, auto, fixed_draws,
                       thin, init, init_strategy, init_values, python, progress_bar, seed,
                       save_loglik, loglik_precision, keep_re, adapt_delta, max_treedepth,
-                      step_size, resume) {
+                      step_size, resume, total_cores = NULL) {
   rs <- if (!is.null(resume)) .resume_info(resume, model, sampler, chains) else NULL
   if (!is.null(rs) && save_loglik &&
       (is.null(rs$fit$.loglik_path) || !file.exists(rs$fit$.loglik_path))) {
@@ -286,7 +286,7 @@
     init_radius = if (is.numeric(init) && length(init) == 1L) as.numeric(init) else 2.0,
     init_values = init_values,
     resume_state = if (is.null(rs)) NULL else normalizePath(rs$fit$.state_path, winslash = "/"),
-    t0 = T0, stride = stride0, totals = rs$totals)
+    t0 = T0, stride = stride0, totals = rs$totals, total_cores = total_cores)
   jsonlite::write_json(list(config = cfg, kwargs = kwargs), file.path(work, "start.json"),
                        auto_unbox = TRUE, digits = 17, null = "null")
   req_n <- req_n + 1L
