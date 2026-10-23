@@ -45,10 +45,10 @@ def check(f, args, cont_idx, seed=0):
             "finite": bool(np.all(np.isfinite(plain)))}
 
 
-def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4)):
+def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4), corr=False):
     rng = np.random.default_rng(seed)
     n_gaps = J - 1
-    f = nb._make_fused_batch_cdp_loglik(J + 5, J, False, n_rkg=n_rkg)
+    f = nb._make_fused_batch_cdp_loglik(J + 5, J, False, n_rkg=n_rkg, has_corr=corr)
     is_old_resp = rng.integers(0, 2, N).astype(np.float64)
     args = [
         jnp.asarray(rng.integers(1, J + 6, N), dtype=jnp.int32),
@@ -62,10 +62,11 @@ def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4)):
         jnp.asarray(rng.uniform(0.6, 1.4, N)),
         jnp.asarray(rng.normal(crit[0], 0.3, N)),
         jnp.asarray(rng.normal(crit[1], 0.3, N)),
+        jnp.asarray(rng.uniform(-0.6, 0.6, N) if corr else np.zeros(N)),
         jnp.asarray(rng.normal(0.3, 0.2, N)),
         jnp.asarray(rng.normal(-0.5, 0.2, (N, n_gaps))),
     ]
-    return f, args, list(range(5, 13))
+    return f, args, [i for i in range(5, 14) if corr or i != 11]
 
 
 def _u(rng, lo, hi, N):
@@ -127,6 +128,9 @@ CASES = {
     "cdp_rk": lambda: cdp_case(2),
     "cdp_rkg": lambda: cdp_case(3),
     "cdp_rkg_tail": lambda: cdp_case(3, crit=(4.0, 3.5)),
+    "cdp_rk_corr": lambda: cdp_case(2, corr=True),
+    "cdp_rkg_corr": lambda: cdp_case(3, corr=True),
+    "cdp_rkg_tail_corr": lambda: cdp_case(3, crit=(4.0, 3.5), corr=True),
 }
 for _k in ("simple", "dpsdt", "mixture", "source_mixture"):
     for _l in ("probit", "logit", "cloglog"):

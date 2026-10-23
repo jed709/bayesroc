@@ -262,22 +262,24 @@
     return log_sum_exp(vals[1:nv]);
   }
 
-  real cdp_log_cell(int kind, real muR, real sR, real muF, real sF, real cR, real cK, real tlo, real thi) {
-    real B = -sR / sF;
+  real cdp_log_cell(int kind, real muR, real sR, real muF, real sF, real cR, real cK, real tlo, real thi, real corr) {
+    real sc = sF * sqrt((1 - corr) * (1 + corr));
+    real B = -(sR + corr * sF) / sc;
+    real BK = -corr * sF / sc;
     real xcR = (cR - muR) / sR;
     real xkh = is_inf(thi) ? positive_infinity() : (thi - cK - muR) / sR;
     real xkl = is_inf(tlo) ? negative_infinity() : (tlo - cK - muR) / sR;
-    real Alo = is_inf(tlo) ? negative_infinity() : (tlo - muR - muF) / sF;
+    real Alo = is_inf(tlo) ? negative_infinity() : (tlo - muR - muF) / sc;
     real Blo = is_inf(tlo) ? 0 : B;
-    real Ahi = is_inf(thi) ? positive_infinity() : (thi - muR - muF) / sF;
+    real Ahi = is_inf(thi) ? positive_infinity() : (thi - muR - muF) / sc;
     real Bhi = is_inf(thi) ? 0 : B;
-    real AK = (cK - muF) / sF;
+    real AK = (cK - muF) / sc;
     if (kind == 1) return bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, xcR, positive_infinity());
-    if (kind == 3) return log_sum_exp(bvn_log_lin_integral(Alo, Blo, AK, 0, xkl, fmin(xkh, xcR)),
+    if (kind == 3) return log_sum_exp(bvn_log_lin_integral(Alo, Blo, AK, BK, xkl, fmin(xkh, xcR)),
                                       bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, fmax(xkh, xkl), xcR));
     real ub = fmin(xcR, xkh);
     return log_sum_exp(bvn_log_lin_integral(Alo, Blo, Ahi, Bhi, negative_infinity(), fmin(xkl, ub)),
-                       bvn_log_lin_integral(AK, 0, Ahi, Bhi, xkl, ub));
+                       bvn_log_lin_integral(AK, BK, Ahi, Bhi, xkl, ub));
   }
 
   real bvn_rect(real a1, real b1, real a2, real b2, real rho_in) {
@@ -994,17 +996,22 @@
       lines <- c(lines, '
   // G(c) = P(R <= c_R, F <= c_K, M < c) -- unified formula (Guess-first approach)
   // Uses fmin for exact min (no smooth approximation needed)
+  // P(R <= value at z_a, F <= c_K): a product for independent R and F, else Phi2 with corr
+  real cdp_lower_quadrant(real z_a, real z_cK, real corr) {
+    return corr == 0 ? Phi(z_a) * Phi(z_cK) : binormal_cdf_cdp(z_a, z_cK, corr);
+  }
+
   real G_cdp(real c, real mu_R, real sigma_R, real mu_F, real sigma_F,
-             real c_R, real c_K) {
+             real c_R, real c_K, real corr) {
     real s = fmin(c_R, c - c_K);
     real z_s = (s - mu_R) / sigma_R;
     real z_cR = (c_R - mu_R) / sigma_R;
     real z_cK = (c_K - mu_F) / sigma_F;
     real mu_M = mu_R + mu_F;
-    real sigma_M = sqrt(square(sigma_R) + square(sigma_F));
+    real sigma_M = sqrt(square(sigma_R) + square(sigma_F) + 2 * corr * sigma_R * sigma_F);
     real z_c = bvn_std(c, mu_M, sigma_M);
-    real rho = sigma_R / sigma_M;
-    return Phi(z_s) * Phi(z_cK) + binormal_cdf_cdp(z_cR, z_c, rho)
+    real rho = (sigma_R + corr * sigma_F) / sigma_M;
+    return cdp_lower_quadrant(z_s, z_cK, corr) + binormal_cdf_cdp(z_cR, z_c, rho)
            - binormal_cdf_cdp(z_s, z_c, rho);
   }
 
@@ -1012,11 +1019,11 @@
   // Shares binormal CDF values between Remember and Guess to avoid
   // redundant Owen T evaluations.
   vector compute_rkg_probs(real mu_R, real sigma_R, real mu_F, real sigma_F,
-                           real c_R, real c_K, real tau_lo, real tau_hi) {
+                           real c_R, real c_K, real tau_lo, real tau_hi, real corr) {
     vector[3] probs;
     real mu_M = mu_R + mu_F;
-    real sigma_M = sqrt(square(sigma_R) + square(sigma_F));
-    real rho = sigma_R / sigma_M;
+    real sigma_M = sqrt(square(sigma_R) + square(sigma_F) + 2 * corr * sigma_R * sigma_F);
+    real rho = (sigma_R + corr * sigma_F) / sigma_M;
     real z_cR = (c_R - mu_R) / sigma_R;
     real z_cK_F = (c_K - mu_F) / sigma_F;
 
@@ -1038,19 +1045,19 @@
     real z_s_hi = (s_hi - mu_R) / sigma_R;
     real G_hi;
     if (c_R <= tau_hi - c_K) {
-      G_hi = Phi(z_cR) * Phi(z_cK_F);
+      G_hi = cdp_lower_quadrant(z_cR, z_cK_F, corr);
     } else {
-      G_hi = Phi(z_s_hi) * Phi(z_cK_F) + bv_cR_hi - binormal_cdf_cdp(z_s_hi, z_hi, rho);
+      G_hi = cdp_lower_quadrant(z_s_hi, z_cK_F, corr) + bv_cR_hi - binormal_cdf_cdp(z_s_hi, z_hi, rho);
     }
 
     real G_lo;
     if (is_inf(tau_lo)) {
       G_lo = 0;
     } else if (c_R <= tau_lo - c_K) {
-      G_lo = Phi(z_cR) * Phi(z_cK_F);
+      G_lo = cdp_lower_quadrant(z_cR, z_cK_F, corr);
     } else {
       real z_s_lo = (tau_lo - c_K - mu_R) / sigma_R;
-      G_lo = Phi(z_s_lo) * Phi(z_cK_F) + bv_cR_lo - binormal_cdf_cdp(z_s_lo, z_lo, rho);
+      G_lo = cdp_lower_quadrant(z_s_lo, z_cK_F, corr) + bv_cR_lo - binormal_cdf_cdp(z_s_lo, z_lo, rho);
     }
 
     real p_Guess = G_hi - G_lo;
@@ -1061,9 +1068,9 @@
 
     probs[1] = p_Remember;
     probs[2] = p_Know >= 1e-6 ? p_Know
-      : exp(cdp_log_cell(2, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi));
+      : exp(cdp_log_cell(2, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr));
     probs[3] = p_Guess >= 1e-6 ? p_Guess
-      : exp(cdp_log_cell(3, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi));
+      : exp(cdp_log_cell(3, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr));
     return probs;
   }')
     }
@@ -1856,6 +1863,17 @@ generate_cdp_likelihood_code <- function(model_data) {
     lines <- c(lines, generate_param_lp("know_crit", model_data$know_crit_fixed, model_data$know_crit_random, model_data$smooth_data[["know_crit"]]))
     lines <- c(lines, "    real c_K = know_crit_n;")
   }
+  target_corr <- "0"
+  if (isTRUE(model_data$has_rho)) {
+    lines <- c(lines, generate_param_lp("rho", model_data$rho_fixed, model_data$rho_random, model_data$smooth_data[["rho"]]))
+    target_corr <- "tanh(rho_n)"
+  }
+  lure_corr <- if (isTRUE(model_data$cdp_rho_shared)) target_corr else "0"
+  if (isTRUE(model_data$has_rho_N)) {
+    lines <- c(lines, generate_param_lp("rho_N", model_data$rho_N_fixed, model_data$rho_N_random, model_data$smooth_data[["rho_N"]]))
+    lure_corr <- "tanh(rho_N_n)"
+  }
+  lines <- c(lines, sprintf("    real corr = (is_old[n] == 1) ? %s : %s;", target_corr, lure_corr))
 
   lines <- c(lines, "",
              "    // Derived CDP parameters",
@@ -1891,20 +1909,20 @@ generate_cdp_likelihood_code <- function(model_data) {
              "    real mF = (is_old[n] == 1) ? mu_F : 0;",
              "    real sF = (is_old[n] == 1) ? sigma_F : 1;",
              "    real mM = mR + mF;",
-             "    real sM = sqrt(square(sR) + square(sF));",
+             "    real sM = sqrt(square(sR) + square(sF) + 2 * corr * sR * sF);",
              "    real z_tau_lo = bvn_std(tau_lo, mM, sM);",
              "    real z_tau_hi = bvn_std(tau_hi, mM, sM);",
              "    if (rk[n] == 0) {",
              "      ll = bvn_log_interval(z_tau_lo, z_tau_hi);",
              if (isTRUE(n_rkg == 3)) c(
              "    } else {",
-             "      vector[3] rkg = compute_rkg_probs(mR, sR, mF, sF, c_R, c_K, tau_lo, tau_hi);",
+             "      vector[3] rkg = compute_rkg_probs(mR, sR, mF, sF, c_R, c_K, tau_lo, tau_hi, corr);",
              "      ll = log(fmax(rkg[rk[n]], 1e-300));",
              "    }") else c(
              "    } else if (rk[n] == 1) {",
-             "      ll = log(binormal_strip_upper((c_R - mR) / sR, z_tau_lo, z_tau_hi, sR / sM));",
+             "      ll = log(binormal_strip_upper((c_R - mR) / sR, z_tau_lo, z_tau_hi, (sR + corr * sF) / sM));",
              "    } else {",
-             "      ll = log(binormal_strip_lower((c_R - mR) / sR, z_tau_lo, z_tau_hi, sR / sM));",
+             "      ll = log(binormal_strip_lower((c_R - mR) / sR, z_tau_lo, z_tau_hi, (sR + corr * sF) / sM));",
              "    }"))
 
   lines <- c(lines,

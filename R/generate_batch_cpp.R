@@ -178,7 +178,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if (is_bivariate && isTRUE(model_data$has_rho)) {
+  if ((is_bivariate || is_cdp) && isTRUE(model_data$has_rho)) {
     params[["rho"]] <- list(
       fixed  = model_data$rho_fixed,
       random = model_data$rho_random,
@@ -194,7 +194,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if (is_bivariate && isTRUE(model_data$has_rho_N)) {
+  if ((is_bivariate || is_cdp) && isTRUE(model_data$has_rho_N)) {
     params[["rho_N"]] <- list(
       fixed  = model_data$rho_N_fixed,
       random = model_data$rho_N_random,
@@ -279,9 +279,10 @@ collect_batch_params <- function(model_data, family_name) {
   params[[".has_discrim_B"]] <- isTRUE(model_data$has_discrim_B) && (family_name == "vrdp2d" || is_bivariate)
   params[[".has_sigma_B"]]  <- isTRUE(model_data$has_sigma_B) && is_bivariate
   params[[".has_sigma2_B"]] <- isTRUE(model_data$has_sigma2_B) && is_bivariate
-  params[[".has_rho"]]      <- isTRUE(model_data$has_rho) && is_bivariate
+  params[[".has_rho"]]      <- isTRUE(model_data$has_rho) && (is_bivariate || is_cdp)
   params[[".has_rho_B"]]    <- isTRUE(model_data$has_rho_B) && is_bivariate
-  params[[".has_rho_N"]]    <- isTRUE(model_data$has_rho_N) && is_bivariate
+  params[[".has_rho_N"]]    <- isTRUE(model_data$has_rho_N) && (is_bivariate || is_cdp)
+  params[[".cdp_rho_shared"]] <- is_cdp && isTRUE(model_data$cdp_rho_shared)
   params[[".has_lambda2"]]  <- isTRUE(model_data$has_lambda2) && family_name == "bivariate_dp"
   params[[".has_lambda2_B"]] <- isTRUE(model_data$has_lambda2_B) && family_name == "bivariate_dp"
   params[[".is_cdp"]]       <- family_name == "cdp"
@@ -5230,6 +5231,9 @@ emit_likelihood_cdp <- function(L, params) {
 
   if (isTRUE(params[[".is_cdp"]])) {
     L$add("    double c_R_val = rec_crit_val;")
+    target_corr <- if (isTRUE(params[[".has_rho"]])) "rho_val" else "0.0"
+    lure_corr <- if (isTRUE(params[[".has_rho_N"]])) "rho_N_val" else if (isTRUE(params[[".cdp_rho_shared"]])) "rho_val" else "0.0"
+    L$add(sprintf("    double corr_n = (is_old_n > 0.5) ? %s : %s;", target_corr, lure_corr))
 
     if (isTRUE(n_rkg == 3) && has_know_crit) {
       L$add("    double c_K_val = know_crit_val;")
@@ -5238,7 +5242,7 @@ emit_likelihood_cdp <- function(L, params) {
       L$add("    auto cdp_res = batch_sdt::cdp_rkg_cell(")
       L$add("        yn, rk_n, is_old_int,")
       L$add("        mu_R_n, sigma_R_n, mu_F_n, sigma_F_n,")
-      L$add("        c_R_val, c_K_val,")
+      L$add("        c_R_val, c_K_val, corr_n,")
       L$add("        thresh_n.data(), n_thresh,")
       L$add("        old_level_map.data());")
     } else {
@@ -5247,7 +5251,7 @@ emit_likelihood_cdp <- function(L, params) {
       L$add("    auto cdp_res = batch_sdt::cdp_rk_cell(")
       L$add("        yn, rk_n, is_old_int,")
       L$add("        mu_R_n, sigma_R_n, mu_F_n, sigma_F_n,")
-      L$add("        c_R_val,")
+      L$add("        c_R_val, corr_n,")
       L$add("        thresh_n.data(), n_thresh,")
       L$add("        old_level_map.data());")
     }
@@ -5341,6 +5345,34 @@ emit_gradient_accumulation_cdp <- function(L, model_data, params, has_crit_re) {
         tag <- sig2_re_tag(sig2_re_idx)
         emit_re_gradient(L, tag, re, group, "d_sigma2_n", "sigma2", sig2_re_idx, "sig2")
       }
+    }
+  }
+
+  # ---- rho / rho_N gradient (Fisher z: d corr / d z = 1 - corr^2) ----
+  has_rho <- isTRUE(params[[".has_rho"]])
+  has_rho_N <- isTRUE(params[[".has_rho_N"]])
+  if (has_rho || has_rho_N) {
+    L$add("")
+    L$add(sprintf("    double d_corr_n = cdp_res.d_corr * (1.0 - corr_n * corr_n)%s;", count_mult))
+  }
+  if (has_rho) {
+    L$add(if (isTRUE(params[[".cdp_rho_shared"]])) "    double d_rho_n = d_corr_n;"
+          else "    double d_rho_n = (is_old_n > 0.5) ? d_corr_n : 0.0;")
+    L$add("    for (int p = 0; p < P_rho; ++p) grad_beta_rho(p) += d_rho_n * X_rho_d(n, p);")
+    rho_re_idx <- 0
+    for (group in names(params[["rho"]]$random)) {
+      rho_re_idx <- rho_re_idx + 1
+      emit_re_gradient(L, rho_re_tag(rho_re_idx), params[["rho"]]$random[[group]], group, "d_rho_n", "rho", rho_re_idx, "rho")
+    }
+  }
+  if (has_rho_N) {
+    L$add("    double d_rho_N_n = (is_old_n > 0.5) ? 0.0 : d_corr_n;")
+    L$add("    for (int p = 0; p < P_rhoN; ++p) grad_beta_rhoN(p) += d_rho_N_n * X_rhoN_d(n, p);")
+    rhoN_re_idx <- 0
+    for (group in names(params[["rho_N"]]$random)) {
+      rhoN_re_idx <- rhoN_re_idx + 1
+      emit_re_gradient(L, rhoN_re_tag(rhoN_re_idx), params[["rho_N"]]$random[[group]], group, "d_rho_N_n", "rho_N",
+                       rhoN_re_idx, "rhoN")
     }
   }
 

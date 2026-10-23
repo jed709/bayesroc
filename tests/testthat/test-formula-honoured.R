@@ -73,7 +73,9 @@ test_that("an SD prior with coef but no dpar reaches only that coefficient", {
   expect_identical(p$prior[p$coef == "x"], rep("normal(0, 0.05)", 2))
   expect_false(any(p$prior[p$coef == "(Intercept)"] == "normal(0, 0.05)"))
   expect_match(m$stan_code, "sigma_dprime_subj[2] ~ normal(0, 0.05);", fixed = TRUE)
-  expect_match(m$stan_code, "sigma_dprime_subj[1] ~ normal(0, 0.5);", fixed = TRUE)
+  default <- p$prior[p$dpar == "dprime" & p$coef == "(Intercept)"]
+  expect_identical(p$source[p$dpar == "dprime" & p$coef == "(Intercept)"], "default")
+  expect_match(m$stan_code, paste0("sigma_dprime_subj[1] ~ ", default, ";"), fixed = TRUE)
 })
 
 test_that("varying criterion2_scale: a factor keeps its reference level in every set, separate terms stay separate", {

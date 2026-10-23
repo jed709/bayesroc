@@ -977,6 +977,7 @@ struct CdpResult {
   double d_sigma;       // d_logP / d_sigma_n (log-sigma_R linear predictor)
   double d_sigma2;      // d_logP / d_sigma2_n (log-sigma_F linear predictor)
   double d_rec_crit;    // d_logP / d_rec_crit_n
+  double d_corr;        // d_logP / d corr (the item type's own recollection-familiarity correlation)
   // Threshold gradients:
   int k_lo, k_hi;       // threshold indices touched (-1 if edge)
   double d_thresh_lo;   // d_logP / d_tau[k_lo]
@@ -995,7 +996,7 @@ struct CdpResult {
 inline CdpResult cdp_rk_cell(
     int yn, int rk_n, int is_old,
     double mu_R, double sigma_R, double mu_F, double sigma_F,
-    double c_R,
+    double c_R, double corr,
     const double* tau, int J,
     const int* old_level_map) {
 
@@ -1003,7 +1004,6 @@ inline CdpResult cdp_rk_cell(
   res.k_lo = -1;
   res.k_hi = -1;
 
-  // Determine if this is an "old" response
   int old_idx = -1;
   for (int j = 0; j < J; ++j) {
     if (yn == old_level_map[j]) {
@@ -1013,25 +1013,14 @@ inline CdpResult cdp_rk_cell(
   }
   bool is_old_resp = (old_idx >= 0);
 
-  // Derived bivariate parameters
-  double mu_M, sigma_M, rho;
-  double mu_R_eff, sigma_R_eff;
-  if (is_old) {
-    mu_R_eff = mu_R;
-    sigma_R_eff = sigma_R;
-    mu_M = mu_R + mu_F;
-    sigma_M = std::sqrt(sigma_R * sigma_R + sigma_F * sigma_F);
-    rho = sigma_R / sigma_M;
-  } else {
-    // Lure: mu_R=0, sigma_R=1, mu_F=0, sigma_F=1
-    mu_R_eff = 0.0;
-    sigma_R_eff = 1.0;
-    mu_M = 0.0;
-    sigma_M = std::sqrt(2.0);
-    rho = 1.0 / std::sqrt(2.0);
-  }
+  // Lures: mu_R = mu_F = 0, sigma_R = sigma_F = 1. corr is the item type's own R-F correlation.
+  double sR = is_old ? sigma_R : 1.0, sF = is_old ? sigma_F : 1.0;
+  double mu_R_eff = is_old ? mu_R : 0.0;
+  double mu_M = is_old ? mu_R + mu_F : 0.0;
+  double sigma_M = std::sqrt(sR * sR + sF * sF + 2.0 * corr * sR * sF);
+  double rho = (sR + corr * sF) / sigma_M;
 
-  double inv_sR = 1.0 / sigma_R_eff;
+  double inv_sR = 1.0 / sR;
   double inv_sM = 1.0 / sigma_M;
   double z_cR = (c_R - mu_R_eff) * inv_sR;
 
@@ -1089,18 +1078,23 @@ inline CdpResult cdp_rk_cell(
   res.d_thresh_lo = dlp_dzlo * inv_sM;
   res.d_thresh_hi = dlp_dzhi * inv_sM;
 
+  // through sigma_M (z_lo, z_hi) and the R-M correlation rho
+  double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
+  double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
+  double dlp_dsM = zl_s + zh_s;
+  double sM3 = sigma_M * sigma_M * sigma_M;
+  res.d_corr = dlp_dsM * (sR * sF * inv_sM) + dlp_drho * (sF * inv_sM - (sR + corr * sF) * sR * sF / sM3);
+
   if (is_old) {
-    double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
-    double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
     res.d_dprime = dlp_dzcR * (-inv_sR) + (dlp_dzlo + dlp_dzhi) * (-inv_sM);
     res.d_dprime2 = (dlp_dzlo + dlp_dzhi) * (-inv_sM);
 
-    double drho_dsR = sigma_F * sigma_F / (sigma_M * sigma_M * sigma_M);
-    double dsR = dlp_dzcR * (-z_cR * inv_sR) + (zl_s + zh_s) * (sigma_R * inv_sM) + dlp_drho * drho_dsR;
+    double drho_dsR = sF * sF * (1.0 - corr * corr) / sM3;
+    double dsR = dlp_dzcR * (-z_cR * inv_sR) + dlp_dsM * ((sR + corr * sF) * inv_sM) + dlp_drho * drho_dsR;
     res.d_sigma = dsR * sigma_R;
 
-    double drho_dsF = -sigma_R * sigma_F / (sigma_M * sigma_M * sigma_M);
-    double dsF = (zl_s + zh_s) * (sigma_F * inv_sM) + dlp_drho * drho_dsF;
+    double drho_dsF = corr * inv_sM - (sR + corr * sF) * (sF + corr * sR) / sM3;
+    double dsF = dlp_dsM * ((sF + corr * sR) * inv_sM) + dlp_drho * drho_dsF;
     res.d_sigma2 = dsF * sigma_F;
   }
 
@@ -1121,10 +1115,11 @@ struct GCdpResult {
   double d_sigma_F;
   double d_c_R;
   double d_c_K;
+  double d_corr;
 };
 inline GCdpResult G_cdp_grad_reuse(
     double c, double mu_R, double sigma_R, double mu_F, double sigma_F,
-    double c_R, double c_K, const BinormalCdfResult& bv_cR);
+    double c_R, double c_K, double corr, const BinormalCdfResult& bv_cR);
 
 
 // CDP R/K/G result (n_rkg == 3) — adds know_crit gradient
@@ -1136,6 +1131,7 @@ struct CdpRkgResult {
   double d_sigma2;
   double d_rec_crit;
   double d_know_crit;
+  double d_corr;
   int k_lo, k_hi;
   double d_thresh_lo;
   double d_thresh_hi;
@@ -1159,15 +1155,12 @@ struct CdpRkgResult {
 inline CdpRkgResult cdp_rkg_cell(
     int yn, int rk_n, int is_old,
     double mu_R, double sigma_R, double mu_F, double sigma_F,
-    double c_R, double c_K,
+    double c_R, double c_K, double corr,
     const double* tau, int J,
     const int* old_level_map) {
-
   CdpRkgResult res = {};
   res.k_lo = -1;
   res.k_hi = -1;
-
-  // Determine if "old" response
   int old_idx = -1;
   for (int j = 0; j < J; ++j) {
     if (yn == old_level_map[j]) {
@@ -1176,9 +1169,7 @@ inline CdpRkgResult cdp_rkg_cell(
     }
   }
   bool is_old_resp = (old_idx >= 0);
-
-  // Effective parameters. CDP fixes lure reference to N(0, 1) on both
-  // dimensions — mu_R=0, sigma_R=1, mu_F=0, sigma_F=1 when is_old == 0.
+  // Lures: mu_R = mu_F = 0, sigma_R = sigma_F = 1. corr is the item type's own R-F correlation.
   double mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff;
   if (is_old) {
     mu_R_eff = mu_R; sigma_R_eff = sigma_R;
@@ -1187,14 +1178,13 @@ inline CdpRkgResult cdp_rkg_cell(
     mu_R_eff = 0.0; sigma_R_eff = 1.0;
     mu_F_eff = 0.0; sigma_F_eff = 1.0;
   }
-
+  double sR = sigma_R_eff, sF = sigma_F_eff;
   double mu_M = mu_R_eff + mu_F_eff;
-  double sigma_M = std::sqrt(sigma_R_eff * sigma_R_eff + sigma_F_eff * sigma_F_eff);
-  double rho_val = sigma_R_eff / sigma_M;
-  double inv_sR = 1.0 / sigma_R_eff;
+  double sigma_M = std::sqrt(sR * sR + sF * sF + 2.0 * corr * sR * sF);
+  double rho_val = (sR + corr * sF) / sigma_M;
+  double inv_sR = 1.0 / sR;
   double inv_sM = 1.0 / sigma_M;
   double z_cR = (c_R - mu_R_eff) * inv_sR;
-
   bool judged = rk_n > 0;
   bool is_lo_edge = !is_old_resp;
   bool is_hi_edge = is_old_resp && (old_idx == J - 1);
@@ -1203,14 +1193,11 @@ inline CdpRkgResult cdp_rkg_cell(
   double tau_hi_val = is_hi_edge ? bvn_tail::kInf : tau[k_hi_idx];
   double z_lo = is_lo_edge ? -bvn_tail::kInf : (tau_lo_val - mu_M) * inv_sM;
   double z_hi = is_hi_edge ? bvn_tail::kInf : (tau_hi_val - mu_M) * inv_sM;
-
   if (!is_lo_edge) res.k_lo = old_idx;
   if (!is_hi_edge) res.k_hi = k_hi_idx;
-
   double p_band = is_lo_edge ? Phi(z_hi) : (is_hi_edge ? Qn(z_lo) : Phi_diff(z_lo, z_hi));
   double phi_lo = is_lo_edge ? 0.0 : phi(z_lo);
   double phi_hi = is_hi_edge ? 0.0 : phi(z_hi);
-
   if (judged && rk_n == 3 && !is_lo_edge && c_R + c_K <= tau_lo_val) {
     res.lp = std::log(kPFloor) - kEmptySlope * (tau_lo_val - c_R - c_K);
     res.d_rec_crit = kEmptySlope;
@@ -1218,7 +1205,6 @@ inline CdpRkgResult cdp_rkg_cell(
     res.d_thresh_lo = -kEmptySlope;
     return res;
   }
-
   BinormalCdfResult bv_hi = {};
   BinormalCdfResult bv_lo = {};
   GCdpResult Ghi = {};
@@ -1228,15 +1214,15 @@ inline CdpRkgResult cdp_rkg_cell(
     bv_hi = binormal_cdf_grad(z_cR, z_hi, rho_val);
     if (!is_lo_edge) bv_lo = binormal_cdf_grad(z_cR, z_lo, rho_val);
     double p_R_raw = (is_hi_edge ? 1.0 : Phi(z_hi)) - bv_hi.val - ((is_lo_edge ? 0.0 : Phi(z_lo)) - bv_lo.val);
-    Ghi = G_cdp_grad_reuse(tau_hi_val, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff, c_R, c_K, bv_hi);
-    if (!is_lo_edge) Glo = G_cdp_grad_reuse(tau_lo_val, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff, c_R, c_K, bv_lo);
+    Ghi = G_cdp_grad_reuse(tau_hi_val, mu_R_eff, sR, mu_F_eff, sF, c_R, c_K, corr, bv_hi);
+    if (!is_lo_edge) Glo = G_cdp_grad_reuse(tau_lo_val, mu_R_eff, sR, mu_F_eff, sF, c_R, c_K, corr, bv_lo);
     double p_G_raw = Ghi.val - Glo.val;
     double p_K_raw = p_band - p_R_raw - p_G_raw;
     prob = rk_n == 1 ? p_R_raw : (rk_n == 2 ? p_K_raw : p_G_raw);
   }
   if (judged && !(prob >= bvn_tail::kTailSwitch)) {
-    bvn_tail::CdpCell t = bvn_tail::cdp_cell(rk_n, mu_R_eff, sigma_R_eff, mu_F_eff, sigma_F_eff,
-                                             c_R, c_K, tau_lo_val, tau_hi_val);
+    bvn_tail::CdpCell t = bvn_tail::cdp_cell(rk_n, mu_R_eff, sR, mu_F_eff, sF,
+                                             c_R, c_K, tau_lo_val, tau_hi_val, corr);
     double lfloor = std::log(kPFloor);
     if (!(t.lp > lfloor)) {
       res.lp = lfloor;
@@ -1253,66 +1239,62 @@ inline CdpRkgResult cdp_rkg_cell(
     res.d_know_crit = t.d[5];
     res.d_thresh_lo = is_lo_edge ? 0.0 : t.d[6];
     res.d_thresh_hi = is_hi_edge ? 0.0 : t.d[7];
+    res.d_corr = t.d[8];
     return res;
   }
   if (prob < kPFloor) prob = kPFloor;
   res.lp = std::log(prob);
-
   double inv_prob = 1.0 / prob;
   double dlp_dpR = 0.0, dlp_dpK = 0.0, dlp_dpG = 0.0, dlp_dpB = 0.0;
   if (!judged) dlp_dpB = inv_prob;
   else if (rk_n == 1) dlp_dpR = inv_prob;
   else if (rk_n == 2) dlp_dpK = inv_prob;
   else dlp_dpG = inv_prob;
-
   double eff_dpR = dlp_dpR - dlp_dpK;
   double eff_dpG = dlp_dpG - dlp_dpK;
   double eff_dpBand = dlp_dpK + dlp_dpB;
-
   double dlp_dzcR = eff_dpR * (-bv_hi.d_z1 + bv_lo.d_z1);
   double dlp_dzhi = is_hi_edge ? 0.0 : eff_dpR * (phi_hi - bv_hi.d_z2) + eff_dpBand * phi_hi;
   double dlp_dzlo = is_lo_edge ? 0.0 : eff_dpR * (-(phi_lo - bv_lo.d_z2)) + eff_dpBand * (-phi_lo);
   double dlp_drho = eff_dpR * (-bv_hi.d_rho + bv_lo.d_rho);
-
   double dG_dmuR  = Ghi.d_mu_R  - Glo.d_mu_R;
   double dG_dsigR = Ghi.d_sigma_R - Glo.d_sigma_R;
   double dG_dmuF  = Ghi.d_mu_F  - Glo.d_mu_F;
   double dG_dsigF = Ghi.d_sigma_F - Glo.d_sigma_F;
   double dG_dcR   = Ghi.d_c_R  - Glo.d_c_R;
   double dG_dcK   = Ghi.d_c_K  - Glo.d_c_K;
+  double dG_dcorr = Ghi.d_corr - Glo.d_corr;
   double dG_dtau_hi = Ghi.d_c;
   double dG_dtau_lo = Glo.d_c;
-
+  double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
+  double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
+  double dlp_dsM = zh_s + zl_s;
+  double sM3 = sigma_M * sigma_M * sigma_M;
+  res.d_corr = dlp_dsM * (sR * sF * inv_sM)
+             + dlp_drho * (sF * inv_sM - (sR + corr * sF) * sR * sF / sM3)
+             + eff_dpG * dG_dcorr;
   if (is_old) {
-    double sR_over_sM = sigma_R_eff * inv_sM;
     res.d_dprime  = dlp_dzcR * (-inv_sR)
                   + (dlp_dzlo + dlp_dzhi) * (-inv_sM)
                   + eff_dpG * dG_dmuR;
     res.d_dprime2 = (dlp_dzlo + dlp_dzhi) * (-inv_sM)
                   + eff_dpG * dG_dmuF;
-
-    double drho_dsigR = (sigma_F_eff * sigma_F_eff) / (sigma_M * sigma_M * sigma_M);
-    double zh_s = is_hi_edge ? 0.0 : dlp_dzhi * (-z_hi * inv_sM);
-    double zl_s = is_lo_edge ? 0.0 : dlp_dzlo * (-z_lo * inv_sM);
+    double drho_dsigR = sF * sF * (1.0 - corr * corr) / sM3;
     double d_sigR_raw = dlp_dzcR * (-z_cR * inv_sR)
-                      + (zh_s + zl_s) * sR_over_sM
+                      + dlp_dsM * ((sR + corr * sF) * inv_sM)
                       + dlp_drho * drho_dsigR
                       + eff_dpG * dG_dsigR;
     res.d_sigma = d_sigR_raw * sigma_R_eff;
-
-    double sF_over_sM = sigma_F_eff * inv_sM;
-    double drho_dsigF = -sigma_R_eff * sigma_F_eff / (sigma_M * sigma_M * sigma_M);
-    double d_sigF_raw = (zh_s + zl_s) * sF_over_sM
+    double drho_dsigF = corr * inv_sM - (sR + corr * sF) * (sF + corr * sR) / sM3;
+    double d_sigF_raw = dlp_dsM * ((sF + corr * sR) * inv_sM)
                       + dlp_drho * drho_dsigF
                       + eff_dpG * dG_dsigF;
     res.d_sigma2 = d_sigF_raw * sigma_F_eff;
   }
   res.d_rec_crit  = dlp_dzcR * inv_sR + eff_dpG * dG_dcR;
   res.d_know_crit = eff_dpG * dG_dcK;
-
   res.d_thresh_lo = is_lo_edge ? 0.0 : (dlp_dzlo * inv_sM + eff_dpG * (-dG_dtau_lo));
   res.d_thresh_hi = is_hi_edge ? 0.0 : (dlp_dzhi * inv_sM + eff_dpG * dG_dtau_hi);
-
   return res;
 }
 
@@ -1323,83 +1305,81 @@ inline CdpRkgResult cdp_rkg_cell(
 // CDF evaluations per threshold boundary (4 total for hi+lo).
 inline GCdpResult G_cdp_grad_reuse(
     double c, double mu_R, double sigma_R, double mu_F, double sigma_F,
-    double c_R, double c_K,
+    double c_R, double c_K, double corr,
     const BinormalCdfResult& bv_cR_pre) {
-
   double inv_sR = 1.0 / sigma_R;
   double inv_sF = 1.0 / sigma_F;
   double z_cR = (c_R - mu_R) * inv_sR;
   double z_cK_F = (c_K - mu_F) * inv_sF;
   double mu_M = mu_R + mu_F;
-  double sigma_M = std::sqrt(sigma_R * sigma_R + sigma_F * sigma_F);
+  double sigma_M = std::sqrt(sigma_R * sigma_R + sigma_F * sigma_F + 2.0 * corr * sigma_R * sigma_F);
   double inv_sM = 1.0 / sigma_M;
   double z_c = (c - mu_M) * inv_sM;
-  double rho = sigma_R * inv_sM;
-
+  double rho = (sigma_R + corr * sigma_F) * inv_sM;
+  double sM3 = sigma_M * sigma_M * sigma_M;
+  double dsM_dsR = (sigma_R + corr * sigma_F) * inv_sM;
+  double dsM_dsF = (sigma_F + corr * sigma_R) * inv_sM;
+  double dsM_dc = sigma_R * sigma_F * inv_sM;
+  double drho_dsR = sigma_F * sigma_F * (1.0 - corr * corr) / sM3;
+  double drho_dsF = corr * inv_sM - (sigma_R + corr * sigma_F) * (sigma_F + corr * sigma_R) / sM3;
+  double drho_dc = sigma_F * inv_sM - (sigma_R + corr * sigma_F) * sigma_R * sigma_F / sM3;
+  // P(R <= R value at za, F <= c_K): a product of normal CDFs for independent R and F, else Phi2 with corr
+  auto lower_quadrant = [&](double za, double& val, double& a1, double& a2, double& ac) {
+    if (corr == 0.0) {
+      double Pa = Phi(za), Pb = Phi(z_cK_F);
+      val = Pa * Pb; a1 = phi(za) * Pb; a2 = Pa * phi(z_cK_F); ac = phi(za) * phi(z_cK_F);
+    } else {
+      auto q = binormal_cdf_grad(za, z_cK_F, corr);
+      val = q.val; a1 = q.d_z1; a2 = q.d_z2; ac = q.d_rho;
+    }
+  };
   bool case1 = (c_R <= c - c_K);
   GCdpResult res = {};
-
+  double P, A1, A2, Ac;
   if (case1) {
-    double Phi_zcR = Phi(z_cR);
-    double Phi_zcKF = Phi(z_cK_F);
-    double phi_zcR = phi(z_cR);
-    double phi_zcKF = phi(z_cK_F);
-    res.val = Phi_zcR * Phi_zcKF;
+    lower_quadrant(z_cR, P, A1, A2, Ac);
+    res.val = P;
     res.d_c = 0.0;
-    res.d_c_R = phi_zcR * inv_sR * Phi_zcKF;
-    res.d_c_K = Phi_zcR * phi_zcKF * inv_sF;
-    res.d_mu_R = -phi_zcR * inv_sR * Phi_zcKF;
-    res.d_mu_F = -Phi_zcR * phi_zcKF * inv_sF;
-    res.d_sigma_R = phi_zcR * (-z_cR * inv_sR) * Phi_zcKF;
-    res.d_sigma_F = Phi_zcR * phi_zcKF * (-z_cK_F * inv_sF);
+    res.d_c_R = A1 * inv_sR;
+    res.d_c_K = A2 * inv_sF;
+    res.d_mu_R = -A1 * inv_sR;
+    res.d_mu_F = -A2 * inv_sF;
+    res.d_sigma_R = A1 * (-z_cR * inv_sR);
+    res.d_sigma_F = A2 * (-z_cK_F * inv_sF);
+    res.d_corr = Ac;
   } else {
     double s = c - c_K;
     double z_s = (s - mu_R) * inv_sR;
-    double Phi_zs = Phi(z_s);
-    double phi_zs = phi(z_s);
-    double Phi_zcKF = Phi(z_cK_F);
-    double phi_zcKF = phi(z_cK_F);
-
-    // Reuse bv1 = bv_cR_pre (avoids redundant binormal_cdf_grad call)
+    lower_quadrant(z_s, P, A1, A2, Ac);
     const auto& bv1 = bv_cR_pre;
     auto bv2 = binormal_cdf_grad(z_s, z_c, rho);
-
-    res.val = Phi_zs * Phi_zcKF + bv1.val - bv2.val;
-
-    res.d_c = phi_zs * inv_sR * Phi_zcKF
+    res.val = P + bv1.val - bv2.val;
+    res.d_c = A1 * inv_sR
             + bv1.d_z2 * inv_sM
             - bv2.d_z1 * inv_sR - bv2.d_z2 * inv_sM;
-
     res.d_c_R = bv1.d_z1 * inv_sR;
-
-    res.d_c_K = phi_zs * (-inv_sR) * Phi_zcKF
-              + Phi_zs * phi_zcKF * inv_sF
+    res.d_c_K = A1 * (-inv_sR)
+              + A2 * inv_sF
               - bv2.d_z1 * (-inv_sR);
-
-    res.d_mu_R = phi_zs * (-inv_sR) * Phi_zcKF
+    res.d_mu_R = A1 * (-inv_sR)
                + bv1.d_z1 * (-inv_sR) + bv1.d_z2 * (-inv_sM)
                - bv2.d_z1 * (-inv_sR) - bv2.d_z2 * (-inv_sM);
-
-    res.d_mu_F = Phi_zs * phi_zcKF * (-inv_sF)
+    res.d_mu_F = A2 * (-inv_sF)
                + bv1.d_z2 * (-inv_sM) - bv2.d_z2 * (-inv_sM);
-
-    double sR_over_sM = sigma_R * inv_sM;
-    double drho_dsR = (sigma_F * sigma_F) / (sigma_M * sigma_M * sigma_M);
-    res.d_sigma_R = phi_zs * (-z_s * inv_sR) * Phi_zcKF
+    double zc_s = -z_c * inv_sM;
+    res.d_sigma_R = A1 * (-z_s * inv_sR)
                   + bv1.d_z1 * (-z_cR * inv_sR)
-                  + bv1.d_z2 * (-z_c * inv_sM) * sR_over_sM
+                  + bv1.d_z2 * zc_s * dsM_dsR
                   + bv1.d_rho * drho_dsR
                   - bv2.d_z1 * (-z_s * inv_sR)
-                  - bv2.d_z2 * (-z_c * inv_sM) * sR_over_sM
+                  - bv2.d_z2 * zc_s * dsM_dsR
                   - bv2.d_rho * drho_dsR;
-
-    double sF_over_sM = sigma_F * inv_sM;
-    double drho_dsF = -sigma_R * sigma_F / (sigma_M * sigma_M * sigma_M);
-    res.d_sigma_F = Phi_zs * phi_zcKF * (-z_cK_F * inv_sF)
-                  + bv1.d_z2 * (-z_c * inv_sM) * sF_over_sM
+    res.d_sigma_F = A2 * (-z_cK_F * inv_sF)
+                  + bv1.d_z2 * zc_s * dsM_dsF
                   + bv1.d_rho * drho_dsF
-                  - bv2.d_z2 * (-z_c * inv_sM) * sF_over_sM
+                  - bv2.d_z2 * zc_s * dsM_dsF
                   - bv2.d_rho * drho_dsF;
+    res.d_corr = Ac + (bv1.d_z2 - bv2.d_z2) * zc_s * dsM_dc + (bv1.d_rho - bv2.d_rho) * drho_dc;
   }
   return res;
 }

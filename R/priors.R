@@ -108,6 +108,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "dprime_L", "sigma_L", "lambda_L",
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
+                     "rho_target", "rho_lure",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
                      "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
                      "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
@@ -128,6 +129,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "fam") dpar <- "dprime2"
     if (dpar == "sigma_R") dpar <- "sigma"
     if (dpar == "sigma_F") dpar <- "sigma2"
+    if (dpar == "rho_target") dpar <- "rho"
+    if (dpar == "rho_lure") dpar <- "rho_N"
   }
   
   prior <- .normalize_prior(prior, class)
@@ -1069,7 +1072,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
   
   # --- Random effect SDs (class = "sd") and correlations (class = "cor") ---
 
-  name_map <- .param_name_map(model$family$family)
+  name_map <- model$family$external_aliases %||% list()
   label <- function(p) name_map[[p]] %||% p
   user_sd <- function(p, group, coef) {
     !is.null(pl$sd_dpar_group_coef[[paste0(p, "_", group, "_", coef)]]) ||
@@ -1171,6 +1174,8 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     result$dpar <- gsub("^dprime2$", "fam", result$dpar)
     result$dpar <- gsub("^sigma$", "sigma_R", result$dpar)
     result$dpar <- gsub("^sigma2$", "sigma_F", result$dpar)
+    if (!is.null(model$family$external_aliases[["rho"]])) result$dpar <- gsub("^rho$", "rho_target", result$dpar)
+    result$dpar <- gsub("^rho_N$", "rho_lure", result$dpar)
   }
   
   result

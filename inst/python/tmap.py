@@ -376,6 +376,8 @@ def _param_rows(config, param, N):
         return None
     if param not in _OLD_ONLY and param not in _NEW_ONLY:
         return None
+    if param == "rho" and config.get("cdp_rho_shared"):
+        return None
     if config.get("item_type") is not None:
         old = np.asarray(config["item_type"], dtype=int).reshape(-1) != 1
     elif config.get("is_old") is not None:

@@ -137,7 +137,7 @@
 # ---- Labels -------------------------------------------------------------------
 
 .param_label <- function(model, p) {
-  ext <- .param_name_map(model$family$family)[[p]]
+  ext <- (model$family$external_aliases %||% .param_name_map(model$family$family))[[p]]
   if (is.null(ext)) p else ext
 }
 

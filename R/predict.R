@@ -2652,6 +2652,7 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
   J <- family$J
   new_levels <- setdiff(seq_len(K), old_levels)
   n_rkg <- if (!is.null(family$n_rkg)) family$n_rkg else 2L
+  if (isTRUE(model$model_data$cdp_rho_shared) && is.null(params[["rho_N"]])) params[["rho_N"]] <- params[["rho"]]
 
   nat <- .probs_cdp_native(params, thresh, is_old, S, N, K, J, old_levels, new_levels, n_rkg)
   if (!is.null(nat)) return(nat)
@@ -2659,14 +2660,15 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
   p_remember <- array(0, dim = c(S, N, K))
   p_know <- if (n_rkg == 3) array(0, dim = c(S, N, K)) else NULL
 
-  band <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
-    if (n_rkg == 3) return(compute_rkg_probs_r(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi))
-    sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
+  band <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr) {
+    if (n_rkg == 3) return(compute_rkg_probs_r(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr))
+    sigma_M <- sqrt(sigma_R^2 + sigma_F^2 + 2 * corr * sigma_R * sigma_F)
+    rho_RM <- (sigma_R + corr * sigma_F) / sigma_M
     z_cR <- (c_R - mu_R) / sigma_R
     z_lo <- (tau_lo - mu_R - mu_F) / sigma_M
     z_hi <- (tau_hi - mu_R - mu_F) / sigma_M
-    c(binormal_strip_upper_r(z_cR, z_lo, z_hi, sigma_R / sigma_M),
-      binormal_strip_lower_r(z_cR, z_lo, z_hi, sigma_R / sigma_M))
+    c(binormal_strip_upper_r(z_cR, z_lo, z_hi, rho_RM),
+      binormal_strip_lower_r(z_cR, z_lo, z_hi, rho_RM))
   }
 
   for (n in seq_len(N)) {
@@ -2678,9 +2680,12 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
       sigma_F <- if (target && !is.null(params[["sigma2"]])) params[["sigma2"]][s, n] else 1
       c_R <- if (!is.null(params[["rec_crit"]])) params[["rec_crit"]][s, n] else 1.5
       c_K <- if (!is.null(params[["know_crit"]])) params[["know_crit"]][s, n] else 1.0
+      corr <- if (target) {
+        if (!is.null(params[["rho"]])) params[["rho"]][s, n] else 0
+      } else if (!is.null(params[["rho_N"]])) params[["rho_N"]][s, n] else 0
       tau <- c(-Inf, thresh[s, n, seq_len(J)], Inf)
       for (b in 0:J) {
-        cell <- band(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau[b + 1L], tau[b + 2L])
+        cell <- band(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau[b + 1L], tau[b + 2L], corr)
         total <- sum(cell)
         ks <- if (b == 0L) new_levels else old_levels[b]
         probs[s, n, ks] <- total / length(ks)
@@ -2707,8 +2712,10 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
   sigma_R <- pick("sigma", 1); sigma_F <- pick("sigma2", 1)
   c_R <- if (!is.null(params[["rec_crit"]])) params[["rec_crit"]] else matrix(1.5, S, N)
   c_K <- if (!is.null(params[["know_crit"]])) params[["know_crit"]] else matrix(1.0, S, N)
+  corr <- ifelse(target, if (!is.null(params[["rho"]])) params[["rho"]] else 0,
+                 if (!is.null(params[["rho_N"]])) params[["rho_N"]] else 0)
   res <- .C(.bvn_native$sym_cdp, as.double(mu_R), as.double(sigma_R), as.double(mu_F), as.double(sigma_F),
-            as.double(c_R), as.double(c_K), as.double(thresh[, , seq_len(J), drop = FALSE]),
+            as.double(c_R), as.double(c_K), as.double(corr), as.double(thresh[, , seq_len(J), drop = FALSE]),
             as.integer(c(S, N, J, K, n_rkg, .native_threads(), length(new_levels))),
             as.integer(old_levels), as.integer(new_levels),
             probs = double(S * N * K), prem = double(S * N * K), pknow = double(S * N * K), NAOK = TRUE)

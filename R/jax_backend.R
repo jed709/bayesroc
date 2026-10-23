@@ -221,6 +221,7 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$stan_data$rk)) config$rk <- as.integer(md$stan_data$rk)
   if (!is.null(md$stan_data$J)) config$J <- md$stan_data$J
   if (!is.null(md$stan_data$n_rkg)) config$n_rkg <- md$stan_data$n_rkg
+  if (isTRUE(md$cdp_rho_shared)) config$cdp_rho_shared <- TRUE
   if (!is.null(md$stan_data$n_new)) config$n_new <- md$stan_data$n_new
   if (!is.null(md$stan_data$old_level_map)) config$old_level_map <- as.integer(md$stan_data$old_level_map)
   if (!is.null(md$stan_data$new_level_map)) config$new_level_map <- as.integer(md$stan_data$new_level_map)

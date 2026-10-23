@@ -377,13 +377,13 @@ ffi::Error ProbitDiffImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::
 void cdp_k(int64_t n, const double* const* i, double* const* o) {
   for (int64_t k = 0; k < n; ++k) {
     if (i[0][k] == 0.0) {
-      for (int j = 0; j < 9; ++j) o[j][k] = 0.0;
+      for (int j = 0; j < 10; ++j) o[j][k] = 0.0;
       continue;
     }
     bvn_tail::CdpCell c = bvn_tail::cdp_cell(static_cast<int>(i[1][k]), i[2][k], i[3][k], i[4][k], i[5][k],
-                                             i[6][k], i[7][k], i[8][k], i[9][k]);
+                                             i[6][k], i[7][k], i[8][k], i[9][k], i[10][k]);
     o[0][k] = c.lp;
-    for (int j = 0; j < 8; ++j) o[1 + j][k] = c.d[j];
+    for (int j = 0; j < 9; ++j) o[1 + j][k] = c.d[j];
   }
 }
 
@@ -468,13 +468,13 @@ BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
 BAYESROC_F32(BayesrocVrdp2dF32, 14, 11, bvn::vrdp_array);
 BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
-BAYESROC_F32(BayesrocCdpCellF32, 10, 9, cdp_k);
+BAYESROC_F32(BayesrocCdpCellF32, 11, 10, cdp_k);
 
 #define BAYESROC_F64(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F64Impl<NI, NO, K>),                           \
                                 ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
 
-BAYESROC_F64(BayesrocCdpCell, 10, 9, cdp_k);
+BAYESROC_F64(BayesrocCdpCell, 11, 10, cdp_k);
 BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
 BAYESROC_F64(BayesrocBvnCdf, 3, 4, cdf_k);
 BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);
@@ -578,7 +578,8 @@ extern "C" void bayesroc_r_pnorm(const double* x, const int* n, const int* threa
 // n_rkg = 2). probs, prem, pknow [S, N, K]: the band's probability spread over its levels, and the judgement
 // shares.
 extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const double* muF, const double* sF,
-                                     const double* cR, const double* cK, const double* th, const int* dims,
+                                     const double* cR, const double* cK, const double* rf, const double* th,
+                                     const int* dims,
                                      const int* old_levels, const int* new_levels, double* probs, double* prem,
                                      double* pknow) {
   const int64_t S = dims[0], N = dims[1], J = dims[2], K = dims[3];
@@ -589,7 +590,8 @@ extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const 
   int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, N));
   auto work = [&](int64_t n0, int64_t n1) {
     const int64_t nb = J + 2;
-    std::vector<double> tau(nb), zc(nb), Pz(nb), A(nb), zs(nb), Ps(nb), Bv(nb), G(nb);
+    std::vector<double> tau(nb), zc(nb), Pz(nb), A(nb), zs(nb), Ps(nb), Bv(nb), G(nb), Pk(nb);
+    std::vector<double> h2(nb), k2(nb), r2(nb), p2(nb), e1(nb), e2(nb), e3(nb);
     std::vector<double> hh, kk, rr, pp, d1, d2, d3;
     std::vector<int> where;
     hh.reserve(2 * nb); kk.reserve(2 * nb); rr.reserve(2 * nb); pp.resize(2 * nb); d1.resize(2 * nb);
@@ -597,8 +599,8 @@ extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const 
     for (int64_t n = n0; n < n1; ++n) {
       for (int64_t s = 0; s < S; ++s) {
         const int64_t sn = s + S * n;
-        const double mR = muR[sn], dR = sR[sn], mF = muF[sn], dF = sF[sn], c_R = cR[sn], c_K = cK[sn];
-        const double mM = mR + mF, sM = std::sqrt(dR * dR + dF * dF), rho = dR / sM;
+        const double mR = muR[sn], dR = sR[sn], mF = muF[sn], dF = sF[sn], c_R = cR[sn], c_K = cK[sn], cr = rf[sn];
+        const double mM = mR + mF, sM = std::sqrt(dR * dR + dF * dF + 2.0 * cr * dR * dF), rho = (dR + cr * dF) / sM;
         const double zcR = (c_R - mR) / dR, zcK = (c_K - mF) / dF, PcR = Phi(zcR), PcK = Phi(zcK);
         tau[0] = -inf;
         for (int64_t j = 0; j < J; ++j) tau[j + 1] = th[sn + SN * j];
@@ -623,7 +625,20 @@ extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const 
         for (int64_t q = 0; q < m; ++q) {
           if (where[q] >= 0) A[where[q]] = pp[q]; else Bv[-where[q] - 1] = pp[q];
         }
-        if (n_rkg == 3) for (int64_t t = 0; t < nb; ++t) G[t] = Ps[t] * PcK + A[t] - Bv[t];
+        if (n_rkg == 3) {
+          // P(R <= s, F <= c_K): a product when R and F are independent, else Phi2(zs, zcK; corr)
+          int64_t m2 = 0;
+          for (int64_t t = 0; t < nb; ++t) {
+            Pk[t] = Ps[t] * PcK;
+            if (cr != 0.0 && std::isfinite(zs[t])) { h2[m2] = zs[t]; k2[m2] = zcK; r2[m2] = cr; ++m2; }
+          }
+          if (m2) {
+            bvn::cdf_array(m2, h2.data(), k2.data(), r2.data(), p2.data(), e1.data(), e2.data(), e3.data());
+            int64_t q = 0;
+            for (int64_t t = 0; t < nb; ++t) if (std::isfinite(zs[t])) Pk[t] = p2[q++];
+          }
+          for (int64_t t = 0; t < nb; ++t) G[t] = Pk[t] + A[t] - Bv[t];
+        }
         for (int64_t b = 0; b <= J; ++b) {
           const double tlo = tau[b], thi = tau[b + 1];
           const double pband = Pz[b + 1] - Pz[b];
@@ -631,15 +646,15 @@ extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const 
           if (n_rkg == 3) {
             c3 = G[b + 1] - G[b];
             c2 = pband - c1 - c3;
-            if (c1 < 1e-6) c1 = std::exp(bvn_tail::cdp_cell(1, mR, dR, mF, dF, c_R, c_K, tlo, thi).lp);
-            if (c2 < 1e-6) c2 = std::exp(bvn_tail::cdp_cell(2, mR, dR, mF, dF, c_R, c_K, tlo, thi).lp);
-            if (c3 < 1e-6) c3 = std::exp(bvn_tail::cdp_cell(3, mR, dR, mF, dF, c_R, c_K, tlo, thi).lp);
+            if (c1 < 1e-6) c1 = std::exp(bvn_tail::cdp_cell(1, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
+            if (c2 < 1e-6) c2 = std::exp(bvn_tail::cdp_cell(2, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
+            if (c3 < 1e-6) c3 = std::exp(bvn_tail::cdp_cell(3, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
           } else {
             c2 = pband - c1;
             if (c1 < 1e-6 || c2 < 1e-6) {
-              const double B = -dR / dF;
-              const double Alo = std::isfinite(tlo) ? (tlo - mR - mF) / dF : -inf;
-              const double Ahi = std::isfinite(thi) ? (thi - mR - mF) / dF : inf;
+              const double sc = dF * std::sqrt((1.0 - cr) * (1.0 + cr)), B = -(dR + cr * dF) / sc;
+              const double Alo = std::isfinite(tlo) ? (tlo - mR - mF) / sc : -inf;
+              const double Ahi = std::isfinite(thi) ? (thi - mR - mF) / sc : inf;
               bvn_tail::LinCond c{Alo, std::isfinite(tlo) ? B : 0.0, Ahi, std::isfinite(thi) ? B : 0.0};
               if (c1 < 1e-6) c1 = std::exp(bvn_tail::log_integral(c, zcR, inf));
               if (c2 < 1e-6) c2 = std::exp(bvn_tail::log_integral(c, -inf, zcR));

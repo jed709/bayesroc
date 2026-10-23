@@ -221,7 +221,9 @@ plot_smooths <- function(fit, smooths = NULL, dpar = NULL, resolution = 100, pro
                            ndraws = ndraws))
 }
 
-.smooth_display_pname <- function(model, pname) .param_name_map(model$family$family)[[pname]] %||% pname
+.smooth_display_pname <- function(model, pname) {
+  (model$family$external_aliases %||% .param_name_map(model$family$family))[[pname]] %||% pname
+}
 
 .smooth_stan_pname <- function(model, pname) {
   if (model$family$family %in% c("cumulative", "bivariate_cumulative")) .smooth_display_pname(model, pname) else pname

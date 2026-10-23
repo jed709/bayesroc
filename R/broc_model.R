@@ -274,6 +274,31 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
          call. = FALSE)
   }
 
+  cdp_rho_shared <- FALSE
+  if (family$family == "cdp") {
+    given <- names(params)[!vapply(params, identical_to_null_formula, logical(1))]
+    if ("rho_N" %in% given) {
+      stop("'rho_N' is not a cdp parameter: the lure recollection-familiarity correlation is 'rho_lure'.",
+           call. = FALSE)
+    }
+    split <- intersect(c("rho_target", "rho_lure"), given)
+    if ("rho" %in% given && length(split)) {
+      stop("'rho' sets one recollection-familiarity correlation shared by targets and lures, so it cannot be ",
+           "combined with '", paste(split, collapse = "' or '"), "'. Give 'rho' alone for a shared correlation, ",
+           "or 'rho_target' and/or 'rho_lure' for separate ones.", call. = FALSE)
+    }
+    cdp_rho_shared <- "rho" %in% given
+    if (cdp_rho_shared) {
+      family$external_aliases[["rho"]] <- NULL
+      family$params$rho$description <- "Correlation of recollection and familiarity, shared by targets and lures"
+    }
+    priors <- .cdp_rho_prior_spelling(priors, cdp_rho_shared)
+    if (length(split) == 1L) {
+      fixed <- setdiff(c("rho_target", "rho_lure"), split)
+      message(sprintf("Note: %s not specified - the %s recollection-familiarity correlation is fixed at 0",
+                      fixed, if (fixed == "rho_target") "target" else "lure"))
+    }
+  }
   params <- .canonical_param_formulas(params, family)
 
   criterion  <- params[["criterion"]]
@@ -334,14 +359,16 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (length(enc_in_crit)) {
     warning("Encoding variable in criterion formula: ", paste(enc_in_crit, collapse = ", "), call. = FALSE)
   }
-  for (lp in c("rho_N", "dprime_L", "sigma_L", "lambda_L")) {
+  for (lp in c("rho_N", "dprime_L", "sigma_L", "lambda_L", if (cdp_rho_shared) "rho")) {
     f <- params[[lp]]
     if (!inherits(f, "formula")) next
     enc <- unique(c(intersect(encoding_vars, all.vars(f)),
                     if (grepl("encoding\\s*\\(", paste(deparse(f), collapse = ""))) "encoding()"))
     if (length(enc)) {
-      stop(lp, " describes new items only, which have no encoding condition, so it cannot depend on an ",
-           "encoding variable (", paste(enc, collapse = ", "), ").", call. = FALSE)
+      what <- if (lp == "rho") "rho is shared by targets and lures, and lures have" else
+        paste(family$external_aliases[[lp]] %||% lp, "describes new items only, which have")
+      stop(what, " no encoding condition, so it cannot depend on an encoding variable (", paste(enc, collapse = ", "), ").",
+           if (lp == "rho") " Use rho_target and rho_lure for separate correlations." else "", call. = FALSE)
     }
   }
 
@@ -430,6 +457,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (rho_B_is_fixed) rho_B <- NULL
   if (rho_N_is_fixed) rho_N <- NULL
   if (criterion2_is_fixed) criterion2 <- NULL
+
+  if (is.null(rho)) cdp_rho_shared <- FALSE
 
   internal_arg_map <- list(
     dprime     = dprime,     dprime2    = dprime2,
@@ -641,6 +670,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = encoding_vars)
   model_data$gap_link <- gap_link
+  model_data$cdp_rho_shared <- cdp_rho_shared
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$gap_link <- gap_link
@@ -810,9 +840,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_discrim_B <- !is.null(parsed[["discrim_B"]]) && (is_bivariate || is_vrdp2d)
   has_sigma_B <- !is.null(parsed[["sigma_B"]]) && is_bivariate
   has_sigma2_B <- !is.null(parsed[["sigma2_B"]]) && is_bivariate
-  has_rho <- !is.null(parsed[["rho"]]) && is_bivariate
+  has_rho <- !is.null(parsed[["rho"]]) && (is_bivariate || is_cdp)
   has_rho_B <- !is.null(parsed[["rho_B"]]) && is_bivariate
-  has_rho_N <- !is.null(parsed[["rho_N"]]) && is_bivariate
+  has_rho_N <- !is.null(parsed[["rho_N"]]) && (is_bivariate || is_cdp)
   has_criterion2 <- !is.null(parsed[["criterion2"]]) && (is_bivariate || is_vrdp2d)
   has_lambda2 <- !is.null(parsed[["lambda2"]]) && is_bivariate_dp
   has_lambda2_B <- !is.null(parsed[["lambda2_B"]]) && is_bivariate_dp
@@ -3343,6 +3373,21 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
   x1 <- colMeans(X1[old, , drop = FALSE])
   x2 <- colMeans(X2[old, , drop = FALSE])
   list(unname(which.max(abs(x1))), as.array(unname(x1)), as.array(unname(x2)))
+}
+
+# a shared cdp correlation is spelled rho; separate ones rho_target / rho_lure. A prior spelled for the other
+# layout keeps its spelling as its dpar, so it matches nothing and is reported as unused
+.cdp_rho_prior_spelling <- function(priors, shared) {
+  if (is.null(priors)) return(priors)
+  one <- inherits(priors, "broc_prior")
+  ps <- if (one) list(priors) else unclass(priors)
+  for (i in seq_along(ps)) {
+    inp <- ps[[i]]$dpar_input
+    if (is.null(inp) || !inp %in% c("rho", "rho_target", "rho_lure", "rho_N")) next
+    if (shared && inp != "rho") ps[[i]]$dpar <- inp
+    if (!shared && inp %in% c("rho", "rho_N")) ps[[i]]$dpar <- paste0(inp, " (shared)")
+  }
+  if (one) ps[[1]] else structure(ps, class = "broc_prior_list")
 }
 
 .canonical_param_formulas <- function(params, family) {

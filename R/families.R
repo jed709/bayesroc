@@ -15,7 +15,8 @@
 .param_name_map <- function(family_name) {
   switch(family_name,
     cdp                  = list(dprime = "rec", dprime2 = "fam",
-                                sigma  = "sigma_R", sigma2 = "sigma_F"),
+                                sigma  = "sigma_R", sigma2 = "sigma_F",
+                                rho = "rho_target", rho_N = "rho_lure"),
     cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
                                 criterion = "cutpoints", criterion_scale = "cutpoints_scale",
@@ -1016,13 +1017,16 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #'
 #' @details
 #' ## Likelihood
-#' Recollection and familiarity are independent Gaussians,
+#' Recollection and familiarity are Gaussians,
 #' \eqn{R \sim \mathcal{N}(\mu_R, \sigma_R^2)} and
 #' \eqn{F \sim \mathcal{N}(\mu_F, \sigma_F^2)} for targets,
-#' \eqn{R, F \sim \mathcal{N}(0, 1)} for lures. Confidence is driven by their sum,
-#' \deqn{M = R + F \sim \mathcal{N}(\mu_R + \mu_F,\; \sigma_R^2 + \sigma_F^2),}
-#' so \eqn{(R, M)} is bivariate normal with \eqn{\rho = \sigma_R / \sigma_M}
-#' (lures: \eqn{\sigma_M = \sqrt{2}}, \eqn{\rho = 1/\sqrt{2}}).
+#' \eqn{R, F \sim \mathcal{N}(0, 1)} for lures, with correlation \eqn{r} (\eqn{r_T} for
+#' targets, \eqn{r_L} for lures; 0 unless estimated, see below). Confidence is driven by
+#' their sum,
+#' \deqn{M = R + F \sim \mathcal{N}(\mu_R + \mu_F,\; \sigma_R^2 + \sigma_F^2 + 2 r \sigma_R \sigma_F),}
+#' so \eqn{(R, M)} is bivariate normal with
+#' \eqn{\rho = (\sigma_R + r \sigma_F) / \sigma_M}
+#' (lures: \eqn{\sigma_M = \sqrt{2 + 2 r_L}}, \eqn{\rho = (1 + r_L) / \sigma_M}).
 #'
 #' `criterion` supplies J thresholds \eqn{\tau_1 < \dots < \tau_J} on M, where
 #' J = `length(old_levels)`. A response falls in old bin j when
@@ -1051,11 +1055,23 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #' with \eqn{G(c) = P(R \le c_R, F \le c_K, M < c)}, and Know is the remainder of
 #' the band.
 #'
-#' Lure means and SDs are fixed at 0 and 1 on both axes, and the R-F correlation
-#' is fixed at 0 (the common-currency variant of Wixted & Mickes, 2010). Moran and
-#' Goshen-Gottstein (2015) report a positive R-F correlation and greater
-#' familiarity variance for targets than lures; the second is available through
-#' `sigma_F`, the first is not modelled.
+#' Lure means and SDs are fixed at 0 and 1 on both axes.
+#'
+#' ## Recollection-familiarity correlation
+#' Wixted and Mickes (2010) define separate R-F correlations for targets and lures
+#' and fix both at 0; Moran and Goshen-Gottstein (2015) report a positive one.
+#' Which correlations are estimated follows from the formulas given:
+#' \itemize{
+#'   \item none of `rho`, `rho_target`, `rho_lure`: both correlations fixed at 0;
+#'   \item `rho`: one correlation shared by targets and lures;
+#'   \item `rho_target` and `rho_lure`: both estimated separately;
+#'   \item `rho_target` alone: the lure correlation is fixed at 0;
+#'   \item `rho_lure` alone: the target correlation is fixed at 0.
+#' }
+#' `rho` cannot be combined with `rho_target` or `rho_lure`. All three use a
+#' Fisher z link, \eqn{r = \tanh(\eta)}. Priors use the formulas' spelling
+#' (`dpar = "rho"` for the shared correlation, `"rho_target"` / `"rho_lure"` for
+#' separate ones).
 #'
 #' ## Parameters
 #' \describe{
@@ -1071,6 +1087,9 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #'     Log link.}
 #'   \item{know_crit}{(optional) Know criterion \eqn{c_K} on the familiarity axis,
 #'     required when `rk` has three levels. Identity link.}
+#'   \item{rho}{(optional) R-F correlation shared by targets and lures. Fisher z link.}
+#'   \item{rho_target}{(optional) R-F correlation for targets. Fisher z link.}
+#'   \item{rho_lure}{(optional) R-F correlation for lures. Fisher z link.}
 #' }
 #'
 #' ## Response coding
@@ -1130,6 +1149,12 @@ cdp <- function(old_levels = NULL) {
                          description = "Remember criterion (c_R) on the recollection axis"),
         know_crit = list(required = FALSE, default = NULL, link = "identity",
                          description = "Know criterion (c_K) on the familiarity axis (R/K/G mode)"),
+        rho       = list(required = FALSE, default = NULL, link = "fisherz",
+                         null_value = 0, null_description = "fixed at 0",
+                         description = "Correlation of recollection and familiarity for targets"),
+        rho_N     = list(required = FALSE, default = NULL, link = "fisherz",
+                         null_value = 0, null_description = "fixed at 0",
+                         description = "Correlation of recollection and familiarity for lures"),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Confidence thresholds (tau) on memory strength M = R + F")

@@ -607,19 +607,20 @@ binormal_strip_lower_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
 #' @param sigma_F Familiarity SD
 #' @param c_R Recollection criterion
 #' @param c_K Know criterion
+#' @param corr Correlation of R and F
 #' @return Scalar cumulative guess probability
 #' @noRd
-G_cdp_r <- function(c_val, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) {
+G_cdp_r <- function(c_val, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr = 0) {
   s <- min(c_R, c_val - c_K)
   z_s <- (s - mu_R) / sigma_R
   z_cR <- (c_R - mu_R) / sigma_R
   z_cK <- (c_K - mu_F) / sigma_F
   mu_M <- mu_R + mu_F
-  sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
+  sigma_M <- sqrt(sigma_R^2 + sigma_F^2 + 2 * corr * sigma_R * sigma_F)
   z_c <- (c_val - mu_M) / sigma_M
-  rho <- sigma_R / sigma_M
-  pnorm(z_s) * pnorm(z_cK) + binormal_cdf_r(z_cR, z_c, rho) -
-    binormal_cdf_r(z_s, z_c, rho)
+  rho <- (sigma_R + corr * sigma_F) / sigma_M
+  rs_part <- if (corr == 0) pnorm(z_s) * pnorm(z_cK) else binormal_cdf_r(z_s, z_cK, corr)
+  rs_part + binormal_cdf_r(z_cR, z_c, rho) - binormal_cdf_r(z_s, z_c, rho)
 }
 
 #' Compute R/K/G probabilities for a single confidence band (G(c) approach)
@@ -640,11 +641,11 @@ G_cdp_r <- function(c_val, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) {
   if (!(u > l)) return(-Inf)
   if (l >= 0) {
     a <- stats::pnorm(l, lower.tail = FALSE, log.p = TRUE)
-    return(a + log1p(-exp(stats::pnorm(u, lower.tail = FALSE, log.p = TRUE) - a)))
+    return(a + log1p(-exp(min(0, stats::pnorm(u, lower.tail = FALSE, log.p = TRUE) - a))))
   }
   if (u <= 0) {
     a <- stats::pnorm(u, log.p = TRUE)
-    return(a + log1p(-exp(stats::pnorm(l, log.p = TRUE) - a)))
+    return(a + log1p(-exp(min(0, stats::pnorm(l, log.p = TRUE) - a))))
   }
   log(stats::pnorm(u) - stats::pnorm(l))
 }
@@ -673,15 +674,17 @@ G_cdp_r <- function(c_val, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) {
   gm + log(v)
 }
 
-cdp_log_cell_r <- function(kind, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
-  B <- -sigma_R / sigma_F
+cdp_log_cell_r <- function(kind, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr = 0) {
+  sc <- sigma_F * sqrt((1 - corr) * (1 + corr))
+  B <- -(sigma_R + corr * sigma_F) / sc
   xcR <- (c_R - mu_R) / sigma_R
   xkh <- if (is.finite(tau_hi)) (tau_hi - c_K - mu_R) / sigma_R else Inf
   xkl <- (tau_lo - c_K - mu_R) / sigma_R
-  Alo <- (tau_lo - mu_R - mu_F) / sigma_F
-  Ahi <- if (is.finite(tau_hi)) (tau_hi - mu_R - mu_F) / sigma_F else Inf
+  Alo <- (tau_lo - mu_R - mu_F) / sc
+  Ahi <- if (is.finite(tau_hi)) (tau_hi - mu_R - mu_F) / sc else Inf
   Bhi <- if (is.finite(tau_hi)) B else 0
-  AK <- (c_K - mu_F) / sigma_F
+  AK <- (c_K - mu_F) / sc
+  BK <- -corr * sigma_F / sc
   lse <- function(a, b) {
     m <- max(a, b)
     if (!is.finite(m)) return(m)
@@ -689,18 +692,18 @@ cdp_log_cell_r <- function(kind, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo,
   }
   if (kind == 1) return(.log_lin_integral_r(Alo, B, Ahi, Bhi, xcR, Inf))
   if (kind == 3) {
-    return(lse(.log_lin_integral_r(Alo, B, AK, 0, xkl, min(xkh, xcR)),
+    return(lse(.log_lin_integral_r(Alo, B, AK, BK, xkl, min(xkh, xcR)),
                .log_lin_integral_r(Alo, B, Ahi, Bhi, max(xkh, xkl), xcR)))
   }
   ub <- min(xcR, xkh)
   lse(.log_lin_integral_r(Alo, B, Ahi, Bhi, -Inf, min(xkl, ub)),
-      .log_lin_integral_r(AK, 0, Ahi, Bhi, xkl, ub))
+      .log_lin_integral_r(AK, BK, Ahi, Bhi, xkl, ub))
 }
 
-compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi) {
+compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr = 0) {
   mu_M <- mu_R + mu_F
-  sigma_M <- sqrt(sigma_R^2 + sigma_F^2)
-  rho <- sigma_R / sigma_M
+  sigma_M <- sqrt(sigma_R^2 + sigma_F^2 + 2 * corr * sigma_R * sigma_F)
+  rho <- (sigma_R + corr * sigma_F) / sigma_M
   z_cR <- (c_R - mu_R) / sigma_R
 
   z_lo <- (tau_lo - mu_M) / sigma_M
@@ -709,8 +712,8 @@ compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, 
   p_Remember <- (pnorm(z_hi) - binormal_cdf_r(z_cR, z_hi, rho)) -
                 (pnorm(z_lo) - binormal_cdf_r(z_cR, z_lo, rho))
 
-  p_Guess <- G_cdp_r(tau_hi, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K) -
-             G_cdp_r(tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K)
+  p_Guess <- G_cdp_r(tau_hi, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) -
+             G_cdp_r(tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
 
   p_Band <- pnorm(z_hi) - pnorm(z_lo)
   p_Know <- p_Band - p_Remember - p_Guess
@@ -718,6 +721,6 @@ compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, 
   raw <- c(p_Remember, p_Know, p_Guess)
   vapply(1:3, function(k) {
     if (raw[k] >= 1e-6) raw[k]
-    else exp(cdp_log_cell_r(k, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi))
+    else exp(cdp_log_cell_r(k, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr))
   }, numeric(1))
 }

@@ -88,6 +88,7 @@ if nb._BVN_FFI:
              - np.asarray(nb._probit_cell_native(jnp.asarray(lo), jnp.asarray(hi - hh))[0])) / (2 * hh)
     cx = np.genfromtxt(sys.argv[4], delimiter=",", skip_header=1)
     cargs = [jnp.asarray(cx[:, j]) for j in range(1, 9)]
+    cargs.append(jnp.zeros(cx.shape[0]))
     ref_lp = cx[:, 9]
     cfin = np.isfinite(ref_lp)
     nat_lp = np.asarray(nb._cdp_tail(jnp.ones(cx.shape[0], bool), jnp.asarray(cx[:, 0]), *cargs)[0])

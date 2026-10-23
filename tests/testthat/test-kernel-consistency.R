@@ -11,7 +11,7 @@
   paste0(rep(c("simple", "dpsdt", "mixture", "source_mixture"), each = 3), "_",
          c("probit", "logit", "cloglog")),
   "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp",
-  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail"
+  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr"
 )
 
 test_that("every fused kernel's custom JVP is the exact derivative of its value", {
@@ -31,11 +31,11 @@ test_that("with the native kernels loaded, every probit and bivariate JVP matche
   lib <- .bvn_ffi_lib()
   ks <- c(paste0(c("simple", "dpsdt", "mixture", "source_mixture"), "_probit"),
           "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp", "vrdp2d",
-          "cdp_rk", "cdp_rkg", "cdp_rkg_tail")
+          "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr")
   res <- .run_py_check("native_jvp_check.py", c(lib, paste(ks, collapse = ",")))
   expect_true(res$ffi_loaded)
   for (k in ks) {
-    tol <- if (k == "cdp_rkg_tail") 1e-5 else 1e-6
+    tol <- if (k %in% c("cdp_rkg_tail", "cdp_rkg_tail_corr")) 1e-5 else 1e-6
     expect_lt(res[[k]], tol, label = paste(k, "native JVP vs finite differences"))
   }
 })

@@ -77,43 +77,82 @@ static void rkg_checks() {
                             {2.5, 0.8, 2.0, 0.7, -2.5, -3.0},
                             {0.5, 1.3, 0.4, 0.6, 0.7, 4.2}};
   const double taus[][3] = {{0.2, 0.9, 1.6}, {3.0, 5.5, 8.5}, {-1.5, -1.2, -1.19}};
+  for (double z0 : {0.0, 0.48, -0.37})
   for (auto& P : sets)
     for (auto& T : taus)
       for (int is_old : {1, 0})
-        for (int yn : {5, 6})
+        for (int yn : {2, 5, 6})
           for (int rk : {1, 2, 3}) {
             double mR = P[0], lsR = std::log(P[1]), mF = P[2], lsF = std::log(P[3]), cR = P[4], cK = P[5];
             double tau[3] = {T[0], T[1], T[2]};
-            auto f = [&](double a, double b, double c, double d, double e, double g, const double* t) {
-              return cdp_rkg_cell(yn, rk, is_old, a, std::exp(b), c, std::exp(d), e, g, t, J, map);
+            auto f = [&](double a, double b, double c, double d, double e, double g, const double* t, double z) {
+              return cdp_rkg_cell(yn, rk, is_old, a, std::exp(b), c, std::exp(d), e, g, std::tanh(z), t, J, map);
             };
-            auto r = f(mR, lsR, mF, lsF, cR, cK, tau);
+            auto r = f(mR, lsR, mF, lsF, cR, cK, tau, z0);
             if (!(r.lp > std::log(1e-290))) continue;
-            char tag[64];
-            std::snprintf(tag, sizeof tag, "cdp_rkg_cell[y%d,rk%d,old%d]", yn, rk, is_old);
+            char tag[96];
+            std::snprintf(tag, sizeof tag, "cdp_rkg_cell[y%d,rk%d,old%d,z%.2f]", yn, rk, is_old, z0);
+            double dz = 1.0 - std::tanh(z0) * std::tanh(z0);
+            chk(tag, "d_corr", r.d_corr * dz, cfd([&](double x) { return f(mR, lsR, mF, lsF, cR, cK, tau, x).lp; }, z0));
             if (is_old) {
-              chk(tag, "d_dprime", r.d_dprime, cfd([&](double x) { return f(x, lsR, mF, lsF, cR, cK, tau).lp; }, mR));
-              chk(tag, "d_sigma", r.d_sigma, cfd([&](double x) { return f(mR, x, mF, lsF, cR, cK, tau).lp; }, lsR));
-              chk(tag, "d_dprime2", r.d_dprime2, cfd([&](double x) { return f(mR, lsR, x, lsF, cR, cK, tau).lp; }, mF));
-              chk(tag, "d_sigma2", r.d_sigma2, cfd([&](double x) { return f(mR, lsR, mF, x, cR, cK, tau).lp; }, lsF));
+              chk(tag, "d_dprime", r.d_dprime, cfd([&](double x) { return f(x, lsR, mF, lsF, cR, cK, tau, z0).lp; }, mR));
+              chk(tag, "d_sigma", r.d_sigma, cfd([&](double x) { return f(mR, x, mF, lsF, cR, cK, tau, z0).lp; }, lsR));
+              chk(tag, "d_dprime2", r.d_dprime2, cfd([&](double x) { return f(mR, lsR, x, lsF, cR, cK, tau, z0).lp; }, mF));
+              chk(tag, "d_sigma2", r.d_sigma2, cfd([&](double x) { return f(mR, lsR, mF, x, cR, cK, tau, z0).lp; }, lsF));
             }
-            chk(tag, "d_rec_crit", r.d_rec_crit, cfd([&](double x) { return f(mR, lsR, mF, lsF, x, cK, tau).lp; }, cR));
-            chk(tag, "d_know_crit", r.d_know_crit, cfd([&](double x) { return f(mR, lsR, mF, lsF, cR, x, tau).lp; }, cK));
+            chk(tag, "d_rec_crit", r.d_rec_crit, cfd([&](double x) { return f(mR, lsR, mF, lsF, x, cK, tau, z0).lp; }, cR));
+            chk(tag, "d_know_crit", r.d_know_crit, cfd([&](double x) { return f(mR, lsR, mF, lsF, cR, x, tau, z0).lp; }, cK));
             if (r.k_lo >= 0) {
               int k = r.k_lo;
               chk(tag, "d_thresh_lo", r.d_thresh_lo, cfd([&](double x) {
-                double t2[3] = {tau[0], tau[1], tau[2]}; t2[k] = x; return f(mR, lsR, mF, lsF, cR, cK, t2).lp; }, tau[k], 1e-7));
+                double t2[3] = {tau[0], tau[1], tau[2]}; t2[k] = x; return f(mR, lsR, mF, lsF, cR, cK, t2, z0).lp; }, tau[k], 1e-5));
             }
             if (r.k_hi >= 0) {
               int k = r.k_hi;
               chk(tag, "d_thresh_hi", r.d_thresh_hi, cfd([&](double x) {
-                double t2[3] = {tau[0], tau[1], tau[2]}; t2[k] = x; return f(mR, lsR, mF, lsF, cR, cK, t2).lp; }, tau[k], 1e-7));
+                double t2[3] = {tau[0], tau[1], tau[2]}; t2[k] = x; return f(mR, lsR, mF, lsF, cR, cK, t2, z0).lp; }, tau[k], 1e-5));
             }
           }
 }
 
+static void rk_checks() {
+  const int J = 3, map[3] = {4, 5, 6};
+  const double sets[][5] = {{0.8, 1.1, 0.6, 0.9, 1.2}, {1.6, 1.5, 0.3, 0.7, 2.4}, {0.1, 0.8, 1.0, 1.3, 0.2}};
+  const double tau[3] = {0.2, 0.9, 1.6};
+  for (double z0 : {0.0, 0.48, -0.37})
+  for (auto& P : sets)
+    for (int is_old : {1, 0})
+      for (int yn : {2, 4, 5, 6})
+        for (int rk : {0, 1, 2}) {
+          double mR = P[0], lsR = std::log(P[1]), mF = P[2], lsF = std::log(P[3]), cR = P[4];
+          auto f = [&](double a, double b, double c, double d, double e, const double* t, double z) {
+            return cdp_rk_cell(yn, rk, is_old, a, std::exp(b), c, std::exp(d), e, std::tanh(z), t, J, map);
+          };
+          auto r = f(mR, lsR, mF, lsF, cR, tau, z0);
+          char tag[96];
+          std::snprintf(tag, sizeof tag, "cdp_rk_cell[y%d,rk%d,old%d,z%.2f]", yn, rk, is_old, z0);
+          double dz = 1.0 - std::tanh(z0) * std::tanh(z0);
+          chk(tag, "d_corr", r.d_corr * dz, cfd([&](double x) { return f(mR, lsR, mF, lsF, cR, tau, x).lp; }, z0));
+          if (is_old) {
+            chk(tag, "d_dprime", r.d_dprime, cfd([&](double x) { return f(x, lsR, mF, lsF, cR, tau, z0).lp; }, mR));
+            chk(tag, "d_sigma", r.d_sigma, cfd([&](double x) { return f(mR, x, mF, lsF, cR, tau, z0).lp; }, lsR));
+            chk(tag, "d_dprime2", r.d_dprime2, cfd([&](double x) { return f(mR, lsR, x, lsF, cR, tau, z0).lp; }, mF));
+            chk(tag, "d_sigma2", r.d_sigma2, cfd([&](double x) { return f(mR, lsR, mF, x, cR, tau, z0).lp; }, lsF));
+          }
+          chk(tag, "d_rec_crit", r.d_rec_crit, cfd([&](double x) { return f(mR, lsR, mF, lsF, x, tau, z0).lp; }, cR));
+          for (int side = 0; side < 2; ++side) {
+            int k = side == 0 ? r.k_lo : r.k_hi;
+            if (k < 0) continue;
+            double an = side == 0 ? r.d_thresh_lo : r.d_thresh_hi;
+            chk(tag, side == 0 ? "d_thresh_lo" : "d_thresh_hi", an, cfd([&](double x) {
+              double t2[3] = {tau[0], tau[1], tau[2]}; t2[k] = x; return f(mR, lsR, mF, lsF, cR, t2, z0).lp; }, tau[k], 1e-5));
+          }
+        }
+}
+
 int main() {
   rkg_checks();
+  rk_checks();
   link_checks<LogitLink>("logit");
   link_checks<CloglogLink>("cloglog");
   // ---------- cell_log_prob (probit) : lp wrt z_lo, z_hi ----------

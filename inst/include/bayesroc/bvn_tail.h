@@ -312,7 +312,7 @@ inline GaussLine gauss_line(double A, double B, double xa, double xb) {
 
 struct CdpCell {
   double lp;
-  double d[8];
+  double d[9];
 };
 
 struct CdpPiece {
@@ -320,24 +320,30 @@ struct CdpPiece {
   const double *dxa, *dxb, *dAl, *dBl, *dAu, *dBu;
 };
 
+// One CDP cell (kind 1 Remember, 2 Know, 3 Guess) within tlo < R + F < thi, as an integral over the
+// standardised recollection value x: F given x is normal with mean muF + corr sF x and SD sF sqrt(1 - corr^2),
+// so every bound on it is linear in x. d: muR, sR, muF, sF, cR, cK, tlo, thi, corr.
 inline CdpCell cdp_cell(int kind, double muR, double sR, double muF, double sF, double cR, double cK,
-                        double tlo, double thi) {
-  static const double Z[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  CdpCell out{-kInf, {0, 0, 0, 0, 0, 0, 0, 0}};
-  double beta = sR / sF, B = -beta;
+                        double tlo, double thi, double corr = 0.0) {
+  static const double Z[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+  CdpCell out{-kInf, {0, 0, 0, 0, 0, 0, 0, 0, 0}};
+  double s2 = (1.0 - corr) * (1.0 + corr), s = std::sqrt(s2), sc = sF * s, cs2 = corr / s2;
+  double B = -(sR + corr * sF) / sc;
   double xcR = (cR - muR) / sR;
   double xkh = std::isfinite(thi) ? (thi - cK - muR) / sR : kInf;
   double xkl = std::isfinite(tlo) ? (tlo - cK - muR) / sR : -kInf;
-  double Alo = std::isfinite(tlo) ? (tlo - muR - muF) / sF : -kInf;
-  double Ahi = std::isfinite(thi) ? (thi - muR - muF) / sF : kInf;
-  double AK = (cK - muF) / sF;
-  double dxcR[8] = {-1 / sR, -xcR / sR, 0, 0, 1 / sR, 0, 0, 0};
-  double dxkh[8] = {-1 / sR, -xkh / sR, 0, 0, 0, -1 / sR, 0, 1 / sR};
-  double dxkl[8] = {-1 / sR, -xkl / sR, 0, 0, 0, -1 / sR, 1 / sR, 0};
-  double dAlo[8] = {-1 / sF, 0, -1 / sF, -Alo / sF, 0, 0, 1 / sF, 0};
-  double dAhi[8] = {-1 / sF, 0, -1 / sF, -Ahi / sF, 0, 0, 0, 1 / sF};
-  double dB[8] = {0, -1 / sF, 0, beta / sF, 0, 0, 0, 0};
-  double dAK[8] = {0, 0, -1 / sF, -AK / sF, 0, 1 / sF, 0, 0};
+  double Alo = std::isfinite(tlo) ? (tlo - muR - muF) / sc : -kInf;
+  double Ahi = std::isfinite(thi) ? (thi - muR - muF) / sc : kInf;
+  double AK = (cK - muF) / sc;
+  double BK = -corr / s;
+  double dxcR[9] = {-1 / sR, -xcR / sR, 0, 0, 1 / sR, 0, 0, 0, 0};
+  double dxkh[9] = {-1 / sR, -xkh / sR, 0, 0, 0, -1 / sR, 0, 1 / sR, 0};
+  double dxkl[9] = {-1 / sR, -xkl / sR, 0, 0, 0, -1 / sR, 1 / sR, 0, 0};
+  double dAlo[9] = {-1 / sc, 0, -1 / sc, -Alo / sF, 0, 0, 1 / sc, 0, Alo * cs2};
+  double dAhi[9] = {-1 / sc, 0, -1 / sc, -Ahi / sF, 0, 0, 0, 1 / sc, Ahi * cs2};
+  double dB[9] = {0, -1 / sc, 0, sR / (sF * sc), 0, 0, 0, 0, -sR * corr / (sc * s2) - 1 / (s * s2)};
+  double dAK[9] = {0, 0, -1 / sc, -AK / sF, 0, 1 / sc, 0, 0, AK * cs2};
+  double dBK[9] = {0, 0, 0, 0, 0, 0, 0, 0, -1 / (s * s2)};
   const double* pdxkh = std::isfinite(xkh) ? dxkh : Z;
   const double* pdxkl = std::isfinite(xkl) ? dxkl : Z;
   const double* pdAlo = std::isfinite(Alo) ? dAlo : Z;
@@ -358,7 +364,7 @@ inline CdpCell cdp_cell(int kind, double muR, double sR, double muF, double sF, 
   } else if (kind == 3) {
     double b1; const double* db1;
     lesser(xkh, pdxkh, xcR, dxcR, b1, db1);
-    pc[np++] = {xkl, b1, Alo, Blo, AK, 0.0, pdxkl, db1, pdAlo, pdBlo, dAK, Z};
+    pc[np++] = {xkl, b1, Alo, Blo, AK, BK, pdxkl, db1, pdAlo, pdBlo, dAK, dBK};
     double a2; const double* da2;
     greater(xkh, pdxkh, xkl, pdxkl, a2, da2);
     pc[np++] = {a2, xcR, Alo, Blo, Ahi, Bhi, da2, dxcR, pdAlo, pdBlo, pdAhi, pdBhi};
@@ -368,7 +374,7 @@ inline CdpCell cdp_cell(int kind, double muR, double sR, double muF, double sF, 
     double b1; const double* db1;
     lesser(xkl, pdxkl, ub, dub, b1, db1);
     pc[np++] = {-kInf, b1, Alo, Blo, Ahi, Bhi, Z, db1, pdAlo, pdBlo, pdAhi, pdBhi};
-    pc[np++] = {xkl, ub, AK, 0.0, Ahi, Bhi, pdxkl, dub, dAK, Z, pdAhi, pdBhi};
+    pc[np++] = {xkl, ub, AK, BK, Ahi, Bhi, pdxkl, dub, dAK, dBK, pdAhi, pdBhi};
   }
   double lps[2] = {-kInf, -kInf};
   double lmax = -kInf;
@@ -404,7 +410,7 @@ inline CdpCell cdp_cell(int kind, double muR, double sR, double muF, double sF, 
     const double* dv[6] = {q.dxa, q.dxb, q.dAl, q.dBl, q.dAu, q.dBu};
     for (int t = 0; t < 6; ++t)
       if (w[t] != 0.0)
-        for (int j = 0; j < 8; ++j) out.d[j] += w[t] * dv[t][j];
+        for (int j = 0; j < 9; ++j) out.d[j] += w[t] * dv[t][j];
   }
   return out;
 }
