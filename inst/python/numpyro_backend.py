@@ -534,10 +534,10 @@ def _asin(x):
     return jnp.sign(x) * jnp.where(a > 0.625, big, small)
 
 
-_DW_RULES = {m: np.polynomial.legendre.leggauss(m) for m in (8, 10, 12, 14, 16, 20)}
+_DW_RULES = {m: np.polynomial.legendre.leggauss(m) for m in (8, 10, 12, 14, 16, 20, 28, 32, 48)}
 _RHO_MAX = 0.999999
-_DW_TIER_EDGES = (0.75, 0.85, 0.9, 0.925, 0.97)
-_DW_TIER_NODES = (8, 10, 12, 14, 16, 20)
+_DW_TIER_EDGES = (0.7, 0.85, 0.9, 0.925, 0.97, 0.98, 0.995, 0.999)
+_DW_TIER_NODES = (8, 10, 12, 14, 16, 20, 28, 32, 48)
 
 
 def _dw_nodes(rho, m):
@@ -572,8 +572,8 @@ def _dw_corner(h, k, A, nodes):
 
 
 def _dw_corners(HK, rho):
-    """Corner integrals with the Gauss-Legendre order set by the largest |rho| present
-    (same tiers as the native kernel: ~1e-6 relative on rectangles)."""
+    """Corner integrals with the Gauss-Legendre order set by the largest |rho| present (same tiers as the
+    native kernel: better than 1e-6 relative on rectangles above the tail switch up to |rho| = 0.9995)."""
     r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
     tier = jnp.searchsorted(jnp.asarray(_DW_TIER_EDGES), jnp.max(jnp.abs(r)), side="right")
 
@@ -2615,10 +2615,10 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             return z, z, z, z, z
         return jax.lax.cond(jnp.any(tail), run, skip, None)
 
-    def _lower_quadrants(z_cR, z_s_hi, z_s_lo, z_cK_F, corr):
-        """Phi2(z, z_cK_F; corr) at z = z_cR, z_s_hi, z_s_lo: (P, dP/dz, dP/dz_cK_F, dP/dcorr) each."""
-        q, _ = _bvn_cdf_multi([(z_cR, z_cK_F), (z_s_hi, z_cK_F), (z_s_lo, z_cK_F)], [], corr)
-        return [tuple(q[j][:4]) for j in range(3)]
+    def _lower_quadrants(z_q_hi, z_q_lo, z_cK_F, corr):
+        """Phi2(z, z_cK_F; corr) at the one R bound each Guess edge needs: (P, dP/dz, dP/dz_cK_F, dP/dcorr) each."""
+        q, _ = _bvn_cdf_multi([(z_q_hi, z_cK_F), (z_q_lo, z_cK_F)], [z_cK_F], corr)
+        return [tuple(q[j][:4]) for j in range(2)]
 
     @custom_jvp
     def _batch_fused(y, rk, is_old_val, old_idx, is_old_resp_val,
@@ -2676,14 +2676,14 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             Phi_zcR = _phi_from_q(z_cR, c0[4])
             Phi_zcKF = _phi_from_q(z_cK_F, e_ckf[0])
             if has_corr:
-                qc, qsh, qsl = _lower_quadrants(z_cR, z_s_hi, z_s_lo, z_cK_F, corr)
-                P_c, P_sh, P_sl = qc[0], qsh[0], qsl[0]
+                qh, ql = _lower_quadrants(jnp.where(case1_hi, z_cR, z_s_hi), jnp.where(case1_lo, z_cR, z_s_lo), z_cK_F, corr)
+                P_hi, P_lo = qh[0], ql[0]
             else:
                 P_c = Phi_zcR * Phi_zcKF
-                P_sh = _phi_from_q(z_s_hi, c2_[4]) * Phi_zcKF
-                P_sl = _phi_from_q(z_s_lo, c3_[4]) * Phi_zcKF
-            G_hi = jnp.where(case1_hi, P_c, P_sh + bv_cR_hi - bv_s_hi)
-            G_lo = jnp.where(case1_lo, P_c, P_sl + bv_cR_lo - bv_s_lo)
+                P_hi = jnp.where(case1_hi, P_c, _phi_from_q(z_s_hi, c2_[4]) * Phi_zcKF)
+                P_lo = jnp.where(case1_lo, P_c, _phi_from_q(z_s_lo, c3_[4]) * Phi_zcKF)
+            G_hi = jnp.where(case1_hi, P_hi, P_hi + bv_cR_hi - bv_s_hi)
+            G_lo = jnp.where(case1_lo, P_lo, P_lo + bv_cR_lo - bv_s_lo)
 
             p_G_raw = G_hi - G_lo
             p_K_raw = p_band - p_R_raw - p_G_raw
@@ -2829,18 +2829,21 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             phi_zs_hi = cdfs[2][5]
             phi_zs_lo = cdfs[3][5]
             if has_corr:
-                (P_c, A1c, A2c, Acc), (P_sh, A1sh, A2sh, Acsh), (P_sl, A1sl, A2sl, Acsl) = \
-                    _lower_quadrants(z_cR, z_s_hi, z_s_lo, z_cK_F, corr)
+                (P_hi, A1h, A2h, Ach), (P_lo, A1l, A2l, Acl) = \
+                    _lower_quadrants(jnp.where(case1_hi, z_cR, z_s_hi), jnp.where(case1_lo, z_cR, z_s_lo), z_cK_F, corr)
             else:
-                P_c, A1c, A2c = Phi_zcR * Phi_zcKF, phi_zcR * Phi_zcKF, Phi_zcR * phi_zcKF
-                P_sh, A1sh, A2sh = Phi_zs_hi * Phi_zcKF, phi_zs_hi * Phi_zcKF, Phi_zs_hi * phi_zcKF
-                P_sl, A1sl, A2sl = Phi_zs_lo * Phi_zcKF, phi_zs_lo * Phi_zcKF, Phi_zs_lo * phi_zcKF
-                Acc = phi_zcR * phi_zcKF
-                Acsh = phi_zs_hi * phi_zcKF
-                Acsl = phi_zs_lo * phi_zcKF
+                P_c, A1c, A2c, Acc = Phi_zcR * Phi_zcKF, phi_zcR * Phi_zcKF, Phi_zcR * phi_zcKF, phi_zcR * phi_zcKF
+                P_hi = jnp.where(case1_hi, P_c, Phi_zs_hi * Phi_zcKF)
+                A1h = jnp.where(case1_hi, A1c, phi_zs_hi * Phi_zcKF)
+                A2h = jnp.where(case1_hi, A2c, Phi_zs_hi * phi_zcKF)
+                Ach = jnp.where(case1_hi, Acc, phi_zs_hi * phi_zcKF)
+                P_lo = jnp.where(case1_lo, P_c, Phi_zs_lo * Phi_zcKF)
+                A1l = jnp.where(case1_lo, A1c, phi_zs_lo * Phi_zcKF)
+                A2l = jnp.where(case1_lo, A2c, Phi_zs_lo * phi_zcKF)
+                Acl = jnp.where(case1_lo, Acc, phi_zs_lo * phi_zcKF)
 
-            G_hi = jnp.where(case1_hi, P_c, P_sh + bv_cR_hi - bv_s_hi)
-            G_lo = jnp.where(case1_lo, P_c, P_sl + bv_cR_lo - bv_s_lo)
+            G_hi = jnp.where(case1_hi, P_hi, P_hi + bv_cR_hi - bv_s_hi)
+            G_lo = jnp.where(case1_lo, P_lo, P_lo + bv_cR_lo - bv_s_lo)
 
             p_G_raw = G_hi - G_lo
             p_K_raw = p_band - p_R_raw - p_G_raw
@@ -2867,53 +2870,53 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
 
             dGhi_dtau = jnp.where(case1_hi, 0.0,
-                A1sh * inv_sR + d_bvCRhi_z2 * inv_sM - d_bvShi_z1 * inv_sR - d_bvShi_z2 * inv_sM)
-            dGhi_dcR = jnp.where(case1_hi, A1c * inv_sR, d_bvCRhi_z1 * inv_sR)
-            dGhi_dcK = jnp.where(case1_hi, A2c * inv_sF,
-                A1sh * (-inv_sR) + A2sh * inv_sF + d_bvShi_z1 * inv_sR)
-            dGhi_dmuR = jnp.where(case1_hi, -A1c * inv_sR,
-                A1sh * (-inv_sR)
+                A1h * inv_sR + d_bvCRhi_z2 * inv_sM - d_bvShi_z1 * inv_sR - d_bvShi_z2 * inv_sM)
+            dGhi_dcR = jnp.where(case1_hi, A1h * inv_sR, d_bvCRhi_z1 * inv_sR)
+            dGhi_dcK = jnp.where(case1_hi, A2h * inv_sF,
+                A1h * (-inv_sR) + A2h * inv_sF + d_bvShi_z1 * inv_sR)
+            dGhi_dmuR = jnp.where(case1_hi, -A1h * inv_sR,
+                A1h * (-inv_sR)
                 + d_bvCRhi_z1 * (-inv_sR) + d_bvCRhi_z2 * (-inv_sM)
                 - d_bvShi_z1 * (-inv_sR) - d_bvShi_z2 * (-inv_sM))
-            dGhi_dmuF = jnp.where(case1_hi, -A2c * inv_sF,
-                A2sh * (-inv_sF) + d_bvCRhi_z2 * (-inv_sM) - d_bvShi_z2 * (-inv_sM))
-            dGhi_dsigR = jnp.where(case1_hi, A1c * (-z_cR * inv_sR),
-                A1sh * (-z_s_hi * inv_sR)
+            dGhi_dmuF = jnp.where(case1_hi, -A2h * inv_sF,
+                A2h * (-inv_sF) + d_bvCRhi_z2 * (-inv_sM) - d_bvShi_z2 * (-inv_sM))
+            dGhi_dsigR = jnp.where(case1_hi, A1h * (-z_cR * inv_sR),
+                A1h * (-z_s_hi * inv_sR)
                 + d_bvCRhi_z1 * (-z_cR * inv_sR)
                 + d_bvCRhi_z2 * (-z_hi * inv_sM) * sR_over_sM + d_bvCRhi_rho * drho_dsR
                 - d_bvShi_z1 * (-z_s_hi * inv_sR)
                 - d_bvShi_z2 * (-z_hi * inv_sM) * sR_over_sM - d_bvShi_rho * drho_dsR)
-            dGhi_dsigF = jnp.where(case1_hi, A2c * (-z_cK_F * inv_sF),
-                A2sh * (-z_cK_F * inv_sF)
+            dGhi_dsigF = jnp.where(case1_hi, A2h * (-z_cK_F * inv_sF),
+                A2h * (-z_cK_F * inv_sF)
                 + d_bvCRhi_z2 * (-z_hi * inv_sM) * sF_over_sM + d_bvCRhi_rho * drho_dsF
                 - d_bvShi_z2 * (-z_hi * inv_sM) * sF_over_sM - d_bvShi_rho * drho_dsF)
-            dGhi_dcorr = jnp.where(case1_hi, Acc,
-                Acsh + (d_bvCRhi_z2 - d_bvShi_z2) * (-z_hi * inv_sM) * dsM_dc
+            dGhi_dcorr = jnp.where(case1_hi, Ach,
+                Ach + (d_bvCRhi_z2 - d_bvShi_z2) * (-z_hi * inv_sM) * dsM_dc
                 + (d_bvCRhi_rho - d_bvShi_rho) * drho_dc)
 
             dGlo_dtau = jnp.where(case1_lo, 0.0,
-                A1sl * inv_sR + d_bvCRlo_z2 * inv_sM - d_bvSlo_z1 * inv_sR - d_bvSlo_z2 * inv_sM)
-            dGlo_dcR = jnp.where(case1_lo, A1c * inv_sR, d_bvCRlo_z1 * inv_sR)
-            dGlo_dcK = jnp.where(case1_lo, A2c * inv_sF,
-                A1sl * (-inv_sR) + A2sl * inv_sF + d_bvSlo_z1 * inv_sR)
-            dGlo_dmuR = jnp.where(case1_lo, -A1c * inv_sR,
-                A1sl * (-inv_sR)
+                A1l * inv_sR + d_bvCRlo_z2 * inv_sM - d_bvSlo_z1 * inv_sR - d_bvSlo_z2 * inv_sM)
+            dGlo_dcR = jnp.where(case1_lo, A1l * inv_sR, d_bvCRlo_z1 * inv_sR)
+            dGlo_dcK = jnp.where(case1_lo, A2l * inv_sF,
+                A1l * (-inv_sR) + A2l * inv_sF + d_bvSlo_z1 * inv_sR)
+            dGlo_dmuR = jnp.where(case1_lo, -A1l * inv_sR,
+                A1l * (-inv_sR)
                 + d_bvCRlo_z1 * (-inv_sR) + d_bvCRlo_z2 * (-inv_sM)
                 - d_bvSlo_z1 * (-inv_sR) - d_bvSlo_z2 * (-inv_sM))
-            dGlo_dmuF = jnp.where(case1_lo, -A2c * inv_sF,
-                A2sl * (-inv_sF) + d_bvCRlo_z2 * (-inv_sM) - d_bvSlo_z2 * (-inv_sM))
-            dGlo_dsigR = jnp.where(case1_lo, A1c * (-z_cR * inv_sR),
-                A1sl * (-z_s_lo * inv_sR)
+            dGlo_dmuF = jnp.where(case1_lo, -A2l * inv_sF,
+                A2l * (-inv_sF) + d_bvCRlo_z2 * (-inv_sM) - d_bvSlo_z2 * (-inv_sM))
+            dGlo_dsigR = jnp.where(case1_lo, A1l * (-z_cR * inv_sR),
+                A1l * (-z_s_lo * inv_sR)
                 + d_bvCRlo_z1 * (-z_cR * inv_sR)
                 + d_bvCRlo_z2 * (-z_lo * inv_sM) * sR_over_sM + d_bvCRlo_rho * drho_dsR
                 - d_bvSlo_z1 * (-z_s_lo * inv_sR)
                 - d_bvSlo_z2 * (-z_lo * inv_sM) * sR_over_sM - d_bvSlo_rho * drho_dsR)
-            dGlo_dsigF = jnp.where(case1_lo, A2c * (-z_cK_F * inv_sF),
-                A2sl * (-z_cK_F * inv_sF)
+            dGlo_dsigF = jnp.where(case1_lo, A2l * (-z_cK_F * inv_sF),
+                A2l * (-z_cK_F * inv_sF)
                 + d_bvCRlo_z2 * (-z_lo * inv_sM) * sF_over_sM + d_bvCRlo_rho * drho_dsF
                 - d_bvSlo_z2 * (-z_lo * inv_sM) * sF_over_sM - d_bvSlo_rho * drho_dsF)
-            dGlo_dcorr = jnp.where(case1_lo, Acc,
-                Acsl + (d_bvCRlo_z2 - d_bvSlo_z2) * (-z_lo * inv_sM) * dsM_dc
+            dGlo_dcorr = jnp.where(case1_lo, Acl,
+                Acl + (d_bvCRlo_z2 - d_bvSlo_z2) * (-z_lo * inv_sM) * dsM_dc
                 + (d_bvCRlo_rho - d_bvSlo_rho) * drho_dc)
 
             dlp_dzcR = eff_dpR * (-d_bvCRhi_z1 + d_bvCRlo_z1)

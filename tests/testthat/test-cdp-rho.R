@@ -95,7 +95,7 @@ test_that("R-side CDP cells with a correlation partition the band and reduce to 
   n <- 200
   a <- rnorm(n, 0.8, 0.4); b <- runif(n, 0.6, 1.5); cc <- rnorm(n, 0.5, 0.4); dd <- runif(n, 0.6, 1.5)
   cr <- rnorm(n, 1.2, 0.6); ck <- rnorm(n, 0.4, 0.6); lo <- rnorm(n, 0, 1); hi <- lo + runif(n, 0.2, 2)
-  r <- runif(n, -0.8, 0.8)
+  r <- c(runif(n - 40, -0.8, 0.8), runif(20, 0.9, 0.999), runif(20, -0.999, -0.9))
   dev <- vapply(seq_len(n), function(i) {
     s <- sqrt(b[i]^2 + dd[i]^2 + 2 * r[i] * b[i] * dd[i])
     sum(compute_rkg_probs_r(a[i], b[i], cc[i], dd[i], cr[i], ck[i], lo[i], hi[i], r[i])) -
@@ -128,8 +128,8 @@ test_that("CDP predictions with correlations: native band cells match the R loop
     set.seed(9)
     params <- list(dprime = matrix(rnorm(S * N, 1, 0.3), S), dprime2 = matrix(rnorm(S * N, 0.5, 0.3), S),
                    rec_crit = matrix(rnorm(S * N, 1.2, 0.3), S), know_crit = matrix(rnorm(S * N, 0.4, 0.3), S))
-    if (isTRUE(m$model_data$has_rho)) params$rho <- matrix(runif(S * N, -0.6, 0.6), S)
-    if (isTRUE(m$model_data$has_rho_N)) params$rho_N <- matrix(runif(S * N, -0.6, 0.6), S)
+    if (isTRUE(m$model_data$has_rho)) params$rho <- matrix(runif(S * N, -0.99, 0.99), S)
+    if (isTRUE(m$model_data$has_rho_N)) params$rho_N <- matrix(runif(S * N, -0.99, 0.99), S)
     thresh <- array(rep(c(-0.2, 0.6, 1.4), each = S * N), c(S, N, 3))
     is_old <- rep(0:1, length.out = N)
     K <- 4L
@@ -182,9 +182,15 @@ test_that("cdp correlations: batch C++ matches plain Stan in log density and gra
     base <- list(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1, sigma_R ~ 1)
     if (cs[[3]]) base <- c(base, list(know_crit ~ 1))
     f <- do.call(brf, c(base, cs[[2]], list(family = cdp(old_levels = 2:4))))
-    r <- suppressMessages(.stan_parity(.broc_plain(f, data = cs[[1]]), broc(f, data = cs[[1]])))
+    mp <- .broc_plain(f, data = cs[[1]]); mb <- broc(f, data = cs[[1]])
+    r <- suppressMessages(.stan_parity(mp, mb))
     lab <- paste(vapply(cs[[2]], function(x) deparse(x[[2]]), ""), collapse = "+")
     expect_lt(r$lp, 1e-8, label = paste(lab, "log density"))
     expect_lt(r$grad, 1e-7, label = paste(lab, "gradient"))
+    if (identical(cs[[2]][[1]][[2]], quote(rho_target))) {
+      r2 <- suppressMessages(.stan_parity_at(mp, mb, list(`beta_rho[1]` = 2.6, `beta_rho_N[1]` = -2.4)))
+      expect_lt(r2$lp, 1e-8, label = paste(lab, "log density at rho 0.989 / -0.984"))
+      expect_lt(r2$grad, 1e-7, label = paste(lab, "gradient at rho 0.989 / -0.984"))
+    }
   }
 })

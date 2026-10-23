@@ -51,7 +51,36 @@ xs = np.linspace(-37.0, 37.0, 2001)
 P, _, Q = nb._acc_phi_and_deriv(jnp.asarray(xs))
 refQ = ndtr(-np.abs(xs))
 
+hfx = np.genfromtxt(sys.argv[5], delimiter=",", skip_header=1)
+hi_rect, hi_cdf, hi_tail, hi_tail999, hi_jax = [], [], [], [], []
+for rr in (0.9, -0.9, 0.99, -0.99, 0.999, -0.999):
+    m = 120
+    a1 = rng.uniform(-5, 5, m); b1 = a1 + rng.uniform(0.05, 4.0, m)
+    a2 = rng.uniform(-5, 5, m); b2 = a2 + rng.uniform(0.05, 4.0, m)
+    rv = np.full(m, rr)
+    args = [jnp.asarray(v) for v in (a1, b1, a2, b2, rv)]
+    got = np.asarray(nb._bvn_rect(*args)[0])
+    want = np.array([bvn(b1[i], b2[i], rr) - bvn(a1[i], b2[i], rr) - bvn(b1[i], a2[i], rr) + bvn(a1[i], a2[i], rr) for i in range(m)])
+    keep = want > 1e-6
+    hi_rect.append(np.max(np.abs(got[keep] / want[keep] - 1)))
+    cg = np.asarray(nb._bvn_cdf(args[1], args[3], args[4])[0])
+    cw = np.array([bvn(b1[i], b2[i], rr) for i in range(m)])
+    hi_cdf.append(np.max(np.abs(cg - cw)))
+    hx = hfx[np.isclose(hfx[:, 4], rr)]
+    tg = np.asarray(nb._bvn_rect(*[jnp.asarray(hx[:, j]) for j in range(5)])[0])
+    (hi_tail999 if abs(rr) > 0.995 else hi_tail).append(np.max(np.abs(np.expm1(np.log(tg) - hx[:, 5]))))
+    if nb._BVN_FFI:
+        nb._BVN_FFI = False
+        jg = np.asarray(nb._bvn_rect(*args)[0])
+        nb._BVN_FFI = True
+        hi_jax.append(np.max(np.abs(jg[keep] / got[keep] - 1)))
+
 out = {
+    "hi_rho_rect_rel_err": float(max(hi_rect)),
+    "hi_rho_cdf_abs_err": float(max(hi_cdf)),
+    "hi_rho_tail_rel_err": float(max(hi_tail)),
+    "hi_rho_tail_rel_err_999": float(max(hi_tail999)),
+    "hi_rho_ffi_vs_jax": float(max(hi_jax)) if hi_jax else 0.0,
     "ffi_loaded": bool(nb._BVN_FFI),
     "rect_abs_err": float(np.max(np.abs(np.asarray(rect[0]) - ref))),
     "rect_rel_err": float(np.max(np.abs(np.asarray(rect[0])[big] / ref[big] - 1))),
