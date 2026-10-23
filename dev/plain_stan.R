@@ -301,7 +301,7 @@
   real bvn_rect(real a1, real b1, real a2, real b2, real rho_in) {
     real rho = fmin(fmax(rho_in, -0.999999), 0.999999);
     real ar = abs(rho);
-    int m = ar < 0.7 ? 8 : (ar < 0.85 ? 10 : (ar < 0.9 ? 12 : (ar < 0.925 ? 14 : (ar < 0.97 ? 16 : (ar < 0.98 ? 20 : (ar < 0.995 ? 28 : (ar < 0.997 ? 32 : (ar < 0.9988 ? 40 : (ar < 0.9995 ? 48 : (ar < 0.9998 ? 64 : (ar < 0.99995 ? 80 : (ar < 0.99999 ? 96 : 128))))))))))));
+    int m = ar < 0.67 ? 8 : (ar < 0.79 ? 10 : (ar < 0.865 ? 12 : (ar < 0.91 ? 14 : (ar < 0.94 ? 16 : (ar < 0.97 ? 20 : (ar < 0.99 ? 28 : (ar < 0.994 ? 32 : (ar < 0.9978 ? 40 : (ar < 0.999 ? 48 : (ar < 0.9997 ? 64 : (ar < 0.99985 ? 80 : (ar < 0.99997 ? 96 : 128))))))))))));
     array[m] real xs = bvn_gl_x(m);
     array[m] real ws = bvn_gl_w(m);
     real A = asin(rho);
