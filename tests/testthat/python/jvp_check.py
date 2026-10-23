@@ -27,14 +27,16 @@ def check(f, args, cont_idx, seed=0):
     worst_primal = 0.0
     worst_tan = 0.0
     worst_abs = 0.0
+    custom = jax.jit(lambda a, t: jax.jvp(f, a, t))
+    reference = jax.jit(lambda a, t: jax.jvp(f.fun, a, t)[1])
     for i in cont_idx:
         v = jnp.asarray(rng.normal(size=np.shape(args[i])))
         tangents = [jnp.zeros_like(a) if jnp.issubdtype(a.dtype, jnp.floating)
                     else np.zeros(np.shape(a), dtype=jax.dtypes.float0) for a in args]
         tangents[i] = v
-        primal, tan = jax.jit(lambda a, t: jax.jvp(f, a, t))(tuple(args), tuple(tangents))
+        primal, tan = custom(tuple(args), tuple(tangents))
         worst_primal = max(worst_primal, float(np.max(np.abs(np.asarray(primal) - plain))))
-        ref = np.asarray(jax.jit(lambda a, t: jax.jvp(f.fun, a, t))(tuple(args), tuple(tangents))[1])
+        ref = np.asarray(reference(tuple(args), tuple(tangents)))
         err = np.abs(np.asarray(tan) - ref)
         if not np.all(np.isfinite(err)):
             return {"custom_jvp": True, "primal_abs": worst_primal, "tangent_abs": float("inf"),
