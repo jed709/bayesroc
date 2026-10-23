@@ -551,19 +551,6 @@ inline void cdf_multi_array(int64_t n, const double* const* in, double* const* o
     for (int a = 0; a < NO; ++a)
       for (int64_t l = 0; i + l < n; ++l) out[a][i + l] = O[a][l];
   }
-  const double* r = in[NI - 1];
-  for (int q = 0; q < NP; ++q) {
-    const double* h = in[q];
-    const double* k = in[NP + q];
-    for (int64_t j = 0; j < n; ++j) {
-      if (out[8 * q][j] >= bvn_tail::kTailSwitch || std::isnan(h[j]) || std::isnan(k[j]) || std::isnan(r[j])) continue;
-      bvn_tail::Rect t = bvn_tail::rect(-bvn_tail::kInf, h[j], -bvn_tail::kInf, k[j], r[j]);
-      out[8 * q][j] = t.p;
-      out[8 * q + 1][j] = t.d1h;
-      out[8 * q + 2][j] = t.d2h;
-      out[8 * q + 3][j] = t.drho;
-    }
-  }
 }
 
 inline void cdf_array(int64_t n, const double* h, const double* k, const double* rho, double* p,

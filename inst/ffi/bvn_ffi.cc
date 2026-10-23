@@ -467,6 +467,7 @@ BAYESROC_F32(BayesrocBvnRectF32, 5, 6, rect_k);
 BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
 BAYESROC_F32(BayesrocVrdp2dF32, 14, 11, bvn::vrdp_array);
 BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
+BAYESROC_F32(BayesrocBvnCdf3F32, 7, 24, (bvn::cdf_multi_array<3, 0>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
 BAYESROC_F32(BayesrocCdpCellF32, 11, 10, cdp_k);
 
@@ -479,6 +480,7 @@ BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
 BAYESROC_F64(BayesrocBvnCdf, 3, 4, cdf_k);
 BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);
 BAYESROC_F64(BayesrocBvnCdf2, 6, 18, (bvn::cdf_multi_array<2, 1>));
+BAYESROC_F64(BayesrocBvnCdf3, 7, 24, (bvn::cdf_multi_array<3, 0>));
 BAYESROC_F64(BayesrocBvnCdf4, 11, 36, (bvn::cdf_multi_array<4, 2>));
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitDiff, ProbitDiffImpl,

@@ -687,14 +687,16 @@ if os.environ.get("BAYESROC_BVN_FFI"):
     try:
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("probit_cell", "ProbitCell"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
+                         ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"), ("cdp_cell", "CdpCell"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
+                         ("cdp_cell", "CdpCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
@@ -1095,7 +1097,7 @@ def _bvn_cdf_multi(pairs, extras, rho):
     ks = arrs[1:2 * n:2]
     xs = arrs[2 * n:2 * n + m]
     r = arrs[-1]
-    if _native_ok(r) and (n, m) in ((2, 1), (4, 2)):
+    if _native_ok(r) and (n, m) in ((2, 1), (3, 0), (4, 2)):
         out = _native_call(f"bvn_cdf{n}", 8 * n + 2 * m, [*hs, *ks, *xs, r])
         return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
                                                                  for j in range(m)]
@@ -2615,8 +2617,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
     def _lower_quadrants(z_cR, z_s_hi, z_s_lo, z_cK_F, corr):
         """Phi2(z, z_cK_F; corr) at z = z_cR, z_s_hi, z_s_lo: (P, dP/dz, dP/dz_cK_F, dP/dcorr) each."""
-        q, _ = _bvn_cdf_multi([(z_cR, z_cK_F), (z_s_hi, z_cK_F), (z_s_lo, z_cK_F), (z_cR, z_cK_F)],
-                              [z_cK_F, z_cR], corr)
+        q, _ = _bvn_cdf_multi([(z_cR, z_cK_F), (z_s_hi, z_cK_F), (z_s_lo, z_cK_F)], [], corr)
         return [tuple(q[j][:4]) for j in range(3)]
 
     @custom_jvp
