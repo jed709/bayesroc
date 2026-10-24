@@ -13,6 +13,11 @@ test_that("lognormal meta-noise needs the probit link and an even number of cate
   expect_identical(broc(brf(conf | old ~ 1, criterion ~ 1, sigma_meta ~ 1, family = evsd()), data = d)$model_data$meta_noise,
                    "gaussian")
   expect_null(broc(brf(conf | old ~ 1, criterion ~ 1, family = evsd(meta_noise = "lognormal")), data = d)$model_data$meta_noise)
+  d$enc <- factor(ifelse(as.integer(d$item) %% 2 == 0, "aloud", "silent"))
+  expect_error(broc(brf(conf | old ~ enc, criterion ~ 1, sigma_meta ~ enc, family = evsd(meta_noise = "lognormal")),
+                    data = d, encoding_vars = "enc"), "lures have no encoding condition")
+  expect_s3_class(broc(brf(conf | old ~ enc, criterion ~ 1, sigma_meta ~ 1, family = evsd(meta_noise = "lognormal")),
+                       data = d, encoding_vars = "enc"), "broc_model")
 })
 
 test_that("lognormal meta-noise cells match the 28-digit reference on the native and R paths", {

@@ -223,6 +223,10 @@ print.broc_summary <- function(x, ...) {
       tbl <- d[c(lab_cols, intersect(c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"), names(d)))]
       if (!length(lab_cols)) tbl <- cbind(cell = "all", tbl)
       for (v in lab_cols) tbl[[v]] <- ifelse(is.na(tbl[[v]]), "all", as.character(tbl[[v]]))
+      if (p == "bias" && "criterion" %in% names(tbl)) {
+        tbl$criterion <- sub("^position ", "", tbl$criterion)
+        names(tbl)[names(tbl) == "criterion"] <- "position"
+      }
       if (!is.null(slope)) {
         tbl <- cbind(tbl[setdiff(names(tbl), c("estimate", "sd", "lower", "upper", "rhat", "ess_bulk", "ess_tail"))],
                      effect = ifelse(is.na(slope), "", paste("per SD of", slope)),

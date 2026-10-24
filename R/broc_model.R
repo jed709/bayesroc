@@ -395,14 +395,15 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (length(enc_in_crit)) {
     warning("Encoding variable in criterion formula: ", paste(enc_in_crit, collapse = ", "), call. = FALSE)
   }
-  for (lp in c("rho_N", "dprime_L", "sigma_L", "lambda_L", if (cdp_rho_shared) "rho")) {
+  for (lp in c("rho_N", "dprime_L", "sigma_L", "lambda_L", if (cdp_rho_shared) "rho", "sigma_meta")) {
     f <- params[[lp]]
     if (!inherits(f, "formula")) next
     enc <- unique(c(intersect(encoding_vars, all.vars(f)),
                     if (grepl("encoding\\s*\\(", paste(deparse(f), collapse = ""))) "encoding()"))
     if (length(enc)) {
-      what <- if (lp == "rho") "rho is shared by targets and lures, and lures have" else
-        paste(family$external_aliases[[lp]] %||% lp, "describes new items only, which have")
+      what <- if (lp == "rho") "rho is shared by targets and lures, and lures have"
+              else if (lp == "sigma_meta") "sigma_meta is the meta-noise of every rating, lures' included, and lures have"
+              else paste(family$external_aliases[[lp]] %||% lp, "describes new items only, which have")
       stop(what, " no encoding condition, so it cannot depend on an encoding variable (", paste(enc, collapse = ", "), ").",
            if (lp == "rho") " Use rho_target and rho_lure for separate correlations." else "", call. = FALSE)
     }
