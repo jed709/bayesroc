@@ -12,6 +12,7 @@
 #include "bayesroc/pcq.h"
 #include "bayesroc/lnoise.h"
 #include "bayesroc/mafc.h"
+#include "bayesroc/lineup.h"
 
 static inline bvn::v4d vphi_p(bvn::v4d x);
 #include "bayesroc/tmap_kernel.h"
@@ -553,6 +554,35 @@ ffi::Error LnoiseCellImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer
   return ffi::Error::Success();
 }
 
+// kind, k, m, s, lo, hi, sb, lo_open, hi_open [N] -> lp, dm, ds, dlo, dhi, dsb [N]: lineup cell
+template <typename T>
+ffi::Error LineupCellImpl(ffi::ThreadPool pool, ffi::AnyBuffer kd, ffi::AnyBuffer kk, ffi::AnyBuffer m,
+                          ffi::AnyBuffer s, ffi::AnyBuffer lo, ffi::AnyBuffer hi, ffi::AnyBuffer sb,
+                          ffi::AnyBuffer ol, ffi::AnyBuffer oh, ffi::Result<ffi::AnyBuffer> lp,
+                          ffi::Result<ffi::AnyBuffer> dm, ffi::Result<ffi::AnyBuffer> ds,
+                          ffi::Result<ffi::AnyBuffer> dlo, ffi::Result<ffi::AnyBuffer> dhi,
+                          ffi::Result<ffi::AnyBuffer> dsb) {
+  const int64_t N = kd.element_count();
+  DBuf<T> b0(kd), b1(kk), b2(m), b3(s), b4(lo), b5(hi), b6(sb), b7(ol), b8(oh);
+  DOut<T> o0(lp), o1(dm), o2(ds), o3(dlo), o4(dhi), o5(dsb);
+  const double *KD = b0.ptr, *KK = b1.ptr, *M = b2.ptr, *S = b3.ptr, *LO = b4.ptr, *HI = b5.ptr, *SB = b6.ptr,
+               *OL = b7.ptr, *OH = b8.ptr;
+  double *P = o0.ptr, *GM = o1.ptr, *GS = o2.ptr, *GL = o3.ptr, *GH = o4.ptr, *GB = o5.ptr;
+  pool_for(pool, N, 64, [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i) {
+      const lineup::Cell c = lineup::cell(static_cast<lineup::Kind>(static_cast<int>(KD[i])), static_cast<int>(KK[i]),
+                                          M[i], S[i], LO[i], HI[i], SB[i], OL[i] > 0.5, OH[i] > 0.5);
+      P[i] = c.lp;
+      GM[i] = c.dm;
+      GS[i] = c.ds;
+      GL[i] = c.dlo;
+      GH[i] = c.dhi;
+      GB[i] = c.dsb;
+    }
+  });
+  return ffi::Error::Success();
+}
+
 #define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
 #define A_ .Arg<ffi::AnyBuffer>()
 #define R_ .Ret<ffi::AnyBuffer>()
@@ -560,6 +590,8 @@ BAYESROC_TMAP(BayesrocPcq, PcqImpl<double>, A_ A_, R_ R_ R_);
 BAYESROC_TMAP(BayesrocPcqF32, PcqImpl<float>, A_ A_, R_ R_ R_);
 BAYESROC_TMAP(BayesrocLnoiseCell, LnoiseCellImpl<double>, A_ A_ A_ A_, R_ R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocLnoiseCellF32, LnoiseCellImpl<float>, A_ A_ A_ A_, R_ R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocLineupCell, LineupCellImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocLineupCellF32, LineupCellImpl<float>, A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
@@ -828,6 +860,19 @@ extern "C" void bayesroc_r_mafc_probs(const double* d, const double* sg, const d
       for (int k = 0; k < MM; ++k)
         out[i + N * k] = k < m[i] ? std::exp(mafc::cell(m[i], target[i] - 1, k, d[i], sg[i], bb, dd, ds, db)) : 0.0;
     }
+  });
+}
+
+// Plain C entry for R's .C(): lineup cell probabilities at n points (open edges flagged by ol / oh).
+extern "C" void bayesroc_r_lineup_cell(const int* kind, const int* k, const double* m, const double* s,
+                                       const double* lo, const double* hi, const double* sb, const int* ol,
+                                       const int* oh, const int* n, const int* threads, double* p) {
+  const int64_t N = *n;
+  if (N <= 0) return;
+  r_threads(N, *threads, 64, [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i)
+      p[i] = std::exp(lineup::cell(static_cast<lineup::Kind>(kind[i]), k[i], m[i], s[i], lo[i], hi[i], sb[i],
+                                   ol[i] != 0, oh[i] != 0).lp);
   });
 }
 

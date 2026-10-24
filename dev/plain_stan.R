@@ -331,6 +331,7 @@
   cdf_code <- generate_link_cdf_wrapper(link)
   lines <- c(lines, cdf_code)
   if (family_name == "mafc") lines <- c(lines, .plain_mafc_functions())
+  if (family_name == "lineup") lines <- c(lines, .plain_lineup_functions())
   
   if (family_name == "cumulative") {
     lines <- c(lines, '
@@ -1742,6 +1743,14 @@ generate_likelihood_code <- function(model_data, family_name) {
       lines <- c(lines, "    real lambda_B_val = inv_logit(lambda_B_n);")
     }
     
+    if (family_name == "lineup" && isTRUE(model_data$has_dprime_L)) {
+      lines <- c(lines, generate_param_lp("dprime_L", model_data$dprime_L_fixed, model_data$dprime_L_random,
+                                          model_data$smooth_data[["dprime_L"]]))
+    }
+    if (family_name == "lineup" && isTRUE(model_data$has_sigma_L)) {
+      lines <- c(lines, generate_param_lp("sigma_L", model_data$sigma_L_fixed, model_data$sigma_L_random,
+                                          model_data$smooth_data[["sigma_L"]]), "    real sigma_L_val = exp(sigma_L_n);")
+    }
     for (mp in c("mratio", "mratio_N", "sigma_meta")) {
       if (!isTRUE(model_data[[paste0("has_", mp)]])) next
       lines <- c(lines, generate_param_lp(mp, model_data[[paste0(mp, "_fixed")]], model_data[[paste0(mp, "_random")]],
@@ -2625,6 +2634,12 @@ generate_likelihood_call <- function(model_data, family_name) {
     "gnoise_lpmf(y[n] | dprime_n, sigma_meta_val, is_old[n], K, thresh)"
   } else if (family_name == "evsdt") {
     "evsdt_lpmf(y[n] | dprime_n, is_old[n], K, thresh)"
+  } else if (family_name == "lineup") {
+    sprintf("lineup_lpmf(y[n] | lu_kind[n], lu_slot[n], lu_size[n], dprime_n, %s, %s, %s, %s, K, thresh)",
+            if (isTRUE(model_data$has_sigma)) "sigma_val" else "1",
+            if (isTRUE(model_data$has_dprime_L)) "dprime_L_n" else "0",
+            if (isTRUE(model_data$has_sigma_L)) "sigma_L_val" else "1",
+            if (isTRUE(model_data$has_sigma_meta)) "sigma_meta_val" else "0")
   } else if (family_name == "metadt") {
     m_old <- if (isTRUE(model_data$has_mratio)) "mratio_val" else "1"
     m_new <- if (isTRUE(model_data$metad_mratio_shared)) m_old else if (isTRUE(model_data$has_mratio_N)) "mratio_N_val" else "1"
@@ -2936,4 +2951,222 @@ generate_mafc_likelihood_code <- function(model_data) {
   }
   call <- sprintf("mafc_cell_lpmf(y[n] | target_pos[n], m_alt[n], dprime_n, %s, bias_n)", sig)
   c(lines, if (isTRUE(model_data$has_counts)) sprintf("    target += counts[n] * %s;", call) else sprintf("    target += %s;", call))
+}
+
+#' Plain-Stan lineup functions (Independent Observations: the winner's integral split at its mode and at the
+#' criteria, Gauss-Legendre on each piece)
+#' @noRd
+.plain_lineup_functions <- function() {
+  '
+  real lu_logphi(real x) {
+    if (x > -30) return log(Phi(x));
+    {
+      real r = 1 / square(x);
+      return -0.5 * square(x) - log(-x) - 0.5 * log(2 * pi()) + log1p(r * (-1 + r * (3 + r * (-15 + r * (105 - 945 * r)))));
+    }
+  }
+
+  real lu_lam(real x) {
+    return exp(std_normal_lpdf(x) - lu_logphi(x));
+  }
+
+  real lu_lg(real zl, real zh, int lo_open, int hi_open) {
+    if (lo_open == 1 && hi_open == 1) return 0;
+    if (lo_open == 1) return lu_logphi(zh);
+    if (hi_open == 1) return lu_logphi(-zl);
+    if (zl > 0) {
+      real a = lu_logphi(-zl);
+      return a + log1m_exp(lu_logphi(-zh) - a);
+    }
+    if (zh < 0) {
+      real a = lu_logphi(zh);
+      return a + log1m_exp(lu_logphi(zl) - a);
+    }
+    return log1m(exp(lu_logphi(zl)) + exp(lu_logphi(-zh)));
+  }
+
+  vector lu_eval(real w, int filler, real k, real m, real s, real lo, real hi, real sb, int lo_open, int hi_open) {
+    vector[3] out;
+    real ma = filler == 1 ? 0 : m;
+    real sa = filler == 1 ? 1 : s;
+    real n1 = filler == 1 ? k - 2 : k - 1;
+    real u = (w - ma) / sa;
+    real h = -0.5 * square(u) - log(sa) - 0.5 * log(2 * pi());
+    real g = -u / sa;
+    real h2 = -1 / square(sa);
+    if (n1 > 0) {
+      real l = lu_lam(w);
+      h += n1 * lu_logphi(w);
+      g += n1 * l;
+      h2 -= n1 * l * (w + l);
+    }
+    if (filler == 1) {
+      real v = (w - m) / s;
+      real l = lu_lam(v);
+      h += lu_logphi(v);
+      g += l / s;
+      h2 -= l * (v + l) / square(s);
+    }
+    if (sb > 0) {
+      real zl = lo_open == 1 ? 0 : (lo - w) / sb;
+      real zh = hi_open == 1 ? 0 : (hi - w) / sb;
+      real lg = lu_lg(zl, zh, lo_open, hi_open);
+      real ph = hi_open == 1 ? 0 : exp(std_normal_lpdf(zh) - lg);
+      real pl = lo_open == 1 ? 0 : exp(std_normal_lpdf(zl) - lg);
+      real d1 = (pl - ph) / sb;
+      h += lg;
+      g += d1;
+      h2 += (pl * zl - ph * zh) / square(sb) - square(d1);
+    }
+    out[1] = h;
+    out[2] = g;
+    out[3] = h2;
+    return out;
+  }
+
+  real lu_quad(int filler, real k, real m, real s, real lo, real hi, real sb, int lo_open, int hi_open) {
+    vector[64] X = to_vector({-0.9993050417357722, -0.9963401167719552, -0.9910133714767443, -0.983336253884626, -0.973326827789911, -0.9610087996520538, -0.9464113748584028, -0.9295691721319396, -0.9105221370785028, -0.8893154459951141, -0.8659993981540928, -0.8406292962525803, -0.8132653151227975, -0.7839723589433414, -0.7528199072605319, -0.7198818501716109, -0.6852363130542333, -0.6489654712546573, -0.6111553551723933, -0.571895646202634, -0.5312794640198946, -0.48940314570705296, -0.4463660172534641, -0.4022701579639916, -0.3572201583376681, -0.31132287199021097, -0.2646871622087674, -0.21742364374000708, -0.16964442042399283, -0.12146281929612054, -0.07299312178779904, -0.02435029266342443, 0.02435029266342443, 0.07299312178779904, 0.12146281929612054, 0.16964442042399283, 0.21742364374000708, 0.2646871622087674, 0.31132287199021097, 0.3572201583376681, 0.4022701579639916, 0.4463660172534641, 0.48940314570705296, 0.5312794640198946, 0.571895646202634, 0.6111553551723933, 0.6489654712546573, 0.6852363130542333, 0.7198818501716109, 0.7528199072605319, 0.7839723589433414, 0.8132653151227975, 0.8406292962525803, 0.8659993981540928, 0.8893154459951141, 0.9105221370785028, 0.9295691721319396, 0.9464113748584028, 0.9610087996520538, 0.973326827789911, 0.983336253884626, 0.9910133714767443, 0.9963401167719552, 0.9993050417357722});
+    vector[64] W = to_vector({0.00178328072169414, 0.004147033260564499, 0.006504457968978502, 0.008846759826363397, 0.011168139460131028, 0.01346304789671786, 0.01572603047602503, 0.017951715775697284, 0.020134823153530088, 0.02227017380838297, 0.0243527025687112, 0.02637746971505491, 0.028339672614259535, 0.030234657072402554, 0.032057928354851495, 0.033805161837141794, 0.0354722132568823, 0.03705512854024009, 0.03855015317861564, 0.039953741132720544, 0.041262563242623576, 0.04247351512365361, 0.04358372452932355, 0.044590558163756566, 0.045491627927418184, 0.04628479658131447, 0.046968182816210076, 0.04754016571483042, 0.04799938859645842, 0.048344762234802996, 0.04857546744150351, 0.048690957009139814, 0.048690957009139814, 0.04857546744150351, 0.048344762234802996, 0.04799938859645842, 0.04754016571483042, 0.046968182816210076, 0.04628479658131447, 0.045491627927418184, 0.044590558163756566, 0.04358372452932355, 0.04247351512365361, 0.041262563242623576, 0.039953741132720544, 0.03855015317861564, 0.03705512854024009, 0.0354722132568823, 0.033805161837141794, 0.032057928354851495, 0.030234657072402554, 0.028339672614259535, 0.02637746971505491, 0.0243527025687112, 0.02227017380838297, 0.020134823153530088, 0.017951715775697284, 0.01572603047602503, 0.01346304789671786, 0.011168139460131028, 0.008846759826363397, 0.006504457968978502, 0.004147033260564499, 0.00178328072169414});
+    real big = 1e300;
+    real a = (sb > 0 || lo_open == 1) ? -big : lo;
+    real b = (sb > 0 || hi_open == 1) ? big : hi;
+    real sa = filler == 1 ? 1 : s;
+    real ma = filler == 1 ? 0 : m;
+    real z = fmin(fmax(ma, a), b);
+    real zl = z;
+    real zr = z;
+    real step = sa;
+    real hm;
+    real el;
+    real er;
+    real tot = 0;
+    int pinned = 0;
+    vector[3] e = lu_eval(z, filler, k, m, s, lo, hi, sb, lo_open, hi_open);
+    if (e[2] > 0) {
+      for (it in 1:200) {
+        real zn = fmin(zr + step, b);
+        vector[3] en = lu_eval(zn, filler, k, m, s, lo, hi, sb, lo_open, hi_open);
+        if (en[2] <= 0) {
+          zr = zn;
+          break;
+        }
+        zl = zn;
+        zr = zn;
+        if (zn >= b) {
+          pinned = 1;
+          break;
+        }
+        step *= 2;
+      }
+    } else {
+      for (it in 1:200) {
+        real zn = fmax(zl - step, a);
+        vector[3] en = lu_eval(zn, filler, k, m, s, lo, hi, sb, lo_open, hi_open);
+        if (en[2] >= 0) {
+          zl = zn;
+          break;
+        }
+        zl = zn;
+        zr = zn;
+        if (zn <= a) {
+          pinned = 1;
+          break;
+        }
+        step *= 2;
+      }
+    }
+    if (pinned == 0) {
+      z = 0.5 * (zl + zr);
+      for (it in 1:100) {
+        vector[3] en = lu_eval(z, filler, k, m, s, lo, hi, sb, lo_open, hi_open);
+        real zn;
+        if (en[2] > 0) zl = z; else zr = z;
+        zn = z - en[2] / en[3];
+        if (!(zn > zl && zn < zr)) zn = 0.5 * (zl + zr);
+        if (abs(zn - z) < 1e-9 / sqrt(-en[3])) {
+          z = zn;
+          break;
+        }
+        z = zn;
+      }
+    } else {
+      z = zl;
+    }
+    hm = lu_eval(z, filler, k, m, s, lo, hi, sb, lo_open, hi_open)[1];
+    for (sd in 1:2) {
+      real side = sd == 1 ? -1 : 1;
+      real bound = sd == 1 ? a : b;
+      real zo = z + side * sqrt(80) * sa;
+      real zi = z;
+      real ee;
+      zo = sd == 1 ? fmax(zo, bound) : fmin(zo, bound);
+      ee = zo;
+      if ((sd == 1 && z <= a) || (sd == 2 && z >= b)) {
+        ee = z;
+      } else if (lu_eval(zo, filler, k, m, s, lo, hi, sb, lo_open, hi_open)[1] < hm - 40) {
+        for (it in 1:80) {
+          vector[3] en = lu_eval(ee, filler, k, m, s, lo, hi, sb, lo_open, hi_open);
+          real zn;
+          if (abs(en[1] - (hm - 40)) < 0.5) break;
+          if (en[1] < hm - 40) zo = ee; else zi = ee;
+          zn = ee - (en[1] - (hm - 40)) / en[2];
+          ee = (zn - zi) * (zn - zo) < 0 ? zn : 0.5 * (zi + zo);
+        }
+      }
+      if (sd == 1) el = ee; else er = ee;
+    }
+    {
+      array[29] real br;
+      int nb = 3;
+      vector[29] bs;
+      br[1] = el;
+      br[2] = er;
+      br[3] = (z > el && z < er) ? z : er;
+      for (t in 1:2) {
+        real c = t == 1 ? lo : hi;
+        int op = t == 1 ? lo_open : hi_open;
+        for (o in 1:13) {
+          real off = o == 1 ? 0 : (o % 2 == 0 ? -1 : 1) * 0.5 * 2^((o - 2) %/% 2);
+          real x = c + off * sb;
+          nb += 1;
+          br[nb] = (sb > 0 && op == 0 && x > el && x < er && (o == 1 || 16 * sb < er - el)) ? x : er;
+        }
+      }
+      bs = sort_asc(to_vector(br));
+      for (p in 1:28) {
+        real hh = 0.5 * (bs[p + 1] - bs[p]);
+        if (hh > 0) {
+          for (i in 1:64) {
+            tot += W[i] * hh * exp(lu_eval(bs[p] + hh * (X[i] + 1), filler, k, m, s, lo, hi, sb, lo_open, hi_open)[1] - hm);
+          }
+        }
+      }
+    }
+    return hm + log(tot);
+  }
+
+  real lineup_lpmf(int y, int kind, int slot, int size, real d, real sg, real dl, real sgl, real sb, int K,
+                   vector thresh) {
+    real m = slot == 1 ? d : (slot == 2 ? dl : 0);
+    real s = slot == 1 ? sg : (slot == 2 ? sgl : 1);
+    int lo_open = y == 1;
+    int hi_open = y == K;
+    real lo = lo_open == 1 ? 0 : thresh[y - 1];
+    real hi = hi_open == 1 ? 0 : thresh[y];
+    if (size == 1) {
+      real t = sqrt(square(s) + square(sb));
+      if (lo_open == 1) return lu_logphi((hi - m) / t);
+      if (hi_open == 1) return lu_logphi(-(lo - m) / t);
+      return lu_lg((lo - m) / t, (hi - m) / t, 0, 0);
+    }
+    if (kind == 2 && sb <= 0) {
+      real lh = hi_open == 1 ? 0 : lu_logphi((hi - m) / s) + (size - 1) * lu_logphi(hi);
+      if (lo_open == 1) return lh;
+      return lh + log1m_exp(lu_logphi((lo - m) / s) + (size - 1) * lu_logphi(lo) - lh);
+    }
+    if (kind == 0) return lu_quad(0, size, m, s, lo, hi, sb, lo_open, hi_open);
+    if (kind == 1) return log(size - 1) + lu_quad(1, size, m, s, lo, hi, sb, lo_open, hi_open);
+    return log_sum_exp(lu_quad(0, size, m, s, lo, hi, sb, lo_open, hi_open),
+                       log(size - 1) + lu_quad(1, size, m, s, lo, hi, sb, lo_open, hi_open));
+  }'
 }

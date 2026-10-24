@@ -18,6 +18,7 @@
                                 sigma  = "sigma_R", sigma2 = "sigma_F",
                                 rho = "rho_target", rho_N = "rho_lure"),
     metadt               = list(mratio = "mratio_old", mratio_N = "mratio_new"),
+    lineup               = list(dprime_L = "dprime_innocent", sigma_L = "sigma_innocent", sigma_meta = "sigma_b"),
     cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
                                 criterion = "cutpoints", criterion_scale = "cutpoints_scale",
@@ -1392,6 +1393,125 @@ mafc <- function(alternatives = NULL) {
                     description = "Position biases, the last position the reference")
       ),
       description = "m-Alternative Forced Choice Model (DeCarlo 2012)"
+    ),
+    class = "broc_family"
+  )
+}
+
+#' Independent Observations Lineup Model
+#'
+#' Signal detection model of simultaneous lineups and showups (Independent
+#' Observations, or MAX, rule; Clark, 2003; Wixted et al., 2018; Cohen,
+#' Starns & Rotello, 2021), with confidence, an optional designated innocent
+#' suspect, an optional shared lineup variance, and crossed random effects on
+#' every parameter.
+#'
+#' @param size The name of the column holding each trial's lineup size k
+#'   (1 for a showup), or one whole number for a constant size.
+#' @param suspect `NULL` (default): no culprit-absent lineup has a designated
+#'   innocent suspect, so every face in it is a filler. Or the name of a
+#'   logical (or 0/1) column: `TRUE` for culprit-absent lineups whose suspect
+#'   slot holds a designated innocent suspect. Ignored on culprit-present rows.
+#'
+#' @details
+#' ## Model
+#' Each of the k faces yields evidence X = b + W: fillers W ~ N(0, 1), the
+#' guilty suspect W ~ N(d', sigma^2), a designated innocent suspect
+#' W ~ N(d'_I, sigma_I^2), and b ~ N(0, sigma_b^2) shared by the faces of one
+#' lineup. The witness compares the largest X with ordered criteria
+#' \eqn{\tau_1 < \dots < \tau_{K-1}}: below the identification criterion the
+#' lineup is rejected (at a confidence set by the criteria below it, when
+#' rejection confidence was collected), above it the largest face is
+#' identified, its confidence the highest criterion it passes. With W_i the
+#' winner's evidence, a cell has probability
+#' \deqn{P = \int f_i(w) \prod_{l \ne i} F_l(w) \, P(\tau_{lo} < b + w < \tau_{hi}) \, dw,}
+#' the last factor an indicator when sigma_b = 0; rejections sum this over all
+#' faces, which for sigma_b = 0 is the closed form
+#' \eqn{F_s(\tau_{hi}) \Phi(\tau_{hi})^{k-1} - F_s(\tau_{lo}) \Phi(\tau_{lo})^{k-1}}.
+#' A showup (k = 1) is the unequal-variance rating model. Cells are computed
+#' by quadrature to about 1e-13.
+#'
+#' ## Data
+#' `resp(id, conf) | present ~ ...`: `id` is `"reject"`, `"suspect"` or
+#' `"filler"`; `conf` the confidence, whole numbers from 1 (least sure), for
+#' identifications and, optionally, rejections (all rejections `NA` gives one
+#' rejection category); `present` is 1 when the culprit is in the lineup. In
+#' a culprit-absent lineup without a designated suspect every face is a
+#' filler, so its identifications are coded `"filler"` (a showup's face may
+#' be coded either way).
+#'
+#' ## Parameters
+#' \describe{
+#'   \item{dprime}{(required) Mean evidence of the guilty suspect. Identity link.}
+#'   \item{sigma}{(optional) SD of the guilty suspect's evidence. Log link. If omitted, 1.}
+#'   \item{dprime_innocent}{(optional) Mean evidence of a designated innocent
+#'     suspect (lineup unfairness). Identity link. If omitted, 0.}
+#'   \item{sigma_innocent}{(optional) SD of a designated innocent suspect's
+#'     evidence. Log link. If omitted, 1.}
+#'   \item{sigma_b}{(optional) SD of the evidence shared by a lineup's faces
+#'     (Wixted et al., 2018). Log link. If omitted, 0 (independent faces).}
+#'   \item{criterion}{(required) The K-1 thresholds on the largest face's
+#'     evidence, rejections below identifications (mid-anchor + K-2 ordered
+#'     gaps). Identity link.}
+#' }
+#'
+#' ## Formula syntax
+#' ```
+#' broc(brf(resp(id, conf) | present ~ 1 + (1 | lineup_set),
+#'          criterion ~ 1 + (1 | lineup_set),
+#'          family = lineup(size = "k", suspect = "designated")),
+#'     data = dat)
+#' ```
+#'
+#' @references
+#' Clark, S. E. (2003). A memory and decision model for eyewitness
+#'   identification. *Applied Cognitive Psychology*, *17*(6), 629-654.
+#'
+#' Wixted, J. T., Vul, E., Mickes, L., & Wilson, B. M. (2018). Models of
+#'   lineup memory. *Cognitive Psychology*, *105*, 81-114.
+#'
+#' Cohen, A. L., Starns, J. J., & Rotello, C. M. (2021). sdtlu: An R package
+#'   for the signal detection analysis of eyewitness lineup data. *Behavior
+#'   Research Methods*, *53*(1), 278-300.
+#'
+#' @return A `broc_family` object.
+#' @seealso [uvsd()], the showup model.
+#' @export
+lineup <- function(size = NULL, suspect = NULL) {
+  if (is.null(size) || !((is.character(size) || (is.numeric(size) && size >= 1 && size == round(size))) &&
+                         length(size) == 1L)) {
+    stop("lineup() needs `size`: the name of the column of lineup sizes, or one whole number.", call. = FALSE)
+  }
+  if (!is.null(suspect) && !(is.character(suspect) && length(suspect) == 1L)) {
+    stop("suspect must be NULL or the name of a logical column flagging designated innocent suspects.", call. = FALSE)
+  }
+  structure(
+    list(
+      family = "lineup",
+      link = link_probit(),
+      size = size,
+      suspect = suspect,
+      params = list(
+        dprime = list(required = TRUE, default = NULL, link = "identity",
+                      description = "Mean evidence of the guilty suspect"),
+        sigma = list(required = FALSE, default = NULL, link = "log",
+                     null_value = 0, null_description = "fixed at 1",
+                     description = "SD of the guilty suspect's evidence"),
+        dprime_L = list(required = FALSE, default = NULL, link = "identity",
+                        null_value = 0, null_description = "fixed at 0 (fair lineup)",
+                        description = "Mean evidence of a designated innocent suspect"),
+        sigma_L = list(required = FALSE, default = NULL, link = "log",
+                       null_value = 0, null_description = "fixed at 1",
+                       description = "SD of a designated innocent suspect's evidence"),
+        sigma_meta = list(required = FALSE, default = NULL, link = "log",
+                          null_description = "independent faces (sigma_b = 0)",
+                          description = "SD of the evidence shared by a lineup's faces"),
+        criterion_scale = .crit_scale_spec(),
+        criterion = list(required = TRUE, default = NULL, link = "identity",
+                         description = "Thresholds on the largest face's evidence, rejections below identifications")
+      ),
+      external_aliases = .param_name_map("lineup"),
+      description = "Independent Observations Lineup Model"
     ),
     class = "broc_family"
   )

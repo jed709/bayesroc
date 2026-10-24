@@ -102,10 +102,14 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     curves <- list(); points <- list()
     for (lev in names(pairs)) {
       pr <- pairs[[lev]]
-      curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob), .cell = lev)
-      if (observed) points[[lev]] <- cbind(.roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
+      curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob, partial = fam == "lineup"),
+                             .cell = lev)
+      if (observed) {
+        points[[lev]] <- cbind(if (fam == "lineup") .lineup_roc_observed(model, w, pr$signal, pr$noise, scale)
+                               else .roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
+      }
     }
-    dim_label <- if (roles$what == "source") "Source" else "Detection"
+    dim_label <- if (roles$what == "source") "Source" else if (roles$what == "lineup") "Identification" else "Detection"
     curves <- cbind(merge(do.call(rbind, curves), cf, by = ".cell", sort = FALSE), .dim = dim_label)
     pts <- if (observed) cbind(merge(do.call(rbind, points), cf, by = ".cell", sort = FALSE), .dim = dim_label)
     list(curves = curves, pts = pts, what = roles$what, n_cells = length(pairs))
@@ -125,12 +129,14 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
             max(vapply(parts, `[[`, integer(1), "n_cells")), re_formula)
 }
 
-.roc_band <- function(far, hr, scale, prob) {
+.roc_band <- function(far, hr, scale, prob, partial = FALSE) {
   lo <- (1 - prob) / 2
   if (scale == "z") {
     clip <- function(x) stats::qnorm(pmin(pmax(x, 1e-6), 1 - 1e-6))
     far <- clip(far); hr <- clip(hr)
     xg <- seq(max(apply(far, 1, min), -3), min(apply(far, 1, max), 3), length.out = 120)
+  } else if (partial) {
+    xg <- seq(0, stats::median(apply(far, 1, max)), length.out = 151)
   } else {
     xg <- seq(0, 1, length.out = 151)
   }
@@ -138,8 +144,10 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     o <- order(far[s, ])
     stats::approx(far[s, o], hr[s, o], xout = xg, ties = mean, rule = 2)$y
   }, numeric(length(xg))))
-  if (scale == "probability") {
+  if (scale == "probability" && !partial) {
     ys <- cbind(0, ys[, -c(1, length(xg)), drop = FALSE], 1)
+  } else if (scale == "probability") {
+    ys[, 1] <- 0
   }
   data.frame(x = xg, y = colMeans(ys), lower = apply(ys, 2, stats::quantile, lo, names = FALSE),
              upper = apply(ys, 2, stats::quantile, 1 - lo, names = FALSE))
@@ -157,6 +165,54 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   if (scale == "z") {
     z <- function(p) stats::qnorm(pmin(pmax(p, 1e-4), 1 - 1e-4))
     for (v in names(out)) out[[v]] <- z(out[[v]])
+  }
+  out
+}
+
+# observed lineup ROC points: at each identification confidence j, the culprit-present suspect identifications
+# at confidence j or above against the culprit-absent false identifications (of a designated innocent suspect,
+# or of any face divided by the lineup size when there is none)
+.lineup_roc_observed <- function(model, w, sig, noi, scale) {
+  lu <- model$model_data$lineup
+  R <- lu$R
+  J <- lu$J
+  code <- lu$code
+  slot <- model$stan_data$lu_slot
+  k <- model$stan_data$lu_size
+  sus <- code > R & code <= R + J
+  conf <- ifelse(code > R + J, code - R - J, code - R)
+  out <- do.call(rbind, lapply(seq_len(J), function(j) {
+    nh <- sum(w[sig]); xh <- sum(w[sig][sus[sig] & conf[sig] >= j])
+    fa <- ifelse(slot[noi] == 2L, sus[noi] & conf[noi] >= j, (code[noi] > R & conf[noi] >= j) / k[noi])
+    nf <- sum(w[noi]); xf <- sum(w[noi] * fa)
+    data.frame(x = xf / nf, y = xh / nh,
+               xlo = stats::qbeta(0.025, xf + 0.5, nf - xf + 0.5), xhi = stats::qbeta(0.975, xf + 0.5, nf - xf + 0.5),
+               ylo = stats::qbeta(0.025, xh + 0.5, nh - xh + 0.5), yhi = stats::qbeta(0.975, xh + 0.5, nh - xh + 0.5))
+  }))
+  if (scale == "z") {
+    z <- function(p) stats::qnorm(pmin(pmax(p, 1e-4), 1 - 1e-4))
+    for (v in names(out)) out[[v]] <- z(out[[v]])
+  }
+  out
+}
+
+# P(suspect identified with the largest evidence above c) along the criterion path [S, r, U]; a culprit-absent
+# lineup without a designated suspect counts any identification divided by the lineup size
+.lineup_survival <- function(tps, c_path, slot, k) {
+  d <- dim(c_path)
+  S <- d[1]; r <- d[2]; U <- d[3]
+  n <- S * r
+  sl <- rep(slot, each = S)
+  kk <- rep(k, each = S)
+  one <- rep(1, n); zero <- rep(0, n)
+  m <- ifelse(sl == 1L, as.vector(tps[["dprime"]]), ifelse(sl == 2L, as.vector(tps[["dprime_L"]] %||% zero), 0))
+  s <- ifelse(sl == 1L, as.vector(tps[["sigma"]] %||% one), ifelse(sl == 2L, as.vector(tps[["sigma_L"]] %||% one), 1))
+  sb <- as.vector(tps[["sigma_meta"]] %||% zero)
+  kind <- ifelse(sl == 0L, 2L, 0L)
+  scale <- ifelse(sl == 0L, 1 / kk, 1)
+  out <- array(0, d)
+  for (j in seq_len(U)) {
+    out[, , j] <- scale * .lineup_cells(kind, kk, m, s, as.vector(c_path[, , j]), zero, sb, FALSE, TRUE)
   }
   out
 }
@@ -257,7 +313,8 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
 
 .collapse_rows <- function(setup, rows, w) {
   pick <- unique(c(1L, ceiling(setup$S / 2), setup$S))
-  cols <- list(setup$data_src$is_old[rows], setup$data_src$source[rows], setup$data_src$item_type[rows])
+  cols <- list(setup$data_src$is_old[rows], setup$data_src$source[rows], setup$data_src$item_type[rows],
+               setup$data_src$lu_slot[rows], setup$data_src$lu_size[rows])
   for (m in setup$tp) cols <- c(cols, list(t(m[pick, rows, drop = FALSE])))
   for (a in list(setup$th, setup$th2)) {
     if (is.null(a)) next
@@ -324,6 +381,12 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
       sg[, !old] <- sqrt(2)
       surv <- 1 - .pnorm_v((c_path - as.vector(mu)) / as.vector(sg))
       dim(surv) <- dim(c_path)
+      for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
+      next
+    }
+    if (fam == "lineup") {
+      surv <- .lineup_survival(tps, crit(setup$th[, idx, , drop = FALSE]), setup$data_src$lu_slot[idx],
+                               setup$data_src$lu_size[idx])
       for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
       next
     }
@@ -559,15 +622,19 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     p <- p + ggplot2::facet_wrap(stats::as.formula(paste("~", paste(by[-1], collapse = " + "))))
   }
   axis_x <- switch(what, source = "Source A items called B", both = "False-alarm rate (detection); A items called B (source)",
-                   "False-alarm rate")
+                   lineup = "False identification rate", "False-alarm rate")
   axis_y <- switch(what, source = "Source B items called B", both = "Hit rate (detection); B items called B (source)",
-                   "Hit rate")
+                   lineup = "Correct identification rate", "Hit rate")
   if (z) {
     rng <- if (!is.null(pts)) range(c(pts$x, pts$y), na.rm = TRUE) + c(-0.75, 0.75)
            else range(c(curves$x, curves$y), na.rm = TRUE)
     p <- p + ggplot2::coord_equal(xlim = rng, ylim = rng) +
       ggplot2::labs(x = paste0("z(", if (both) axis_x else tolower(axis_x), ")"),
                     y = paste0("z(", if (both) axis_y else tolower(axis_y), ")"))
+  } else if (what == "lineup") {
+    xmax <- max(c(curves$x, if (!is.null(pts)) pts$xhi), na.rm = TRUE) * 1.05
+    p <- p + ggplot2::coord_cartesian(xlim = c(0, xmax), ylim = c(0, 1), expand = FALSE) +
+      ggplot2::labs(x = axis_x, y = axis_y)
   } else {
     p <- p + ggplot2::coord_equal(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
       ggplot2::scale_x_continuous(breaks = seq(0, 1, 0.25), labels = c("0", ".25", ".5", ".75", "1")) +
@@ -576,7 +643,8 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   }
   level <- if (identical(re_formula, NA)) "Model curve for a typical participant (random effects at zero)."
            else "Model curve averaged over the observed data."
-  title <- paste0(if (z) "zROC" else "ROC", switch(what, source = ": source memory", both = ": detection and source memory", ""))
+  title <- paste0(if (z) "zROC" else "ROC", switch(what, source = ": source memory", both = ": detection and source memory",
+                                                    lineup = ": lineup identification", ""))
   p + .colour_scales(n_cells, if (length(by)) by[1] else NULL) +
     ggplot2::labs(title = title,
                   subtitle = paste0("Model with ", round(100 * prob), "% band",

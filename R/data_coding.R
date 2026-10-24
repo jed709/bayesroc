@@ -41,7 +41,7 @@
   })), encoding_vars, counts))
   exempt <- character(0)
   rv <- .resp_vars(brf_obj)
-  if (length(rv) == 2L && family$family %in% c("cdp", "bivariate_sdt", "bivariate_dp", "vrdp2d")) exempt <- rv[2]
+  if (length(rv) == 2L && family$family %in% c("cdp", "bivariate_sdt", "bivariate_dp", "vrdp2d", "lineup")) exempt <- rv[2]
   vars <- setdiff(intersect(vars, names(data)), exempt)
   if (!length(vars)) return(list(data = data, dropped = integer(0)))
   ok <- stats::complete.cases(data[vars])
@@ -204,4 +204,75 @@
   if (M < 2L || any(m < 2L)) stop("mafc() needs at least 2 alternatives per trial.", call. = FALSE)
   if (M - 1L > 64L) stop("mafc() supports up to 65 alternatives.", call. = FALSE)
   list(choice = choice, target = target, m = m, M = as.integer(M))
+}
+
+.code_lineup <- function(data, id_var, conf_var, present_var, size, suspect) {
+  if (is.null(conf_var) || is.null(present_var)) {
+    stop("lineup() needs `resp(id, conf) | present ~ ...`: the identification, its confidence and whether the ",
+         "culprit was present.", call. = FALSE)
+  }
+  for (v in c(id_var, conf_var, present_var)) {
+    if (!v %in% names(data)) {
+      stop("lineup() needs `resp(id, conf) | present ~ ...`: column '", v %||% "?", "' is missing from the data.",
+           call. = FALSE)
+    }
+  }
+  N <- nrow(data)
+  id <- tolower(trimws(as.character(data[[id_var]])))
+  bad <- which(!id %in% c("reject", "suspect", "filler"))
+  if (length(bad)) {
+    stop("'", id_var, "' must be \"reject\", \"suspect\" or \"filler\"; row ", bad[1], " has \"", data[[id_var]][bad[1]],
+         "\".", call. = FALSE)
+  }
+  present <- .code_is_old(data[[present_var]], present_var, allow_centered = FALSE)
+  if (is.character(size)) {
+    if (!size %in% names(data)) stop("Column '", size, "' (lineup(size = )) not found in the data.", call. = FALSE)
+    k <- .code_position(data[[size]], size)
+  } else {
+    k <- rep(as.integer(size), N)
+  }
+  designated <- rep(FALSE, N)
+  if (!is.null(suspect)) {
+    if (!suspect %in% names(data)) stop("Column '", suspect, "' (lineup(suspect = )) not found in the data.", call. = FALSE)
+    sv <- data[[suspect]]
+    designated <- if (is.logical(sv)) sv else as.numeric(as.character(sv)) != 0
+    if (anyNA(designated)) stop("'", suspect, "' must be TRUE/FALSE (or 1/0) on every row.", call. = FALSE)
+  }
+  designated <- designated & present == 0
+  conf <- data[[conf_var]]
+  num <- suppressWarnings(as.numeric(as.character(conf)))
+  if (any(is.na(num) & !is.na(conf)) || any(abs(num - round(num)) > 1e-8 | num < 1, na.rm = TRUE)) {
+    stop("'", conf_var, "' must hold confidence levels 1, 2, ... (whole numbers from 1).", call. = FALSE)
+  }
+  conf <- as.integer(round(num))
+  ids <- id != "reject"
+  if (any(is.na(conf[ids]))) {
+    stop("Row ", which(ids & is.na(conf))[1], ": an identification needs its confidence in '", conf_var, "'.",
+         call. = FALSE)
+  }
+  rej <- !ids
+  rconf <- conf[rej]
+  if (any(!is.na(rconf)) && anyNA(rconf)) {
+    stop("Rejection confidence is given on some rejections but not others: give it on every rejection or none.",
+         call. = FALSE)
+  }
+  R <- if (all(is.na(rconf))) 1L else max(rconf)
+  J <- if (any(ids)) max(conf[ids]) else 1L
+  if (all(is.na(rconf))) conf[rej] <- 1L
+  if (any(id == "filler" & k == 1L)) {
+    stop("Row ", which(id == "filler" & k == 1L)[1], ": a showup (size 1) has no fillers; code its identification \"suspect\".",
+         call. = FALSE)
+  }
+  bad <- which(id == "suspect" & present == 0 & !designated & k > 1L)
+  if (length(bad)) {
+    stop("Row ", bad[1], ": a suspect identification in a culprit-absent lineup with no designated innocent suspect. ",
+         "Flag designated suspects with lineup(suspect = ) or code these identifications \"filler\".", call. = FALSE)
+  }
+  pos <- ifelse(rej, R + 1L - conf, R + conf)
+  slot <- ifelse(present == 1, 1L, ifelse(designated, 2L, 0L))
+  kind <- ifelse(rej | slot == 0L, 2L, ifelse(id == "suspect", 0L, 1L))
+  code <- ifelse(rej, pos, ifelse(k == 1L | id == "suspect", R + conf, R + J + conf))
+  labels <- c(if (R == 1L) "rej" else paste0("rej ", R:1), paste0("sus ", seq_len(J)), paste0("fil ", seq_len(J)))
+  list(y = as.integer(pos), kind = as.integer(kind), slot = as.integer(slot), k = as.integer(k), present = present,
+       R = R, J = J, K = R + J, code = as.integer(code), code_labels = labels)
 }

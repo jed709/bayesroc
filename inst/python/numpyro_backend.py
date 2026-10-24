@@ -685,7 +685,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
-                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"),
+                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("lineup_cell", "LineupCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
@@ -693,7 +693,8 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
-                         ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                         ("lnoise_cell", "LnoiseCell"), ("lineup_cell", "LineupCell"),
+                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
@@ -1608,6 +1609,281 @@ def _lnoise_cell_lp_jvp(primals, tangents):
     ta, tln, tlf, ts = tangents
     return lp, da * ta + jnp.where(jnp.isneginf(primals[1]), 0.0, dln * tln) + \
         jnp.where(jnp.isposinf(primals[2]), 0.0, dlf * tlf) + ds * ts
+
+
+_LU_DROP = 40.0
+
+
+def _lu_logphi(x):
+    """(log Phi(x), phi(x) / Phi(x))."""
+    lp = _log_q(-x)
+    return lp, jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - lp)
+
+
+def _lu_log_interval(zl, zh, lo_open, hi_open):
+    """log(Phi(zh) - Phi(zl)) on the tail side of the interval, with phi(zl) / P and phi(zh) / P."""
+    a = _log_q(-zh)
+    b = _log_q(zl)
+    c = _log_q(-zl)
+    d = _log_q(zh)
+    up = b + jnp.log1p(-jnp.exp(d - b))
+    dn = a + jnp.log1p(-jnp.exp(c - a))
+    mid = jnp.log1p(-jnp.exp(c) - jnp.exp(d))
+    lg = jnp.where(zl > 0.0, up, jnp.where(zh < 0.0, dn, mid))
+    lg = jnp.where(lo_open, jnp.where(hi_open, 0.0, a), jnp.where(hi_open, b, lg))
+    ph = jnp.where(hi_open, 0.0, jnp.exp(-0.5 * zh * zh - _LOG_SQRT_2PI - lg))
+    pl = jnp.where(lo_open, 0.0, jnp.exp(-0.5 * zl * zl - _LOG_SQRT_2PI - lg))
+    return lg, pl, ph
+
+
+def _lu_quad_jax(filler, k, m, s, lo, hi, sb, lo_open, hi_open):
+    """Pure-JAX reference of the native lineup quadrature (lineup.h): log of the integral of the winner's
+    density times the other faces' CDFs times the criterion-interval probability, with d/dm, d/ds, d/dlo,
+    d/dhi, d/dsb of the log; the integrand split at its mode and graded at the criteria when sb is small."""
+    dt = m.dtype
+    ma = jnp.where(filler, 0.0, m)
+    sa = jnp.where(filler, 1.0, s)
+    n1 = jnp.where(filler, k - 2, k - 1).astype(dt)
+    interval = sb > 0.0
+    sbs = jnp.where(interval, sb, 1.0)
+    lo0 = jnp.where(lo_open, 0.0, lo)
+    hi0 = jnp.where(hi_open, 0.0, hi)
+
+    def ev(w):
+        u = (w - ma) / sa
+        v = (w - m) / s
+        h = -0.5 * u * u - jnp.log(sa) - _LOG_SQRT_2PI
+        g = -u / sa
+        h2 = -1.0 / (sa * sa)
+        lw, lmw = _lu_logphi(w)
+        h = h + n1 * lw
+        g = g + n1 * lmw
+        h2 = h2 - n1 * lmw * (w + lmw)
+        lv, lmv = _lu_logphi(v)
+        h = h + jnp.where(filler, lv, 0.0)
+        g = g + jnp.where(filler, lmv / s, 0.0)
+        h2 = h2 - jnp.where(filler, lmv * (v + lmv) / (s * s), 0.0)
+        zl = jnp.where(lo_open, 0.0, (lo0 - w) / sbs)
+        zh = jnp.where(hi_open, 0.0, (hi0 - w) / sbs)
+        lg, pl, ph = _lu_log_interval(zl, zh, lo_open, hi_open)
+        d1 = (pl - ph) / sbs
+        h = h + jnp.where(interval, lg, 0.0)
+        g = g + jnp.where(interval, d1, 0.0)
+        h2 = h2 + jnp.where(interval, (pl * zl - ph * zh) / (sbs * sbs) - d1 * d1, 0.0)
+        return h, g, h2
+
+    inf = jnp.asarray(np.inf, dt)
+    a = jnp.where(interval | lo_open, -inf, lo0)
+    b = jnp.where(interval | hi_open, inf, hi0)
+    z0 = jnp.clip(ma, a, b)
+    _, g0, _ = ev(z0)
+    right = g0 > 0.0
+
+    def expand(_, st):
+        zl, zr, step, done = st
+        zn = jnp.where(right, jnp.minimum(zr + step, b), jnp.maximum(zl - step, a))
+        _, gn, _ = ev(zn)
+        hit = jnp.where(right, gn <= 0.0, gn >= 0.0)
+        at_edge = jnp.where(right, zn >= b, zn <= a)
+        nzl = jnp.where(done, zl, jnp.where(right, jnp.where(hit, zl, zn), zn))
+        nzr = jnp.where(done, zr, jnp.where(right, zn, jnp.where(hit, zr, zn)))
+        return nzl, nzr, jnp.where(done, step, 2.0 * step), done | hit | at_edge
+
+    zl, zr, _, _ = jax.lax.fori_loop(0, 80, expand, (z0, z0, sa, jnp.zeros_like(right)))
+    _, gzl, _ = ev(zl)
+    _, gzr, _ = ev(zr)
+    pinned_b = right & (gzr > 0.0)
+    pinned_a = (~right) & (gzl < 0.0)
+
+    def newton(_, st):
+        z, zl, zr = st
+        _, g, h2 = ev(z)
+        zl = jnp.where(g > 0.0, z, zl)
+        zr = jnp.where(g > 0.0, zr, z)
+        zn = z - g / h2
+        return jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr)), zl, zr
+
+    zm, _, _ = jax.lax.fori_loop(0, 80, newton, (0.5 * (zl + zr), zl, zr))
+    zm = jnp.where(pinned_b, b, jnp.where(pinned_a, a, zm))
+    zm = jnp.clip(zm, a, b)
+    hm, _, _ = ev(zm)
+    target = hm - _LU_DROP
+
+    def edge(side, bound):
+        zo0 = zm + side * np.sqrt(2.0 * _LU_DROP) * sa
+        zo0 = jnp.minimum(zo0, bound) if side > 0 else jnp.maximum(zo0, bound)
+        ho, _, _ = ev(zo0)
+        keep = ho >= target
+
+        def step(_, st):
+            z, zi, zo = st
+            h, g, _ = ev(z)
+            zo = jnp.where(h < target, z, zo)
+            zi = jnp.where(h < target, zi, z)
+            zn = z - (h - target) / jnp.where(g != 0.0, g, 1.0)
+            zn = jnp.where((zn - zi) * (zn - zo) < 0.0, zn, 0.5 * (zi + zo))
+            return zn, zi, zo
+
+        ze = jax.lax.fori_loop(0, 60, step, (zo0, zm, zo0))[0]
+        return jnp.where(keep, zo0, ze)
+
+    el = jnp.where(zm > a, edge(-1.0, a), zm)
+    er = jnp.where(zm < b, edge(1.0, b), zm)
+    steep = 16.0 * sbs < er - el
+    pts = [zm]
+    for t, op in ((lo0, lo_open), (hi0, hi_open)):
+        for off, need_steep in ((0.0, False), (-2.0, True), (2.0, True), (-8.0, True), (8.0, True)):
+            x = t + off * sbs
+            ok = interval & ~op & (x > el) & (x < er) & (steep | (not need_steep))
+            pts.append(jnp.where(ok, x, er))
+    br = jnp.sort(jnp.stack([el, er] + pts, -1), -1)
+    lo_b, hi_b = br[..., :-1], br[..., 1:]
+    hh = 0.5 * (hi_b - lo_b)
+    X = jnp.asarray(_GL32_X, dt)
+    W = jnp.asarray(_GL32_W, dt)
+    w = ((lo_b + hh)[..., None] + hh[..., None] * X).reshape(br.shape[:-1] + (-1,))
+    wt = (hh[..., None] * W).reshape(w.shape)
+    E = lambda v: v[..., None]
+    u = (w - E(ma)) / E(sa)
+    H = -0.5 * u * u - E(jnp.log(sa) + _LOG_SQRT_2PI + hm)
+    lw, _ = _lu_logphi(w)
+    H = H + E(n1) * lw
+    v = (w - E(m)) / E(s)
+    lv, lmv = _lu_logphi(v)
+    H = H + jnp.where(E(filler), lv, 0.0)
+    dm = jnp.where(E(filler), -lmv / E(s), u / E(sa))
+    ds = jnp.where(E(filler), -lmv * v / E(s), (u * u - 1.0) / E(sa))
+    zlv = jnp.where(E(lo_open), 0.0, (E(lo0) - w) / E(sbs))
+    zhv = jnp.where(E(hi_open), 0.0, (E(hi0) - w) / E(sbs))
+    lg, pl, ph = _lu_log_interval(zlv, zhv, E(lo_open), E(hi_open))
+    H = H + jnp.where(E(interval), lg, 0.0)
+    e = wt * jnp.exp(H)
+    tot = jnp.sum(e, -1)
+    it = 1.0 / tot
+    lp = hm + jnp.log(tot)
+    out_dm = jnp.sum(e * dm, -1) * it
+    out_ds = jnp.sum(e * ds, -1) * it
+    dlo_i = jnp.sum(e * (-pl / E(sbs)), -1) * it
+    dhi_i = jnp.sum(e * (ph / E(sbs)), -1) * it
+    dsb_i = jnp.sum(e * ((pl * zlv - ph * zhv) / E(sbs)), -1) * it
+    hlo, _, _ = ev(lo0)
+    hhi, _, _ = ev(hi0)
+    dlo_b = jnp.where(lo_open, 0.0, -jnp.exp(hlo - lp))
+    dhi_b = jnp.where(hi_open, 0.0, jnp.exp(hhi - lp))
+    return (lp, out_dm, out_ds, jnp.where(interval, dlo_i, dlo_b), jnp.where(interval, dhi_i, dhi_b),
+            jnp.where(interval, dsb_i, 0.0))
+
+
+def _lu_any_closed(k, m, s, lo, hi, lo_open, hi_open):
+    def logH(c):
+        u = (c - m) / s
+        lu, lmu = _lu_logphi(u)
+        lc, lmc = _lu_logphi(c)
+        return lu + (k - 1) * lc, lmu / s + (k - 1) * lmc, -lmu / s, -lmu * u / s
+
+    lh, dch, dmh, dsh = logH(jnp.where(hi_open, 0.0, hi))
+    lh, dch, dmh, dsh = [jnp.where(hi_open, 0.0, v) for v in (lh, dch, dmh, dsh)]
+    ll, dcl, dml, dsl = logH(jnp.where(lo_open, 0.0, lo))
+    d = jnp.where(lo_open, -np.inf, ll - lh)
+    om = -jnp.expm1(d)
+    wh = 1.0 / om
+    wl = jnp.where(lo_open, 0.0, jnp.exp(d) / om)
+    return lh + jnp.log(om), wh * dmh - wl * dml, wh * dsh - wl * dsl, -wl * dcl, wh * dch, jnp.zeros_like(m)
+
+
+def _lu_single(m, s, lo, hi, sb, lo_open, hi_open):
+    t = jnp.sqrt(s * s + sb * sb)
+    zl = jnp.where(lo_open, -40.0, (jnp.where(lo_open, 0.0, lo) - m) / t)
+    zh = jnp.where(hi_open, 40.0, (jnp.where(hi_open, 0.0, hi) - m) / t)
+    lp = jnp.where(lo_open, _log_q(-zh), jnp.where(hi_open, _log_q(zl), _log_diff_phi(zl, zh)))
+    ph = jnp.where(hi_open, 0.0, jnp.exp(-0.5 * zh * zh - _LOG_SQRT_2PI - lp))
+    pl = jnp.where(lo_open, 0.0, jnp.exp(-0.5 * zl * zl - _LOG_SQRT_2PI - lp))
+    dt = (pl * jnp.where(lo_open, 0.0, zl) - ph * jnp.where(hi_open, 0.0, zh)) / t
+    return lp, (pl - ph) / t, dt * s / t, -pl / t, ph / t, dt * sb / t
+
+
+def _lineup_cell_jax(kind, k, m, s, lo, hi, sb, lo_open, hi_open):
+    """Pure-JAX reference of lineup::cell: (lp, dm, ds, dlo, dhi, dsb)."""
+    kk = jnp.maximum(k, 2.0)
+    qs = _lu_quad_jax(jnp.zeros_like(lo_open), kk, m, s, lo, hi, sb, lo_open, hi_open)
+    qf = _lu_quad_jax(jnp.ones_like(lo_open), kk, m, s, lo, hi, sb, lo_open, hi_open)
+    lf = qf[0] + jnp.log(kk - 1.0)
+    mx = jnp.maximum(qs[0], lf)
+    ea, eb = jnp.exp(qs[0] - mx), jnp.exp(lf - mx)
+    wa, wb = ea / (ea + eb), eb / (ea + eb)
+    qa = [mx + jnp.log(ea + eb)] + [wa * x + wb * y for x, y in zip(qs[1:], qf[1:])]
+    qc = _lu_any_closed(kk, m, s, lo, hi, lo_open, hi_open)
+    q1 = _lu_single(m, s, lo, hi, sb, lo_open, hi_open)
+    is_s, is_f = kind == 0, kind == 1
+    closed = (kind == 2) & (sb <= 0.0)
+    out = []
+    for j in range(6):
+        v = jnp.where(is_s, qs[j], jnp.where(is_f, lf if j == 0 else qf[j], jnp.where(closed, qc[j], qa[j])))
+        out.append(jnp.where(k == 1, q1[j], v))
+    return tuple(out)
+
+
+def _lineup_raw(kind, k, m, s, lo, hi, sb, lo_open, hi_open):
+    dt = m.dtype
+    args = [jnp.asarray(v, dtype=dt) for v in (kind, k, m, s, lo, hi, sb, lo_open, hi_open)]
+    if _native_ok(m):
+        return _native_call("lineup_cell", 6, args)
+    return _lineup_cell_jax(args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7] > 0.5,
+                            args[8] > 0.5)
+
+
+def _make_fused_lineup_loglik(K, gap_link_is_softplus):
+    """Lineup (Independent Observations) log-likelihood over [N] trials with custom JVP: the suspect slot
+    N(m, s^2) (the guilty suspect, a designated innocent suspect, or a filler), the criterion interval of
+    the trial's position on the thresholds, and the shared lineup SD sb."""
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+
+    def _pieces(y, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps):
+        gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
+        thresh = build(thresh_mid, gap_vals)
+        k_hi = jnp.clip(y - 1, 0, n_thresh - 1)
+        k_lo = jnp.clip(y - 2, 0, n_thresh - 1)
+        rows = jnp.arange(y.shape[0])
+        lo_open = y == 1
+        hi_open = y == K
+        m = jnp.where(slot == 1, d, jnp.where(slot == 2, dl, 0.0))
+        s = jnp.where(slot == 1, sg, jnp.where(slot == 2, sgl, 1.0))
+        lo = jnp.where(lo_open, 0.0, thresh[rows, k_lo])
+        hi = jnp.where(hi_open, 0.0, thresh[rows, k_hi])
+        out = _lineup_raw(kind, size, m, s, lo, hi, sb, lo_open, hi_open)
+        return out, (lo_open, hi_open, k_lo, k_hi, gap_vals)
+
+    @custom_jvp
+    def _lineup(y, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps):
+        return _pieces(y, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps)[0][0]
+
+    @_lineup.defjvp
+    def _lineup_jvp(primals, tangents):
+        y, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps = primals
+        _, _, _, _, t_d, t_sg, t_dl, t_sgl, t_sb, t_mid, t_gaps = tangents
+        (lp, dm, ds, dlo, dhi, dsb), (lo_open, hi_open, k_lo, k_hi, gap_vals) = _pieces(*primals)
+        dlo = jnp.where(lo_open, 0.0, dlo)
+        dhi = jnp.where(hi_open, 0.0, dhi)
+        g1, g2 = slot == 1, slot == 2
+        gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
+        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
+        d_gaps = (gm[:, k_lo].T * dlo[:, None] + gm[:, k_hi].T * dhi[:, None]) * gap_d
+        tan = (jnp.where(g1, dm * t_d + ds * t_sg, 0.0) + jnp.where(g2, dm * t_dl + ds * t_sgl, 0.0) +
+               dsb * t_sb + (dlo + dhi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        return lp, tan
+
+    return _lineup
+
+
+def fused_loglik_lineup(y, K, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps, gap_link="log"):
+    """Lineup log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
+    N = y.shape[0]
+    is_softplus = gap_link == "softplus"
+    gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
+    key = ("lineup", int(K), bool(is_softplus))
+    if key not in _fused_cache:
+        _fused_cache[key] = _make_fused_lineup_loglik(int(K), bool(is_softplus))
+    return _fused_cache[key](y, kind, slot, size, d, sg, dl, sgl, sb, thresh_mid, gaps_per_obs)
 
 
 def _mafc_terms(y0, t0, m, d, sg, b):
@@ -5391,6 +5667,18 @@ def sdt_model(config):
                     gap_link=gap_link, rk_static=np.asarray(config["rk"]), y_static=np.asarray(config["y"]),
                     corr=cdp_corr,
                 )
+
+        elif family_name == "lineup":
+            ones = jnp.ones(N, dtype=_FLOAT)
+            zeros = jnp.zeros(N, dtype=_FLOAT)
+            log_lik = fused_loglik_lineup(
+                y, int(config["K"]), jnp.asarray(config["lu_kind"], dtype=jnp.int32),
+                jnp.asarray(config["lu_slot"], dtype=jnp.int32), jnp.asarray(config["lu_size"], dtype=_FLOAT),
+                trial_params.get("dprime", zeros), trial_params.get("sigma", ones), trial_params.get("dprime_L", zeros),
+                trial_params.get("sigma_L", ones), trial_params.get("sigma_meta", zeros), thresh_mid_vec, log_gaps_obs,
+                gap_link)
+            if counts is not None:
+                log_lik = log_lik * counts
 
         elif family_name == "metadt":
             ones = jnp.ones(N, dtype=_FLOAT)

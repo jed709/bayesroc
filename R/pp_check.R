@@ -89,9 +89,11 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
   } else {
     probs <- .predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
                            cores = cores, margin = if (bivariate) response)
-    y_obs <- if (bivariate && response == 2L) model$stan_data$y2 else model$stan_data$y
+    y_obs <- if (bivariate && response == 2L) model$stan_data$y2
+             else if (fam == "lineup") model$model_data$lineup$code else model$stan_data$y
     K <- dim(probs)[3]
-    labs <- if (bivariate && response == 2L) model$model_data$response2_labels else model$model_data$response_labels
+    labs <- if (bivariate && response == 2L) model$model_data$response2_labels
+            else if (fam == "lineup") model$model_data$lineup$code_labels else model$model_data$response_labels
     cat_labels <- if (length(labs) == K) as.character(labs) else as.character(seq_len(K))
   }
   counts <- .row_weights(model)[rows]
@@ -116,6 +118,8 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     factor(c("New", "Source A", "Source B")[sd$item_type], levels = c("New", "Source A", "Source B"))
   } else if (fam == "source_mixture") {
     factor(ifelse(sd$source == max(sd$source), "Source B", "Source A"), levels = c("Source A", "Source B"))
+  } else if (fam == "lineup") {
+    factor(ifelse(sd$is_old > 0, "Culprit present", "Culprit absent"), levels = c("Culprit absent", "Culprit present"))
   } else if (!is.null(sd$is_old) && fam != "cumulative") {
     factor(ifelse(sd$is_old > 0, "Targets", "Lures"), levels = c("Lures", "Targets"))
   } else NULL

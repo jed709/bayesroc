@@ -103,7 +103,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
   if (!is.null(prim) && length(as.character(prim)) >= 2) {
     lhs_str <- deparse(prim[[2]])
     if (grepl("\\|", lhs_str) && family$family %in%
-        c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp", "metadt")) {
+        c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp", "metadt", "lineup")) {
       bar_var <- trimws(strsplit(lhs_str, "\\|")[[1]][2])
       if (!grepl("^[a-zA-Z_.][a-zA-Z0-9_.]*$", bar_var)) {
       } else if (bar_var %in% cols) {
@@ -229,7 +229,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   gap_link <- match.arg(nc(gap_link, nc(brf_obj$gap_link, "log")),
                          c("log", "softplus"))
   if (!inherits(family, "broc_family")) {
-    stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), cdp(), vrdp2d(), or metad()")
+    stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), cdp(), vrdp2d(), metad(), mafc(), or lineup()")
   }
 
 
@@ -382,6 +382,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     } else if (family$family == "source_mixture") {
       stop("encoding_vars cannot be used with source_mixture() family. ",
            "Source mixture models use source (A/B) rather than old/new.")
+    } else if (family$family == "lineup") {
+      stop("encoding_vars do not apply to lineup(): every witness saw the culprit, so a study condition is an ",
+           "ordinary predictor of dprime (and sigma); fillers and innocent suspects are never studied.", call. = FALSE)
     } else if (family$family == "metadt") {
       stop("encoding_vars cannot be used with metad(): meta-d' is defined on one pair of stimulus ",
            "distributions per condition, and new items have no encoding condition. ",
@@ -831,10 +834,18 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   N <- nrow(data)
   resp_col <- parsed$response$response
   is_mafc <- family$family == "mafc"
+  is_lineup <- family$family == "lineup"
   mafc_coded <- NULL
+  lineup_coded <- NULL
   if (is_mafc) {
     mafc_coded <- .code_mafc(data, resp_col, parsed$response$is_old, family$alternatives)
     rc <- list(y = mafc_coded$choice, K = mafc_coded$M, labels = as.character(seq_len(mafc_coded$M)), offset = 0)
+  } else if (is_lineup) {
+    lineup_coded <- .code_lineup(data, resp_col, parsed$response$response2, parsed$response$is_old, family$size, family$suspect)
+    rc <- list(y = lineup_coded$y, K = lineup_coded$K,
+               labels = c(if (lineup_coded$R == 1L) "reject" else paste0("reject ", lineup_coded$R:1),
+                          paste0("ID ", seq_len(lineup_coded$J))), offset = 0)
+    data[[parsed$response$is_old]] <- lineup_coded$present
   } else {
     rc <- .code_response(data[[resp_col]], resp_col)
   }
@@ -890,7 +901,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   }
   
   is_vrdp2d <- family$family == "vrdp2d"
-  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp", "mafc")
+  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp", "mafc", "lineup")
   has_lambda <- !is.null(parsed[["lambda"]]) && family$family %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
   has_dprime2 <- !is.null(parsed[["dprime2"]]) && family$family %in% c("mixture", "cdp", "vrdp2d")
   has_sigma2 <- !is.null(parsed[["sigma2"]]) && family$family %in% c("mixture", "bivariate_sdt", "bivariate_dp", "cdp", "vrdp2d")
@@ -907,7 +918,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   is_metad <- family$family == "metadt"
   has_mratio <- !is.null(parsed[["mratio"]]) && is_metad
   has_mratio_N <- !is.null(parsed[["mratio_N"]]) && is_metad
-  has_sigma_meta <- !is.null(parsed[["sigma_meta"]]) && family$family == "evsdt"
+  has_sigma_meta <- !is.null(parsed[["sigma_meta"]]) && family$family %in% c("evsdt", "lineup")
   has_criterion2 <- !is.null(parsed[["criterion2"]]) && (is_bivariate || is_vrdp2d)
   has_lambda2 <- !is.null(parsed[["lambda2"]]) && is_bivariate_dp
   has_lambda2_B <- !is.null(parsed[["lambda2_B"]]) && is_bivariate_dp
@@ -917,11 +928,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_rec_crit <- !is.null(parsed$rec_crit) && is_cdp
   has_know_crit <- !is.null(parsed$know_crit) && is_cdp
 
-  has_dprime_L <- !is.null(parsed[["dprime_L"]]) && family$family == "mixture"
-  has_sigma_L <- !is.null(parsed[["sigma_L"]]) && family$family == "mixture"
+  has_dprime_L <- !is.null(parsed[["dprime_L"]]) && family$family %in% c("mixture", "lineup")
+  has_sigma_L <- !is.null(parsed[["sigma_L"]]) && family$family %in% c("mixture", "lineup")
   has_lambda_L <- !is.null(parsed[["lambda_L"]]) && family$family == "mixture"
   
-  if (has_dprime_L && !has_lambda_L) {
+  if (has_dprime_L && !has_lambda_L && !is_lineup) {
     stop("lambda_L formula is required when dprime_L is specified (lure mixture model)")
   }
   if (has_lambda_L && !has_dprime_L) {
@@ -938,18 +949,18 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stop("metad() needs an even number of response categories, at least 4: K/2 confidence levels for ",
          "\"new\" responses and K/2 for \"old\" responses. The response has ", K, " categories.", call. = FALSE)
   }
-  meta_noise <- if (has_sigma_meta) (if (is.null(family$meta_noise)) "gaussian" else family$meta_noise) else NULL
-  if (has_sigma_meta && !identical(family$link$name, "probit")) {
+  meta_noise <- if (has_sigma_meta && !is_lineup) (if (is.null(family$meta_noise)) "gaussian" else family$meta_noise) else NULL
+  if (has_sigma_meta && !is_lineup && !identical(family$link$name, "probit")) {
     stop("sigma_meta is the ", if (meta_noise == "gaussian") "Gaussian meta-noise model (Bang et al., 2019)"
          else "lognormal meta-noise model (Shekhar & Rahnev, 2021)",
          ", defined on the probit scale: use evsd() with the default link_probit().", call. = FALSE)
   }
-  if (has_sigma_meta && (K < 4L || K %% 2L != 0L)) {
+  if (has_sigma_meta && !is_lineup && (K < 4L || K %% 2L != 0L)) {
     stop("sigma_meta needs an even number of response categories, at least 4: the middle threshold is the ",
          "decision criterion and the confidence ratings sit on each side of it. The response has ", K,
          " categories.", call. = FALSE)
   }
-  if (K == 2 && !family$family %in% c("evsdt", "mafc")) {
+  if (K == 2 && !family$family %in% c("evsdt", "mafc", "lineup")) {
     stop("Binary responses (K=2) are only supported for the evsd() family. ",
          "Models with sigma, lambda, or other parameters require K >= 3 for identifiability.")
   }
@@ -1096,6 +1107,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
 
     data[[is_old_var]] <- is_old_vals
     stan_data$is_old <- is_old_vals
+    if (is_lineup) {
+      stan_data$lu_kind <- lineup_coded$kind
+      stan_data$lu_slot <- lineup_coded$slot
+      stan_data$lu_size <- lineup_coded$k
+    }
     if (is_metad) {
       if (length(unique_vals) != 2L) {
         stop("metad() needs both old and new items: `", is_old_var, "` takes only the value ",
@@ -1956,6 +1972,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     meta_noise = meta_noise,
     bias = bias,
     has_bias = !is.null(bias),
+    lineup = if (is_lineup) lineup_coded[c("R", "J", "code", "code_labels")] else NULL,
     centered_coding = if (exists("centered_coding")) centered_coding else FALSE,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
@@ -3443,7 +3460,7 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
     }
     hdr <- c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code)
     deps <- c(core_hpp, file.path(dirname(core_hpp), "..", "include", "bayesroc",
-                                  c("bvn_tail.h", "bvn_simd.h", "lnoise.h", "pcq.h", "mafc.h")))
+                                  c("bvn_tail.h", "bvn_simd.h", "lnoise.h", "pcq.h", "mafc.h", "lineup.h")))
     deps <- deps[file.exists(deps)]
   }
   key <- digest_string(c(model$stan_code, hdr, unname(tools::md5sum(deps)), isTRUE(threads),

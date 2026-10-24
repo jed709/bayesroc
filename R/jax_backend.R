@@ -234,6 +234,11 @@ build_numpyro_config <- function(model) {
                           centre = .centre_info(b$X, bcols))
     }
   }
+  if (identical(family_name, "lineup")) {
+    config$lu_kind <- as.integer(md$stan_data$lu_kind)
+    config$lu_slot <- as.integer(md$stan_data$lu_slot)
+    config$lu_size <- as.integer(md$stan_data$lu_size)
+  }
   if (identical(family_name, "metadt")) {
     config$is_old_mid <- md$stan_data$is_old_mid
     config$metad_relative <- identical(md$metac, "relative")

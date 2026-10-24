@@ -579,6 +579,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
                   dprime2 = "normal(2, 1)"),
     cdp = list(dprime = "normal(1, 0.75)", dprime2 = "normal(1, 0.75)"),
     mixture = list(dprime2 = "normal(0.5, 0.5)"),
+    lineup = list(dprime_L = "normal(0, 0.75)", sigma_meta = "normal(-1, 1)", thresh_mid = "normal(1, 1)"),
     list())
   for (pname in setdiff(names(fam_defaults), lookup$user_set$b)) lookup$b[[pname]] <- fam_defaults[[pname]]
 
