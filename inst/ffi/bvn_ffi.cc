@@ -955,6 +955,110 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
     for (int64_t k = 0; k < S * U; ++k) acc[k] += part[t][k];
 }
 
+static inline bvn::v4d vlink_cdf(bvn::v4d z, int link) {
+  using bvn::splat;
+  if (link == 1) return splat(1.0) / (splat(1.0) + bvn::vexp(-z));
+  if (link == 2) return splat(1.0) - bvn::vexp(-bvn::vexp(bvn::vmin(z, splat(700.0))));
+  return vphi_p(z);
+}
+
+// Plain C entry for R's .C(): weighted survival curves of the confidence response of the meta models.
+// th [S, R, J] thresholds (the middle one the decision criterion c0), d, p1, p2 [S, R], a [R] (is_old),
+// u [U], w [R]; dims = {S, R, J, U, path, threads, link, kind, rel}; q (meta-d' midpoint weight), ext.
+// kind 0 meta-d' (p1, p2 the M-ratios of "old" and "new" responses), 1 Gaussian meta-noise (p1 = sigma_meta),
+// 2 lognormal meta-noise (p1 = sigma_meta). acc [S, U] += w_r * P(rating above the criterion at u).
+extern "C" void bayesroc_r_meta_survival(const double* th, const double* d, const double* p1, const double* p2,
+                                         const double* a, const double* u, const double* w, const int* dims,
+                                         const double* q, const double* ext, double* acc) {
+  const int64_t S = dims[0], R = dims[1], J = dims[2], U = dims[3];
+  const int path = dims[4], threads = dims[5], link = dims[6], kind = dims[7], rel = dims[8];
+  const double e = *ext, qq = *q;
+  const int64_t mid = (J + 1) / 2 - 1;
+  std::vector<int> lo(U);
+  std::vector<double> fr(U);
+  for (int64_t j = 0; j < U; ++j) {
+    double f = std::floor(u[j]);
+    int l = static_cast<int>(f < J ? f : J);
+    lo[j] = l;
+    fr[j] = u[j] - l;
+  }
+  int64_t T = std::max<int64_t>(1, std::min<int64_t>(threads, R));
+  std::vector<std::vector<double>> part(T, std::vector<double>(size_t(S) * size_t(U), 0.0));
+  const int64_t Up = (U + 3) & ~int64_t(3);
+  auto work = [&](int64_t t, int64_t r0, int64_t r1) {
+    using bvn::splat;
+    using bvn::v4d;
+    double* out = part[t].data();
+    std::vector<double> knots(J + 2), cu(Up, 0.0), gh_(Up), gk_(Up), gr_(Up), gp_(Up), gd_(3 * Up);
+    for (int64_t r = r0; r < r1; ++r) {
+      const double wr = w[r];
+      if (wr == 0.0) continue;
+      for (int64_t s = 0; s < S; ++s) {
+        const int64_t sr = s + S * r;
+        const double c0 = th[sr + S * R * mid], dd = d[sr], mu = a[r] * dd;
+        if (path) {
+          for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
+          knots[0] = knots[1] - e;
+          knots[J + 1] = knots[J] + e;
+        }
+        for (int64_t j = 0; j < U; ++j) cu[j] = path ? knots[lo[j]] * (1.0 - fr[j]) + knots[lo[j] + 1] * fr[j] : u[j];
+        if (kind == 0) {
+          const double m0 = qq * dd;
+          const double mo = p1[sr], mn = p2[sr];
+          const double muo = m0 + mo * dd * (a[r] - qq), mun = m0 + mn * dd * (a[r] - qq);
+          const double so = rel ? (mo - 1.0) * (c0 - m0) : 0.0, sn = rel ? (mn - 1.0) * (c0 - m0) : 0.0;
+          const v4d head = v4d{c0 - mu, c0 + so - muo, c0 + sn - mun, 0.0};
+          const v4d sv0 = vlink_surv(head, link), cd0 = vlink_cdf(head, link);
+          const double pold = sv0[0], pnew = cd0[0], deno = sv0[1], denn = cd0[2];
+          const double fo = deno > 0.0 ? pold / deno : 0.0, fn = denn > 0.0 ? pnew / denn : 0.0;
+          for (int64_t j = 0; j < Up; j += 4) {
+            v4d c;
+            std::memcpy(&c, &cu[j], 32);
+            const v4d upv = splat(fo) * vlink_surv(c + splat(so - muo), link);
+            const v4d dnv = splat(1.0) - splat(fn) * vlink_cdf(c + splat(sn - mun), link);
+            accumulate_surv(out, s, S, j, U, wr, bvn::vsel(c >= splat(c0), upv, dnv));
+          }
+        } else if (kind == 1) {
+          const double tau = std::sqrt(1.0 + p1[sr] * p1[sr]), rho = 1.0 / tau, zc = c0 - mu;
+          for (int64_t j = 0; j < U; ++j) {
+            const double z = (cu[j] - mu) / tau, sg = cu[j] > c0 ? -1.0 : 1.0;
+            gh_[j] = sg * zc;
+            gk_[j] = sg * z;
+            gr_[j] = rho;
+          }
+          bvn::cdf_array(U, gh_.data(), gk_.data(), gr_.data(), gp_.data(), gd_.data(), gd_.data() + U, gd_.data() + 2 * U);
+          const double pold = vphi_p(splat(-zc))[0];
+          for (int64_t j = 0; j < U; ++j) {
+            const double v = cu[j] == c0 ? pold : cu[j] > c0 ? gp_[j] : 1.0 - gp_[j];
+            if (v > 0.0) out[s + S * j] += wr * v;
+          }
+        } else {
+          const double sm = p1[sr];
+          for (int64_t j = 0; j < U; ++j) {
+            const bool up = cu[j] >= c0;
+            const double D = std::fabs(cu[j] - c0);
+            const double pc = std::exp(lnoise::cell(up ? mu - c0 : c0 - mu, std::log(D), bvn_tail::kInf, sm).lp);
+            const double v = up ? pc : 1.0 - pc;
+            if (v > 0.0) out[s + S * j] += wr * v;
+          }
+        }
+      }
+    }
+  };
+  if (T == 1) {
+    work(0, 0, R);
+  } else {
+    const int64_t per = (R + T - 1) / T;
+    std::vector<std::thread> pool;
+    for (int64_t t = 1; t < T; ++t)
+      if (t * per < R) pool.emplace_back(work, t, t * per, std::min(R, (t + 1) * per));
+    work(0, 0, std::min(R, per));
+    for (auto& th_ : pool) th_.join();
+  }
+  for (int64_t t = 0; t < T; ++t)
+    for (int64_t k = 0; k < S * U; ++k) acc[k] += part[t][k];
+}
+
 // Plain C entry for R's .C(): weighted survival curves of a two-normal mixture with its own mean and SD
 // per component (the mixture and source-mixture families). th [S, R, J]; mu, sig, lam, mu2, sig2 [S, R];
 // u [U]; w [R]; dims = {S, R, J, U, path, threads, link}; ext as for the detection kernel.

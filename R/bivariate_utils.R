@@ -195,6 +195,7 @@ binormal_cdf_r <- function(z1, z2, rho) {
       st$sym_lnoise <- sym("bayesroc_r_lnoise_cell")
       st$sym_mafc <- sym("bayesroc_r_mafc_probs")
       st$sym_lineup <- sym("bayesroc_r_lineup_cell")
+      st$sym_metasurv <- sym("bayesroc_r_meta_survival")
       TRUE
     }, error = function(e) FALSE)
   }

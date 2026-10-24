@@ -224,3 +224,37 @@ test_that("metad through the JAX transport map (f64 and f32) recovers Stan's pos
     expect_lt(max(z), 4, label = paste(prec, "max |z|"))
   }
 })
+
+test_that("meta-model ROC survival: the native kernel equals the R path (meta-d', Gaussian and lognormal meta-noise)", {
+  skip_if_no_jax()
+  cases <- list(
+    metad = list(d = .sim_metad(), f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), mratio_old ~ 1,
+                                          mratio_new ~ 1, family = metad())),
+    metad_rel_logit = list(d = .sim_metad(relative = TRUE, link = "logit"),
+                           f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), mratio ~ 1,
+                                   family = metad("relative", link = link_logit()))),
+    gnoise = list(d = .sim_gnoise(), f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
+                                            family = evsd())),
+    lnoise = list(d = .sim_lnoise(), f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
+                                            family = evsd(meta_noise = "lognormal"))))
+  sym <- .bvn_native$sym_metasurv
+  on.exit(.bvn_native$sym_metasurv <- sym, add = TRUE)
+  for (nm in names(cases)) {
+    m <- suppressMessages(broc(cases[[nm]]$f, data = cases[[nm]]$d))
+    fit <- suppressMessages(fit_broc(m, backend = "jax", iter_warmup = 150, iter_sampling = 20, chains = 1,
+                                     progress_bar = FALSE))
+    setup <- .plot_setup(fit, m, 10, NULL)
+    w <- .row_weights(m)
+    u <- .roc_u_grid(m$model_data$K - 1L)
+    crit <- function(th) .criterion_path(th, u)
+    attr(crit, "u") <- u
+    attr(crit, "mode") <- "path"
+    for (rows in list(which(m$stan_data$is_old > 0), which(m$stan_data$is_old <= 0))) {
+      .bvn_native$sym_metasurv <- sym
+      a <- .roc_survival_rows(m, setup, rows, w[rows], 1, length(u), crit)
+      .bvn_native$sym_metasurv <- NULL
+      b <- .roc_survival_rows(m, setup, rows, w[rows], 1, length(u), crit)
+      expect_lt(max(abs(a - b)), 1e-12, label = nm)
+    }
+  }
+})

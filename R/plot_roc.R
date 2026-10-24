@@ -346,6 +346,25 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
                                setup$data_src$source[rows], S, r, model)
     }
   }
+  meta <- fam == "metadt" || (fam == "evsdt" && isTRUE(model$model_data$has_sigma_meta))
+  if (meta && !is.null(u) && .bvn_native_ready() && !is.null(.bvn_native$sym_metasurv)) {
+    r <- length(rows)
+    tps_all <- lapply(setup$tp, function(m) m[, rows, drop = FALSE])
+    md <- model$model_data
+    one <- rep(1, S * r)
+    kind <- if (fam == "metadt") 0L else if (identical(md$meta_noise, "lognormal")) 2L else 1L
+    p1 <- if (kind == 0L) as.vector(tps_all[["mratio"]] %||% one) else as.vector(tps_all[["sigma_meta"]])
+    p2 <- if (kind == 0L) {
+      if (isTRUE(md$metad_mratio_shared)) p1 else as.vector(tps_all[["mratio_N"]] %||% one)
+    } else one
+    th <- setup$th[, rows, , drop = FALSE]
+    acc <- .C(.bvn_native$sym_metasurv, as.double(th), as.double(tps_all[["dprime"]]), as.double(p1), as.double(p2),
+              as.double(setup$data_src$is_old[rows]), as.double(u), as.double(w_rows),
+              as.integer(c(S, r, dim(th)[3], length(u), identical(attr(crit, "mode"), "path"), .native_threads(),
+                           .native_link_code(link, fam), kind, identical(md$metac, "relative"))),
+              as.double(md$stan_data$is_old_mid %||% 0.5), 8.0, acc = double(S * length(u)), NAOK = TRUE)$acc
+    return(matrix(acc, S, length(u)) / sum(w_rows))
+  }
   if (!is.null(pt)) {
     # a normal (or recollection-mixed normal) response's survival along the criterion path, accumulated natively
     th <- setup$th[, rows, , drop = FALSE]
@@ -552,15 +571,17 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   S <- dim(th)[1]; r <- dim(th)[2]
   mu <- as.vector(tps[["dprime"]] * matrix(is_old, S, r, byrow = TRUE))
   tau <- as.vector(sqrt(1 + tps[["sigma_meta"]]^2))
-  zc <- as.vector(th[, , (dim(th)[3] + 1L) %/% 2L]) - mu
+  c0 <- as.vector(th[, , (dim(th)[3] + 1L) %/% 2L])
+  zc <- c0 - mu
   inf <- rep(Inf, length(zc))
+  pold <- stats::pnorm(zc, lower.tail = FALSE)
   out <- array(0, dim(c_path))
   for (j in seq_len(dim(c_path)[3])) {
     t <- as.vector(c_path[, , j])
     z <- (t - mu) / tau
     up <- .bvn_rect_v(zc, inf, z, inf, 1 / tau)
     dn <- 1 - .bvn_rect_v(-inf, zc, -inf, z, 1 / tau)
-    out[, , j] <- ifelse(t >= zc + mu, up, dn)
+    out[, , j] <- ifelse(t == c0, pold, ifelse(t > c0, up, dn))
   }
   out
 }
