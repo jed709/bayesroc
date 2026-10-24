@@ -1336,7 +1336,35 @@ def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     return lp, -s * da * ia, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), s * dc * ic
 
 
-def _metad_cell(z_a, z_lo, z_hi, z_c, old):
+def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
+    """The meta-d' cell of _metad_cell_jax under a logistic or Gumbel-min latent distribution: the
+    survival on "old" responses and the CDF on "new" ones taken directly, the link not being symmetric."""
+    cdf, pdf = _link_fns(link_name)
+    diff = _link_diff_fn(link_name)
+    if link_name == "logit":
+        ccdf = lambda x: jax_expit(-x)
+    else:
+        ccdf = lambda x: jnp.exp(-jnp.exp(jnp.minimum(x, _CLOGLOG_HI)))
+    fl = _pfloor()
+    lo_open = z_lo <= -0.5 * _OPEN
+    hi_open = z_hi >= 0.5 * _OPEN
+    zl = jnp.where(lo_open, 0.0, z_lo)
+    zh = jnp.where(hi_open, 0.0, z_hi)
+    Pa = jnp.where(old, ccdf(z_a), cdf(z_a))
+    Pc = jnp.where(old, ccdf(z_c), cdf(z_c))
+    D = jnp.where(lo_open, cdf(zh), jnp.where(hi_open, ccdf(zl), diff(zl, zh)))
+    ia = jnp.where(Pa > fl, 1.0 / jnp.maximum(Pa, fl), 0.0)
+    ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
+    ic = jnp.where(Pc > fl, 1.0 / jnp.maximum(Pc, fl), 0.0)
+    s = jnp.where(old, -1.0, 1.0).astype(z_a.dtype)
+    lp = jnp.log(jnp.maximum(Pa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Pc, fl))
+    return (lp, s * pdf(z_a) * ia, jnp.where(lo_open, 0.0, -pdf(zl) * ib), jnp.where(hi_open, 0.0, pdf(zh) * ib),
+            -s * pdf(z_c) * ic)
+
+
+def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit"):
+    if link_name != "probit":
+        return _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name)
     if _native_ok(z_a):
         return _native_call("metad_cell", 5, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype)])
     return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
@@ -1765,7 +1793,7 @@ def fused_loglik_lnoise(y, K, mu, sm, thresh_mid, gaps, gap_link="log"):
     return _fused_cache[key](y, mu, sm, thresh_mid, gaps_per_obs)
 
 
-def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative):
+def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="probit"):
     """Meta-d' log-likelihood over [N] trials with custom JVP: the type-1 decision and the
     meta-level rating truncated at the meta criterion, the confidence criteria shifted by
     (M - 1)(c - q d) under the relative anchor."""
@@ -1787,7 +1815,7 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative):
         rows = jnp.arange(y.shape[0])
         z_lo = jnp.where(y > 1, thresh[rows, k_lo] + off, -_OPEN)
         z_hi = jnp.where(y < K, thresh[rows, k_hi] + off, _OPEN)
-        out = _metad_cell(c - a * d, z_lo, z_hi, c + off, old)
+        out = _metad_cell(c - a * d, z_lo, z_hi, c + off, old, link_name)
         return out, (old, M, a_c, c_mid, k_lo, k_hi, gap_vals)
 
     @custom_jvp
@@ -1889,14 +1917,16 @@ def fused_loglik_gnoise(y, K, mu, sm, thresh_mid, gaps, gap_link="log"):
     return _fused_cache[key](y, mu, sm, thresh_mid, gaps_per_obs)
 
 
-def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link="log", q=0.5, relative=False):
+def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link="log", q=0.5, relative=False,
+                       link_name="probit"):
     """Meta-d' log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
     N = y.shape[0]
     is_softplus = gap_link == "softplus"
     gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
-    key = ("metad", int(K), bool(is_softplus), float(q), bool(relative))
+    key = ("metad", int(K), bool(is_softplus), float(q), bool(relative), str(link_name))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_metad_loglik(int(K), bool(is_softplus), float(q), bool(relative))
+        _fused_cache[key] = _make_fused_metad_loglik(int(K), bool(is_softplus), float(q), bool(relative),
+                                                     str(link_name))
     return _fused_cache[key](y, d, m_old, m_new, is_old, thresh_mid, gaps_per_obs)
 
 
@@ -5368,7 +5398,8 @@ def sdt_model(config):
             m_new = m_old if config.get("metad_shared") else trial_params.get("mratio_N", ones)
             log_lik = fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
                                          is_old, thresh_mid_vec, log_gaps_obs, gap_link,
-                                         q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")))
+                                         q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")),
+                                         link_name=link_name)
             if counts is not None:
                 log_lik = log_lik * counts
 

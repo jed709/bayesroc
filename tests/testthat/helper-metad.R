@@ -1,6 +1,9 @@
 .sim_metad <- function(n_sub = 12, n_item = 24, K = 6, d = 1.5, c = 0.8, m_old = 0.8, m_new = 0.8,
                        sd_sub = c(d = 0.3, c = 0.2, m = 0.25), sd_item = c(d = 0.2, c = 0.1, m = 0.15),
-                       relative = FALSE, centred = FALSE, gaps = rep(0.45, K / 2 - 1), seed = 1) {
+                       relative = FALSE, centred = FALSE, gaps = rep(0.45, K / 2 - 1), seed = 1,
+                       link = "probit") {
+  pl <- switch(link, probit = stats::pnorm, logit = stats::plogis, cloglog = function(x) -expm1(-exp(x)))
+  ql <- switch(link, probit = stats::qnorm, logit = stats::qlogis, cloglog = function(p) log(-log1p(-p)))
   set.seed(seed)
   dat <- expand.grid(sub = factor(seq_len(n_sub)), item = factor(seq_len(n_item)))
   dat$old <- as.integer((as.integer(dat$item) + as.integer(dat$sub)) %% 2 == 0)
@@ -13,15 +16,15 @@
   cc <- c + us[is, "c"] + ui[ii, "c"]
   lm <- us[is, "m"] + ui[ii, "m"]
   n <- nrow(dat)
-  x <- stats::rnorm(n, dat$old * dd)
+  x <- if (link == "probit") stats::rnorm(n, dat$old * dd) else dat$old * dd + ql(stats::runif(n))
   r <- x > cc
   M <- ifelse(r, m_old, m_new) * exp(lm)
   mid <- dd / 2
   mu_m <- mid + M * dd * (dat$old - 0.5)
   mc <- if (relative) mid + M * (cc - mid) else cc
-  pc <- stats::pnorm(mc - mu_m)
+  pc <- pl(mc - mu_m)
   u <- stats::runif(n)
-  xm <- mu_m + stats::qnorm(ifelse(r, pc + u * (1 - pc), u * pc))
+  xm <- mu_m + ql(ifelse(r, pc + u * (1 - pc), u * pc))
   up <- cumsum(gaps)
   dat$conf <- ifelse(r, K / 2 + 1 + vapply(seq_len(n), function(i) sum(xm[i] > mc[i] + up), 0),
                      K / 2 - vapply(seq_len(n), function(i) sum(xm[i] < mc[i] - up), 0))

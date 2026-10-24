@@ -4,7 +4,7 @@
 \alias{metad}
 \title{Meta-d' Model of Confidence Ratings}
 \usage{
-metad(metac = c("absolute", "relative"))
+metad(metac = c("absolute", "relative"), link = link_probit())
 }
 \arguments{
 \item{metac}{Where the meta criterion sits. \code{"absolute"} (default): at the
@@ -12,6 +12,12 @@ type-1 criterion, as in HMeta-d (Fleming, 2017), the hmetad package and
 bmm. \code{"relative"}: scaled with the M-ratio about the midpoint of the two
 distributions, so that meta-c' = c' (Maniscalco & Lau, 2014; hmetad with
 \code{metac_absolute = FALSE}).}
+
+\item{link}{Latent-distribution link: \code{\link[=link_probit]{link_probit()}} (default, the
+published model), \code{\link[=link_logit]{link_logit()}} or \code{\link[=link_cloglog]{link_cloglog()}}. Both the type-1 and
+the meta-level distributions take the link's shape, so \code{dprime} and the
+criteria are on that link's scale, and the M-ratio keeps its meaning as
+meta-d'/d' on it.}
 }
 \value{
 A \code{broc_family} object.
@@ -28,7 +34,8 @@ Responses are a K-point scale with K even and at least 4: responses
 1, ..., K/2 are "new" at decreasing confidence, K/2 + 1, ..., K are "old"
 at increasing confidence. The decision follows equal-variance SDT with new
 items N(0, 1), old items N(d', 1) and the type-1 criterion c, the middle
-threshold \eqn{\tau_{K/2}}. With m = d'/2 the midpoint, the confidence
+threshold \eqn{\tau_{K/2}} (shown for the probit link; \code{link} swaps
+\eqn{\Phi} for the logistic or Gumbel-min CDF throughout). With m = d'/2 the midpoint, the confidence
 rating given the decision comes from a second, meta-level SDT model with
 means \eqn{m \pm M d'/2} and confidence criteria \eqn{t_k}, truncated at
 the meta criterion \eqn{t_{K/2}}:

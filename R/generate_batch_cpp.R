@@ -5379,7 +5379,8 @@ emit_likelihood_metad <- function(L, params) {
   L$add("    const bool open_lo = yn == 1, open_hi = yn == K;")
   L$add("    const int k_lo = open_lo ? -1 : yn - 2;")
   L$add("    const int k_hi = open_hi ? -1 : yn - 1;")
-  L$add("    batch_sdt::MetadResult res = batch_sdt::metad_cell(old_side, open_lo, open_hi, c_val - mu,")
+  L$add(sprintf("    batch_sdt::MetadResult res = batch_sdt::metad_cell%s(old_side, open_lo, open_hi, c_val - mu,",
+                link_suffix(params)))
   L$add("        open_lo ? 0.0 : thresh_n(k_lo) + off, open_hi ? 0.0 : thresh_n(k_hi) + off, c_val + off);")
   if (params[[".has_counts"]]) {
     L$add("    total_lp += res.lp * count_n;")

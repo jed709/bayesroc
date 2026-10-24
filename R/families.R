@@ -1221,6 +1221,11 @@ cdp <- function(old_levels = NULL) {
 #'   bmm. `"relative"`: scaled with the M-ratio about the midpoint of the two
 #'   distributions, so that meta-c' = c' (Maniscalco & Lau, 2014; hmetad with
 #'   `metac_absolute = FALSE`).
+#' @param link Latent-distribution link: [link_probit()] (default, the
+#'   published model), [link_logit()] or [link_cloglog()]. Both the type-1 and
+#'   the meta-level distributions take the link's shape, so `dprime` and the
+#'   criteria are on that link's scale, and the M-ratio keeps its meaning as
+#'   meta-d'/d' on it.
 #'
 #' @details
 #' ## Likelihood
@@ -1228,7 +1233,8 @@ cdp <- function(old_levels = NULL) {
 #' 1, ..., K/2 are "new" at decreasing confidence, K/2 + 1, ..., K are "old"
 #' at increasing confidence. The decision follows equal-variance SDT with new
 #' items N(0, 1), old items N(d', 1) and the type-1 criterion c, the middle
-#' threshold \eqn{\tau_{K/2}}. With m = d'/2 the midpoint, the confidence
+#' threshold \eqn{\tau_{K/2}} (shown for the probit link; `link` swaps
+#' \eqn{\Phi} for the logistic or Gumbel-min CDF throughout). With m = d'/2 the midpoint, the confidence
 #' rating given the decision comes from a second, meta-level SDT model with
 #' means \eqn{m \pm M d'/2} and confidence criteria \eqn{t_k}, truncated at
 #' the meta criterion \eqn{t_{K/2}}:
@@ -1280,12 +1286,15 @@ cdp <- function(old_levels = NULL) {
 #' @return A `broc_family` object.
 #' @seealso [evsd()], the type-1 model it reduces to at M = 1.
 #' @export
-metad <- function(metac = c("absolute", "relative")) {
+metad <- function(metac = c("absolute", "relative"), link = link_probit()) {
   metac <- match.arg(metac)
+  if (!inherits(link, "broc_link")) {
+    stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
+  }
   structure(
     list(
       family = "metadt",
-      link = link_probit(),
+      link = link,
       metac = metac,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",

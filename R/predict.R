@@ -2239,13 +2239,24 @@ probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
   m_old <- params[["mratio"]] %||% one
   m_new <- if (isTRUE(md$metad_mratio_shared)) m_old else params[["mratio_N"]] %||% one
   pmax(.metad_cells(params[["dprime"]], m_old, m_new, thresh, matrix(is_old, S, N, byrow = TRUE),
-                    md$stan_data$is_old_mid, identical(md$metac, "relative"), K), 1e-10)
+                    md$stan_data$is_old_mid, identical(md$metac, "relative"), K, model$family$link$name), 1e-10)
 }
 
-.metad_cells <- function(d, m_old, m_new, thresh, a, q, relative, K) {
+.link_p <- function(x, link = "probit", lower.tail = TRUE) {
+  switch(link,
+    probit = stats::pnorm(x, lower.tail = lower.tail),
+    logit = stats::plogis(x, lower.tail = lower.tail),
+    cloglog = if (lower.tail) -expm1(-exp(pmin(x, 700))) else exp(-exp(pmin(x, 700))),
+    stop("Unknown link: ", link))
+}
+
+.link_med <- function(link) if (identical(link, "cloglog")) log(log(2)) else 0
+
+.metad_cells <- function(d, m_old, m_new, thresh, a, q, relative, K, link = "probit") {
   h <- K %/% 2L
-  pdiff <- function(lo, hi) ifelse(lo >= 0, stats::pnorm(lo, lower.tail = FALSE) - stats::pnorm(hi, lower.tail = FALSE),
-                                   stats::pnorm(hi) - stats::pnorm(lo))
+  med <- .link_med(link)
+  pdiff <- function(lo, hi) ifelse(lo >= med, .link_p(lo, link, FALSE) - .link_p(hi, link, FALSE),
+                                   .link_p(hi, link) - .link_p(lo, link))
   cc <- thresh[, , h]
   mid <- q * d
   mu <- a * d
@@ -2254,8 +2265,8 @@ probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
     M <- if (old) m_old else m_new
     mu_m <- mid + M * (mu - mid)
     s <- if (relative) (M - 1) * (cc - mid) else 0
-    t1 <- stats::pnorm(cc - mu, lower.tail = !old)
-    t2 <- stats::pnorm(cc + s - mu_m, lower.tail = !old)
+    t1 <- .link_p(cc - mu, link, lower.tail = !old)
+    t2 <- .link_p(cc + s - mu_m, link, lower.tail = !old)
     for (k in if (old) (h + 1L):K else seq_len(h)) {
       lo <- if (k == 1L) array(-Inf, dim(d)) else thresh[, , k - 1L] + s - mu_m
       hi <- if (k == K) array(Inf, dim(d)) else thresh[, , k] + s - mu_m

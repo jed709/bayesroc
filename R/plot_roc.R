@@ -331,7 +331,7 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
       th <- setup$th[, idx, , drop = FALSE]
       surv_fn <- if (fam == "metadt") .metad_survival
                  else if (identical(model$model_data$meta_noise, "lognormal")) .lnoise_survival else .gnoise_survival
-      surv <- surv_fn(tps, th, crit(th), setup$data_src$is_old[idx], model$model_data)
+      surv <- surv_fn(tps, th, crit(th), setup$data_src$is_old[idx], c(model$model_data, list(link_name = link)))
       for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
       next
     }
@@ -470,12 +470,14 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     list(mu_m = mu_m, s = if (rel) (M - 1) * (cc - mid) else 0)
   }
   o <- side(m_old); nw <- side(m_new)
-  p_old <- stats::pnorm(cc - a * d, lower.tail = FALSE)
+  lk <- md$link_name %||% "probit"
+  p_old <- .link_p(cc - a * d, lk, FALSE)
+  p_new <- .link_p(cc - a * d, lk)
   out <- array(0, dim(c_path))
   for (j in seq_len(dim(c_path)[3])) {
     t <- matrix(c_path[, , j], S, r)
-    up <- p_old * stats::pnorm(t + o$s - o$mu_m, lower.tail = FALSE) / stats::pnorm(cc + o$s - o$mu_m, lower.tail = FALSE)
-    dn <- 1 - (1 - p_old) * stats::pnorm(t + nw$s - nw$mu_m) / stats::pnorm(cc + nw$s - nw$mu_m)
+    up <- p_old * .link_p(t + o$s - o$mu_m, lk, FALSE) / .link_p(cc + o$s - o$mu_m, lk, FALSE)
+    dn <- 1 - p_new * .link_p(t + nw$s - nw$mu_m, lk) / .link_p(cc + nw$s - nw$mu_m, lk)
     out[, , j] <- ifelse(t >= cc, up, dn)
   }
   out

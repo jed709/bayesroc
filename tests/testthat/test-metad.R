@@ -119,6 +119,86 @@ test_that("metad batch and plain Stan agree on log density and gradient for ever
   }
 })
 
+test_that("metad under logit and cloglog links: M = 1 is evsd on the same link, cells sum to one, both anchors", {
+  set.seed(9)
+  K <- 6L
+  for (lk in c("logit", "cloglog")) {
+    for (rel in c(FALSE, TRUE)) {
+      n <- 40
+      d <- matrix(stats::runif(n, 0.2, 3), 1)
+      a <- matrix(rep(0:1, n / 2), 1)
+      th <- array(t(apply(matrix(stats::rnorm(n * (K - 1L), 0, 1.5), n), 1, sort)), c(1, n, K - 1L))
+      M1 <- matrix(1, 1, n)
+      p1 <- .metad_cells(d, M1, M1, th, a, 0.5, rel, K, lk)
+      cdf <- function(x) link_cdf_r(x, lk)
+      ev <- vapply(seq_len(K), function(k) {
+        hi <- if (k == K) rep(1, n) else cdf(th[1, , k] - a * d)
+        lo <- if (k == 1L) rep(0, n) else cdf(th[1, , k - 1L] - a * d)
+        hi - lo
+      }, numeric(n))
+      expect_lt(max(abs(p1[1, , ] - ev)), 1e-12, label = paste(lk, rel, "M = 1"))
+      Mo <- matrix(stats::runif(n, 0.3, 1.6), 1)
+      Mn <- matrix(stats::runif(n, 0.3, 1.6), 1)
+      p <- .metad_cells(d, Mo, Mn, th, a, 0.5, rel, K, lk)
+      expect_lt(max(abs(apply(p, 2, sum) - 1)), 1e-12, label = paste(lk, rel, "sum"))
+      expect_true(all(p >= 0))
+      expect_lt(max(abs(rowSums(p[1, , 1:3]) - cdf(th[1, , 3] - a[1, ] * d[1, ]))), 1e-12, label = paste(lk, rel, "type 1"))
+    }
+  }
+})
+
+test_that("metad links: batch and plain Stan agree on log density and gradient", {
+  skip_if_no_cmdstan()
+  for (lk in c("logit", "cloglog")) {
+    link <- if (lk == "logit") link_logit() else link_cloglog()
+    cfgs <- list(
+      shared = list(f = brf(conf | old ~ 1 + (1 | s | sub) + (1 | item), criterion ~ 1 + (1 | s | sub) + (1 | item),
+                            mratio ~ 1 + (1 | s | sub) + (1 | item), family = metad(link = link)),
+                    d = .sim_metad(link = lk)),
+      split_relative = list(f = brf(conf | old ~ cond + (1 | sub), criterion ~ cond + (1 | sub),
+                                    mratio_old ~ 1 + (1 | sub), mratio_new ~ 1 + (1 | item),
+                                    family = metad("relative", link = link)),
+                            d = .sim_metad(K = 8, relative = TRUE, centred = TRUE, m_new = 1.1, link = lk)))
+    for (nm in names(cfgs)) {
+      cf <- cfgs[[nm]]
+      mb <- suppressMessages(broc(cf$f, data = cf$d))
+      mp <- suppressMessages(.broc_plain(cf$f, data = cf$d))
+      expect_true(isTRUE(mb$batch_likelihood))
+      r <- .stan_parity(mp, mb)
+      expect_identical(r$dim[1], r$dim[2], label = paste(lk, nm))
+      expect_lt(r$lp, 1e-9, label = paste(lk, nm, "lp"))
+      expect_lt(r$grad, 1e-8, label = paste(lk, nm, "gradient"))
+    }
+  }
+})
+
+test_that("metad links: the JAX likelihood matches the R cells, and its custom JVP the finite differences", {
+  skip_if_no_jax()
+  set.seed(11)
+  K <- 6L
+  n <- 400
+  rows <- list()
+  for (lk in c("logit", "cloglog")) for (rel in c(FALSE, TRUE)) {
+    d <- stats::runif(n, 0.2, 3); a <- rep(0:1, n / 2)
+    c0 <- stats::rnorm(n, 0.5, 1); g <- matrix(stats::rnorm(n * (K - 2L), -0.3, 0.6), n)
+    mo <- stats::runif(n, 0.3, 1.6); mn <- stats::runif(n, 0.3, 1.6)
+    up <- t(apply(exp(g[, 1:2, drop = FALSE]), 1, cumsum)); dn <- t(apply(exp(g[, 3:4, drop = FALSE]), 1, cumsum))
+    th <- array(cbind(c0 - dn[, 2], c0 - dn[, 1], c0, c0 + up[, 1], c0 + up[, 2]), c(1, n, K - 1L))
+    p <- .metad_cells(matrix(d, 1), matrix(mo, 1), matrix(mn, 1), th, matrix(a, 1), 0.5, rel, K, lk)
+    y <- rep(seq_len(K), length.out = n)
+    rows[[length(rows) + 1L]] <- data.frame(link = lk, rel = as.integer(rel), y = y, d = d, a = a, c0 = c0, g, mo = mo,
+                                            mn = mn, lp = log(p[cbind(1, seq_len(n), y)]))
+  }
+  csv <- tempfile(fileext = ".csv")
+  utils::write.csv(do.call(rbind, rows), csv, row.names = FALSE)
+  out <- system2(jax_python(), c(test_path("python", "metad_link_check.py"), dirname(find_backend_script()),
+                                 .bvn_ffi_lib(), csv), stdout = TRUE, stderr = FALSE)
+  res <- jsonlite::fromJSON(sub("^RESULT ", "", grep("^RESULT ", out, value = TRUE)))
+  expect_lt(res$jax_vs_r, 1e-11)
+  expect_lt(res$jvp_vs_fd, 1e-7)
+  expect_lt(res$f32_vs_f64, 1e-4)
+})
+
 test_that("metad through the JAX transport map (f64 and f32) recovers Stan's posterior", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .sim_metad(n_sub = 16, n_item = 32, m_old = 0.7, m_new = 1, relative = TRUE, seed = 3)

@@ -386,6 +386,30 @@ inline MixtureCellResult mixture_cell_t(double z1_lo, double z1_hi, double z2_lo
           (cp1.p - cp2.p) * inv_P};
 }
 
+template <class L>
+inline MetadResult metad_cell_t(bool old_side, bool open_lo, bool open_hi,
+                                double z_a, double z_lo, double z_hi, double z_c) {
+  double pa = old_side ? L::ccdf(z_a) : L::cdf(z_a);
+  double pc = old_side ? L::ccdf(z_c) : L::cdf(z_c);
+  double pb = open_lo ? L::cdf(z_hi) : open_hi ? L::ccdf(z_lo) : L::diff(z_lo, z_hi);
+  double ia = pa > kPFloor ? 1.0 / pa : 0.0;
+  double ib = pb > kPFloor ? 1.0 / pb : 0.0;
+  double ic = pc > kPFloor ? 1.0 / pc : 0.0;
+  const double s = old_side ? -1.0 : 1.0;
+  pa = std::fmax(pa, kPFloor);
+  pb = std::fmax(pb, kPFloor);
+  pc = std::fmax(pc, kPFloor);
+  return {std::log(pa) + std::log(pb / pc), s * L::pdf(z_a) * ia, open_lo ? 0.0 : -L::pdf(z_lo) * ib,
+          open_hi ? 0.0 : L::pdf(z_hi) * ib, -s * L::pdf(z_c) * ic};
+}
+
+inline MetadResult metad_cell_logit(bool o, bool l, bool h, double a, double lo, double hi, double c) {
+  return metad_cell_t<LogitLink>(o, l, h, a, lo, hi, c);
+}
+inline MetadResult metad_cell_cloglog(bool o, bool l, bool h, double a, double lo, double hi, double c) {
+  return metad_cell_t<CloglogLink>(o, l, h, a, lo, hi, c);
+}
+
 inline CellResult cell_log_prob_logit(double a, double b) { return cell_log_prob_t<LogitLink>(a, b); }
 inline CellResult edge_lo_logit(double z) { return edge_lo_t<LogitLink>(z); }
 inline CellResult edge_hi_logit(double z) { return edge_hi_t<LogitLink>(z); }
