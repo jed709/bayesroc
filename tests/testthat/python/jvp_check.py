@@ -136,6 +136,14 @@ def metad_case(relative, K=6, q=0.5, mid=(0.6, 0.3), d=(1.2, 0.6), N=400, seed=4
     return f, args, [1, 2, 3, 5, 6]
 
 
+def lnoise_case(K=6, sm=(0.15, 1.2), mid=(0.6, 0.3), d=(0.8, 0.8), gaps=(-0.4, 0.2), N=300, seed=7):
+    rng = np.random.default_rng(seed)
+    f = nb._make_fused_lnoise_loglik(K, False)
+    args = [jnp.asarray(rng.integers(1, K + 1, N), dtype=jnp.int32), _n(rng, d[0], d[1], N), _u(rng, sm[0], sm[1], N),
+            _n(rng, mid[0], mid[1], N), _n(rng, gaps[0], gaps[1], (N, K - 2))]
+    return f, args, [1, 2, 3, 4]
+
+
 def gnoise_case(K=6, sm=(0.3, 1.6), mid=(0.6, 0.3), N=300, seed=6):
     rng = np.random.default_rng(seed)
     f = nb._make_fused_gnoise_loglik(K, False)
@@ -159,6 +167,10 @@ CASES = {
     "pcq_m4": lambda: pcq_case(3),
     "pcq_m8_slopes": lambda: pcq_case(7, slopes=True),
     "pcq_m21": lambda: pcq_case(20),
+    "lnoise": lambda: lnoise_case(),
+    "lnoise_k4_small_noise": lambda: lnoise_case(K=4, sm=(0.005, 0.08)),
+    "lnoise_k8_large_noise": lambda: lnoise_case(K=8, sm=(1.0, 4.0), gaps=(-1.0, 0.4)),
+    "lnoise_tail": lambda: lnoise_case(mid=(3.0, 0.5), d=(4.5, 1.0)),
     "gnoise": lambda: gnoise_case(),
     "gnoise_k4_small_noise": lambda: gnoise_case(K=4, sm=(0.05, 0.3)),
     "gnoise_k8_tail": lambda: gnoise_case(K=8, mid=(3.0, 0.5)),

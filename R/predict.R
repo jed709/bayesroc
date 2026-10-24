@@ -2080,7 +2080,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
     )
 
     switch(family_name,
-      evsdt          = probs_evsdt(tp, th, ds$is_old, link_name, S, n_chunk, K),
+      evsdt          = probs_evsdt(tp, th, ds$is_old, link_name, S, n_chunk, K, model$model_data$meta_noise),
       uvsdt          = probs_uvsdt(tp, th, ds$is_old, link_name, S, n_chunk, K),
       dpsdt          = probs_dpsdt(tp, th, ds$is_old, link_name, S, n_chunk, K,
                                     has_sigma = isTRUE(model$model_data$has_sigma)),
@@ -2141,7 +2141,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
     n_chunk <- length(cd$idx)
     ds <- list(is_old = cd$is_old, source = cd$source, item_type = cd$item_type)
     switch(cd$family_name,
-      evsdt          = probs_evsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K),
+      evsdt          = probs_evsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K,
+                                   cd$model$model_data$meta_noise),
       uvsdt          = probs_uvsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K),
       dpsdt          = probs_dpsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K,
                                     has_sigma = isTRUE(cd$model$model_data$has_sigma)),
@@ -2199,10 +2200,11 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 
 #' EVSDT probabilities
 #' @noRd
-probs_evsdt <- function(params, thresh, is_old, link_name, S, N, K) {
+probs_evsdt <- function(params, thresh, is_old, link_name, S, N, K, meta_noise = NULL) {
   if (!is.null(params[["sigma_meta"]])) {
-    return(pmax(.gnoise_cells(params[["dprime"]], params[["sigma_meta"]], thresh, matrix(is_old, S, N, byrow = TRUE),
-                              K), 1e-10))
+    cells <- if (identical(meta_noise, "lognormal")) .lnoise_cells else .gnoise_cells
+    return(pmax(cells(params[["dprime"]], params[["sigma_meta"]], thresh, matrix(is_old, S, N, byrow = TRUE), K),
+                1e-10))
   }
   pmax(.ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), 1, link_name, K), 1e-10)
 }
@@ -2256,6 +2258,140 @@ probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
     out[, , k] <- if (old) .bvn_rect_v(zc, inf, lo, hi, rho) else .bvn_rect_v(-inf, zc, lo, hi, rho)
   }
   out
+}
+
+.lnoise_cells <- function(d, sm, thresh, a, K) {
+  h <- K %/% 2L
+  mu <- as.vector(a * d)
+  c0 <- as.vector(thresh[, , h])
+  s <- as.vector(sm)
+  n <- length(c0)
+  out <- array(0, c(dim(d), K))
+  for (k in seq_len(K)) {
+    if (k > h) {
+      Dn <- if (k == h + 1L) rep(0, n) else as.vector(thresh[, , k - 1L]) - c0
+      Df <- if (k == K) rep(Inf, n) else as.vector(thresh[, , k]) - c0
+      A <- mu - c0
+    } else {
+      Dn <- if (k == h) rep(0, n) else c0 - as.vector(thresh[, , k])
+      Df <- if (k == 1L) rep(Inf, n) else c0 - as.vector(thresh[, , k - 1L])
+      A <- c0 - mu
+    }
+    out[, , k] <- .lnoise_cell_v(A, log(Dn), log(Df), s)
+  }
+  out
+}
+
+# P(D_near e^(sZ) < T <= D_far e^(sZ)), T ~ N(a, 1), Z ~ N(0, 1), elementwise, from ln = log D_near
+# (-Inf: D = 0) and lf = log D_far (Inf: open); the native kernel when it is there
+.lnoise_cell_v <- function(a, ln, lf, s) {
+  n <- length(a)
+  if (n && .bvn_native_ready() && !is.null(.bvn_native$sym_lnoise)) {
+    return(exp(.C(.bvn_native$sym_lnoise, as.double(a), as.double(ln), as.double(lf), as.double(s),
+                  as.integer(n), .native_threads(), lp = double(n), NAOK = TRUE)$lp))
+  }
+  .lnoise_cell_r(a, ln, lf, s)
+}
+
+.lnoise_cell_r <- function(a, ln, lf, s) {
+  R <- 8.5
+  gl <- .gauss_legendre(56L)
+  gh <- .gauss_hermite_e(24L)
+  ghlw <- log(gh$w) + 0.5 * gh$x^2
+  n <- length(a)
+  Pa <- stats::pnorm(a)
+  Qa <- stats::pnorm(a, lower.tail = FALSE)
+  lam <- function(x) exp(stats::dnorm(x, log = TRUE) - stats::pnorm(x, log.p = TRUE))
+  kd <- function(u, Pa, Qa) ifelse(u >= 0, stats::pnorm(u, lower.tail = FALSE) - Qa, Pa - stats::pnorm(u))
+  pint <- function(lo, hi) ifelse(lo >= 0, stats::pnorm(lo, lower.tail = FALSE) - stats::pnorm(hi, lower.tail = FALSE),
+                                  stats::pnorm(hi) - stats::pnorm(lo))
+  cum <- function(l) {
+    w <- exp(l); x <- a - w; L <- lam(x); sw <- s * w
+    zl <- -L * sw; zr <- rep(0, n)
+    z <- -zl / (-1 - L * s * sw - L * (x + L) * sw * sw)
+    for (it in seq_len(40L)) {
+      w <- exp(l + s * z); x <- a - w; L <- lam(x); sw <- s * w
+      g <- -z - L * sw
+      d2 <- -1 - L * s * sw - L * (x + L) * sw * sw
+      zl <- ifelse(g > 0, z, zl); zr <- ifelse(g > 0, zr, z)
+      zn <- z - g / d2
+      z <- ifelse(zn > zl & zn < zr, zn, 0.5 * (zl + zr))
+    }
+    w <- exp(l + s * z); x <- a - w; L <- lam(x); sw <- s * w
+    d2 <- -1 - L * s * sw - L * (x + L) * sw * sw
+    zs <- (-log(s) - l) / s
+    agh <- zs >= z + R
+    C <- K <- numeric(n)
+    i <- which(agh)
+    if (length(i)) {
+      sc <- 1 / sqrt(-d2[i])
+      h0 <- -0.5 * z[i]^2 + stats::pnorm(a[i] - exp(l[i] + s[i] * z[i]), log.p = TRUE)
+      zg <- z[i] + outer(sc, gh$x)
+      ug <- a[i] - exp(l[i] + s[i] * zg)
+      eg <- exp(sweep(-0.5 * zg^2, 2, ghlw, "+") - h0)
+      cg <- sc * exp(h0) / sqrt(2 * pi)
+      C[i] <- cg * rowSums(eg * stats::pnorm(ug))
+      K[i] <- cg * rowSums(eg * kd(ug, Pa[i], Qa[i]))
+    }
+    i <- which(!agh)
+    if (length(i)) {
+      zc <- pmin(z[i], zs[i]); lo <- zc - R; hi <- pmin(zc + R, zs[i])
+      hz <- 0.5 * pmax(hi - lo, 0)
+      zz <- (lo + hz) + outer(hz, gl$x)
+      u <- a[i] - exp(l[i] + s[i] * zz)
+      pz <- sweep(stats::dnorm(zz), 2, gl$w, "*") * hz
+      es <- 1 / s[i] - a[i]
+      elo <- pmax(es, -R)
+      net <- es - ifelse(zs[i] < 0, lam(zs[i]), 0)
+      ehi <- ifelse(es > 0 & net * R > 40, es + 40 / ifelse(net > 0, net, 1), pmax(es, 0) + R)
+      he <- 0.5 * pmax(ehi - elo, 0)
+      ee <- (elo + he) + outer(he, gl$x)
+      Z <- (log(pmax(a[i] + ee, 1e-300)) - l[i]) / s[i]
+      pe <- sweep(stats::dnorm(ee), 2, gl$w, "*") * he
+      zsm <- matrix(zs[i], length(i), ncol(Z))
+      diff <- ifelse(zsm >= 0, stats::pnorm(zsm, lower.tail = FALSE) - stats::pnorm(Z, lower.tail = FALSE),
+                     stats::pnorm(Z) - stats::pnorm(zsm))
+      Qzs <- stats::pnorm(zs[i], lower.tail = FALSE)
+      C[i] <- rowSums(pz * stats::pnorm(u)) + rowSums(pe * diff)
+      K[i] <- rowSums(pz * kd(u, Pa[i], Qa[i])) + rowSums(pe * stats::pnorm(Z, lower.tail = FALSE)) +
+        pint(-a[i], elo) * Qzs
+    }
+    list(C = C, K = K)
+  }
+  on <- ln == -Inf
+  of <- lf == Inf
+  cn <- cum(ifelse(on, 0, ln))
+  cf <- cum(ifelse(of, 0, lf))
+  Cn <- ifelse(on, Pa, cn$C); Kn <- ifelse(on, 0, cn$K)
+  Cf <- ifelse(of, 0, cf$C); Kf <- ifelse(of, Pa, cf$K)
+  pmax(ifelse(Kf < Cn, Kf - Kn, Cn - Cf), 0)
+}
+
+.quad_rules <- new.env(parent = emptyenv())
+
+.golub_welsch <- function(b, mass) {
+  n <- length(b) + 1L
+  J <- matrix(0, n, n)
+  J[cbind(seq_len(n - 1L), 2:n)] <- b
+  J[cbind(2:n, seq_len(n - 1L))] <- b
+  e <- eigen(J, symmetric = TRUE)
+  o <- order(e$values)
+  list(x = e$values[o], w = mass * e$vectors[1, o]^2)
+}
+
+.gauss_legendre <- function(n) {
+  key <- paste0("gl", n)
+  if (is.null(.quad_rules[[key]])) {
+    k <- seq_len(n - 1L)
+    .quad_rules[[key]] <- .golub_welsch(k / sqrt(4 * k^2 - 1), 2)
+  }
+  .quad_rules[[key]]
+}
+
+.gauss_hermite_e <- function(n) {
+  key <- paste0("gh", n)
+  if (is.null(.quad_rules[[key]])) .quad_rules[[key]] <- .golub_welsch(sqrt(seq_len(n - 1L)), sqrt(2 * pi))
+  .quad_rules[[key]]
 }
 
 #' UVSDT probabilities

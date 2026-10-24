@@ -4,11 +4,16 @@
 \alias{evsd}
 \title{Equal Variance Signal Detection Model}
 \usage{
-evsd(link = link_probit())
+evsd(link = link_probit(), meta_noise = c("gaussian", "lognormal"))
 }
 \arguments{
 \item{link}{Link function: \code{\link[=link_probit]{link_probit()}} (default), \code{\link[=link_logit]{link_logit()}} or
 \code{\link[=link_cloglog]{link_cloglog()}}.}
+
+\item{meta_noise}{Form of the meta-noise when \code{sigma_meta} is modelled:
+\code{"gaussian"} (default; Bang et al., 2019) adds normal noise to the
+evidence read by the rating; \code{"lognormal"} (Shekhar & Rahnev, 2021) makes
+the confidence criteria lognormal in their distance from c0.}
 }
 \value{
 A \code{broc_family} object.
@@ -37,9 +42,11 @@ old-item distributions have unit SD.
 \item{criterion}{(required) K-1 confidence thresholds, parameterized
 internally as a mid-anchor \code{thresh_mid} plus K-2 ordered gaps. Identity
 link on the gap parameterization.}
-\item{sigma_meta}{(optional) SD of Gaussian noise added to the decision
-evidence before the confidence rating (Bang et al., 2019). Log link.
-If omitted, the rating is read from the decision evidence itself.}
+\item{sigma_meta}{(optional) Meta-noise SD: of the Gaussian noise added to
+the decision evidence before the rating (Bang et al., 2019), or of the
+log-distance of each confidence criterion from c0 (Shekhar & Rahnev,
+2021), as set by \code{meta_noise}. Log link. If omitted, the rating is read
+from the decision evidence against fixed criteria.}
 }
 }
 
@@ -53,6 +60,18 @@ the rating is the lowest confidence. Each cell is a bivariate normal
 rectangle with correlation 1 / sqrt(1 + sigma_meta^2). Requires the probit
 link and an even number of response categories (at least 4). As
 \code{sigma_meta} goes to 0 the model becomes the ordinary rating model.
+}
+
+\subsection{Lognormal meta-noise}{
+
+With \code{meta_noise = "lognormal"}, the rating is read from the decision
+evidence x, but on each trial the confidence criteria are
+c0 + (c_k - c0) exp(sigma_meta z) on the side of the decision, with one
+z ~ N(0, 1) shared by all criteria so that they never cross (Shekhar &
+Rahnev, 2021). The thresholds c_k are the median criteria. Each cell is a
+one-dimensional integral, computed by quadrature. Requires the probit link
+and an even number of response categories (at least 4); as \code{sigma_meta}
+goes to 0 the model becomes the ordinary rating model.
 }
 
 \subsection{Formula syntax}{
@@ -71,6 +90,9 @@ guide} (2nd ed.). Lawrence Erlbaum.
 Bang, J. W., Shekhar, M., & Rahnev, D. (2019). Sensory noise increases
 metacognitive efficiency. \emph{Journal of Experimental Psychology: General},
 \emph{148}(3), 437-452.
+
+Shekhar, M., & Rahnev, D. (2021). The nature of metacognitive inefficiency
+in perceptual decision making. \emph{Psychological Review}, \emph{128}(1), 45-70.
 }
 \seealso{
 \code{\link[=uvsd]{uvsd()}} for unequal-variance extension, \code{\link[=dpsd]{dpsd()}} for dual-process,

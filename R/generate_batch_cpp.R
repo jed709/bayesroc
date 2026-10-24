@@ -309,6 +309,7 @@ collect_batch_params <- function(model_data, family_name) {
   params[[".cdp_rho_shared"]] <- is_cdp && isTRUE(model_data$cdp_rho_shared)
   params[[".is_metad"]]     <- family_name == "metadt"
   params[[".has_sigma_meta"]] <- isTRUE(model_data$has_sigma_meta) && family_name == "evsdt"
+  params[[".lnoise"]] <- params[[".has_sigma_meta"]] && identical(model_data$meta_noise, "lognormal")
   params[[".has_mratio"]]   <- isTRUE(model_data$has_mratio) && family_name == "metadt"
   params[[".has_mratio_N"]] <- isTRUE(model_data$has_mratio_N) && family_name == "metadt"
   params[[".metad_shared"]] <- family_name == "metadt" && isTRUE(model_data$metad_mratio_shared)
@@ -1434,6 +1435,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     emit_likelihood_cdp(L, params)
   } else if (isTRUE(params[[".is_metad"]])) {
     emit_likelihood_metad(L, params)
+  } else if (isTRUE(params[[".lnoise"]])) {
+    emit_likelihood_lnoise(L, params)
   } else if (isTRUE(params[[".has_sigma_meta"]])) {
     emit_likelihood_gnoise(L, params)
   } else {
@@ -1450,6 +1453,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     emit_gradient_accumulation_cdp(L, model_data, params, has_crit_re)
   } else if (isTRUE(params[[".is_metad"]])) {
     emit_gradient_accumulation_metad(L, model_data, params, has_crit_re)
+  } else if (isTRUE(params[[".lnoise"]])) {
+    emit_gradient_accumulation_lnoise(L, model_data, params, has_crit_re)
   } else if (isTRUE(params[[".has_sigma_meta"]])) {
     emit_gradient_accumulation_gnoise(L, model_data, params, has_crit_re)
   } else {
@@ -5451,6 +5456,72 @@ emit_gradient_accumulation_gnoise <- function(L, model_data, params, has_crit_re
   L$add(sprintf("    const double d_mid_extra = g_c%s;", w))
   emit_thresh_propagation(L, model_data, params, has_crit_re, paste0("g2_lo * inv_tau", w),
                           paste0("g2_hi * inv_tau", w), is_crit_intercept_only, d_mid = "d_mid_extra")
+}
+
+# ============================================================================
+# Lognormal meta-noise (evsd with sigma_meta, meta_noise = "lognormal")
+# ============================================================================
+
+#' Emit lognormal meta-noise likelihood
+#' @noRd
+emit_likelihood_lnoise <- function(L, params) {
+  L$add("    const bool old_side = 2 * yn > K;")
+  L$add("    const double c_mid = thresh_n(mid);")
+  L$add("    const double a_ln = old_side ? mu - c_mid : c_mid - mu;")
+  L$add("    const bool open_lo = old_side ? 2 * yn == K + 2 : yn == 1;")
+  L$add("    const bool open_hi = old_side ? yn == K : 2 * yn == K;")
+  L$add("    const int k_lo = open_lo ? -1 : yn - 2;")
+  L$add("    const int k_hi = open_hi ? -1 : yn - 1;")
+  L$add("    const double D_lo = open_lo ? 0.0 : (old_side ? thresh_n(k_lo) - c_mid : c_mid - thresh_n(k_lo));")
+  L$add("    const double D_hi = open_hi ? 0.0 : (old_side ? thresh_n(k_hi) - c_mid : c_mid - thresh_n(k_hi));")
+  L$add("    const bool open_near = old_side ? open_lo : open_hi, open_far = old_side ? open_hi : open_lo;")
+  L$add("    const double D_near = old_side ? D_lo : D_hi, D_far = old_side ? D_hi : D_lo;")
+  L$add("    const lnoise::Cell res = lnoise::cell(a_ln, open_near ? -bvn_tail::kInf : std::log(D_near),")
+  L$add("        open_far ? bvn_tail::kInf : std::log(D_far), sigma_meta_val);")
+  if (params[[".has_counts"]]) {
+    L$add("    total_lp += res.lp * count_n;")
+  } else {
+    L$add("    total_lp += res.lp;")
+  }
+  L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = res.lp;")
+}
+
+#' Emit lognormal meta-noise gradient accumulation
+#' @noRd
+emit_gradient_accumulation_lnoise <- function(L, model_data, params, has_crit_re) {
+  has_counts <- params[[".has_counts"]]
+  crit <- model_data$criterion
+  is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
+  w <- if (has_counts) " * count_n" else ""
+
+  L$add("    const double g_near = open_near ? 0.0 : res.dln / D_near;")
+  L$add("    const double g_far = open_far ? 0.0 : res.dlf / D_far;")
+  L$add("    const double sgn = old_side ? 1.0 : -1.0;")
+  L$add("    const double g_lo = sgn * (old_side ? g_near : g_far);")
+  L$add("    const double g_hi = sgn * (old_side ? g_far : g_near);")
+  L$add(sprintf("    double d_dprime_n = sgn * res.da * is_old_n%s;", w))
+  L$add(sprintf("    double d_sigma_meta_n = res.ds * sigma_meta_val%s;", w))
+  if (isTRUE(params[[".has_dp_fixed"]])) {
+    L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
+  }
+  dp_re_idx <- 0
+  for (group in names(params[["dprime"]]$random)) {
+    dp_re_idx <- dp_re_idx + 1
+    emit_re_gradient(L, dp_re_tag(dp_re_idx), params[["dprime"]]$random[[group]], group, "d_dprime_n",
+                     "dprime", dp_re_idx, "dp")
+  }
+  L$add("    for (int p = 0; p < P_sgm; ++p) grad_beta_sgm(p) += d_sigma_meta_n * X_sgm_d(n, p);")
+  re_idx <- 0
+  for (group in names(params[["sigma_meta"]]$random)) {
+    re_idx <- re_idx + 1
+    emit_re_gradient(L, sgm_re_tag(re_idx), params[["sigma_meta"]]$random[[group]], group, "d_sigma_meta_n",
+                     "sigma_meta", re_idx, "sgm")
+  }
+  L$add("")
+  L$add("    // Gradient: d_lp / d_thresh")
+  L$add(sprintf("    const double d_mid_extra = -sgn * (res.da + g_near + g_far)%s;", w))
+  emit_thresh_propagation(L, model_data, params, has_crit_re, paste0("g_lo", w), paste0("g_hi", w),
+                          is_crit_intercept_only, d_mid = "d_mid_extra")
 }
 
 # ============================================================================

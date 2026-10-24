@@ -925,9 +925,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stop("metad() needs an even number of response categories, at least 4: K/2 confidence levels for ",
          "\"new\" responses and K/2 for \"old\" responses. The response has ", K, " categories.", call. = FALSE)
   }
+  meta_noise <- if (has_sigma_meta) (if (is.null(family$meta_noise)) "gaussian" else family$meta_noise) else NULL
   if (has_sigma_meta && !identical(family$link$name, "probit")) {
-    stop("sigma_meta is the Gaussian meta-noise model (Bang et al., 2019), defined on the probit scale: ",
-         "use evsd() with the default link_probit().", call. = FALSE)
+    stop("sigma_meta is the ", if (meta_noise == "gaussian") "Gaussian meta-noise model (Bang et al., 2019)"
+         else "lognormal meta-noise model (Shekhar & Rahnev, 2021)",
+         ", defined on the probit scale: use evsd() with the default link_probit().", call. = FALSE)
   }
   if (has_sigma_meta && (K < 4L || K %% 2L != 0L)) {
     stop("sigma_meta needs an even number of response categories, at least 4: the middle threshold is the ",
@@ -1907,6 +1909,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     sigma_meta_fixed = sigma_meta_fixed,
     sigma_meta_random = sigma_meta_random,
     metac = if (is_metad) family$metac else NULL,
+    meta_noise = meta_noise,
     centered_coding = if (exists("centered_coding")) centered_coding else FALSE,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
@@ -3391,7 +3394,8 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
       }
     }
     hdr <- c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code)
-    deps <- c(core_hpp, file.path(dirname(core_hpp), "..", "include", "bayesroc", "bvn_tail.h"))
+    deps <- c(core_hpp, file.path(dirname(core_hpp), "..", "include", "bayesroc",
+                                  c("bvn_tail.h", "bvn_simd.h", "lnoise.h")))
     deps <- deps[file.exists(deps)]
   }
   key <- digest_string(c(model$stan_code, hdr, unname(tools::md5sum(deps)), isTRUE(threads),

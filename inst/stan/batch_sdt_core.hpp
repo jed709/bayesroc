@@ -9,6 +9,7 @@
 #include <limits>
 
 #include "../include/bayesroc/bvn_tail.h"
+#include "../include/bayesroc/lnoise.h"
 
 namespace batch_sdt {
 

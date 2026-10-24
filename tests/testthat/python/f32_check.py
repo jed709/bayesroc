@@ -45,6 +45,10 @@ res["vrdp2d"] = nb._vrdp2d_native(z1h, z1l, z2h, z2l, *flags, f32r(inputs[5] * 0
 res["metad"] = nb._metad_cell(lo, z1l, z1h, f32r(inputs[0] - np.abs(inputs[4])), flags[0] > 0)
 pc = f32r(np.stack([inputs[0], inputs[2] + 1.0, inputs[5] * 0.3], 1))
 res["pcq"] = nb._pcq_raw(jnp.ones_like(pc), pc)
+lnd = np.abs(inputs[2]) * 0.4 + 0.05
+ln_in = np.where((np.arange(n) + 1) % 4 != 0, np.log(lnd), -np.inf)
+lf_in = np.where((np.arange(n) + 2) % 4 != 0, np.log(lnd + np.abs(inputs[5]) * 0.1 + 0.1), np.inf)
+res["lnoise"] = nb._lnoise_raw(f32r(inputs[0] + 1.0), f32r(ln_in), f32r(lf_in), f32r(np.exp(inputs[4] * 1.5 - 0.5)))
 out = {k: [np.asarray(a, dtype=np.float64).tolist() for a in v] for k, v in res.items()}
 
 if len(sys.argv) > 3 and sys.argv[3] == "f64":

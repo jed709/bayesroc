@@ -369,7 +369,114 @@
     }
   }')
   
-  if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
+  if (family_name == "evsdt" && identical(model_data$meta_noise, "lognormal")) {
+    lines <- c(lines, '
+  real ln_lam(real x) {
+    return exp(std_normal_lpdf(x) - std_normal_lcdf(x));
+  }
+
+  real ln_interval(real lo, real hi) {
+    return lo >= 0 ? Phi(-lo) - Phi(-hi) : Phi(hi) - Phi(lo);
+  }
+
+  vector ln_cum(real a, real l, real s, real Pa, real Qa, real pa) {
+    vector[56] GX = to_vector({-0.9990943438014656, -0.9952312260810697, -0.9882937155401615, -0.9783017091402564, -0.9652859019054901, -0.9492864795619627, -0.9303528802474963, -0.9085436204206555, -0.8839261083278276, -0.8565764337627486, -0.8265791321428817, -0.7940269228938664, -0.7590204227051289, -0.7216678344501881, -0.6820846126944704, -0.6403931068070069, -0.5967221827706634, -0.5512068248555346, -0.5039877183843817, -0.4552108148784596, -0.40502688092709127, -0.3535910321749545, -0.3010622538672207, -0.24760290943433721, -0.19337823863527526, -0.13855584681037625, -0.08330518682243537, -0.02779703528727544, 0.02779703528727544, 0.08330518682243537, 0.13855584681037625, 0.19337823863527526, 0.24760290943433721, 0.3010622538672207, 0.3535910321749545, 0.40502688092709127, 0.4552108148784596, 0.5039877183843817, 0.5512068248555346, 0.5967221827706634, 0.6403931068070069, 0.6820846126944704, 0.7216678344501881, 0.7590204227051289, 0.7940269228938664, 0.8265791321428817, 0.8565764337627486, 0.8839261083278276, 0.9085436204206555, 0.9303528802474963, 0.9492864795619627, 0.9652859019054901, 0.9783017091402564, 0.9882937155401615, 0.9952312260810697, 0.9990943438014656});
+    vector[56] GW = to_vector({0.002323855375774208, 0.005402522246015044, 0.008469063163307663, 0.01150982434038326, 0.014515089278021987, 0.017475512911400717, 0.020381929882402214, 0.023225351562565253, 0.025996987058392027, 0.02868826847382286, 0.03129087674731017, 0.03379676711561189, 0.0361981938723151, 0.03848773425924778, 0.040658311384744704, 0.04270321608466702, 0.04461612765269215, 0.046391133373001874, 0.04802274679360021, 0.04950592468304754, 0.050836082617798435, 0.05200910915174136, 0.053021378524010704, 0.05386976186571443, 0.05455163687088942, 0.05506489590176235, 0.0554079525032451, 0.05557974630651438, 0.05557974630651438, 0.0554079525032451, 0.05506489590176235, 0.05455163687088942, 0.05386976186571443, 0.053021378524010704, 0.05200910915174136, 0.050836082617798435, 0.04950592468304754, 0.04802274679360021, 0.046391133373001874, 0.04461612765269215, 0.04270321608466702, 0.040658311384744704, 0.03848773425924778, 0.0361981938723151, 0.03379676711561189, 0.03129087674731017, 0.02868826847382286, 0.025996987058392027, 0.023225351562565253, 0.020381929882402214, 0.017475512911400717, 0.014515089278021987, 0.01150982434038326, 0.008469063163307663, 0.005402522246015044, 0.002323855375774208});
+    vector[24] HX = to_vector({-8.507803519195257, -7.437890666021663, -6.541675005098634, -5.732747175251201, -4.97804137463912, -4.260383605019905, -3.56930676407356, -2.8977286432233136, -2.2404678516917524, -1.5934804298164202, -0.953421922932109, -0.31737009662945237, 0.31737009662945237, 0.953421922932109, 1.5934804298164202, 2.2404678516917524, 2.8977286432233136, 3.56930676407356, 4.260383605019905, 4.97804137463912, 5.732747175251201, 6.541675005098634, 7.437890666021663, 8.507803519195257});
+    vector[24] HLW = to_vector({0.20601823308995648, -0.041187175259988607, -0.1686086758187244, -0.25088612275244415, -0.3091932858267903, -0.35243736290923344, -0.3851643200217296, -0.40997167262863066, -0.42844783666589326, -0.44159776129144634, -0.450055647302028, -0.4541970080901803, -0.4541970080901803, -0.450055647302028, -0.44159776129144634, -0.42844783666589326, -0.40997167262863066, -0.3851643200217296, -0.35243736290923344, -0.3091932858267903, -0.25088612275244415, -0.1686086758187244, -0.041187175259988607, 0.20601823308995648});
+    real R = 8.5;
+    real w = exp(l);
+    real x = a - w;
+    real L = ln_lam(x);
+    real sw = s * w;
+    real zl = -L * sw;
+    real zr = 0;
+    real d2 = -1 - L * s * sw - L * (x + L) * sw * sw;
+    real z = -zl / d2;
+    real zs = (-log(s) - l) / s;
+    real C = 0;
+    real Kv = 0;
+    for (it in 1:40) {
+      real g;
+      real zn;
+      w = exp(l + s * z);
+      x = a - w;
+      L = ln_lam(x);
+      sw = s * w;
+      g = -z - L * sw;
+      d2 = -1 - L * s * sw - L * (x + L) * sw * sw;
+      if (g > 0) zl = z; else zr = z;
+      zn = z - g / d2;
+      z = (zn > zl && zn < zr) ? zn : 0.5 * (zl + zr);
+    }
+    w = exp(l + s * z);
+    x = a - w;
+    L = ln_lam(x);
+    sw = s * w;
+    d2 = -1 - L * s * sw - L * (x + L) * sw * sw;
+    if (zs >= z + R) {
+      real sc = 1 / sqrt(-d2);
+      real h0 = -0.5 * square(z) + std_normal_lcdf(a - exp(l + s * z));
+      for (i in 1:24) {
+        real zi = z + sc * HX[i];
+        real u = a - exp(l + s * zi);
+        real e = exp(-0.5 * square(zi) + HLW[i] - h0);
+        C += e * Phi(u);
+        Kv += e * (u >= 0 ? Phi(-u) - Qa : Pa - Phi(u));
+      }
+      return to_vector({C, Kv}) * sc * exp(h0) / sqrt(2 * pi());
+    }
+    {
+      real zc = fmin(z, zs);
+      real lo = zc - R;
+      real hi = fmin(zc + R, zs);
+      real hz = 0.5 * fmax(hi - lo, 0);
+      real es = 1 / s - a;
+      real elo = fmax(es, -R);
+      real net = es - (zs < 0 ? ln_lam(zs) : 0);
+      real ehi = (es > 0 && net * R > 40) ? es + 40 / net : fmax(es, 0) + R;
+      real he = 0.5 * fmax(ehi - elo, 0);
+      for (i in 1:56) {
+        real zi = lo + hz * (1 + GX[i]);
+        real u = a - exp(l + s * zi);
+        real pz = GW[i] * hz * exp(std_normal_lpdf(zi));
+        real ei = elo + he * (1 + GX[i]);
+        real Z = (log(a + ei) - l) / s;
+        real pe = GW[i] * he * exp(std_normal_lpdf(ei));
+        C += pz * Phi(u) + pe * (zs >= 0 ? Phi(-zs) - Phi(-Z) : Phi(Z) - Phi(zs));
+        Kv += pz * (u >= 0 ? Phi(-u) - Qa : Pa - Phi(u)) + pe * Phi(-Z);
+      }
+      Kv += ln_interval(-a, elo) * Phi(-zs);
+    }
+    return to_vector({C, Kv});
+  }
+
+  real lnoise_cell(real a, real Dn, real Df, real s) {
+    real Pa = Phi(a);
+    real Qa = Phi(-a);
+    real pa = exp(std_normal_lpdf(a));
+    vector[2] n = Dn > 0 ? ln_cum(a, log(Dn), s, Pa, Qa, pa) : to_vector({Pa, 0.0});
+    vector[2] f = is_inf(Df) ? to_vector({0.0, Pa}) : ln_cum(a, log(Df), s, Pa, Qa, pa);
+    real P = f[2] < n[1] ? f[2] - n[2] : n[1] - f[1];
+    return log(fmax(P, 1e-300));
+  }
+
+  real lnoise_lpmf(int y, real dprime, real sigma_m, real is_old, int K, vector thresh) {
+    int h = K %/% 2;
+    real mu = is_old * dprime;
+    real c0 = thresh[h];
+    if (y > h) {
+      real Dn = y == h + 1 ? 0 : thresh[y - 1] - c0;
+      real Df = y == K ? positive_infinity() : thresh[y] - c0;
+      return lnoise_cell(mu - c0, Dn, Df, sigma_m);
+    }
+    {
+      real Dn = y == h ? 0 : c0 - thresh[y];
+      real Df = y == 1 ? positive_infinity() : c0 - thresh[y - 1];
+      return lnoise_cell(c0 - mu, Dn, Df, sigma_m);
+    }
+  }')
+  } else if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
     lines <- c(lines, .stan_bvn_functions(), '
   real gnoise_lpmf(int y, real dprime, real sigma_m, real is_old, int K, vector thresh) {
     int h = K %/% 2;
@@ -2509,6 +2616,8 @@ generate_likelihood_call <- function(model_data, family_name) {
     } else {
       "source_mixture_lpmf(y[n] | source[n], dprime_n, lambda_val, K, thresh)"
     }
+  } else if (family_name == "evsdt" && identical(model_data$meta_noise, "lognormal")) {
+    "lnoise_lpmf(y[n] | dprime_n, sigma_meta_val, is_old[n], K, thresh)"
   } else if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
     "gnoise_lpmf(y[n] | dprime_n, sigma_meta_val, is_old[n], K, thresh)"
   } else if (family_name == "evsdt") {

@@ -91,6 +91,10 @@ print.broc_link <- function(x, ...) {
 #'
 #' @param link Link function: [link_probit()] (default), [link_logit()] or
 #'   [link_cloglog()].
+#' @param meta_noise Form of the meta-noise when `sigma_meta` is modelled:
+#'   `"gaussian"` (default; Bang et al., 2019) adds normal noise to the
+#'   evidence read by the rating; `"lognormal"` (Shekhar & Rahnev, 2021) makes
+#'   the confidence criteria lognormal in their distance from c0.
 #'
 #' @details
 #' ## Likelihood
@@ -109,9 +113,11 @@ print.broc_link <- function(x, ...) {
 #'   \item{criterion}{(required) K-1 confidence thresholds, parameterized
 #'     internally as a mid-anchor `thresh_mid` plus K-2 ordered gaps. Identity
 #'     link on the gap parameterization.}
-#'   \item{sigma_meta}{(optional) SD of Gaussian noise added to the decision
-#'     evidence before the confidence rating (Bang et al., 2019). Log link.
-#'     If omitted, the rating is read from the decision evidence itself.}
+#'   \item{sigma_meta}{(optional) Meta-noise SD: of the Gaussian noise added to
+#'     the decision evidence before the rating (Bang et al., 2019), or of the
+#'     log-distance of each confidence criterion from c0 (Shekhar & Rahnev,
+#'     2021), as set by `meta_noise`. Log link. If omitted, the rating is read
+#'     from the decision evidence against fixed criteria.}
 #' }
 #'
 #' ## Gaussian meta-noise
@@ -123,6 +129,16 @@ print.broc_link <- function(x, ...) {
 #' rectangle with correlation 1 / sqrt(1 + sigma_meta^2). Requires the probit
 #' link and an even number of response categories (at least 4). As
 #' `sigma_meta` goes to 0 the model becomes the ordinary rating model.
+#'
+#' ## Lognormal meta-noise
+#' With `meta_noise = "lognormal"`, the rating is read from the decision
+#' evidence x, but on each trial the confidence criteria are
+#' c0 + (c_k - c0) exp(sigma_meta z) on the side of the decision, with one
+#' z ~ N(0, 1) shared by all criteria so that they never cross (Shekhar &
+#' Rahnev, 2021). The thresholds c_k are the median criteria. Each cell is a
+#' one-dimensional integral, computed by quadrature. Requires the probit link
+#' and an even number of response categories (at least 4); as `sigma_meta`
+#' goes to 0 the model becomes the ordinary rating model.
 #'
 #' ## Formula syntax
 #' ```
@@ -140,23 +156,30 @@ print.broc_link <- function(x, ...) {
 #'   metacognitive efficiency. *Journal of Experimental Psychology: General*,
 #'   *148*(3), 437-452.
 #'
+#' Shekhar, M., & Rahnev, D. (2021). The nature of metacognitive inefficiency
+#'   in perceptual decision making. *Psychological Review*, *128*(1), 45-70.
+#'
 #' @return A `broc_family` object.
 #' @seealso [uvsd()] for unequal-variance extension, [dpsd()] for dual-process,
 #'   [mixture()] for mixture variants.
 #' @export
-evsd <- function(link = link_probit()) {
+evsd <- function(link = link_probit(), meta_noise = c("gaussian", "lognormal")) {
   if (!inherits(link, "broc_link")) {
     stop("link must be created with link_probit(), link_logit(), or link_cloglog()")
   }
+  meta_noise <- match.arg(meta_noise)
   structure(
     list(
       family = "evsdt",
       link = link,
+      meta_noise = meta_noise,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
         sigma_meta = list(required = FALSE, default = NULL, link = "log",
                           null_description = "ratings read from the decision evidence",
-                          description = "SD of the Gaussian meta-noise between decision and rating"),
+                          description = if (meta_noise == "gaussian")
+                            "SD of the Gaussian meta-noise between decision and rating"
+                          else "SD of the lognormal noise in the confidence criteria"),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity")
       ),

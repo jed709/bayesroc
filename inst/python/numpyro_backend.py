@@ -685,7 +685,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
-                         ("pcq", "Pcq"),
+                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
@@ -693,7 +693,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
-                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                         ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
@@ -1410,6 +1410,218 @@ def _pcq_logint_jvp(primals, tangents):
     ta, tc = tangents
     lp, dc, da = _pcq_raw(a, c)
     return lp, jnp.sum(dc * tc + da * ta, -1)
+
+
+_LN_R = 8.5
+_LN_GL_X, _LN_GL_W = np.polynomial.legendre.leggauss(56)
+_LN_GH_X, _LN_GH_W = np.polynomial.hermite_e.hermegauss(24)
+_LN_GH_LW = np.log(_LN_GH_W) + 0.5 * _LN_GH_X ** 2
+_LN_FLOOR = 1e-300
+
+
+def _ln_lam(x):
+    return jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - _log_q(-x))
+
+
+def _ln_mode(a, l, s):
+    w = jnp.exp(l)
+    x = a - w
+    L = _ln_lam(x)
+    sw = s * w
+    zl = -L * sw
+    d2 = -1.0 - L * s * sw - L * (x + L) * sw * sw
+    z = -zl / d2
+
+    def body(_, st):
+        z, zl, zr = st
+        w = jnp.exp(l + s * z)
+        x = a - w
+        L = _ln_lam(x)
+        sw = s * w
+        g = -z - L * sw
+        d2 = -1.0 - L * s * sw - L * (x + L) * sw * sw
+        zl = jnp.where(g > 0.0, z, zl)
+        zr = jnp.where(g > 0.0, zr, z)
+        zn = z - g / d2
+        zn = jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr))
+        return zn, zl, zr
+
+    z, _, _ = jax.lax.fori_loop(0, 40, body, (z, zl, jnp.zeros_like(z)))
+    w = jnp.exp(l + s * z)
+    x = a - w
+    L = _ln_lam(x)
+    sw = s * w
+    return z, -1.0 - L * s * sw - L * (x + L) * sw * sw
+
+
+def _ln_interval(lo, hi):
+    return jnp.where(lo >= 0.0, jax.scipy.special.ndtr(-lo) - jax.scipy.special.ndtr(-hi),
+                     jax.scipy.special.ndtr(hi) - jax.scipy.special.ndtr(lo))
+
+
+def _ln_kdiff(u, Pa, Qa):
+    return jnp.where(u >= 0.0, jax.scipy.special.ndtr(-u) - Qa, Pa - jax.scipy.special.ndtr(u))
+
+
+def _ln_cum(a, l, s, Pa, Qa, pa):
+    """(C, K, dC/da, dK/da, dC/dl, dC/ds) for C = P(T > e^(l + s Z)), T ~ N(a, 1), and K = Phi(a) - C, each
+    accumulated pointwise; dK/dl = -dC/dl and dK/ds = -dC/ds."""
+    zm, d2 = _ln_mode(a, l, s)
+    zs = (-jnp.log(s) - l) / s
+    agh = zs >= zm + _LN_R
+    pdf = lambda t: jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI)
+    ndtr = jax.scipy.special.ndtr
+
+    sc = jnp.where(agh, 1.0 / jnp.sqrt(-d2), 1.0)
+    h0 = jnp.where(agh, -0.5 * zm * zm + _log_q(-(a - jnp.exp(l + s * zm))), 0.0)
+    zg = zm[..., None] + sc[..., None] * _LN_GH_X
+    wg = jnp.exp(l[..., None] + s[..., None] * zg)
+    ug = a[..., None] - wg
+    eg = jnp.exp(-0.5 * zg * zg + _LN_GH_LW - h0[..., None])
+    pu = pdf(ug)
+    cg = sc * jnp.exp(h0) / np.sqrt(2.0 * np.pi)
+    g_agh = [cg * jnp.sum(v, -1) for v in (eg * ndtr(ug), eg * _ln_kdiff(ug, Pa[..., None], Qa[..., None]),
+                                            eg * pu, eg * (pa[..., None] - pu), -eg * pu * wg, -eg * pu * wg * zg)]
+
+    zc = jnp.minimum(zm, zs)
+    lo = zc - _LN_R
+    hi = jnp.minimum(zc + _LN_R, zs)
+    h = 0.5 * jnp.maximum(hi - lo, 0.0)
+    z = (lo + h)[..., None] + h[..., None] * _LN_GL_X
+    w = jnp.exp(l[..., None] + s[..., None] * z)
+    u = a[..., None] - w
+    pz = _LN_GL_W * pdf(z)
+    pu = pdf(u)
+    cz = h
+    vz = [cz * jnp.sum(v, -1) for v in (pz * ndtr(u), pz * _ln_kdiff(u, Pa[..., None], Qa[..., None]), pz * pu,
+                                         pz * (pa[..., None] - pu), -pz * pu * w, -pz * pu * w * z)]
+
+    es = 1.0 / s - a
+    elo = jnp.maximum(es, -_LN_R)
+    net = es - jnp.where(zs < 0.0, _ln_lam(zs), 0.0)
+    ehi = jnp.where((es > 0.0) & (net * _LN_R > 40.0), es + 40.0 / jnp.where(net > 0.0, net, 1.0),
+                    jnp.maximum(es, 0.0) + _LN_R)
+    he = 0.5 * jnp.maximum(ehi - elo, 0.0)
+    e = (elo + he)[..., None] + he[..., None] * _LN_GL_X
+    ae = jnp.maximum(a[..., None] + e, 1e-300)
+    Z = (jnp.log(ae) - l[..., None]) / s[..., None]
+    pe = _LN_GL_W * pdf(e)
+    pZ = pdf(Z) / s[..., None]
+    zsb = zs[..., None]
+    diff = jnp.where(zsb >= 0.0, ndtr(-zsb) - ndtr(-Z), ndtr(Z) - ndtr(zsb))
+    ve = [he * jnp.sum(v, -1) for v in (pe * diff, pe * ndtr(-Z), pe * pZ / ae, -pe * pZ / ae, -pe * pZ,
+                                        -pe * pZ * Z)]
+    Qzs = ndtr(-zs)
+    kc = _ln_interval(-a, elo) * Qzs
+    split = [vz[0] + ve[0], vz[1] + ve[1] + kc, vz[2] + ve[2], vz[3] + ve[3] + pa * Qzs, vz[4] + ve[4],
+             vz[5] + ve[5]]
+    return [jnp.where(agh, x, y) for x, y in zip(g_agh, split)]
+
+
+def _lnoise_cell_jax(a, ln, lf, s):
+    """Pure-JAX reference of the native lognormal meta-noise cell kernel: log P(D_near e^(sZ) < T <=
+    D_far e^(sZ)), T ~ N(a, 1), with ln = log D_near (-inf: open, D = 0) and lf = log D_far (+inf: open),
+    and its derivatives in a, ln, lf and s."""
+    on = jnp.isneginf(ln)
+    of = jnp.isposinf(lf)
+    Pa = jax.scipy.special.ndtr(a)
+    Qa = jax.scipy.special.ndtr(-a)
+    pa = jnp.exp(-0.5 * a * a - _LOG_SQRT_2PI)
+    n = _ln_cum(a, jnp.where(on, 0.0, ln), s, Pa, Qa, pa)
+    f = _ln_cum(a, jnp.where(of, 0.0, lf), s, Pa, Qa, pa)
+    z0 = jnp.zeros_like(a)
+    n = [jnp.where(on, v, x) for v, x in zip((Pa, z0, pa, z0, z0, z0), n)]
+    f = [jnp.where(of, v, x) for v, x in zip((z0, Pa, z0, pa, z0, z0), f)]
+    use_k = f[1] < n[0]
+    P = jnp.where(use_k, f[1] - n[1], n[0] - f[0])
+    ok = P > _LN_FLOOR
+    iP = jnp.where(ok, 1.0 / jnp.where(ok, P, 1.0), 0.0)
+    lp = jnp.log(jnp.where(ok, P, _LN_FLOOR))
+    da = jnp.where(use_k, f[3] - n[3], n[2] - f[2]) * iP
+    return lp, da, n[4] * iP, -f[4] * iP, (n[5] - f[5]) * iP
+
+
+def _lnoise_raw(a, ln, lf, s):
+    a, ln, lf, s = jnp.broadcast_arrays(*(jnp.asarray(v) for v in (a, ln, lf, s)))
+    if _native_ok(a):
+        return _native_call("lnoise_cell", 5, (a, ln, lf, s))
+    return _lnoise_cell_jax(a, ln, lf, s)
+
+
+@custom_jvp
+def lnoise_cell_lp(a, ln, lf, s):
+    """log P of a lognormal meta-noise cell (Shekhar & Rahnev 2021); see _lnoise_cell_jax."""
+    return _lnoise_raw(a, ln, lf, s)[0]
+
+
+@lnoise_cell_lp.defjvp
+def _lnoise_cell_lp_jvp(primals, tangents):
+    lp, da, dln, dlf, ds = _lnoise_raw(*primals)
+    ta, tln, tlf, ts = tangents
+    return lp, da * ta + jnp.where(jnp.isneginf(primals[1]), 0.0, dln * tln) + \
+        jnp.where(jnp.isposinf(primals[2]), 0.0, dlf * tlf) + ds * ts
+
+
+def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
+    """Lognormal meta-noise (evsd with sigma_meta, Shekhar & Rahnev 2021) log-likelihood with custom JVP:
+    the decision on x ~ N(mu, 1) against the middle threshold c0, the confidence criteria on the side of
+    the decision at c0 + (c_k - c0) exp(s z), one z ~ N(0, 1) per trial."""
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    half = K // 2
+
+    def _pieces(y, mu, sm, thresh_mid, gaps):
+        gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
+        thresh = build(thresh_mid, gap_vals)
+        old = y > half
+        sgn = jnp.where(old, 1.0, -1.0)
+        open_lo = jnp.where(old, y == half + 1, y == 1)
+        open_hi = jnp.where(old, y == K, y == half)
+        k_hi = jnp.clip(y - 1, 0, n_thresh - 1)
+        k_lo = jnp.clip(y - 2, 0, n_thresh - 1)
+        rows = jnp.arange(y.shape[0])
+        D_lo = sgn * (thresh[rows, k_lo] - thresh_mid)
+        D_hi = sgn * (thresh[rows, k_hi] - thresh_mid)
+        open_near = jnp.where(old, open_lo, open_hi)
+        open_far = jnp.where(old, open_hi, open_lo)
+        D_near = jnp.where(open_near, 1.0, jnp.where(old, D_lo, D_hi))
+        D_far = jnp.where(open_far, 1.0, jnp.where(old, D_hi, D_lo))
+        ln = jnp.where(open_near, -jnp.inf, jnp.log(D_near))
+        lf = jnp.where(open_far, jnp.inf, jnp.log(D_far))
+        out = _lnoise_raw(sgn * (mu - thresh_mid), ln, lf, sm)
+        return out, (old, sgn, open_near, open_far, D_near, D_far, k_lo, k_hi, gap_vals)
+
+    @custom_jvp
+    def _lnoise(y, mu, sm, thresh_mid, gaps):
+        return _pieces(y, mu, sm, thresh_mid, gaps)[0][0]
+
+    @_lnoise.defjvp
+    def _lnoise_jvp(primals, tangents):
+        y, mu, sm, thresh_mid, gaps = primals
+        _, t_mu, t_sm, t_mid, t_gaps = tangents
+        (lp, da, dln, dlf, ds), (old, sgn, open_near, open_far, D_near, D_far, k_lo, k_hi, gap_vals) =             _pieces(*primals)
+        g_near = jnp.where(open_near, 0.0, dln / D_near)
+        g_far = jnp.where(open_far, 0.0, dlf / D_far)
+        g_lo = sgn * jnp.where(old, g_near, g_far)
+        g_hi = sgn * jnp.where(old, g_far, g_near)
+        d_c = -sgn * (da + g_near + g_far)
+        gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
+        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
+        d_gaps = (gm[:, k_lo].T * g_lo[:, None] + gm[:, k_hi].T * g_hi[:, None]) * gap_d
+        tan = (sgn * da * t_mu + ds * t_sm + (d_c + g_lo + g_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        return lp, tan
+
+    return _lnoise
+
+
+def fused_loglik_lnoise(y, K, mu, sm, thresh_mid, gaps, gap_link="log"):
+    """Lognormal meta-noise log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
+    N = y.shape[0]
+    is_softplus = gap_link == "softplus"
+    gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
+    key = ("lnoise", int(K), bool(is_softplus))
+    if key not in _fused_cache:
+        _fused_cache[key] = _make_fused_lnoise_loglik(int(K), bool(is_softplus))
+    return _fused_cache[key](y, mu, sm, thresh_mid, gaps_per_obs)
 
 
 def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative):
@@ -3754,7 +3966,8 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     is_simple = family_name in ("evsdt", "uvsdt", "cumulative")
 
     if family_name == "evsdt" and kwargs.get("sigma_meta") is not None and has_fused_inputs:
-        log_lik = fused_loglik_gnoise(y, K, is_old * mu_signal, kwargs["sigma_meta"], thresh_mid, log_gaps, gap_link)
+        fused = fused_loglik_lnoise if kwargs.get("meta_noise") == "lognormal" else fused_loglik_gnoise
+        log_lik = fused(y, K, is_old * mu_signal, kwargs["sigma_meta"], thresh_mid, log_gaps, gap_link)
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -4146,6 +4359,14 @@ class _PositivePart(dist.Distribution):
         return lp - jnp.log1p(-self._lo)
 
 
+def _corr_cholesky_site(name, prior_str, dim):
+    """LKJ-distributed Cholesky factor of a correlation matrix; a 1 x 1 block has no free
+    correlation, so it is the constant [[1]] (as Stan's cholesky_factor_corr[1])."""
+    if dim == 1:
+        return numpyro.deterministic(name, jnp.ones((1, 1), dtype=_FLOAT))
+    return numpyro.sample(name, parse_prior(prior_str, dim=dim))
+
+
 def _re_corr_cholesky(prefix, conf, dim):
     """Cholesky factor of a random effect's correlation matrix. With `cor_blocks` (lists of
     0-based dimensions) the matrix is block-diagonal: each block has its own LKJ factor
@@ -4154,11 +4375,11 @@ def _re_corr_cholesky(prefix, conf, dim):
     prior_str = conf.get("prior_cor", "lkj_corr_cholesky(1)")
     blocks = conf.get("cor_blocks")
     if not blocks:
-        return numpyro.sample(f"L_corr_{prefix}", parse_prior(prior_str, dim=dim))
+        return _corr_cholesky_site(f"L_corr_{prefix}", prior_str, dim)
     L = jnp.eye(dim, dtype=_FLOAT)
     for b, ix in enumerate(blocks):
         ix = jnp.asarray(ix, dtype=jnp.int32)
-        Lb = numpyro.sample(f"L_corr_{prefix}_b{b + 1}", parse_prior(prior_str, dim=int(ix.shape[0])))
+        Lb = _corr_cholesky_site(f"L_corr_{prefix}_b{b + 1}", prior_str, int(ix.shape[0]))
         L = L.at[ix[:, None], ix[None, :]].set(Lb)
     return numpyro.deterministic(f"L_corr_{prefix}", L)
 
@@ -4653,8 +4874,7 @@ def sdt_model(config):
             dim_offset += nt
 
         cor_prior_str = members[0].get("prior_cor", "lkj_corr_cholesky(1)")
-        cor_prior = parse_prior(cor_prior_str, dim=total_dim)
-        L_corr = numpyro.sample(f"L_corr_cross_{cor_id}_{group}", cor_prior)
+        L_corr = _corr_cholesky_site(f"L_corr_cross_{cor_id}_{group}", cor_prior_str, total_dim)
         numpyro.deterministic(f"corr_cross_{cor_id}_{group}", L_corr @ L_corr.T)
         L = jnp.diag(all_sds) @ L_corr
         numpyro.deterministic(f"sigma_cross_{cor_id}_{group}", all_sds)
@@ -5300,6 +5520,7 @@ def sdt_model(config):
             gap_link=gap_link,
             is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
             sigma_meta=trial_params.get("sigma_meta"),
+            meta_noise=config.get("meta_noise"),
         )
 
     if counts is not None:

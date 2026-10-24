@@ -47,6 +47,24 @@
   dat
 }
 
+.sim_lnoise <- function(n_sub = 12, n_item = 24, K = 6, d = 1.5, c = 0.8, sm = 0.6,
+                        sd_sub = c(d = 0.3, c = 0.2, s = 0.25), gaps = rep(0.45, K / 2 - 1), seed = 1) {
+  set.seed(seed)
+  dat <- expand.grid(sub = factor(seq_len(n_sub)), item = factor(seq_len(n_item)))
+  dat$old <- as.integer((as.integer(dat$item) + as.integer(dat$sub)) %% 2 == 0)
+  dat$cond <- factor(ifelse(as.integer(dat$item) <= n_item / 2, "a", "b"))
+  us <- vapply(sd_sub, function(s) stats::rnorm(n_sub, 0, s), numeric(n_sub))
+  is <- as.integer(dat$sub)
+  dd <- d + us[is, "d"]; cc <- c + us[is, "c"]; ss <- sm * exp(us[is, "s"])
+  n <- nrow(dat)
+  x <- stats::rnorm(n, dat$old * dd)
+  e <- exp(ss * stats::rnorm(n))
+  up <- cumsum(gaps)
+  dat$conf <- ifelse(x > cc, K / 2 + 1 + vapply(seq_len(n), function(i) sum(x[i] > cc[i] + up * e[i]), 0),
+                     K / 2 - vapply(seq_len(n), function(i) sum(x[i] < cc[i] - up * e[i]), 0))
+  dat
+}
+
 .gnoise_quad <- function(d, sm, tau, s, K) {
   h <- K %/% 2
   mu <- s * d

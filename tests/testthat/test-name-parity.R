@@ -55,6 +55,14 @@ test_that("JAX random-effect draws use Stan's names and satisfy Stan's identitie
     max(abs(u[[s]] - raw[[s]] %*% t(diag(as.numeric(sg[s, ])) %*% L[[s]]))), numeric(1)))
   expect_lt(err, 1e-10)
   expect_false(any(grepl("^sigma_cross_c_sub_block_", colnames(r$dm))))
+
+  r <- .np_jax(brf(item_resp | is_old ~ 1 + (1 | sub), sigma ~ 1 + (1 | c | sub), family = uvsd()), d)
+  expect_true(all(r$dm[, "L_corr_cross_c_sub[1,1]"] == 1))
+  raw <- .np_cols(r$dm, "u_cross_c_sub_raw", G, 1)
+  us <- .np_cols(r$dm, "u_sigma_sub_from_c", G)
+  sg <- as.numeric(r$dm[, "sigma_cross_c_sub[1]"])
+  err <- max(vapply(seq_len(nrow(r$dm)), function(s) max(abs(as.numeric(us[s, ]) - raw[[s]][, 1] * sg[s])), numeric(1)))
+  expect_lt(err, 1e-10)
 })
 
 test_that("JAX output names match the Stan program's declared variables", {

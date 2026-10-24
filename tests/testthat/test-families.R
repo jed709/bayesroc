@@ -62,6 +62,19 @@ test_that("evsd with Gaussian meta-noise: smoke", {
   expect_true("sigma_meta" %in% est$parameter)
 })
 
+test_that("evsd with lognormal meta-noise: smoke", {
+  skip_if_no_cmdstan()
+  d <- .sim_lnoise()
+  m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
+                                 family = evsd(meta_noise = "lognormal")), d))
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
+                  parallel_chains = .fast_chains,
+                  iter_warmup = .fast_iter, iter_sampling = .fast_iter)
+  .assert_post_fit_works(fit)
+  est <- estimates(fit)
+  expect_true("sigma_meta" %in% est$parameter)
+})
+
 test_that("uvsd: smoke", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)

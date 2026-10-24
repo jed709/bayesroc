@@ -10,6 +10,7 @@
 #include "xla/ffi/api/ffi.h"
 #include "bayesroc/bvn_simd.h"
 #include "bayesroc/pcq.h"
+#include "bayesroc/lnoise.h"
 
 static inline bvn::v4d vphi_p(bvn::v4d x);
 #include "bayesroc/tmap_kernel.h"
@@ -526,11 +527,37 @@ ffi::Error PcqImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer c, ffi
   return ffi::Error::Success();
 }
 
+// a, ln, lf, s [N] -> lp, da, dln, dlf, ds [N]: lognormal meta-noise cell (ln = -inf / lf = +inf: open edge)
+template <typename T>
+ffi::Error LnoiseCellImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer ln, ffi::AnyBuffer lf,
+                          ffi::AnyBuffer s, ffi::Result<ffi::AnyBuffer> lp, ffi::Result<ffi::AnyBuffer> da,
+                          ffi::Result<ffi::AnyBuffer> dln, ffi::Result<ffi::AnyBuffer> dlf,
+                          ffi::Result<ffi::AnyBuffer> ds) {
+  const int64_t N = a.element_count();
+  DBuf<T> pa(a), pn(ln), pf(lf), ps(s);
+  DOut<T> o0(lp), o1(da), o2(dln), o3(dlf), o4(ds);
+  const double *A = pa.ptr, *LN = pn.ptr, *LF = pf.ptr, *S = ps.ptr;
+  double *P = o0.ptr, *GA = o1.ptr, *GN = o2.ptr, *GF = o3.ptr, *GS = o4.ptr;
+  pool_for(pool, N, 512, [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i) {
+      lnoise::Cell c = lnoise::cell(A[i], LN[i], LF[i], S[i]);
+      P[i] = c.lp;
+      GA[i] = c.da;
+      GN[i] = c.dln;
+      GF[i] = c.dlf;
+      GS[i] = c.ds;
+    }
+  });
+  return ffi::Error::Success();
+}
+
 #define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
 #define A_ .Arg<ffi::AnyBuffer>()
 #define R_ .Ret<ffi::AnyBuffer>()
 BAYESROC_TMAP(BayesrocPcq, PcqImpl<double>, A_ A_, R_ R_ R_);
 BAYESROC_TMAP(BayesrocPcqF32, PcqImpl<float>, A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocLnoiseCell, LnoiseCellImpl<double>, A_ A_ A_ A_, R_ R_ R_ R_ R_);
+BAYESROC_TMAP(BayesrocLnoiseCellF32, LnoiseCellImpl<float>, A_ A_ A_ A_, R_ R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
@@ -772,6 +799,16 @@ extern "C" void bayesroc_r_bvn_rect(const double* a1, const double* b1, const do
     std::vector<double> d(size_t(5) * size_t(m));
     bvn::rect_array(m, a1 + i0, b1 + i0, a2 + i0, b2 + i0, rho + i0, p + i0, d.data(), d.data() + m,
                     d.data() + 2 * m, d.data() + 3 * m, d.data() + 4 * m);
+  });
+}
+
+// Plain C entry for R's .C(): log P of n lognormal meta-noise cells (ln = -inf / lf = +inf: open edge).
+extern "C" void bayesroc_r_lnoise_cell(const double* a, const double* ln, const double* lf, const double* s,
+                                       const int* n, const int* threads, double* lp) {
+  const int64_t N = *n;
+  if (N <= 0) return;
+  r_threads(N, *threads, 256, [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i) lp[i] = lnoise::cell(a[i], ln[i], lf[i], s[i]).lp;
   });
 }
 

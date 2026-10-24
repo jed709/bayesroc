@@ -329,8 +329,9 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     }
     if (fam == "metadt" || (fam == "evsdt" && isTRUE(model$model_data$has_sigma_meta))) {
       th <- setup$th[, idx, , drop = FALSE]
-      surv <- (if (fam == "metadt") .metad_survival else .gnoise_survival)(tps, th, crit(th),
-                                                                          setup$data_src$is_old[idx], model$model_data)
+      surv_fn <- if (fam == "metadt") .metad_survival
+                 else if (identical(model$model_data$meta_noise, "lognormal")) .lnoise_survival else .gnoise_survival
+      surv <- surv_fn(tps, th, crit(th), setup$data_src$is_old[idx], model$model_data)
       for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
       next
     }
@@ -495,6 +496,25 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     up <- .bvn_rect_v(zc, inf, z, inf, 1 / tau)
     dn <- 1 - .bvn_rect_v(-inf, zc, -inf, z, 1 / tau)
     out[, , j] <- ifelse(t >= zc + mu, up, dn)
+  }
+  out
+}
+
+# P(rating above t | S) under lognormal meta-noise: P(x > c0, x - c0 > (t - c0) e^(sZ)) above the decision
+# criterion c0, and 1 - P(x < c0, c0 - x > (c0 - t) e^(sZ)) below it
+.lnoise_survival <- function(tps, th, c_path, is_old, md) {
+  S <- dim(th)[1]; r <- dim(th)[2]
+  mu <- as.vector(tps[["dprime"]] * matrix(is_old, S, r, byrow = TRUE))
+  s <- as.vector(tps[["sigma_meta"]])
+  c0 <- as.vector(th[, , (dim(th)[3] + 1L) %/% 2L])
+  out <- array(0, dim(c_path))
+  inf <- rep(Inf, length(c0))
+  for (j in seq_len(dim(c_path)[3])) {
+    t <- as.vector(c_path[, , j])
+    up <- t >= c0
+    D <- abs(t - c0)
+    p <- .lnoise_cell_v(ifelse(up, mu - c0, c0 - mu), log(D), inf, s)
+    out[, , j] <- ifelse(up, p, 1 - p)
   }
   out
 }

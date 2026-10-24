@@ -222,6 +222,7 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$stan_data$J)) config$J <- md$stan_data$J
   if (!is.null(md$stan_data$n_rkg)) config$n_rkg <- md$stan_data$n_rkg
   if (isTRUE(md$cdp_rho_shared)) config$cdp_rho_shared <- TRUE
+  if (isTRUE(md$has_sigma_meta)) config$meta_noise <- md$meta_noise
   if (identical(family_name, "metadt")) {
     config$is_old_mid <- md$stan_data$is_old_mid
     config$metad_relative <- identical(md$metac, "relative")
