@@ -1342,21 +1342,16 @@ def _metad_cell(z_a, z_lo, z_hi, z_c, old):
     return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
 
 
-_PCQ_RULES = {k: np.polynomial.hermite_e.hermegauss(k) for k in (32, 48, 64, 96)}
-
-
-def _pcq_nodes(n):
-    return 32 if n <= 3 else 48 if n <= 7 else 64 if n <= 20 else 96
+_PCQ_GL_X, _PCQ_GL_W = np.polynomial.legendre.leggauss(64)
+_PCQ_DROP = 40.0
 
 
 def _pcq_jax(a, c):
-    """(log int phi(z) prod_j Phi(a_j z + c_j) dz, d/dc, d/da) over the trailing axis: adaptive
-    Gauss-Hermite centred at the mode of the (concave) log integrand, nodes tiered on the number
-    of terms; the pure-JAX reference of the native kernel."""
-    n = a.shape[-1]
-    Xn, Wn = _PCQ_RULES[_pcq_nodes(n)]
-    X = jnp.asarray(Xn, dtype=a.dtype)
-    LW = jnp.asarray(np.log(Wn) + 0.5 * Xn ** 2, dtype=a.dtype)
+    """(log int phi(z) prod_j Phi(a_j z + c_j) dz, d/dc, d/da) over the trailing axis: the log-concave
+    integrand split at its mode, each side by Gauss-Legendre out to where it has fallen by e^-40; the
+    pure-JAX reference of the native kernel (64 nodes a side, its finest tier)."""
+    X = jnp.asarray(_PCQ_GL_X, dtype=a.dtype)
+    W = jnp.asarray(_PCQ_GL_W, dtype=a.dtype)
 
     def lam(x):
         return jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - _log_q(-x))
@@ -1364,28 +1359,46 @@ def _pcq_jax(a, c):
     def h(z):
         return -0.5 * z * z + jnp.sum(_log_q(-(a * z[..., None] + c)), -1)
 
-    def newton(_, z):
+    def gh(z):
         x = a * z[..., None] + c
         lx = lam(x)
-        g = -z + jnp.sum(a * lx, -1)
-        h2 = -1.0 - jnp.sum(a * a * lx * (x + lx), -1)
-        return z - g / h2
+        return -z + jnp.sum(a * lx, -1), -1.0 - jnp.sum(a * a * lx * (x + lx), -1)
 
-    z = jax.lax.fori_loop(0, 40, newton, jnp.zeros(a.shape[:-1], a.dtype))
-    x = a * z[..., None] + c
-    lx = lam(x)
-    s = 1.0 / jnp.sqrt(1.0 + jnp.sum(a * a * lx * (x + lx), -1))
-    zi = z[..., None] + s[..., None] * X
-    hz = h(z)
-    g = jax.vmap(h, in_axes=-1, out_axes=-1)(zi) - hz[..., None] + LW
-    gm = jnp.max(g, -1, keepdims=True)
-    e = jnp.exp(g - gm)
+    def newton(_, st):
+        z, zl, zr = st
+        g, h2 = gh(z)
+        zl = jnp.where(g > 0.0, z, zl)
+        zr = jnp.where(g > 0.0, zr, z)
+        zn = z - g / h2
+        return jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr)), zl, zr
+
+    shape = a.shape[:-1]
+    zm, _, _ = jax.lax.fori_loop(0, 80, newton, (jnp.zeros(shape, a.dtype), jnp.full(shape, -60.0, a.dtype),
+                                                  jnp.full(shape, 60.0, a.dtype)))
+    hm = h(zm)
+    target = hm - _PCQ_DROP
+
+    def edge(z0):
+        def step(_, z):
+            g, _ = gh(z)
+            return z - (h(z) - target) / g
+        return jax.lax.fori_loop(0, 40, step, z0)
+
+    zl = edge(zm - np.sqrt(2.0 * _PCQ_DROP))
+    zr = edge(zm + np.sqrt(2.0 * _PCQ_DROP))
+    lo = jnp.stack([zl, zm], -1)
+    hi = jnp.stack([zm, zr], -1)
+    hh = 0.5 * (hi - lo)
+    zi = ((lo + hh)[..., None] + hh[..., None] * X).reshape(shape + (2 * X.shape[0],))
+    wi = (hh[..., None] * W).reshape(zi.shape)
+    hv = jax.vmap(h, in_axes=-1, out_axes=-1)(zi) - hm[..., None]
+    e = wi * jnp.exp(hv)
     sm = jnp.sum(e, -1)
     w = e / sm[..., None]
     li = lam(a[..., None, :] * zi[..., :, None] + c[..., None, :])
     dc = jnp.sum(w[..., None] * li, -2)
     da = jnp.sum(w[..., None] * li * zi[..., None], -2)
-    return hz + jnp.log(s) + gm[..., 0] + jnp.log(sm) - _LOG_SQRT_2PI, dc, da
+    return hm + jnp.log(sm) - _LOG_SQRT_2PI, dc, da
 
 
 def _pcq_raw(a, c):

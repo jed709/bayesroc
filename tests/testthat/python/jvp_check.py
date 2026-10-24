@@ -152,9 +152,9 @@ def gnoise_case(K=6, sm=(0.3, 1.6), mid=(0.6, 0.3), N=300, seed=6):
     return f, args, [1, 2, 3, 4]
 
 
-def pcq_case(n, slopes=False, N=200, seed=8):
+def pcq_case(n, slopes=False, N=200, seed=8, steep=False):
     rng = np.random.default_rng(seed)
-    a = _u(rng, 0.6, 1.6, (N, n)) if slopes else jnp.ones((N, n))
+    a = _u(rng, 3.0, 6.0, (N, n)) if steep else _u(rng, 0.6, 1.6, (N, n)) if slopes else jnp.ones((N, n))
     d = rng.uniform(0, 6, N)
     b = rng.normal(0, 1, (N, n + 1))
     c = np.where((rng.uniform(size=N) < .5)[:, None], d[:, None] + b[:, :1] - b[:, 1:],
@@ -167,6 +167,7 @@ CASES = {
     "pcq_m4": lambda: pcq_case(3),
     "pcq_m8_slopes": lambda: pcq_case(7, slopes=True),
     "pcq_m21": lambda: pcq_case(20),
+    "pcq_m4_steep": lambda: pcq_case(3, steep=True),
     "lnoise": lambda: lnoise_case(),
     "lnoise_k4_small_noise": lambda: lnoise_case(K=4, sm=(0.005, 0.08)),
     "lnoise_k8_large_noise": lambda: lnoise_case(K=8, sm=(1.0, 4.0), gaps=(-1.0, 0.4)),
