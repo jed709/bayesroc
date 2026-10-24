@@ -18,7 +18,7 @@ generate_batch_cpp <- function(model_data, family) {
   family_name <- if (is.list(family)) family$family else family
 
   supported <- c("evsdt", "uvsdt", "cumulative", "dpsdt", "mixture", "source_mixture", "vrdp2d",
-                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "cdp", "metadt")
+                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "cdp", "metadt", "mafc")
   if (!(family_name %in% supported)) return(NULL)
 
   params <- collect_batch_params(model_data, family_name)
@@ -64,7 +64,7 @@ collect_batch_params <- function(model_data, family_name) {
   is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")
   is_cdp <- family_name %in% c("cdp")
 
-  if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp") && isTRUE(model_data$has_sigma)) {
+  if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc") && isTRUE(model_data$has_sigma)) {
     params[["sigma"]] <- list(
       fixed  = model_data$sigma_fixed,
       random = model_data$sigma_random,
@@ -270,6 +270,9 @@ collect_batch_params <- function(model_data, family_name) {
     fixed  = model_data$criterion,
     random = model_data$criterion$random
   )
+  if (family_name == "mafc") {
+    params[["bias"]] <- list(fixed = model_data$bias, random = model_data$bias$random)
+  }
 
   if (family_name == "vrdp2d" || is_bivariate) {
     params[["criterion2"]] <- list(
@@ -280,7 +283,9 @@ collect_batch_params <- function(model_data, family_name) {
 
   params[[".family"]]      <- family_name
   params[[".has_counts"]]  <- isTRUE(model_data$has_counts)
-  params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
+  params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc")
+  params[[".is_mafc"]]     <- family_name == "mafc"
+  params[[".has_bias"]]    <- family_name == "mafc" && isTRUE(model_data$has_bias)
   params[[".has_lambda"]]  <- isTRUE(model_data$has_lambda) && family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
   params[[".has_dprime2"]] <- (isTRUE(model_data$has_dprime2) || isTRUE(model_data$needs_ordered_dprime)) && family_name %in% c("mixture", "vrdp2d", "cdp")
   params[[".has_sigma2"]]  <- isTRUE(model_data$has_sigma2) && family_name %in% c("mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp")
@@ -409,6 +414,9 @@ build_batch_signature <- function(model_data, family_name, params) {
     add_data("const int&",               "int",          "mid_thresh2")
   } else if (isTRUE(params[[".is_source_mixture"]])) {
     add_data("const std::vector<int>&",  "array[] int",  "source")
+  } else if (isTRUE(params[[".is_mafc"]])) {
+    add_data("const std::vector<int>&",  "array[] int",  "target_pos")
+    add_data("const std::vector<int>&",  "array[] int",  "m_alt")
   } else if (!isTRUE(params[[".is_cumulative"]])) {
     add_data("const std::vector<double>&", "array[] real", "is_old_d")
   }
@@ -426,7 +434,7 @@ build_batch_signature <- function(model_data, family_name, params) {
   }
   if (!has_two_responses) {
     add_data("const int&",               "int",          "K")
-    if (!isTRUE(params[[".is_cdp"]])) {
+    if (!isTRUE(params[[".is_cdp"]]) && !isTRUE(params[[".is_mafc"]])) {
       add_data("const int&",             "int",          "mid_thresh")
     }
   }
@@ -947,7 +955,10 @@ build_batch_signature <- function(model_data, family_name, params) {
     }
   }
 
+  if (isTRUE(params[[".has_bias"]])) emit_bias_signature(params, add_data, add_data_tpl, add_param, add_group_idx)
+
   # ---- Criterion population (dimension 1 for vrdp2d/bivariate, or standard) ----
+  if (!isTRUE(params[[".is_mafc"]])) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   K_for_crit <- if (has_two_responses) model_data$stan_data$K1
@@ -979,6 +990,8 @@ build_batch_signature <- function(model_data, family_name, params) {
         add_data_tpl("matrix", sprintf("Z_criterion_%s", group))
       }
     }
+  }
+
   }
 
   # ---- Criterion2 population (vrdp2d/bivariate -- source dimension thresholds) ----
@@ -1278,6 +1291,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("  const int n_gaps = n_thresh - 1;")
     L$add("  const int mid = mid_thresh_cdp - 1;")
     L$add("  const int n_upper = n_thresh - mid - 1;")
+  } else if (isTRUE(params[[".is_mafc"]])) {
+    L$add("  const int M = K;")
   } else {
     L$add("  const int n_thresh = K - 1;")
     L$add("  const int n_gaps = n_thresh - 1;")
@@ -1314,7 +1329,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
 
   # --- Pre-loop variables ---
   L$add("  double total_lp = 0.0;")
-  if (has_two_responses) {
+  if (isTRUE(params[[".is_mafc"]])) {
+  } else if (has_two_responses) {
     L$add("  Eigen::VectorXd thresh1_n(n_thresh1);")
     L$add("  Eigen::VectorXd thresh2_n(n_thresh2);")
     L$add("  Eigen::VectorXd& thresh_n = thresh1_n;")
@@ -1323,7 +1339,8 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   }
   crit <- model_data$criterion
   is_crit_intercept_only_early <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
-  if (has_crit_re) {
+  if (isTRUE(params[[".is_mafc"]])) {
+  } else if (has_crit_re) {
     L$add("  Eigen::VectorXd exp_eff_gaps(n_gaps);")
     .dgap_decl(L, params, "exp_eff_gaps", "Eigen::VectorXd", "n_gaps")
   } else {
@@ -1396,6 +1413,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
     L$add("    int item_type_n = item_type[n];")
   } else if (isTRUE(params[[".is_source_mixture"]])) {
     L$add("    int source_n = source[n];")
+  } else if (isTRUE(params[[".is_mafc"]])) {
+    L$add("    int target_n = target_pos[n];")
+    L$add("    int m_n = m_alt[n];")
   } else if (!isTRUE(params[[".is_cumulative"]])) {
     L$add("    double is_old_n = is_old_d[n];")
   }
@@ -1413,7 +1433,7 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   emit_param_computation(L, model_data, family_name, params)
   L$add("")
 
-  emit_thresh_computation(L, model_data, params, has_crit_re)
+  if (!isTRUE(params[[".is_mafc"]])) emit_thresh_computation(L, model_data, params, has_crit_re)
   if (has_two_responses) {
     L$add("")
     if (.varying_per_obs(model_data, params)) {
@@ -1427,7 +1447,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   }
   L$add("")
 
-  if (family_name == "vrdp2d") {
+  if (isTRUE(params[[".is_mafc"]])) {
+    emit_likelihood_mafc(L, params)
+  } else if (family_name == "vrdp2d") {
     emit_likelihood_vrdp2d(L, params)
   } else if (isTRUE(params[[".is_bivariate"]])) {
     emit_likelihood_bivariate(L, params)
@@ -1445,7 +1467,9 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L$add("")
 
   L$add("    if constexpr (is_autodiff) {")
-  if (family_name == "vrdp2d") {
+  if (isTRUE(params[[".is_mafc"]])) {
+    emit_gradient_accumulation_mafc(L, model_data, params)
+  } else if (family_name == "vrdp2d") {
     emit_gradient_accumulation_vrdp2d(L, model_data, params, has_crit_re, has_crit2_re)
   } else if (isTRUE(params[[".is_bivariate"]])) {
     emit_gradient_accumulation_bivariate(L, model_data, params, has_crit_re, has_crit2_re)
@@ -1901,6 +1925,8 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
     L$add("  // CDP old_level_map (already int)")
   }
 
+  if (isTRUE(params[[".has_bias"]])) emit_bias_values(L, params)
+  if (!isTRUE(params[[".is_mafc"]])) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   if (!is_crit_intercept_only) {
@@ -1937,6 +1963,8 @@ emit_value_extractions <- function(L, model_data, family_name, params) {
                        crit_re_idx, group))
       }
     }
+  }
+
   }
 
   if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) {
@@ -2279,6 +2307,8 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
     }
   }
 
+  if (isTRUE(params[[".has_bias"]])) emit_bias_accumulators(L, params)
+  if (!isTRUE(params[[".is_mafc"]])) {
   crit <- model_data$criterion
   is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
   if (is_crit_intercept_only) {
@@ -2296,6 +2326,8 @@ emit_gradient_accumulators <- function(L, model_data, family_name, params) {
       L$add(sprintf("  Eigen::MatrixXd grad_u_crit%d = Eigen::MatrixXd::Zero(u_crit%d_d.rows(), u_crit%d_d.cols());",
                      crit_re_idx, crit_re_idx, crit_re_idx))
     }
+  }
+
   }
 
   if (isTRUE(params[[".has_sigma_B"]])) emit_param_grad_accum(L, "sigma_B", "sigB", params[["sigma_B"]]$random, "sigma_B")
@@ -2554,6 +2586,13 @@ emit_group_indices <- function(L, model_data, family_name, params) {
     }
   }
 
+  for (group in names(params[["bias"]]$random)) {
+    if (!(group %in% emitted)) {
+      L$add(sprintf("    int g_%s = %s[n] - 1;", group, group))
+      emitted <- c(emitted, group)
+    }
+  }
+
   if (!is.null(params[["criterion"]]$random)) {
     for (group in names(params[["criterion"]]$random)) {
       if (!(group %in% emitted)) {
@@ -2632,6 +2671,7 @@ emit_param_computation <- function(L, model_data, family_name, params) {
   emit_smooth_contribution(L, params[[".smooth_data"]], "dprime", "dprime_n")
 
   if (isTRUE(params[[".is_cdp_family"]])) {
+  } else if (isTRUE(params[[".is_mafc"]])) {
   } else if (isTRUE(params[[".is_cumulative"]]) || isTRUE(params[[".is_source_mixture"]]) || isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])) {
     L$add("    double mu = dprime_n;")
   } else {
@@ -2663,7 +2703,8 @@ emit_param_computation <- function(L, model_data, family_name, params) {
 
     emit_smooth_contribution(L, params[[".smooth_data"]], "sigma", "sigma_n")
     L$add("    double sigma_val = std::exp(sigma_n);")
-    if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]]) || isTRUE(params[[".is_cdp_family"]])) {
+    if (isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]]) || isTRUE(params[[".is_cdp_family"]]) ||
+        isTRUE(params[[".is_mafc"]])) {
     } else {
       L$add("    double s = is_old_n > 0 ? sigma_val : 1.0;")
     }
@@ -5065,6 +5106,8 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
+  if (isTRUE(params[[".has_bias"]])) emit_bias_operands(L, params)
+  if (!isTRUE(params[[".is_mafc"]])) {
   if (is_crit_intercept_only) {
     L$add("    operands.push_back(beta_thresh_mid.coeff(0));")
     L$add("    gradients.push_back(grad_thresh_mid_pop);")
@@ -5096,6 +5139,9 @@ emit_operand_packing <- function(L, model_data, family_name, params, has_crit_re
     }
   }
 
+  }
+
+  has_two_responses <- isTRUE(params[[".is_vrdp2d"]]) || isTRUE(params[[".is_bivariate"]])
   if (has_two_responses) {
     varying_sc <- isTRUE(params[[".varying_source_criteria"]])
     K2_val <- model_data$stan_data$K2
@@ -6542,4 +6588,167 @@ emit_grad_thresh2_varying_obs <- function(L, model_data, params, lo, hi, d_lo2, 
     }
   }
   L$add("    }")
+}
+
+# ============================================================================
+# m-AFC (mafc): position biases, likelihood and gradient
+# ============================================================================
+
+#' Emit the batch-signature arguments of the bias parameter
+#' @noRd
+emit_bias_signature <- function(params, add_data, add_data_tpl, add_param, add_group_idx) {
+  add_data_tpl("matrix", "X_bias")
+  add_param("matrix", "beta_bias")
+  for (group in names(params[["bias"]]$random)) {
+    re <- params[["bias"]]$random[[group]]
+    add_group_idx(group)
+    add_param("matrix", re_var_name("bias", group, re$cor_id))
+    n_re_terms <- re$n_re_terms %||% 1
+    if ((n_re_terms > 1 || !is.null(re$term_idx)) && !isTRUE(re$use_z_matrix)) {
+      add_data("const std::vector<int>&", "array[] int", sprintf("idx_bias_%s", group))
+    }
+    if (isTRUE(re$use_z_matrix)) add_data_tpl("matrix", sprintf("Z_bias_%s", group))
+  }
+}
+
+#' Emit value extraction for the bias parameter
+#' @noRd
+emit_bias_values <- function(L, params) {
+  L$add("  const Eigen::MatrixXd X_bias_d = value_of(X_bias);")
+  L$add("  const Eigen::MatrixXd beta_bias_d = value_of(beta_bias);")
+  L$add("  const int P_bias = X_bias_d.cols();")
+  i <- 0
+  for (group in names(params[["bias"]]$random)) {
+    i <- i + 1
+    re <- params[["bias"]]$random[[group]]
+    L$add(sprintf("  const Eigen::MatrixXd u_bias%d_d = value_of(%s);", i, re_var_name("bias", group, re$cor_id)))
+    if (isTRUE(re$use_z_matrix)) L$add(sprintf("  const Eigen::MatrixXd Z_bias%d_d = value_of(Z_bias_%s);", i, group))
+  }
+}
+
+#' Emit gradient accumulators for the bias parameter
+#' @noRd
+emit_bias_accumulators <- function(L, params) {
+  L$add("  Eigen::MatrixXd grad_beta_bias = Eigen::MatrixXd::Zero(beta_bias_d.rows(), beta_bias_d.cols());")
+  i <- 0
+  for (group in names(params[["bias"]]$random)) {
+    i <- i + 1
+    L$add(sprintf("  Eigen::MatrixXd grad_u_bias%d = Eigen::MatrixXd::Zero(u_bias%d_d.rows(), u_bias%d_d.cols());",
+                  i, i, i))
+  }
+}
+
+#' Emit the RE column expression of bias component k (C++ int k) for one group
+#' @noRd
+.bias_re_terms <- function(re, group, i) {
+  g_var <- sprintf("g_%s", group)
+  R <- re$n_re_terms %||% 1
+  if (isTRUE(re$use_z_matrix)) {
+    list(kind = "z", R = R, g = g_var, i = i)
+  } else if (R == 1 && is.null(re$term_idx)) {
+    list(kind = "one", R = R, g = g_var, i = i)
+  } else {
+    list(kind = "idx", R = R, g = g_var, i = i, idx = sprintf("idx_bias_%s", group))
+  }
+}
+
+#' Emit the per-observation bias vector bias_n[0..M-1] (bias_n[M-1] = 0)
+#' @noRd
+emit_bias_computation <- function(L, params) {
+  L$add("    double bias_n[mafc::kMaxAlt];")
+  L$add("    for (int k = 0; k < M; ++k) bias_n[k] = 0.0;")
+  if (!isTRUE(params[[".has_bias"]])) return(invisible())
+  L$add("    for (int k = 0; k + 1 < M; ++k) {")
+  L$add("      double b = 0.0;")
+  L$add("      for (int p = 0; p < P_bias; ++p) b += X_bias_d(n, p) * beta_bias_d(k, p);")
+  i <- 0
+  for (group in names(params[["bias"]]$random)) {
+    i <- i + 1
+    t <- .bias_re_terms(params[["bias"]]$random[[group]], group, i)
+    if (t$kind == "z") {
+      L$add(sprintf("      for (int j = 0; j < %d; ++j) b += Z_bias%d_d(n, j) * u_bias%d_d(%s, k * %d + j);",
+                    t$R, i, i, t$g, t$R))
+    } else if (t$kind == "one") {
+      L$add(sprintf("      b += u_bias%d_d(%s, k);", i, t$g))
+    } else {
+      L$add(sprintf("      if (%s[n] > 0) b += u_bias%d_d(%s, k * %d + %s[n] - 1);", t$idx, i, t$g, t$R, t$idx))
+    }
+  }
+  L$add("      bias_n[k] = b;")
+  L$add("    }")
+}
+
+#' Emit the m-AFC cell log-likelihood
+#' @noRd
+emit_likelihood_mafc <- function(L, params) {
+  emit_bias_computation(L, params)
+  sig <- if (isTRUE(params[[".has_sigma"]])) "sigma_val" else "1.0"
+  L$add("    double mafc_dd = 0.0, mafc_ds = 0.0, mafc_db[mafc::kMaxAlt];")
+  L$add("    for (int k = m_n; k < M; ++k) mafc_db[k] = 0.0;")
+  L$add(sprintf("    const double lp_n = mafc::cell(m_n, target_n - 1, yn - 1, dprime_n, %s, bias_n, mafc_dd, mafc_ds, mafc_db);",
+                sig))
+  if (params[[".has_counts"]]) {
+    L$add("    total_lp += lp_n * count_n;")
+  } else {
+    L$add("    total_lp += lp_n;")
+  }
+  L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = lp_n;")
+}
+
+#' Emit m-AFC gradient accumulation
+#' @noRd
+emit_gradient_accumulation_mafc <- function(L, model_data, params) {
+  w <- if (params[[".has_counts"]]) " * count_n" else ""
+  L$add(sprintf("    double d_dprime_n = mafc_dd%s;", w))
+  if (isTRUE(params[[".has_dp_fixed"]])) {
+    L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
+  }
+  dp_re_idx <- 0
+  for (group in names(params[["dprime"]]$random)) {
+    dp_re_idx <- dp_re_idx + 1
+    emit_re_gradient(L, dp_re_tag(dp_re_idx), params[["dprime"]]$random[[group]], group, "d_dprime_n",
+                     "dprime", dp_re_idx, "dp")
+  }
+  if (isTRUE(params[[".has_sigma"]])) {
+    L$add(sprintf("    double d_sigma_n = mafc_ds * sigma_val%s;", w))
+    L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
+    sig_re_idx <- 0
+    for (group in names(params[["sigma"]]$random)) {
+      sig_re_idx <- sig_re_idx + 1
+      emit_re_gradient(L, sig_re_tag(sig_re_idx), params[["sigma"]]$random[[group]], group, "d_sigma_n",
+                       "sigma", sig_re_idx, "sig")
+    }
+  }
+  if (isTRUE(params[[".has_bias"]])) {
+    L$add("    for (int k = 0; k + 1 < M; ++k) {")
+    L$add(sprintf("      const double gb = mafc_db[k]%s;", w))
+    L$add("      if (gb == 0.0) continue;")
+    L$add("      for (int p = 0; p < P_bias; ++p) grad_beta_bias(k, p) += gb * X_bias_d(n, p);")
+    i <- 0
+    for (group in names(params[["bias"]]$random)) {
+      i <- i + 1
+      t <- .bias_re_terms(params[["bias"]]$random[[group]], group, i)
+      if (t$kind == "z") {
+        L$add(sprintf("      for (int j = 0; j < %d; ++j) grad_u_bias%d(%s, k * %d + j) += gb * Z_bias%d_d(n, j);",
+                      t$R, i, t$g, t$R, i))
+      } else if (t$kind == "one") {
+        L$add(sprintf("      grad_u_bias%d(%s, k) += gb;", i, t$g))
+      } else {
+        L$add(sprintf("      if (%s[n] > 0) grad_u_bias%d(%s, k * %d + %s[n] - 1) += gb;", t$idx, i, t$g, t$R, t$idx))
+      }
+    }
+    L$add("    }")
+  }
+}
+
+#' Emit operand packing for the bias parameter
+#' @noRd
+emit_bias_operands <- function(L, params) {
+  emit_pack_mat(L, "beta_bias", "grad_beta_bias")
+  i <- 0
+  for (group in names(params[["bias"]]$random)) {
+    i <- i + 1
+    re <- params[["bias"]]$random[[group]]
+    emit_pack_mat(L, re_var_name("bias", group, re$cor_id), sprintf("grad_u_bias%d", i))
+  }
 }

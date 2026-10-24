@@ -171,3 +171,37 @@
   }
   coder(new, name)
 }
+
+.code_position <- function(v, name) {
+  num <- if (is.factor(v) || is.character(v)) suppressWarnings(as.numeric(as.character(v))) else as.numeric(v)
+  if (any(is.na(num) & !is.na(v)) || any(abs(num - round(num)) > 1e-8, na.rm = TRUE) || any(num < 1, na.rm = TRUE)) {
+    stop("'", name, "' must hold positions 1, 2, ..., m (whole numbers from 1).", call. = FALSE)
+  }
+  as.integer(round(num))
+}
+
+.code_mafc <- function(data, choice_var, target_var, alternatives) {
+  if (is.null(target_var) || !target_var %in% names(data)) {
+    stop("mafc() needs `choice | target ~ ...`: the target position is missing from the data.", call. = FALSE)
+  }
+  choice <- .code_position(data[[choice_var]], choice_var)
+  target <- .code_position(data[[target_var]], target_var)
+  if (is.null(alternatives)) {
+    M <- max(choice, target)
+    m <- rep(M, length(choice))
+  } else {
+    if (!alternatives %in% names(data)) {
+      stop("Column '", alternatives, "' (mafc(alternatives = )) not found in the data.", call. = FALSE)
+    }
+    m <- .code_position(data[[alternatives]], alternatives)
+    M <- max(m)
+    bad <- which(choice > m | target > m)
+    if (length(bad)) {
+      stop("Row ", bad[1], ": choice ", choice[bad[1]], " / target ", target[bad[1]], " exceeds its ", m[bad[1]],
+           " alternatives.", call. = FALSE)
+    }
+  }
+  if (M < 2L || any(m < 2L)) stop("mafc() needs at least 2 alternatives per trial.", call. = FALSE)
+  if (M - 1L > 64L) stop("mafc() supports up to 65 alternatives.", call. = FALSE)
+  list(choice = choice, target = target, m = m, M = as.integer(M))
+}

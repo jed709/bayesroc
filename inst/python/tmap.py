@@ -294,6 +294,17 @@ def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
                                                         (f"{gap_prefix}[{g + 1}]", None) if P == 1 else ("", None),
                                                         (gap_prefix, (g,)) if P == 1 else ("", None)]))
             comps.append((k * R, flats))
+    elif param == "bias":
+        bconf = config.get("bias")
+        if bconf is None:
+            return None
+        X = np.asarray(bconf["X"], dtype=float).reshape(N, -1)
+        centre = bconf.get("centre")
+        n_comp = int(config["K"]) - 1
+        if nt != n_comp * R:
+            return None
+        for k in range(n_comp):
+            comps.append((k * R, [_beta_site(off, None, [("beta_bias", (k, j))]) for j in range(X.shape[1])]))
     else:
         pc = (config.get("params") or {}).get(param)
         cum_loc = config.get("family") in ("cumulative", "bivariate_cumulative") and param in ("dprime", "discrim")
@@ -577,6 +588,8 @@ def _supers(config, off, split=False):
             n_comp = None
             if mp == "criterion" and not m.get("location_only"):
                 n_comp = n_thresh
+            elif mp == "bias":
+                n_comp = int(config["K"]) - 1
             elif mp == "criterion2" and not m.get("location_only") and config.get("K2") is not None:
                 if config.get("varying_source_criteria"):
                     lay = _varying_sets(config, m)

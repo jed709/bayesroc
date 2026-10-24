@@ -259,14 +259,16 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
       k <- keep_of(p)
       push(p, reduce(cell_mean(val$tp[[p]], rows, k), k), slope = slope)
     }
-    crit_sets <- list(criterion = val$th, criterion2 = if (length(dim(val$th2)) == 3L) val$th2)
+    crit_sets <- if (fam == "mafc") list(bias = if (isTRUE(model$model_data$has_bias)) val$th)
+                 else list(criterion = val$th, criterion2 = if (length(dim(val$th2)) == 3L) val$th2)
     for (cn in names(crit_sets)) {
       th <- crit_sets[[cn]]
       if (is.null(th) || (!is.null(internal) && !cn %in% internal)) next
-      J <- dim(th)[3]
+      J <- dim(th)[3] - (cn == "bias")
       kp <- keep_of(cn)
       for (k in seq_len(J)) {
-        push(cn, reduce(cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N), kp), kp), paste0("c", k), slope)
+        push(cn, reduce(cell_mean(matrix(th[, , k], nrow = setup$S), seq_len(setup$N), kp), kp),
+             if (cn == "bias") paste0("position ", k) else paste0("c", k), slope)
       }
     }
     # source criteria that vary with the detection response: one set per set of the model (the

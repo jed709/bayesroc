@@ -61,7 +61,8 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   setup <- .plot_setup(fit, model, ndraws, re_formula, thresholds2 = any(responses == 2L))
   setup$cache <- new.env(parent = emptyenv())
   w <- .row_weights(model)
-  parts <- lapply(responses, function(resp) .distribution_curves(model, setup, cells, w, by, resp, fam, bivariate))
+  parts <- if (fam == "mafc") list(.mafc_distribution_curves(setup, cells, w))
+           else lapply(responses, function(resp) .distribution_curves(model, setup, cells, w, by, resp, fam, bivariate))
   df <- do.call(rbind, lapply(parts, `[[`, "df"))
   crit <- do.call(rbind, lapply(parts, `[[`, "crit"))
   .distributions_plot(df, crit, by, parts, re_formula, fam)
@@ -123,6 +124,26 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   crit$dim <- dim_label
   list(df = df, crit = crit, shared = shared, levs = names(pairs), noise_name = noise_name,
        signal_name = signal_name, what = roles$what, dim = dim_label)
+}
+
+# m-AFC: the target's evidence, N(d', sigma^2) mixed over draws and rows, against a lure's N(0, 1)
+.mafc_distribution_curves <- function(setup, cells, w) {
+  d <- setup$tp[["dprime"]]
+  sg <- setup$tp[["sigma"]] %||% matrix(1, nrow(d), ncol(d))
+  levs <- levels(cells)
+  rng <- c(min(-4, stats::quantile(d - 4 * sg, 0.02)), max(4, stats::quantile(d + 4 * sg, 0.98)))
+  grid <- seq(rng[1], rng[2], length.out = 220)
+  curves <- lapply(levs, function(l) {
+    r <- which(cells == l)
+    wr <- w[r] / sum(w[r])
+    y <- vapply(grid, function(x) mean(stats::dnorm(x, d[, r, drop = FALSE], sg[, r, drop = FALSE]) %*% wr), numeric(1))
+    data.frame(x = grid, y = y, item = "Targets", cell = l)
+  })
+  df <- rbind(do.call(rbind, curves), data.frame(x = grid, y = stats::dnorm(grid), item = "Lures", cell = "Lures"))
+  df$dim <- "Evidence"
+  crit <- data.frame(cell = character(0), set = integer(0), k = integer(0), x = numeric(0), dim = character(0))
+  list(df = df, crit = crit, shared = TRUE, levs = levs, noise_name = "Lures", signal_name = "Targets",
+       what = "detection", dim = "Evidence")
 }
 
 # Mean criterion locations per cell (data-weighted over rows, averaged over draws). Criteria that vary with
@@ -209,7 +230,8 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   else if (two) p <- p + ggplot2::facet_wrap(~ dim, scales = "free_x")
   else if (panels) p <- p + ggplot2::facet_wrap(~ panel, ncol = 1)
   xlab <- if (two) "Latent strength" else p1$dim
-  sub <- if (fam == "dpsdt") "Familiarity, scaled by the probability of not recollecting; dashed lines are criteria"
+  sub <- if (fam == "mafc") "Evidence of the target and of each lure; the choice is the largest evidence plus position bias"
+         else if (fam == "dpsdt") "Familiarity, scaled by the probability of not recollecting; dashed lines are criteria"
          else if (varying) "Dashed lines are the response criteria; the source criteria are one set per detection response"
          else "Dashed lines are the response criteria"
   p + ggplot2::scale_x_continuous(sec.axis = sec) +

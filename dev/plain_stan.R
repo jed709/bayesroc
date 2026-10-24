@@ -330,6 +330,7 @@
   
   cdf_code <- generate_link_cdf_wrapper(link)
   lines <- c(lines, cdf_code)
+  if (family_name == "mafc") lines <- c(lines, .plain_mafc_functions())
   
   if (family_name == "cumulative") {
     lines <- c(lines, '
@@ -1700,6 +1701,8 @@ generate_likelihood_code <- function(model_data, family_name) {
     return(lines)
   }
 
+  if (family_name == "mafc") return(c(lines, generate_mafc_likelihood_code(model_data)))
+
   if ((has_encoding_params || isTRUE(model_data$has_lure_mixture)) && family_name %in% c("mixture", "dpsdt")) {
     lines <- c(lines, generate_likelihood_with_encoding_branch(model_data, family_name))
   } else {
@@ -2792,4 +2795,145 @@ is_simple_encoding <- function(fixed_info, random_info) {
   }
   
   TRUE
+}
+
+#' Plain-Stan m-AFC functions (the cell integral split at its mode, Gauss-Legendre on each side)
+#' @noRd
+.plain_mafc_functions <- function() {
+  '
+  real pcq_lam(real x) {
+    return x > -30 ? exp(std_normal_lpdf(x)) / Phi(x) : exp(std_normal_lpdf(x) - std_normal_lcdf(x));
+  }
+
+  real pcq_logphi(real x) {
+    return x > -30 ? log(Phi(x)) : std_normal_lcdf(x);
+  }
+
+  real pcq_h(real z, vector a, vector c) {
+    real h = -0.5 * square(z);
+    for (j in 1:rows(a)) h += pcq_logphi(a[j] * z + c[j]);
+    return h;
+  }
+
+  real pcq_dh(real z, vector a, vector c) {
+    real g = -z;
+    for (j in 1:rows(a)) g += a[j] * pcq_lam(a[j] * z + c[j]);
+    return g;
+  }
+
+  real pcq_log(vector a, vector c) {
+    vector[64] X = to_vector({-0.9993050417357722, -0.9963401167719552, -0.9910133714767443, -0.983336253884626, -0.973326827789911, -0.9610087996520538, -0.9464113748584028, -0.9295691721319396, -0.9105221370785028, -0.8893154459951141, -0.8659993981540928, -0.8406292962525803, -0.8132653151227975, -0.7839723589433414, -0.7528199072605319, -0.7198818501716109, -0.6852363130542333, -0.6489654712546573, -0.6111553551723933, -0.571895646202634, -0.5312794640198946, -0.48940314570705296, -0.4463660172534641, -0.4022701579639916, -0.3572201583376681, -0.31132287199021097, -0.2646871622087674, -0.21742364374000708, -0.16964442042399283, -0.12146281929612054, -0.07299312178779904, -0.02435029266342443, 0.02435029266342443, 0.07299312178779904, 0.12146281929612054, 0.16964442042399283, 0.21742364374000708, 0.2646871622087674, 0.31132287199021097, 0.3572201583376681, 0.4022701579639916, 0.4463660172534641, 0.48940314570705296, 0.5312794640198946, 0.571895646202634, 0.6111553551723933, 0.6489654712546573, 0.6852363130542333, 0.7198818501716109, 0.7528199072605319, 0.7839723589433414, 0.8132653151227975, 0.8406292962525803, 0.8659993981540928, 0.8893154459951141, 0.9105221370785028, 0.9295691721319396, 0.9464113748584028, 0.9610087996520538, 0.973326827789911, 0.983336253884626, 0.9910133714767443, 0.9963401167719552, 0.9993050417357722});
+    vector[64] W = to_vector({0.00178328072169414, 0.004147033260564499, 0.006504457968978502, 0.008846759826363397, 0.011168139460131028, 0.01346304789671786, 0.01572603047602503, 0.017951715775697284, 0.020134823153530088, 0.02227017380838297, 0.0243527025687112, 0.02637746971505491, 0.028339672614259535, 0.030234657072402554, 0.032057928354851495, 0.033805161837141794, 0.0354722132568823, 0.03705512854024009, 0.03855015317861564, 0.039953741132720544, 0.041262563242623576, 0.04247351512365361, 0.04358372452932355, 0.044590558163756566, 0.045491627927418184, 0.04628479658131447, 0.046968182816210076, 0.04754016571483042, 0.04799938859645842, 0.048344762234802996, 0.04857546744150351, 0.048690957009139814, 0.048690957009139814, 0.04857546744150351, 0.048344762234802996, 0.04799938859645842, 0.04754016571483042, 0.046968182816210076, 0.04628479658131447, 0.045491627927418184, 0.044590558163756566, 0.04358372452932355, 0.04247351512365361, 0.041262563242623576, 0.039953741132720544, 0.03855015317861564, 0.03705512854024009, 0.0354722132568823, 0.033805161837141794, 0.032057928354851495, 0.030234657072402554, 0.028339672614259535, 0.02637746971505491, 0.0243527025687112, 0.02227017380838297, 0.020134823153530088, 0.017951715775697284, 0.01572603047602503, 0.01346304789671786, 0.011168139460131028, 0.008846759826363397, 0.006504457968978502, 0.004147033260564499, 0.00178328072169414});
+    int n = rows(a);
+    real g0 = pcq_dh(0, a, c);
+    real zl = 0;
+    real zr = fmax(g0, 0);
+    real z = 0;
+    real hm;
+    array[2] real lo;
+    array[2] real hi;
+    real tot = 0;
+    if (zr > 0) {
+      z = 0.5 * zr;
+      for (it in 1:80) {
+        real g = pcq_dh(z, a, c);
+        real h2 = -1;
+        real zn;
+        for (j in 1:n) {
+          real x = a[j] * z + c[j];
+          real l = pcq_lam(x);
+          h2 -= square(a[j]) * l * (x + l);
+        }
+        if (g > 0) zl = z; else zr = z;
+        zn = z - g / h2;
+        z = (zn > zl && zn < zr) ? zn : 0.5 * (zl + zr);
+      }
+    }
+    hm = pcq_h(z, a, c);
+    lo[2] = z;
+    hi[1] = z;
+    for (sd in 1:2) {
+      real side = sd == 1 ? -1 : 1;
+      real zo = z + side * sqrt(80);
+      real zi = z;
+      real e = zo;
+      for (it in 1:60) {
+        real he = pcq_h(e, a, c);
+        real en = e - (he - (hm - 40)) / pcq_dh(e, a, c);
+        if (he < hm - 40) zo = e; else zi = e;
+        e = (en - zi) * (en - zo) < 0 ? en : 0.5 * (zi + zo);
+      }
+      if (sd == 1) lo[1] = e; else hi[2] = e;
+    }
+    for (p in 1:2) {
+      real hh = 0.5 * (hi[p] - lo[p]);
+      for (i in 1:64) tot += W[i] * hh * exp(pcq_h(lo[p] + hh * (X[i] + 1), a, c) - hm);
+    }
+    return hm + log(tot) - 0.5 * log(2 * pi());
+  }
+
+  real mafc_cell_lpmf(int k, int s, int m, real d, real sg, vector b) {
+    if (m == 2) {
+      int o = 3 - s;
+      real z = (d + b[s] - b[o]) / sqrt(1 + square(sg));
+      return pcq_logphi(k == s ? z : -z);
+    }
+    {
+      vector[m - 1] a;
+      vector[m - 1] c;
+      int t = 1;
+      if (k == s) {
+        for (j in 1:m) {
+          if (j == s) continue;
+          a[t] = sg;
+          c[t] = d + b[s] - b[j];
+          t += 1;
+        }
+      } else {
+        a[1] = 1 / sg;
+        c[1] = (b[k] - b[s] - d) / sg;
+        t = 2;
+        for (j in 1:m) {
+          if (j == s || j == k) continue;
+          a[t] = 1;
+          c[t] = b[k] - b[j];
+          t += 1;
+        }
+      }
+      return pcq_log(a, c);
+    }
+  }'
+}
+
+#' Plain-Stan per-observation m-AFC likelihood
+#' @noRd
+generate_mafc_likelihood_code <- function(model_data) {
+  lines <- generate_param_lp("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]])
+  sig <- "1"
+  if (isTRUE(model_data$has_sigma)) {
+    lines <- c(lines, generate_param_lp("sigma", model_data$sigma_fixed, model_data$sigma_random, model_data$smooth_data[["sigma"]]),
+               "    real sigma_val = exp(sigma_n);")
+    sig <- "sigma_val"
+  }
+  lines <- c(lines, "    vector[K] bias_n = rep_vector(0, K);")
+  b <- model_data$bias
+  if (!is.null(b)) {
+    lines <- c(lines, "    for (k in 1:(K - 1)) {", "      bias_n[k] = X_bias[n] * beta_bias[k]';")
+    for (group in names(b$random)) {
+      re <- b$random[[group]]
+      u <- if (!is.null(re$cor_id)) sprintf("u_bias_%s_from_%s", group, re$cor_id) else sprintf("u_bias_%s", group)
+      R <- re$n_re_terms %||% 1
+      if (isTRUE(re$use_z_matrix)) {
+        lines <- c(lines, sprintf("      bias_n[k] += Z_bias_%s[n] * %s[%s[n], ((k - 1) * %d + 1):(k * %d)]';", group, u, group, R, R))
+      } else if (R == 1 && is.null(re$term_idx)) {
+        lines <- c(lines, sprintf("      bias_n[k] += %s[%s[n], k];", u, group))
+      } else {
+        lines <- c(lines, sprintf("      if (idx_bias_%s[n] > 0) bias_n[k] += %s[%s[n], (k - 1) * %d + idx_bias_%s[n]];",
+                                  group, u, group, R, group))
+      }
+    }
+    lines <- c(lines, "    }")
+  }
+  call <- sprintf("mafc_cell_lpmf(y[n] | target_pos[n], m_alt[n], dprime_n, %s, bias_n)", sig)
+  c(lines, if (isTRUE(model_data$has_counts)) sprintf("    target += counts[n] * %s;", call) else sprintf("    target += %s;", call))
 }

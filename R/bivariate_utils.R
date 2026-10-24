@@ -193,6 +193,7 @@ binormal_cdf_r <- function(z1, z2, rho) {
       st$sym_cdp <- sym("bayesroc_r_cdp_probs")
       st$sym_mixsurv <- sym("bayesroc_r_mix_survival")
       st$sym_lnoise <- sym("bayesroc_r_lnoise_cell")
+      st$sym_mafc <- sym("bayesroc_r_mafc_probs")
       TRUE
     }, error = function(e) FALSE)
   }

@@ -136,6 +136,17 @@ def metad_case(relative, K=6, q=0.5, mid=(0.6, 0.3), d=(1.2, 0.6), N=400, seed=4
     return f, args, [1, 2, 3, 5, 6]
 
 
+def mafc_case(M=3, sig=(1.0, 1.0), mixed=False, N=300, seed=9):
+    rng = np.random.default_rng(seed)
+    m = rng.choice([2, M], N) if mixed else np.full(N, M)
+    t = np.array([rng.integers(0, k) for k in m])
+    y = np.array([rng.integers(0, k) for k in m])
+    b = np.concatenate([rng.normal(0, 0.6, (N, M - 1)), np.zeros((N, 1))], 1)
+    args = [jnp.asarray(y, dtype=jnp.int32), jnp.asarray(t, dtype=jnp.int32), jnp.asarray(m, dtype=jnp.int32),
+            _n(rng, 1.5, 0.8, N), _u(rng, sig[0], sig[1], N), jnp.asarray(b)]
+    return nb.fused_loglik_mafc, args, [3, 4, 5]
+
+
 def lnoise_case(K=6, sm=(0.15, 1.2), mid=(0.6, 0.3), d=(0.8, 0.8), gaps=(-0.4, 0.2), N=300, seed=7):
     rng = np.random.default_rng(seed)
     f = nb._make_fused_lnoise_loglik(K, False)
@@ -168,6 +179,10 @@ CASES = {
     "pcq_m8_slopes": lambda: pcq_case(7, slopes=True),
     "pcq_m21": lambda: pcq_case(20),
     "pcq_m4_steep": lambda: pcq_case(3, steep=True),
+    "mafc_m2": lambda: mafc_case(M=2),
+    "mafc_m3": lambda: mafc_case(),
+    "mafc_m5_uv": lambda: mafc_case(M=5, sig=(0.4, 2.5)),
+    "mafc_mixed_m": lambda: mafc_case(M=4, sig=(0.6, 1.6), mixed=True),
     "lnoise": lambda: lnoise_case(),
     "lnoise_k4_small_noise": lambda: lnoise_case(K=4, sm=(0.005, 0.08)),
     "lnoise_k8_large_noise": lambda: lnoise_case(K=8, sm=(1.0, 4.0), gaps=(-1.0, 0.4)),

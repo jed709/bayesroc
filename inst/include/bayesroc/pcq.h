@@ -26,6 +26,7 @@ constexpr double kGW64[64] = {0.00178328072169414, 0.004147033260564499, 0.00650
 
 using bvn::splat;
 using bvn::v4d;
+using bvn::v4i;
 
 inline double lambda(double x) {
   if (x < 0.0) return 1.0 / bvn_tail::mills(-x);
@@ -49,14 +50,31 @@ inline void pack(int n, const double* a, const double* c, Terms& t) {
 
 inline double hsum(v4d x) { return (x[0] + x[1]) + (x[2] + x[3]); }
 
+// log Phi(x) and lambda(x) = phi(x) / Phi(x), with the Gaussian factor kept out of both on the
+// lower tail so that neither underflows
+inline void vlogphi(v4d x, v4d& logP, v4d& lam) {
+  const v4d ax = bvn::vmin(bvn::vabs(x), splat(280.0));
+  const v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * ax);
+  const v4d u = (splat(2.0) * t - splat(bvn_tail::kPhiA + bvn_tail::kPhiB)) * splat(1.0 / (bvn_tail::kPhiB - bvn_tail::kPhiA));
+  const v4d Cu = bvn::clenshaw<19>(bvn_tail::kPhiC, u);
+  const v4d Du = bvn::clenshaw<18>(bvn::kPhiD, u);
+  const v4d G = (splat(1.0) - t) * splat(1.0 / 0.2316419) * Cu + splat(0.2316419) * t * t * (Cu + t * Du);
+  const v4d le = splat(-0.5) * x * x - splat(bvn_tail::kLogSqrt2Pi);
+  const v4d tc = t * Cu;
+  const v4d e = bvn::vexp(bvn::vmax(le, splat(-745.0)));
+  const v4d up = splat(1.0) - e * tc;
+  const v4i neg = x < splat(0.0);
+  logP = bvn::vsel(neg, le + bvn::vlog(tc), bvn::vlog(up));
+  lam = bvn::vsel(neg, G / tc, e * G / up);
+}
+
 inline void eval(const Terms& t, double z, double& h, double& g, double* h2) {
   v4d H = splat(0.0), G = H, H2 = H;
   const v4d vz = splat(z);
   for (int v = 0; v < t.nv; ++v) {
-    v4d x = t.a[v] * vz + t.c[v];
-    bvn::PhiV ph = bvn::vacc_phi(x);
-    v4d l = ph.dP / ph.P;
-    H += bvn::vlog(ph.P);
+    v4d x = t.a[v] * vz + t.c[v], lp, l;
+    vlogphi(x, lp, l);
+    H += lp;
     G += t.a[v] * l;
     if (h2) H2 += t.a[v] * t.a[v] * l * (x + l);
   }
@@ -69,9 +87,8 @@ inline void grad(const Terms& t, double z, double& g, double& h2) {
   v4d G = splat(0.0), H2 = G;
   const v4d vz = splat(z);
   for (int v = 0; v < t.nv; ++v) {
-    v4d x = t.a[v] * vz + t.c[v];
-    bvn::PhiV ph = bvn::vacc_phi(x);
-    v4d l = ph.dP / ph.P;
+    v4d x = t.a[v] * vz + t.c[v], lp, l;
+    vlogphi(x, lp, l);
     G += t.a[v] * l;
     H2 += t.a[v] * t.a[v] * l * (x + l);
   }
@@ -91,7 +108,8 @@ inline double mode(const Terms& t, bool positive, double& hz) {
         if (g > 0.0) zl = z; else zr = z;
         double zn = z - g / h2;
         if (!(zn > zl && zn < zr)) zn = 0.5 * (zl + zr);
-        if (std::fabs(zn - z) < 1e-2 || zr - zl < 1e-2) {
+        const double tol = 1e-3 / std::sqrt(-h2);
+        if (std::fabs(zn - z) < tol || zr - zl < tol) {
           z = zn;
           break;
         }
@@ -120,12 +138,15 @@ inline double mode(const Terms& t, bool positive, double& hz) {
   return z;
 }
 
-inline double edge(const Terms& t, double z, double target) {
-  double h, g;
-  for (int it = 0; it < 60; ++it) {
+inline double edge(const Terms& t, double zm, double target, double side) {
+  double zo = zm + side * std::sqrt(2.0 * kDrop), zi = zm, z = zo, h, g;
+  for (int it = 0; it < 80; ++it) {
     eval(t, z, h, g, nullptr);
     if (std::fabs(h - target) < 0.5) break;
-    z -= (h - target) / g;
+    if (h < target) zo = z; else zi = z;
+    double zn = z - (h - target) / g;
+    if (!((zn - zi) * (zn - zo) < 0.0)) zn = 0.5 * (zi + zo);
+    z = zn;
   }
   return z;
 }
@@ -137,9 +158,8 @@ inline double log_int(int n, const double* a, const double* c, double* dc, doubl
   for (int j = 0; j < n; ++j) positive = positive && a[j] >= 0.0;
   double hm;
   const double zm = mode(t, positive, hm);
-  const double target = hm - kDrop, gauss = std::sqrt(2.0 * (kDrop - hm));
-  const double zl = edge(t, zm - std::sqrt(2.0 * kDrop), target);
-  const double zr = edge(t, positive && gauss < zm + std::sqrt(2.0 * kDrop) ? gauss : zm + std::sqrt(2.0 * kDrop), target);
+  const double target = hm - kDrop;
+  const double zl = edge(t, zm, target, -1.0), zr = edge(t, zm, target, 1.0);
   double amax = 0.0;
   for (int j = 0; j < n; ++j) amax = std::fmax(amax, std::fabs(a[j]));
   const int K = amax < 1.25 ? 24 : amax < 2.0 ? 32 : amax < 3.5 ? 40 : amax < 7.0 ? 48 : 64;
@@ -148,7 +168,6 @@ inline double log_int(int n, const double* a, const double* c, double* dc, doubl
   v4d DC[kMaxTerms], DA[kMaxTerms];
   for (int j = 0; j < n; ++j) DC[j] = DA[j] = splat(0.0);
   v4d S = splat(0.0);
-  const bool direct = hm > -600.0 && n <= 16;
   const double lo[2] = {zl, zm}, hi[2] = {zm, zr};
   for (int p = 0; p < 2; ++p) {
     const double hh = 0.5 * (hi[p] - lo[p]);
@@ -159,14 +178,14 @@ inline double log_int(int n, const double* a, const double* c, double* dc, doubl
         w0[k] = W[i + k];
       }
       const v4d z = splat(lo[p] + hh) + splat(hh) * x0;
-      v4d H = splat(-0.5) * z * z - splat(hm), Pr = splat(1.0);
+      v4d H = splat(-0.5) * z * z - splat(hm);
       v4d L[kMaxTerms];
       for (int j = 0; j < n; ++j) {
-        bvn::PhiV ph = bvn::vacc_phi(splat(a[j]) * z + splat(c[j]));
-        if (direct) Pr *= ph.P; else H += bvn::vlog(ph.P);
-        L[j] = ph.dP / ph.P;
+        v4d lp;
+        vlogphi(splat(a[j]) * z + splat(c[j]), lp, L[j]);
+        H += lp;
       }
-      const v4d w = w0 * splat(hh) * bvn::vexp(H) * Pr;
+      const v4d w = w0 * splat(hh) * bvn::vexp(H);
       S += w;
       for (int j = 0; j < n; ++j) {
         const v4d l = w * L[j];

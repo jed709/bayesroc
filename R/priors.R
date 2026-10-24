@@ -109,7 +109,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "rho_target", "rho_lure",
-                     "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new",
+                     "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new", "bias",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
                      "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
                      "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
@@ -411,6 +411,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       mratio = "normal(0, 0.5)",
       mratio_N = "normal(0, 0.5)",
       sigma_meta = "normal(0, 1)",
+      bias = "normal(0, 1)",
       rec_crit = "normal(2, 1)",
       know_crit = "normal(0, 1)",
       dprime_L = "normal(0, 1)",
@@ -446,6 +447,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       mratio = "normal(0, 0.5)",
       mratio_N = "normal(0, 0.5)",
       sigma_meta = "normal(0, 0.5)",
+      bias = "normal(0, 0.5)",
       rec_crit = "normal(0, 1)",
       know_crit = "normal(0, 1)",
       dprime_L = "normal(0, 1)",
@@ -650,7 +652,7 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
                      rec_crit = "rec_crit", know_crit = "know_crit", dprime_L = "dprime_L", sigma_L = "sigma_L",
                      lambda_L = "lambda_L", thresh_mid = "criterion", thresh_mid2 = "criterion2",
                      criterion_scale = "criterion_scale", criterion2_scale = "criterion2_scale",
-                     mratio = "mratio", mratio_N = "mratio_N", sigma_meta = "sigma_meta")
+                     mratio = "mratio", mratio_N = "mratio_N", sigma_meta = "sigma_meta", bias = "bias")
 
 .noise_sd_dpars <- c("sigma", "sigma2", "sigma_B", "sigma2_B", "sigma_L")
 .latent_log_dpars <- c("dprime", "dprime_B", "discrim", "discrim_B", "log_gaps", "log_gaps2")
@@ -1062,6 +1064,8 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("mratio_N", "mratio_N", model$model_data$mratio_N_fixed$coef_names)
   if (isTRUE(model$model_data$has_sigma_meta))
     add_fixed_priors("sigma_meta", "sigma_meta", model$model_data$sigma_meta_fixed$coef_names)
+  if (isTRUE(model$model_data$has_bias))
+    add_fixed_priors("bias", "bias", model$model_data$bias$coef_names)
   if (isTRUE(model$model_data$has_rec_crit))
     add_fixed_priors("rec_crit", "rec_crit", model$model_data$rec_crit_fixed$coef_names)
   if (isTRUE(model$model_data$has_know_crit))
@@ -1394,11 +1398,11 @@ print.broc_prior_table <- function(x, ...) {
   c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
     "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
     "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale",
-    "criterion2_scale", "mratio", "mratio_N", "sigma_meta")
+    "criterion2_scale", "mratio", "mratio_N", "sigma_meta", "bias")
 }
 
 .re_list_of <- function(model_data, p) {
-  if (p %in% c("criterion", "criterion2")) model_data[[p]]$random else model_data[[paste0(p, "_random")]]
+  if (p %in% c("criterion", "criterion2", "bias")) model_data[[p]]$random else model_data[[paste0(p, "_random")]]
 }
 
 .re_sd_coef_names <- function(p, re) {

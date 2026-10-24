@@ -30,7 +30,9 @@
   fam <- model$family
   tp <- compute_trial_params(draws, model, data_src, re_formula, S, N)
   th <- th2 <- NULL
-  if (thresholds) {
+  if (thresholds && fam$family == "mafc") {
+    th <- compute_bias(draws, model, data_src, re_formula, S, N, model$model_data$K)
+  } else if (thresholds) {
     n_thresh_K <- if (fam$family == "cdp") fam$J + 1 else model$model_data$K
     th <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = tp[["criterion_scale"]])
     if (thresholds2 && .is_bivariate_family(fam$family)) {
@@ -129,6 +131,10 @@
       return(list(signal = which(sd$item_type >= 2L), noise = which(sd$item_type == 1L), what = "detection"))
     }
     return(list(signal = which(sd$item_type == 3L), noise = which(sd$item_type == 2L), what = "source"))
+  }
+  if (fam == "mafc") {
+    stop("ROC curves are not defined for mafc(): a forced choice has no confidence criteria to trace one. ",
+         "plot_distributions() shows the target and lure evidence.", call. = FALSE)
   }
   stop("ROC curves are not defined for the ", family_display_name(fam), " family: it has no ",
        "signal and noise items.", call. = FALSE)

@@ -147,7 +147,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   gap_link <- if (!is.null(model$gap_link)) model$gap_link else "log"
 
   supported <- c("evsdt", "uvsdt", "dpsdt", "mixture", "cumulative", "source_mixture",
-                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp", "metadt")
+                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp", "metadt", "mafc")
   if (!family_name %in% supported) {
     stop("predict() does not yet support family '", family_display_name(family_name),
          "'. Supported: ",
@@ -207,7 +207,8 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
 
   # ---- Compute thresholds ----
   n_thresh_K <- if (is_cdp) family$J + 1 else K
-  thresh <- compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = trial_params[["criterion_scale"]])
+  thresh <- if (family_name == "mafc") compute_bias(draws, model, data_src, re_formula, S, N, K)
+            else compute_thresholds(draws, model, data_src, re_formula, S, N, n_thresh_K, crit_scale = trial_params[["criterion_scale"]])
 
   # one response's probabilities of a bivariate family, [S, N, K]: margin = 1 detection,
   # 2 source
@@ -477,6 +478,12 @@ build_data_source_from_model <- function(model) {
   }
 
   src$criterion_random <- md$criterion$random
+  if (identical(model$family$family, "mafc")) {
+    src$target_pos <- md$stan_data$target_pos
+    src$m_alt <- md$stan_data$m_alt
+    src$X_bias <- md$bias$X
+    src$bias_random <- md$bias$random
+  }
 
   if (isTRUE(md$has_criterion2) && !is.null(md$criterion2)) {
     src$X_criterion2 <- md$criterion2$X
@@ -513,12 +520,16 @@ get_predict_variables <- function(model, include_re = TRUE) {
     if (P > 0) vars <- c(vars, paste0("beta_", dprime_name, "[", seq_len(P), "]"))
   }
 
+  if (identical(model$family$family, "mafc")) {
+    if (!is.null(md$bias)) vars <- c(vars, "beta_bias")
+  } else {
   P_crit <- md$criterion$n_coef
   vars <- c(vars, paste0("beta_thresh_mid[", 1:P_crit, "]"))
 
   n_gaps <- if (is_cdp) model$family$J - 1 else K - 2
   if (n_gaps > 0) {
     vars <- c(vars, .gap_param(gap_link))
+  }
   }
 
   param_names <- c("sigma", "lambda", "dprime2", "sigma2",
@@ -632,6 +643,11 @@ get_re_variables <- function(model) {
       paste0("u_", criterion_name, "_", group)
     }
     vars <- c(vars, var_base)
+  }
+
+  for (group in names(md$bias$random)) {
+    re <- md$bias$random[[group]]
+    vars <- c(vars, if (!is.null(re$cor_id)) paste0("u_bias_", group, "_from_", re$cor_id) else paste0("u_bias_", group))
   }
 
   crit2_stan <- if (is_bivariate_cumulative) "cutpoints2" else "criterion2"
@@ -2076,7 +2092,9 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
     ds <- list(
       is_old = if (!is.null(data_src$is_old)) data_src$is_old[idx] else NULL,
       source = if (!is.null(data_src$source)) data_src$source[idx] else NULL,
-      item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL
+      item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL,
+      target_pos = if (!is.null(data_src$target_pos)) data_src$target_pos[idx] else NULL,
+      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL
     )
 
     switch(family_name,
@@ -2092,7 +2110,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       bivariate_cumulative = probs_bivariate_cumulative(tp, th, th2, S, n_chunk, K, K2, model = model),
       vrdp2d         = probs_vrdp2d(tp, th, th2, ds$item_type, S, n_chunk, K, K2, model = model),
       cdp            = probs_cdp(tp, th, ds$is_old, S, n_chunk, K, model = model),
-      metadt         = probs_metadt(tp, th, ds$is_old, S, n_chunk, K, model = model)
+      metadt         = probs_metadt(tp, th, ds$is_old, S, n_chunk, K, model = model),
+      mafc           = probs_mafc(tp, th, ds, S, n_chunk, K)
     )
   }
 
@@ -2117,7 +2136,9 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       },
       is_old = if (!is.null(data_src$is_old)) data_src$is_old[idx] else NULL,
       source = if (!is.null(data_src$source)) data_src$source[idx] else NULL,
-      item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL
+      item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL,
+      target_pos = if (!is.null(data_src$target_pos)) data_src$target_pos[idx] else NULL,
+      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL
     )
   })
 
@@ -2139,7 +2160,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 
   .predict_worker <- function(cd) {
     n_chunk <- length(cd$idx)
-    ds <- list(is_old = cd$is_old, source = cd$source, item_type = cd$item_type)
+    ds <- list(is_old = cd$is_old, source = cd$source, item_type = cd$item_type, target_pos = cd$target_pos, m_alt = cd$m_alt)
     switch(cd$family_name,
       evsdt          = probs_evsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K,
                                    cd$model$model_data$meta_noise),
@@ -2160,7 +2181,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       vrdp2d         = probs_vrdp2d(cd$trial_params, cd$thresh, cd$thresh2, ds$item_type,
                                      cd$S, n_chunk, cd$K, cd$K2, model = cd$model),
       cdp            = probs_cdp(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model),
-      metadt         = probs_metadt(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model)
+      metadt         = probs_metadt(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model),
+      mafc           = probs_mafc(cd$trial_params, cd$thresh, ds, cd$S, n_chunk, cd$K)
     )
   }
   environment(.predict_worker) <- globalenv()
@@ -2981,7 +3003,12 @@ rebuild_design_matrices <- function(model, newdata) {
   src <- list(N = N)
   src$.frame <- newdata
 
-  if (!is_cumulative && !is_bivariate && !is_vrdp2d && !is.null(parsed$response$is_old)) {
+  if (family_name == "mafc") {
+    if (!is.null(family$alternatives) && !family$alternatives %in% names(newdata)) {
+      stop("newdata is missing required columns: ", family$alternatives, call. = FALSE)
+    }
+    src <- .mafc_newdata(model, newdata, src)
+  } else if (!is_cumulative && !is_bivariate && !is_vrdp2d && !is.null(parsed$response$is_old)) {
     src$is_old <- .code_is_old(newdata[[parsed$response$is_old]], parsed$response$is_old, allow_centered = TRUE)
   } else if (is_cumulative) {
     src$is_old <- rep(1L, N)
@@ -3029,7 +3056,8 @@ rebuild_design_matrices <- function(model, newdata) {
   }
 
   crit_ref_names <- drop_smooth_null_space_names(md$criterion$coef_names)
-  if (md$criterion$is_intercept_only ||
+  if (is.null(md$criterion)) {
+  } else if (md$criterion$is_intercept_only ||
       identical(crit_ref_names, "(Intercept)")) {
     src$X_criterion <- matrix(1, nrow = N, ncol = 1)
     colnames(src$X_criterion) <- "(Intercept)"
@@ -3585,4 +3613,159 @@ rebuild_z_matrix <- function(re, newdata, encoding_vars, is_old_var) {
   of <- max.col(L, ties.method = "first")
   of[rowSums(L) == 0] <- match("(none)", cl)
   as.integer(of)
+}
+
+# =============================================================================
+# m-AFC predictions
+# =============================================================================
+
+.rebuild_vec_design <- function(spec, newdata, train_data) {
+  N <- nrow(newdata)
+  ref <- drop_smooth_null_space_names(spec$coef_names)
+  if (isTRUE(spec$is_intercept_only) || identical(ref, "(Intercept)")) {
+    X <- matrix(1, nrow = N, ncol = 1)
+    colnames(X) <- "(Intercept)"
+    return(X)
+  }
+  if (!is.null(spec$fixed_formula)) {
+    return(rebuild_one_design_matrix(spec$fixed_formula, newdata, NULL, NULL, ref_colnames = ref,
+                                     conditional_info = spec$conditional_info, train_data = train_data))
+  }
+  align_matrix_columns(model.matrix(as.formula(paste("~", paste(ref, collapse = " + "))), data = newdata), ref)
+}
+
+.mafc_newdata <- function(model, newdata, src) {
+  md <- model$model_data
+  parsed <- model$parsed
+  alt <- model$family$alternatives
+  M <- md$K
+  src$target_pos <- .code_position(newdata[[parsed$response$is_old]], parsed$response$is_old)
+  src$m_alt <- if (is.null(alt)) rep(M, nrow(newdata)) else .code_position(newdata[[alt]], alt)
+  bad <- which(src$target_pos > src$m_alt | src$m_alt > M)
+  if (length(bad)) {
+    stop("newdata row ", bad[1], ": target position ", src$target_pos[bad[1]], " with ", src$m_alt[bad[1]],
+         " alternatives does not fit the model's ", M, " positions.", call. = FALSE)
+  }
+  if (!is.null(md$bias)) {
+    src$X_bias <- .rebuild_vec_design(md$bias, newdata, model$data)
+    if (!is.null(md$bias$random)) {
+      src$bias_random <- lapply(stats::setNames(names(md$bias$random), names(md$bias$random)), function(group) {
+        re <- md$bias$random[[group]]
+        remap <- remap_group_indices(newdata, group, model$data, re)
+        re$group_idx <- remap$group_idx
+        re$new_level_idx <- as.integer(remap$new_level_idx)
+        if (!is.null(remap$warning)) warning(remap$warning)
+        .rebuild_re_design(re, newdata, NULL, NULL)
+      })
+    }
+  }
+  src
+}
+
+#' Position biases for all draws: [S, N, M], the last position 0
+#' @noRd
+compute_bias <- function(draws, model, data_src, re_formula, S, N, M) {
+  md <- model$model_data
+  out <- array(0, dim = c(S, N, M))
+  if (is.null(md$bias)) return(out)
+  P <- md$bias$n_coef
+  X <- data_src$X_bias
+  include_re <- !identical(re_formula, NA)
+  rand <- data_src$bias_random
+  new_u <- if (include_re && !is.null(rand) && isTRUE(data_src$.allow_new_levels)) {
+    sample_criterion_new_u(draws, rand, "bias", S, md, data_src, "bias")
+  } else NULL
+  for (k in seq_len(M - 1L)) {
+    beta_k <- draws[, paste0("beta_bias[", k, ",", seq_len(P), "]"), drop = FALSE]
+    b <- X %*% t(beta_k)
+    if (include_re && !is.null(rand)) {
+      b <- b + compute_criterion_re(draws, rand, data_src, "bias", S, N, thresh_k = k, md = md, new_u_cache = new_u)
+    }
+    out[, , k] <- t(b)
+  }
+  out
+}
+
+#' m-AFC choice probabilities [S, N, M]
+#' @noRd
+probs_mafc <- function(params, bias, ds, S, N, M) {
+  d <- as.vector(params[["dprime"]])
+  sg <- if (!is.null(params[["sigma"]])) as.vector(params[["sigma"]]) else rep(1, S * N)
+  m <- rep(as.integer(ds$m_alt), each = S)
+  tgt <- rep(as.integer(ds$target_pos), each = S)
+  b <- matrix(bias, S * N, M)
+  p <- if (.bvn_native_ready() && !is.null(.bvn_native$sym_mafc)) {
+    .C(.bvn_native$sym_mafc, as.double(d), as.double(sg), as.double(b), as.integer(m), as.integer(tgt),
+       as.integer(M), as.integer(S * N), .native_threads(), out = double(S * N * M), NAOK = TRUE)$out
+  } else {
+    .mafc_probs_r(d, sg, b, m, tgt, M)
+  }
+  pmax(array(p, c(S, N, M)), 1e-10)
+}
+
+.mafc_probs_r <- function(d, sg, b, m, tgt, M) {
+  n <- length(d)
+  out <- matrix(0, n, M)
+  for (k in seq_len(M)) {
+    rows <- which(k <= m)
+    if (!length(rows)) next
+    a <- matrix(0, length(rows), M - 1L)
+    cc <- matrix(40, length(rows), M - 1L)
+    for (r in seq_along(rows)) {
+      i <- rows[r]
+      s <- tgt[i]
+      pos <- setdiff(seq_len(M), k)
+      for (t in seq_along(pos)) {
+        j <- pos[t]
+        if (j > m[i]) next
+        if (k == s) {
+          a[r, t] <- sg[i]; cc[r, t] <- d[i] + b[i, s] - b[i, j]
+        } else if (j == s) {
+          a[r, t] <- 1 / sg[i]; cc[r, t] <- (b[i, k] - b[i, s] - d[i]) / sg[i]
+        } else {
+          a[r, t] <- 1; cc[r, t] <- b[i, k] - b[i, j]
+        }
+      }
+    }
+    out[rows, k] <- exp(.pcq_r(a, cc))
+  }
+  out
+}
+
+# log of the integral of phi(z) prod_j Phi(a_j z + c_j) over rows of a, c: the integrand split at its
+# mode and each side integrated by Gauss-Legendre to where it has fallen by e^-40, as the native kernel
+.pcq_r <- function(a, cc) {
+  gl <- .gauss_legendre(64L)
+  n <- nrow(a)
+  lam <- function(x) exp(stats::dnorm(x, log = TRUE) - stats::pnorm(x, log.p = TRUE))
+  h <- function(z) -0.5 * z^2 + rowSums(stats::pnorm(a * z + cc, log.p = TRUE))
+  g <- function(z) -z + rowSums(a * lam(a * z + cc))
+  zl <- rep(0, n); zr <- pmax(g(rep(0, n)), 0); z <- 0.5 * zr
+  for (it in seq_len(80L)) {
+    x <- a * z + cc
+    l <- lam(x)
+    gz <- -z + rowSums(a * l)
+    h2 <- -1 - rowSums(a * a * l * (x + l))
+    zl <- ifelse(gz > 0, z, zl); zr <- ifelse(gz > 0, zr, z)
+    zn <- z - gz / h2
+    z <- ifelse(zn > zl & zn < zr, zn, 0.5 * (zl + zr))
+  }
+  hm <- h(z)
+  edge <- function(side) {
+    zo <- z + side * sqrt(80); zi <- z; e <- zo
+    for (it in seq_len(60L)) {
+      he <- h(e)
+      en <- e - (he - (hm - 40)) / g(e)
+      zo <- ifelse(he < hm - 40, e, zo); zi <- ifelse(he < hm - 40, zi, e)
+      e <- ifelse((en - zi) * (en - zo) < 0, en, 0.5 * (zi + zo))
+    }
+    e
+  }
+  lo <- cbind(edge(-1), z); hi <- cbind(z, edge(1))
+  tot <- numeric(n)
+  for (p in 1:2) {
+    hh <- 0.5 * (hi[, p] - lo[, p])
+    for (i in seq_along(gl$x)) tot <- tot + gl$w[i] * hh * exp(h(lo[, p] + hh * (gl$x[i] + 1)) - hm)
+  }
+  hm + log(tot) - 0.5 * log(2 * pi)
 }

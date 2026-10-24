@@ -1378,14 +1378,21 @@ def _pcq_jax(a, c):
     hm = h(zm)
     target = hm - _PCQ_DROP
 
-    def edge(z0):
-        def step(_, z):
+    def edge(side):
+        def step(_, st):
+            z, zi, zo = st
+            hz = h(z)
             g, _ = gh(z)
-            return z - (h(z) - target) / g
-        return jax.lax.fori_loop(0, 40, step, z0)
+            zo = jnp.where(hz < target, z, zo)
+            zi = jnp.where(hz < target, zi, z)
+            zn = z - (hz - target) / g
+            zn = jnp.where((zn - zi) * (zn - zo) < 0.0, zn, 0.5 * (zi + zo))
+            return zn, zi, zo
+        zo = zm + side * np.sqrt(2.0 * _PCQ_DROP)
+        return jax.lax.fori_loop(0, 60, step, (zo, zm, zo))[0]
 
-    zl = edge(zm - np.sqrt(2.0 * _PCQ_DROP))
-    zr = edge(zm + np.sqrt(2.0 * _PCQ_DROP))
+    zl = edge(-1.0)
+    zr = edge(1.0)
     lo = jnp.stack([zl, zm], -1)
     hi = jnp.stack([zm, zr], -1)
     hh = 0.5 * (hi - lo)
@@ -1573,6 +1580,127 @@ def _lnoise_cell_lp_jvp(primals, tangents):
     ta, tln, tlf, ts = tangents
     return lp, da * ta + jnp.where(jnp.isneginf(primals[1]), 0.0, dln * tln) + \
         jnp.where(jnp.isposinf(primals[2]), 0.0, dlf * tlf) + ds * ts
+
+
+def _mafc_terms(y0, t0, m, d, sg, b):
+    """Slopes a and shifts c [N, M-1] of the product-of-CDFs integral for an m-AFC cell (DeCarlo 2012,
+    target SD sg): the slots are the positions other than the chosen one, a lure slot past the trial's m
+    alternatives is the empty term (a = 0, c = 40). Also returns the slot roles for the tangent."""
+    M = b.shape[-1]
+    j = jnp.arange(M - 1)
+    pos = jnp.where(j[None, :] < y0[:, None], j[None, :], j[None, :] + 1)
+    bj = jnp.take_along_axis(b, pos, axis=1)
+    bk = jnp.take_along_axis(b, y0[:, None], axis=1)
+    bs = jnp.take_along_axis(b, t0[:, None], axis=1)
+    correct = (y0 == t0)[:, None]
+    tslot = pos == t0[:, None]
+    valid = pos < m[:, None]
+    isg = 1.0 / sg[:, None]
+    a = jnp.where(correct, sg[:, None], jnp.where(tslot, isg, 1.0))
+    c = jnp.where(correct, d[:, None] + bs - bj, jnp.where(tslot, (bk - bs - d[:, None]) * isg, bk - bj))
+    return jnp.where(valid, a, 0.0), jnp.where(valid, c, 40.0), (pos, correct, tslot, valid, isg)
+
+
+@custom_jvp
+def fused_loglik_mafc(y0, t0, m, d, sg, b):
+    """m-AFC log-likelihood over [N] trials: choice y0 and target t0 (0-based positions), m alternatives,
+    sensitivity d, target SD sg and position biases b [N, M] (b[:, M-1] = 0 for the reference)."""
+    a, c, _ = _mafc_terms(y0, t0, m, d, sg, b)
+    return _pcq_raw(a, c)[0]
+
+
+@fused_loglik_mafc.defjvp
+def _fused_loglik_mafc_jvp(primals, tangents):
+    y0, t0, m, d, sg, b = primals
+    _, _, _, td, tsg, tb = tangents
+    a, c, (pos, correct, tslot, valid, isg) = _mafc_terms(y0, t0, m, d, sg, b)
+    lp, dc, da = _pcq_raw(a, c)
+    tbj = jnp.take_along_axis(tb, pos, axis=1)
+    tbk = jnp.take_along_axis(tb, y0[:, None], axis=1)
+    tbs = jnp.take_along_axis(tb, t0[:, None], axis=1)
+    ta = jnp.where(correct, tsg[:, None], jnp.where(tslot, -tsg[:, None] * isg * isg, 0.0))
+    tc = jnp.where(correct, td[:, None] + tbs - tbj,
+                   jnp.where(tslot, (tbk - tbs - td[:, None]) * isg - c * tsg[:, None] * isg, tbk - tbj))
+    ta = jnp.where(valid, ta, 0.0)
+    tc = jnp.where(valid, tc, 0.0)
+    return lp, jnp.sum(dc * tc + da * ta, -1)
+
+
+def _vec_re_shift(u, idx, conf, n_comp):
+    """Per-observation shifts [n_comp, N] of a component-major vector random effect (bias)."""
+    R = u.shape[0] // n_comp
+    if conf.get("type", "index") == "matrix":
+        Z = _ensure_2d(jnp.asarray(conf["Z"], dtype=_FLOAT))
+        return jnp.stack([jnp.sum(Z * u[k * R:(k + 1) * R, idx].T, axis=1) for k in range(n_comp)])
+    if conf.get("term_idx") is not None:
+        tidx = jnp.array(conf["term_idx"], dtype=jnp.int32) - 1
+        has = tidx >= 0
+        tsafe = jnp.clip(tidx, 0, R - 1)
+        return jnp.stack([jnp.where(has, u[k * R + tsafe, idx], 0.0) for k in range(n_comp)])
+    return u[:, idx]
+
+
+def _sample_vec_re(name, conf):
+    """One independent random effect of a vector parameter (bias): the same sites as a criterion
+    random effect, u [D, G] component-major."""
+    group = conf["group"]
+    G = int(conf["n_groups"])
+    D = int(conf["n_terms"])
+    sd_prior = _positive_dist(parse_prior(conf.get("prior_sd", "normal(0, 0.5)")))
+    per = conf.get("prior_sd_per_coef")
+    if isinstance(per, str):
+        per = [per]
+    has_per = per is not None and len(per) == D and len(set(per)) > 1
+    if conf.get("correlated", True) and D > 1 and conf.get("whiten") is not None and not conf.get("cor_blocks"):
+        sds = [_positive_dist(parse_prior(per[t])) for t in range(D)] if has_per else [sd_prior] * D
+        _, Lc, L = _whitened_cov(f"{name}_{group}", conf, D, sds)
+        numpyro.deterministic(f"corr_{name}_{group}", Lc @ Lc.T)
+        u = L @ numpyro.sample(f"z_{name}_{group}", dist.Normal(0, 1).expand([D, G]))
+    elif conf.get("correlated", True) and D > 1:
+        if has_per:
+            sd = jnp.stack([numpyro.sample(f"sigma_{name}_{group}[{t + 1}]", _positive_dist(parse_prior(per[t])))
+                            for t in range(D)])
+        else:
+            sd = numpyro.sample(f"sigma_{name}_{group}", sd_prior.expand([D]))
+        Lc = _re_corr_cholesky(f"{name}_{group}", conf, D)
+        numpyro.deterministic(f"corr_{name}_{group}", Lc @ Lc.T)
+        u = (jnp.diag(sd) @ Lc) @ numpyro.sample(f"z_{name}_{group}", dist.Normal(0, 1).expand([D, G]))
+    else:
+        u = jnp.zeros((D, G))
+        for t in range(D):
+            sdp = _positive_dist(parse_prior(per[t])) if has_per else sd_prior
+            sd_t = numpyro.sample(f"sigma_{name}_{group}[{t + 1}]", sdp)
+            u = u.at[t].set(sd_t * numpyro.sample(f"z_{name}_{group}[{t + 1}]", dist.Normal(0, 1).expand([G])))
+    numpyro.deterministic(f"u_{name}_{group}", u.T)
+    return u
+
+
+def _mafc_bias(config, bias_res, cross_contribs, N, M):
+    """Position biases [N, M] (the last position 0) from the bias coefficients and random effects."""
+    bconf = config.get("bias")
+    if bconf is None:
+        return jnp.zeros((N, M), dtype=_FLOAT)
+    X = jnp.asarray(bconf["X"], dtype=_FLOAT).reshape(N, -1)
+    P = X.shape[1]
+    cols = bconf.get("col_names", ["V1"])
+    cols = [cols] if isinstance(cols, str) else cols
+    pri = [bconf.get("priors", {}).get(cols[j], "normal(0, 1)") for j in range(P)]
+    beta_c = _grid_sample("beta_bias", [pri] * (M - 1), (M - 1, P)).reshape(M - 1, P)
+    centre = _centre_of(bconf) if P > 1 else None
+    if centre is not None:
+        beta = jnp.stack([_uncentre(beta_c[k], centre) for k in range(M - 1)])
+        for k in range(M - 1):
+            _centre_factor(f"beta_bias[{k + 1}]", lambda j: parse_prior(pri[j]), centre, beta[k], beta_c[k])
+        numpyro.deterministic("orig__beta_bias", beta)
+    else:
+        beta = beta_c
+    bias = (X @ beta.T).T
+    contribs = list(cross_contribs)
+    for conf in bias_res:
+        contribs.append((_sample_vec_re("bias", conf), jnp.array(conf["index"], dtype=jnp.int32) - 1, conf))
+    for u, idx, conf in contribs:
+        bias = bias + _vec_re_shift(u, idx, conf, M - 1)
+    return jnp.concatenate([bias.T, jnp.zeros((N, 1), dtype=_FLOAT)], 1)
 
 
 def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
@@ -4674,6 +4802,7 @@ def sdt_model(config):
     criterion_re_configs = [rc for rc in re_configs
                             if rc.get("param") in ("criterion", "criterion2")
                             and rc.get("cor_id") is None]
+    bias_re_configs = [rc for rc in re_configs if rc.get("param") == "bias" and rc.get("cor_id") is None]
 
     cross_cor_groups = {}
     independent_re_idxs = []
@@ -4681,7 +4810,7 @@ def sdt_model(config):
     for re_idx, re_conf in enumerate(re_configs):
         param = re_conf.get("param")
         cor_id = re_conf.get("cor_id")
-        if param in ("criterion", "criterion2") and cor_id is None:
+        if param in ("criterion", "criterion2", "bias") and cor_id is None:
             continue
         if cor_id is not None:
             cross_cor_groups.setdefault(cor_id, []).append(re_idx)
@@ -4855,6 +4984,7 @@ def sdt_model(config):
         _sample_independent_re(re_configs[re_idx], param_values)
 
     cross_cor_criterion_contributions = []
+    cross_cor_bias_contributions = []
 
     for cor_id, member_idxs in cross_cor_groups.items():
         members = [re_configs[i] for i in member_idxs]
@@ -4904,6 +5034,9 @@ def sdt_model(config):
             if param in ("criterion", "criterion2"):
                 idx_crit = jnp.array(m_conf["index"], dtype=jnp.int32) - 1
                 cross_cor_criterion_contributions.append((u_portion, idx_crit, m_conf))
+                continue
+            if param == "bias":
+                cross_cor_bias_contributions.append((u_portion, jnp.array(m_conf["index"], dtype=jnp.int32) - 1, m_conf))
                 continue
 
             re_type = m_conf.get("type", "index")
@@ -4995,546 +5128,555 @@ def sdt_model(config):
         else:
             trial_params[param_name] = eta
 
-    # ---- Build thresholds ----
-    P_crit = config.get("P_crit", 1)
-    X_crit = jnp.array(config["X_crit"], dtype=_FLOAT)
-    if X_crit.ndim == 1:
-        X_crit = X_crit[:, None]
-
-    prior_thresh_mid = config.get("prior_thresh_mid", "normal(0, 1.5)")
-    prior_log_gaps = config.get("prior_log_gaps", "normal(0, 0.5)")
-    prior_thresh_mid2 = config.get("prior_thresh_mid2", prior_thresh_mid)
-    prior_log_gaps2 = config.get("prior_log_gaps2", prior_log_gaps)
-    per_gap2_priors = config.get("prior_log_gaps2_per_gap")
-    has_per_gap2 = per_gap2_priors is not None and len(set(per_gap2_priors)) > 1
-    n_gaps = n_thresh - 1
-
-    def _mid_prior(j):
-        return _grid_get(config, "prior_thresh_mid_grid", j, None, prior_thresh_mid)
-
-    def _gap_prior(k, j):
-        fallback = per_gap_priors[k] if per_gap_priors is not None else prior_log_gaps
-        return _grid_get(config, "prior_log_gaps_grid", k, j, fallback)
-
-    per_gap_priors = config.get("prior_log_gaps_per_gap")
-    if isinstance(per_gap_priors, str):
-        per_gap_priors = [per_gap_priors]
-    if P_crit == 1:
-        beta_thresh_mid = numpyro.sample("beta_thresh_mid[1]",
-                                          parse_prior(_mid_prior(0))).reshape(1)
-    else:
-        beta_thresh_mid = jnp.zeros(P_crit)
-        for j in range(P_crit):
-            mid_j = numpyro.sample(f"beta_thresh_mid[{j+1}]",
-                                   parse_prior(_mid_prior(j)))
-            beta_thresh_mid = beta_thresh_mid.at[j].set(mid_j)
-
-    crit_centre = _centre_of({"centre": config.get("crit_centre")}) if P_crit > 1 else None
-    if crit_centre is not None:
-        mid_c, beta_thresh_mid = beta_thresh_mid, _uncentre(beta_thresh_mid, crit_centre)
-        _centre_factor("beta_thresh_mid", lambda j: parse_prior(_mid_prior(j)), crit_centre, beta_thresh_mid, mid_c)
-        for j in range(P_crit):
-            numpyro.deterministic(f"orig__beta_thresh_mid[{j+1}]", beta_thresh_mid[j])
-    thresh_mid_vec = X_crit @ beta_thresh_mid
-
-    gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
-    beta_log_gaps = jnp.zeros((n_gaps, P_crit)) if n_gaps > 0 else None
-    crit_ls = bool(config.get("crit_ls")) and n_gaps > 0
-    if crit_ls:
-        gap_pri = [_gap_prior(k, 0) for k in range(n_gaps)]
-        if P_crit == 1 and len(set(gap_pri)) == 1:
-            beta_log_gaps = numpyro.sample(gap_param_prefix,
-                                           parse_prior(gap_pri[0]).expand([n_gaps])).reshape(n_gaps, 1)
-        else:
-            for k in range(n_gaps):
-                site = f"{gap_param_prefix}[{k+1}]" if P_crit == 1 else f"{gap_param_prefix}[{k+1},1]"
-                beta_log_gaps = beta_log_gaps.at[k, 0].set(numpyro.sample(site, parse_prior(gap_pri[k])))
-        log_gaps_obs = jnp.zeros((n_gaps, N))
-    elif n_gaps > 0 and config.get("crit_scalar") and P_crit > 1:
-        for k in range(n_gaps):
-            lg_k = numpyro.sample(f"{gap_param_prefix}[{k+1},1]", parse_prior(_gap_prior(k, 0)))
-            beta_log_gaps = beta_log_gaps.at[k, 0].set(lg_k)
-        log_gaps_obs = beta_log_gaps @ X_crit.T
-    elif n_gaps > 0:
-        gap_pri = [[_gap_prior(k, j) for j in range(P_crit)] for k in range(n_gaps)]
-        uniform_gaps = len({p for row in gap_pri for p in row}) == 1
-        if P_crit == 1 and uniform_gaps:
-            beta_log_gaps = numpyro.sample(gap_param_prefix,
-                                            parse_prior(gap_pri[0][0]).expand([n_gaps])).reshape(n_gaps, 1)
-        elif P_crit == 1:
-            for k in range(n_gaps):
-                row_k = numpyro.sample(f"{gap_param_prefix}[{k+1}]",
-                                        parse_prior(gap_pri[k][0]))
-                beta_log_gaps = beta_log_gaps.at[k, 0].set(row_k)
-        else:
-            for k in range(n_gaps):
-                for j in range(P_crit):
-                    lg_kj = numpyro.sample(f"{gap_param_prefix}[{k+1},{j+1}]",
-                                           parse_prior(gap_pri[k][j]))
-                    beta_log_gaps = beta_log_gaps.at[k, j].set(lg_kj)
-            if crit_centre is not None:
-                gaps_c = beta_log_gaps
-                beta_log_gaps = jnp.stack([_uncentre(gaps_c[k], crit_centre) for k in range(n_gaps)])
-                for k in range(n_gaps):
-                    _centre_factor(f"{gap_param_prefix}[{k+1}]", lambda j, k=k: parse_prior(gap_pri[k][j]), crit_centre,
-                                   beta_log_gaps[k], gaps_c[k])
-                    for j in range(P_crit):
-                        numpyro.deterministic(f"orig__{gap_param_prefix}[{k+1},{j+1}]", beta_log_gaps[k, j])
-
-        log_gaps_obs = beta_log_gaps @ X_crit.T
-    else:
-        log_gaps_obs = jnp.zeros((0, N))
-
-    mid_idx = (n_thresh + 1) // 2 - 1
-
-    crit_re_contributions = list(cross_cor_criterion_contributions)
-
-    for crit_re in criterion_re_configs:
-        if crit_re["param"] != "criterion":
-            continue
-        crit_group = crit_re["group"]
-        n_groups_crit = int(crit_re["n_groups"])
-        n_dims = int(crit_re["n_terms"])
-        crit_correlated = crit_re.get("correlated", True)
-        crit_sd_prior = _positive_dist(parse_prior(crit_re.get("prior_sd", "normal(0, 0.5)")))
-        per_coef_sd = crit_re.get("prior_sd_per_coef")
-        has_per_coef_sd = (per_coef_sd is not None
-                          and len(per_coef_sd) == n_dims
-                          and len(set(per_coef_sd)) > 1)
-
-        if crit_correlated and n_dims > 1 and crit_re.get("whiten") is not None and not crit_re.get("cor_blocks"):
-            sd_list = ([_positive_dist(parse_prior(per_coef_sd[t])) for t in range(n_dims)] if has_per_coef_sd
-                       else [crit_sd_prior] * n_dims)
-            crit_sds, L_corr_crit, L_crit = _whitened_cov(f"criterion_{crit_group}", crit_re, n_dims, sd_list)
-            numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
-            z_crit = numpyro.sample(f"z_criterion_{crit_group}",
-                                    dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
-            u_crit = L_crit @ z_crit
-        elif crit_correlated and n_dims > 1:
-            if has_per_coef_sd:
-                crit_sds_list = []
-                for t in range(n_dims):
-                    sd_prior_t = _positive_dist(parse_prior(per_coef_sd[t]))
-                    sd_t = numpyro.sample(f"sigma_criterion_{crit_group}[{t+1}]",
-                                          sd_prior_t)
-                    crit_sds_list.append(sd_t)
-                crit_sds = jnp.stack(crit_sds_list)
-            else:
-                crit_sds = numpyro.sample(f"sigma_criterion_{crit_group}",
-                                           crit_sd_prior.expand([n_dims]))
-            L_corr_crit = _re_corr_cholesky(f"criterion_{crit_group}", crit_re, n_dims)
-            numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
-            L_crit = jnp.diag(crit_sds) @ L_corr_crit
-            z_crit = numpyro.sample(f"z_criterion_{crit_group}",
-                                    dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
-            u_crit = L_crit @ z_crit
-        else:
-            u_crit = jnp.zeros((n_dims, n_groups_crit))
-            for t in range(n_dims):
-                sd_prior_t = (_positive_dist(parse_prior(per_coef_sd[t]))
-                              if has_per_coef_sd else crit_sd_prior)
-                sd_t = numpyro.sample(f"sigma_criterion_{crit_group}[{t+1}]", sd_prior_t)
-                z_t = numpyro.sample(f"z_criterion_{crit_group}[{t+1}]",
-                                     dist.Normal(0, 1).expand([n_groups_crit]))
-                u_crit = u_crit.at[t].set(sd_t * z_t)
-
-        numpyro.deterministic(f"u_criterion_{crit_group}", u_crit.T)
-        idx_crit = jnp.array(crit_re["index"], dtype=jnp.int32) - 1
-        crit_re_contributions.append((u_crit, idx_crit, crit_re))
-
-    for u_c, idx_c, conf_c in crit_re_contributions:
-        if conf_c.get("param") != "criterion":
-            continue
-        d_mid, d_gaps = _crit_re_shift(u_c, idx_c, conf_c, n_thresh, mid_idx, n_gaps)
-        thresh_mid_vec = thresh_mid_vec + d_mid
-        if d_gaps is not None:
-            log_gaps_obs = log_gaps_obs + d_gaps
-
-    for (Zs_sm, s_mat) in _criterion_smooth_s:
-        thresh_mid_vec = thresh_mid_vec + Zs_sm @ s_mat[0]
-        if n_gaps > 0 and not crit_ls:
-            for g in range(n_gaps):
-                log_gaps_obs = log_gaps_obs.at[g].add(Zs_sm @ s_mat[1 + g])
-
-    if crit_ls:
-        thresh_mid_vec, log_gaps_obs = _location_scale_criteria(
-            thresh_mid_vec, beta_log_gaps[:, 0], param_values.get("criterion_scale", jnp.zeros(N)),
-            n_thresh, gap_link)
-
-    thresh = build_thresholds_vectorized(thresh_mid_vec, log_gaps_obs, n_thresh, gap_link=gap_link)
-
-    # ---- Compute log-likelihood ----
-    is_bivariate = family_name in ("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
-    is_cdp = family_name == "cdp"
-
-    if is_cdp:
-        rk = jnp.array(config["rk"], dtype=jnp.int32)
-        J = int(config["J"])
-        old_level_map = config["old_level_map"]
-        n_rkg = int(config.get("n_rkg", 2))
-
-        mu_R_raw = param_values.get("dprime", jnp.zeros(N))
-        mu_F_raw = param_values.get("dprime2", jnp.zeros(N))
-        sigma_R_raw = trial_params.get("sigma", jnp.ones(N))
-        sigma_F_raw = trial_params.get("sigma2", jnp.ones(N))
-
-        mu_R = jnp.where(is_old == 1, mu_R_raw, 0.0)
-        mu_F = jnp.where(is_old == 1, mu_F_raw, 0.0)
-        sigma_R = jnp.where(is_old == 1, sigma_R_raw, 1.0)
-        sigma_F = jnp.where(is_old == 1, sigma_F_raw, 1.0)
-
-        c_R = param_values.get("rec_crit", jnp.full(N, 1.5))
-        c_K = param_values.get("know_crit", jnp.zeros(N)) if n_rkg == 3 else jnp.zeros(N)
-        cdp_corr = None
-        if "rho" in trial_params or "rho_N" in trial_params:
-            rho_t = trial_params.get("rho", jnp.zeros(N))
-            rho_l = trial_params.get("rho_N", rho_t if config.get("cdp_rho_shared") else jnp.zeros(N))
-            cdp_corr = jnp.where(is_old == 1, rho_t, rho_l)
-        if knob is not None:
-            G = jnp.asarray(knob["G"])
-            bound = thresh[G, jnp.asarray(knob["band"])] - c_R[G] - c_K[G]
-            slack = numpyro.sample("know_crit_slack", dist.ImproperUniform(dist.constraints.real, (), ()))
-            t = jnp.max(bound) + jnp.exp(slack)
-            numpyro.factor("know_crit_slack_jac", slack)
-            v = jnp.asarray(knob["v"], dtype=_FLOAT)
-            beta_kc = knob_state["beta_perp"] + t * v
-            prior_strs = knob_state["prior_strs"]
-            numpyro.factor("know_crit_prior", sum(parse_prior(prior_strs[j]).log_prob(beta_kc[j])
-                                                  for j in range(knob_state["n_coef"])))
-            if knob_state["n_coef"] == 1:
-                numpyro.deterministic("beta_know_crit[1]", beta_kc[0])
-            elif len(set(prior_strs)) == 1:
-                numpyro.deterministic("beta_know_crit", beta_kc)
-            else:
-                for j in range(knob_state["n_coef"]):
-                    numpyro.deterministic(f"beta_know_crit[{j+1}]", beta_kc[j])
-            c_K = c_K + t * (knob_state["X"] @ v)
-
-        log_lik = cdp_loglik(
-                y=y, rk=rk, is_old=is_old, thresh=thresh,
-                mu_R=mu_R, sigma_R=sigma_R, mu_F=mu_F, sigma_F=sigma_F,
-                c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
-                n_rkg=n_rkg, counts=counts,
-                thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
-                gap_link=gap_link, rk_static=np.asarray(config["rk"]), y_static=np.asarray(config["y"]),
-                corr=cdp_corr,
-            )
-
-    elif family_name == "metadt":
-        ones = jnp.ones(N, dtype=_FLOAT)
-        m_old = trial_params.get("mratio", ones)
-        m_new = m_old if config.get("metad_shared") else trial_params.get("mratio_N", ones)
-        log_lik = fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
-                                     is_old, thresh_mid_vec, log_gaps_obs, gap_link,
-                                     q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")))
+    if family_name == "mafc":
+        M = int(config["K"])
+        bias_full = _mafc_bias(config, bias_re_configs, cross_cor_bias_contributions, N, M)
+        log_lik = fused_loglik_mafc(y - 1, jnp.array(config["target_pos"], dtype=jnp.int32) - 1,
+                                    jnp.array(config["m_alt"], dtype=jnp.int32), trial_params.get("dprime", jnp.zeros(N)),
+                                    trial_params.get("sigma", jnp.ones(N)), bias_full)
         if counts is not None:
             log_lik = log_lik * counts
+    else:
+        # ---- Build thresholds ----
+        P_crit = config.get("P_crit", 1)
+        X_crit = jnp.array(config["X_crit"], dtype=_FLOAT)
+        if X_crit.ndim == 1:
+            X_crit = X_crit[:, None]
 
-    elif is_bivariate:
-        y2 = jnp.array(config["y2"], dtype=jnp.int32)
-        item_type = jnp.array(config["item_type"], dtype=jnp.int32)
+        prior_thresh_mid = config.get("prior_thresh_mid", "normal(0, 1.5)")
+        prior_log_gaps = config.get("prior_log_gaps", "normal(0, 0.5)")
+        prior_thresh_mid2 = config.get("prior_thresh_mid2", prior_thresh_mid)
+        prior_log_gaps2 = config.get("prior_log_gaps2", prior_log_gaps)
+        per_gap2_priors = config.get("prior_log_gaps2_per_gap")
+        has_per_gap2 = per_gap2_priors is not None and len(set(per_gap2_priors)) > 1
+        n_gaps = n_thresh - 1
 
-        K2 = config.get("K2", K)
-        n_thresh2 = K2 - 1
-        varying_source = config.get("varying_source_criteria", False)
+        def _mid_prior(j):
+            return _grid_get(config, "prior_thresh_mid_grid", j, None, prior_thresh_mid)
 
-        # -- Sample criterion2 REs first (needed for threshold construction) --
-        crit2_re_list = [rc for rc in criterion_re_configs if rc["param"] == "criterion2"]
-        varying_re_mode = config.get("crit2_re_mode", "full")
-        crit2_ls = bool(config.get("crit2_ls")) and K2 - 2 > 0
-        s2_eta = param_values.get("criterion2_scale", jnp.zeros(N))
-        c2_terms = [(u, i, c) for (u, i, c) in crit_re_contributions
-                    if c.get("param") == "criterion2"]
+        def _gap_prior(k, j):
+            fallback = per_gap_priors[k] if per_gap_priors is not None else prior_log_gaps
+            return _grid_get(config, "prior_log_gaps_grid", k, j, fallback)
 
-        for crit2_re in crit2_re_list:
-            c2_group = crit2_re["group"]
-            c2_n_groups = int(crit2_re["n_groups"])
-            c2_n_dims = int(crit2_re["n_terms"])
-            c2_correlated = crit2_re.get("correlated", True)
-            c2_sd_prior = _positive_dist(parse_prior(crit2_re.get("prior_sd", "normal(0, 0.5)")))
-            c2_per_coef = crit2_re.get("prior_sd_per_coef")
-            if c2_per_coef is not None and len(c2_per_coef) == c2_n_dims:
-                c2_sd_priors = [_positive_dist(parse_prior(p)) for p in c2_per_coef]
-            else:
-                c2_sd_priors = [c2_sd_prior] * c2_n_dims
-
-            if c2_correlated and c2_n_dims > 1:
-                c2_sds = jnp.zeros(c2_n_dims)
-                for t in range(c2_n_dims):
-                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
-                    c2_sds = c2_sds.at[t].set(sd_t)
-                L_corr_c2 = _re_corr_cholesky(f"criterion2_{c2_group}", crit2_re, c2_n_dims)
-                numpyro.deterministic(f"corr_criterion2_{c2_group}", L_corr_c2 @ L_corr_c2.T)
-                L_c2 = jnp.diag(c2_sds) @ L_corr_c2
-                z_c2 = numpyro.sample(f"z_criterion2_{c2_group}",
-                                      dist.Normal(0, 1).expand([c2_n_dims, c2_n_groups]))
-                u_c2 = L_c2 @ z_c2
-            else:
-                u_c2 = jnp.zeros((c2_n_dims, c2_n_groups))
-                for t in range(c2_n_dims):
-                    sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
-                    z_t = numpyro.sample(f"z_criterion2_{c2_group}[{t+1}]",
-                                         dist.Normal(0, 1).expand([c2_n_groups]))
-                    u_c2 = u_c2.at[t].set(sd_t * z_t)
-
-            numpyro.deterministic(f"u_criterion2_{c2_group}",
-                                  u_c2[0] if c2_n_dims == 1 else u_c2.T)
-            c2_terms.append((u_c2, jnp.array(crit2_re["index"], dtype=jnp.int32) - 1, crit2_re))
-
-        # -- Build source dimension thresholds --
-        n_gaps2 = n_thresh2 - 1
-        mid2 = (n_thresh2 + 1) // 2 - 1
-        _t2_mid_fused = None
-        _t2_gaps_fused = None
-
-        if varying_source:
-            pv2 = config.get("prior_vary2") or {}
-            vbin = config.get("vbin")
-            n_vbin = int(config.get("n_vbin", K))
-            n_vcell = int(config.get("n_vcell", 1))
-            n_vset = n_vbin * n_vcell
-            v2_mid = pv2.get("mid", prior_thresh_mid2)
-            v2_mid = [v2_mid] * n_vset if isinstance(v2_mid, str) else list(v2_mid)
-            v2_gaps = pv2.get("gaps", [[prior_log_gaps2] * n_gaps2] * n_vset)
-            v2_gaps = [[g] if isinstance(g, str) else list(g) for g in v2_gaps]
-            beta_thresh_mid_2 = _grid_sample("beta_thresh_mid_2_varying", v2_mid, (n_vset,))
-
-            if n_gaps2 > 0:
-                gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
-                beta_log_gaps_2 = _grid_sample(gap2_name, v2_gaps, (n_vset, n_gaps2))
-            else:
-                beta_log_gaps_2 = None
-
-            y1_idx = y - 1 if vbin is None else jnp.asarray(np.asarray(vbin, dtype=np.int32).reshape(-1) - 1)[y - 1]
-            set_idx = y1_idx
-            if n_vcell > 1:
-                set_idx = y1_idx + n_vbin * (jnp.asarray(np.asarray(config["vcell"], dtype=np.int32).reshape(-1)) - 1)
-
-            thresh2_mid_per_obs = beta_thresh_mid_2[set_idx]
-            if beta_log_gaps_2 is not None:
-                log_gaps2_per_obs = beta_log_gaps_2[set_idx].T
-            else:
-                log_gaps2_per_obs = jnp.zeros((0, N))
-
-            cov2 = config.get("crit2_cov")
-            if cov2 is not None:
-                Xc2 = _ensure_2d(jnp.array(cov2["X"], dtype=_FLOAT))
-                P_c2 = Xc2.shape[1]
-                b_mid_cov = _grid_sample("beta_thresh_mid_2_cov",
-                                         pv2.get("cov_mid", [prior_thresh_mid2] * P_c2), (P_c2,))
-                thresh2_mid_per_obs = thresh2_mid_per_obs + Xc2 @ b_mid_cov
-                if n_gaps2 > 0 and not crit2_ls:
-                    gcov_name = "beta_raw_gaps_2_cov" if gap_link == "softplus" else "beta_log_gaps_2_cov"
-                    b_gaps_cov = _grid_sample(gcov_name,
-                                              pv2.get("cov_gaps", [[prior_log_gaps2] * P_c2] * n_gaps2),
-                                              (n_gaps2, P_c2))
-                    log_gaps2_per_obs = log_gaps2_per_obs + b_gaps_cov @ Xc2.T
-
-            for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
-                thresh2_mid_per_obs = thresh2_mid_per_obs + Zs_sm2 @ s_mat2[0]
-                if not crit2_ls:
-                    for g in range(n_gaps2):
-                        log_gaps2_per_obs = log_gaps2_per_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
-
-            for u_c2, idx_c2, c2_conf in c2_terms:
-                d_mid, d_gaps = _crit2_varying_shift(u_c2, idx_c2, varying_re_mode, y1_idx,
-                                                     n_thresh2, mid2, n_gaps2, c2_conf)
-                thresh2_mid_per_obs = thresh2_mid_per_obs + d_mid
-                if d_gaps is not None:
-                    log_gaps2_per_obs = log_gaps2_per_obs + d_gaps
-
-            if crit2_ls:
-                thresh2_mid_per_obs, log_gaps2_per_obs = _location_scale_criteria(
-                    thresh2_mid_per_obs, log_gaps2_per_obs, s2_eta, n_thresh2, gap_link)
-
-            thresh2 = build_thresholds_vectorized(thresh2_mid_per_obs, log_gaps2_per_obs, n_thresh2, gap_link=gap_link)
-            _t2_mid_fused = thresh2_mid_per_obs
-            _t2_gaps_fused = log_gaps2_per_obs
-
-        elif "criterion2" in params_config:
-            c2_conf = params_config["criterion2"]
-            c2_n_coef = c2_conf["n_coef"]
-            X_c2 = _ensure_2d(jnp.array(c2_conf["X"], dtype=_FLOAT))
-            c2_col_names = c2_conf.get("col_names", [f"V{i+1}" for i in range(c2_n_coef)])
-            if isinstance(c2_col_names, str):
-                c2_col_names = [c2_col_names]
-
-            beta_thresh2_mid = jnp.zeros(c2_n_coef)
-            for j in range(c2_n_coef):
-                prior_str = _grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)
-                t2m_j = numpyro.sample(f"beta_thresh_mid_2[{j+1}]",
-                                       parse_prior(prior_str))
-                beta_thresh2_mid = beta_thresh2_mid.at[j].set(t2m_j)
-
-            c2_centre = _centre_of(c2_conf)
-            if c2_centre is not None:
-                mid2_c, beta_thresh2_mid = beta_thresh2_mid, _uncentre(beta_thresh2_mid, c2_centre)
-                _centre_factor("beta_thresh_mid_2", lambda j: parse_prior(_grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)),
-                               c2_centre, beta_thresh2_mid, mid2_c)
-                for j in range(c2_n_coef):
-                    numpyro.deterministic(f"orig__beta_thresh_mid_2[{j+1}]", beta_thresh2_mid[j])
-            thresh2_mid_vec = X_c2 @ beta_thresh2_mid
-
-            if n_gaps2 > 0:
-                gap2_name_ij = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
-                g2_pri = [[_grid_get(config, "prior_log_gaps2_grid", k, j,
-                                     per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
-                           for j in range(c2_n_coef)] for k in range(n_gaps2)]
-                g2_uniform = len({p for row in g2_pri for p in row}) == 1
-                if crit2_ls:
-                    beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
-                    for k in range(n_gaps2):
-                        site = f"{gap2_name_ij}[{k+1}]" if c2_n_coef == 1 else f"{gap2_name_ij}[{k+1},1]"
-                        beta_log_gaps2 = beta_log_gaps2.at[k, 0].set(numpyro.sample(site, parse_prior(g2_pri[k][0])))
-                elif c2_n_coef == 1 and not g2_uniform:
-                    beta_log_gaps2 = jnp.stack([
-                        numpyro.sample(f"{gap2_name_ij}[{k+1}]", parse_prior(g2_pri[k][0]))
-                        for k in range(n_gaps2)]).reshape(n_gaps2, 1)
-                elif c2_n_coef == 1:
-                    beta_log_gaps2 = numpyro.sample(gap2_name_ij,
-                                                     parse_prior(g2_pri[0][0]).expand([n_gaps2])).reshape(n_gaps2, 1)
-                else:
-                    beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
-                    for k in range(n_gaps2):
-                        for j in range(c2_n_coef):
-                            lg2_kj = numpyro.sample(f"{gap2_name_ij}[{k+1},{j+1}]",
-                                                    parse_prior(g2_pri[k][j]))
-                            beta_log_gaps2 = beta_log_gaps2.at[k, j].set(lg2_kj)
-                    if c2_centre is not None:
-                        g2_c = beta_log_gaps2
-                        beta_log_gaps2 = jnp.stack([_uncentre(g2_c[k], c2_centre) for k in range(n_gaps2)])
-                        for k in range(n_gaps2):
-                            _centre_factor(f"{gap2_name_ij}[{k+1}]", lambda j, k=k: parse_prior(g2_pri[k][j]), c2_centre,
-                                           beta_log_gaps2[k], g2_c[k])
-                            for j in range(c2_n_coef):
-                                numpyro.deterministic(f"orig__{gap2_name_ij}[{k+1},{j+1}]", beta_log_gaps2[k, j])
-                log_gaps2_obs = beta_log_gaps2 @ X_c2.T
-            else:
-                log_gaps2_obs = jnp.zeros((0, N))
-
-            for u_c2, idx_c2, conf_c2 in c2_terms:
-                d_mid, d_gaps = _crit_re_shift(u_c2, idx_c2, conf_c2, n_thresh2, mid2, n_gaps2)
-                thresh2_mid_vec = thresh2_mid_vec + d_mid
-                if d_gaps is not None:
-                    log_gaps2_obs = log_gaps2_obs + d_gaps
-
-            for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
-                thresh2_mid_vec = thresh2_mid_vec + Zs_sm2 @ s_mat2[0]
-                if n_gaps2 > 0 and not crit2_ls:
-                    for g in range(n_gaps2):
-                        log_gaps2_obs = log_gaps2_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
-
-            if crit2_ls:
-                thresh2_mid_vec, log_gaps2_obs = _location_scale_criteria(
-                    thresh2_mid_vec, beta_log_gaps2[:, 0], s2_eta, n_thresh2, gap_link)
-
-            thresh2 = build_thresholds_vectorized(thresh2_mid_vec, log_gaps2_obs, n_thresh2, gap_link=gap_link)
-            _t2_mid_fused = thresh2_mid_vec
-            _t2_gaps_fused = log_gaps2_obs
-
+        per_gap_priors = config.get("prior_log_gaps_per_gap")
+        if isinstance(per_gap_priors, str):
+            per_gap_priors = [per_gap_priors]
+        if P_crit == 1:
+            beta_thresh_mid = numpyro.sample("beta_thresh_mid[1]",
+                                              parse_prior(_mid_prior(0))).reshape(1)
         else:
-            thresh2_mid = numpyro.sample("beta_thresh_mid_2[1]",
-                                         parse_prior(_grid_get(config, "prior_thresh_mid2_grid", 0, None,
-                                                               prior_thresh_mid2)))
-            if n_gaps2 > 0:
-                gap2_name_int = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
-                g2i_pri = [_grid_get(config, "prior_log_gaps2_grid", k, 0,
-                                     per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
-                           for k in range(n_gaps2)]
-                if len(set(g2i_pri)) > 1:
-                    log_gaps2 = jnp.stack([
-                        numpyro.sample(f"{gap2_name_int}[{k+1}]", parse_prior(g2i_pri[k]))
-                        for k in range(n_gaps2)])
-                else:
-                    log_gaps2 = numpyro.sample(gap2_name_int,
-                                                parse_prior(g2i_pri[0]).expand([n_gaps2]))
+            beta_thresh_mid = jnp.zeros(P_crit)
+            for j in range(P_crit):
+                mid_j = numpyro.sample(f"beta_thresh_mid[{j+1}]",
+                                       parse_prior(_mid_prior(j)))
+                beta_thresh_mid = beta_thresh_mid.at[j].set(mid_j)
+
+        crit_centre = _centre_of({"centre": config.get("crit_centre")}) if P_crit > 1 else None
+        if crit_centre is not None:
+            mid_c, beta_thresh_mid = beta_thresh_mid, _uncentre(beta_thresh_mid, crit_centre)
+            _centre_factor("beta_thresh_mid", lambda j: parse_prior(_mid_prior(j)), crit_centre, beta_thresh_mid, mid_c)
+            for j in range(P_crit):
+                numpyro.deterministic(f"orig__beta_thresh_mid[{j+1}]", beta_thresh_mid[j])
+        thresh_mid_vec = X_crit @ beta_thresh_mid
+
+        gap_param_prefix = "beta_raw_gaps" if gap_link == "softplus" else "beta_log_gaps"
+        beta_log_gaps = jnp.zeros((n_gaps, P_crit)) if n_gaps > 0 else None
+        crit_ls = bool(config.get("crit_ls")) and n_gaps > 0
+        if crit_ls:
+            gap_pri = [_gap_prior(k, 0) for k in range(n_gaps)]
+            if P_crit == 1 and len(set(gap_pri)) == 1:
+                beta_log_gaps = numpyro.sample(gap_param_prefix,
+                                               parse_prior(gap_pri[0]).expand([n_gaps])).reshape(n_gaps, 1)
             else:
-                log_gaps2 = jnp.zeros(n_gaps2)
+                for k in range(n_gaps):
+                    site = f"{gap_param_prefix}[{k+1}]" if P_crit == 1 else f"{gap_param_prefix}[{k+1},1]"
+                    beta_log_gaps = beta_log_gaps.at[k, 0].set(numpyro.sample(site, parse_prior(gap_pri[k])))
+            log_gaps_obs = jnp.zeros((n_gaps, N))
+        elif n_gaps > 0 and config.get("crit_scalar") and P_crit > 1:
+            for k in range(n_gaps):
+                lg_k = numpyro.sample(f"{gap_param_prefix}[{k+1},1]", parse_prior(_gap_prior(k, 0)))
+                beta_log_gaps = beta_log_gaps.at[k, 0].set(lg_k)
+            log_gaps_obs = beta_log_gaps @ X_crit.T
+        elif n_gaps > 0:
+            gap_pri = [[_gap_prior(k, j) for j in range(P_crit)] for k in range(n_gaps)]
+            uniform_gaps = len({p for row in gap_pri for p in row}) == 1
+            if P_crit == 1 and uniform_gaps:
+                beta_log_gaps = numpyro.sample(gap_param_prefix,
+                                                parse_prior(gap_pri[0][0]).expand([n_gaps])).reshape(n_gaps, 1)
+            elif P_crit == 1:
+                for k in range(n_gaps):
+                    row_k = numpyro.sample(f"{gap_param_prefix}[{k+1}]",
+                                            parse_prior(gap_pri[k][0]))
+                    beta_log_gaps = beta_log_gaps.at[k, 0].set(row_k)
+            else:
+                for k in range(n_gaps):
+                    for j in range(P_crit):
+                        lg_kj = numpyro.sample(f"{gap_param_prefix}[{k+1},{j+1}]",
+                                               parse_prior(gap_pri[k][j]))
+                        beta_log_gaps = beta_log_gaps.at[k, j].set(lg_kj)
+                if crit_centre is not None:
+                    gaps_c = beta_log_gaps
+                    beta_log_gaps = jnp.stack([_uncentre(gaps_c[k], crit_centre) for k in range(n_gaps)])
+                    for k in range(n_gaps):
+                        _centre_factor(f"{gap_param_prefix}[{k+1}]", lambda j, k=k: parse_prior(gap_pri[k][j]), crit_centre,
+                                       beta_log_gaps[k], gaps_c[k])
+                        for j in range(P_crit):
+                            numpyro.deterministic(f"orig__{gap_param_prefix}[{k+1},{j+1}]", beta_log_gaps[k, j])
 
-            thresh2_single = build_thresholds(thresh2_mid, log_gaps2, n_thresh2, gap_link=gap_link)
-            thresh2 = jnp.broadcast_to(thresh2_single[None, :], (N, n_thresh2))
+            log_gaps_obs = beta_log_gaps @ X_crit.T
+        else:
+            log_gaps_obs = jnp.zeros((0, N))
 
-            if c2_terms or _criterion2_smooth_s or crit2_ls:
-                thresh2_mid_vec_re = jnp.broadcast_to(thresh2_mid, (N,))
-                log_gaps2_obs_re = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
+        mid_idx = (n_thresh + 1) // 2 - 1
+
+        crit_re_contributions = list(cross_cor_criterion_contributions)
+
+        for crit_re in criterion_re_configs:
+            if crit_re["param"] != "criterion":
+                continue
+            crit_group = crit_re["group"]
+            n_groups_crit = int(crit_re["n_groups"])
+            n_dims = int(crit_re["n_terms"])
+            crit_correlated = crit_re.get("correlated", True)
+            crit_sd_prior = _positive_dist(parse_prior(crit_re.get("prior_sd", "normal(0, 0.5)")))
+            per_coef_sd = crit_re.get("prior_sd_per_coef")
+            has_per_coef_sd = (per_coef_sd is not None
+                              and len(per_coef_sd) == n_dims
+                              and len(set(per_coef_sd)) > 1)
+
+            if crit_correlated and n_dims > 1 and crit_re.get("whiten") is not None and not crit_re.get("cor_blocks"):
+                sd_list = ([_positive_dist(parse_prior(per_coef_sd[t])) for t in range(n_dims)] if has_per_coef_sd
+                           else [crit_sd_prior] * n_dims)
+                crit_sds, L_corr_crit, L_crit = _whitened_cov(f"criterion_{crit_group}", crit_re, n_dims, sd_list)
+                numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
+                z_crit = numpyro.sample(f"z_criterion_{crit_group}",
+                                        dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
+                u_crit = L_crit @ z_crit
+            elif crit_correlated and n_dims > 1:
+                if has_per_coef_sd:
+                    crit_sds_list = []
+                    for t in range(n_dims):
+                        sd_prior_t = _positive_dist(parse_prior(per_coef_sd[t]))
+                        sd_t = numpyro.sample(f"sigma_criterion_{crit_group}[{t+1}]",
+                                              sd_prior_t)
+                        crit_sds_list.append(sd_t)
+                    crit_sds = jnp.stack(crit_sds_list)
+                else:
+                    crit_sds = numpyro.sample(f"sigma_criterion_{crit_group}",
+                                               crit_sd_prior.expand([n_dims]))
+                L_corr_crit = _re_corr_cholesky(f"criterion_{crit_group}", crit_re, n_dims)
+                numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
+                L_crit = jnp.diag(crit_sds) @ L_corr_crit
+                z_crit = numpyro.sample(f"z_criterion_{crit_group}",
+                                        dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
+                u_crit = L_crit @ z_crit
+            else:
+                u_crit = jnp.zeros((n_dims, n_groups_crit))
+                for t in range(n_dims):
+                    sd_prior_t = (_positive_dist(parse_prior(per_coef_sd[t]))
+                                  if has_per_coef_sd else crit_sd_prior)
+                    sd_t = numpyro.sample(f"sigma_criterion_{crit_group}[{t+1}]", sd_prior_t)
+                    z_t = numpyro.sample(f"z_criterion_{crit_group}[{t+1}]",
+                                         dist.Normal(0, 1).expand([n_groups_crit]))
+                    u_crit = u_crit.at[t].set(sd_t * z_t)
+
+            numpyro.deterministic(f"u_criterion_{crit_group}", u_crit.T)
+            idx_crit = jnp.array(crit_re["index"], dtype=jnp.int32) - 1
+            crit_re_contributions.append((u_crit, idx_crit, crit_re))
+
+        for u_c, idx_c, conf_c in crit_re_contributions:
+            if conf_c.get("param") != "criterion":
+                continue
+            d_mid, d_gaps = _crit_re_shift(u_c, idx_c, conf_c, n_thresh, mid_idx, n_gaps)
+            thresh_mid_vec = thresh_mid_vec + d_mid
+            if d_gaps is not None:
+                log_gaps_obs = log_gaps_obs + d_gaps
+
+        for (Zs_sm, s_mat) in _criterion_smooth_s:
+            thresh_mid_vec = thresh_mid_vec + Zs_sm @ s_mat[0]
+            if n_gaps > 0 and not crit_ls:
+                for g in range(n_gaps):
+                    log_gaps_obs = log_gaps_obs.at[g].add(Zs_sm @ s_mat[1 + g])
+
+        if crit_ls:
+            thresh_mid_vec, log_gaps_obs = _location_scale_criteria(
+                thresh_mid_vec, beta_log_gaps[:, 0], param_values.get("criterion_scale", jnp.zeros(N)),
+                n_thresh, gap_link)
+
+        thresh = build_thresholds_vectorized(thresh_mid_vec, log_gaps_obs, n_thresh, gap_link=gap_link)
+
+        # ---- Compute log-likelihood ----
+        is_bivariate = family_name in ("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
+        is_cdp = family_name == "cdp"
+
+        if is_cdp:
+            rk = jnp.array(config["rk"], dtype=jnp.int32)
+            J = int(config["J"])
+            old_level_map = config["old_level_map"]
+            n_rkg = int(config.get("n_rkg", 2))
+
+            mu_R_raw = param_values.get("dprime", jnp.zeros(N))
+            mu_F_raw = param_values.get("dprime2", jnp.zeros(N))
+            sigma_R_raw = trial_params.get("sigma", jnp.ones(N))
+            sigma_F_raw = trial_params.get("sigma2", jnp.ones(N))
+
+            mu_R = jnp.where(is_old == 1, mu_R_raw, 0.0)
+            mu_F = jnp.where(is_old == 1, mu_F_raw, 0.0)
+            sigma_R = jnp.where(is_old == 1, sigma_R_raw, 1.0)
+            sigma_F = jnp.where(is_old == 1, sigma_F_raw, 1.0)
+
+            c_R = param_values.get("rec_crit", jnp.full(N, 1.5))
+            c_K = param_values.get("know_crit", jnp.zeros(N)) if n_rkg == 3 else jnp.zeros(N)
+            cdp_corr = None
+            if "rho" in trial_params or "rho_N" in trial_params:
+                rho_t = trial_params.get("rho", jnp.zeros(N))
+                rho_l = trial_params.get("rho_N", rho_t if config.get("cdp_rho_shared") else jnp.zeros(N))
+                cdp_corr = jnp.where(is_old == 1, rho_t, rho_l)
+            if knob is not None:
+                G = jnp.asarray(knob["G"])
+                bound = thresh[G, jnp.asarray(knob["band"])] - c_R[G] - c_K[G]
+                slack = numpyro.sample("know_crit_slack", dist.ImproperUniform(dist.constraints.real, (), ()))
+                t = jnp.max(bound) + jnp.exp(slack)
+                numpyro.factor("know_crit_slack_jac", slack)
+                v = jnp.asarray(knob["v"], dtype=_FLOAT)
+                beta_kc = knob_state["beta_perp"] + t * v
+                prior_strs = knob_state["prior_strs"]
+                numpyro.factor("know_crit_prior", sum(parse_prior(prior_strs[j]).log_prob(beta_kc[j])
+                                                      for j in range(knob_state["n_coef"])))
+                if knob_state["n_coef"] == 1:
+                    numpyro.deterministic("beta_know_crit[1]", beta_kc[0])
+                elif len(set(prior_strs)) == 1:
+                    numpyro.deterministic("beta_know_crit", beta_kc)
+                else:
+                    for j in range(knob_state["n_coef"]):
+                        numpyro.deterministic(f"beta_know_crit[{j+1}]", beta_kc[j])
+                c_K = c_K + t * (knob_state["X"] @ v)
+
+            log_lik = cdp_loglik(
+                    y=y, rk=rk, is_old=is_old, thresh=thresh,
+                    mu_R=mu_R, sigma_R=sigma_R, mu_F=mu_F, sigma_F=sigma_F,
+                    c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
+                    n_rkg=n_rkg, counts=counts,
+                    thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
+                    gap_link=gap_link, rk_static=np.asarray(config["rk"]), y_static=np.asarray(config["y"]),
+                    corr=cdp_corr,
+                )
+
+        elif family_name == "metadt":
+            ones = jnp.ones(N, dtype=_FLOAT)
+            m_old = trial_params.get("mratio", ones)
+            m_new = m_old if config.get("metad_shared") else trial_params.get("mratio_N", ones)
+            log_lik = fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
+                                         is_old, thresh_mid_vec, log_gaps_obs, gap_link,
+                                         q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")))
+            if counts is not None:
+                log_lik = log_lik * counts
+
+        elif is_bivariate:
+            y2 = jnp.array(config["y2"], dtype=jnp.int32)
+            item_type = jnp.array(config["item_type"], dtype=jnp.int32)
+
+            K2 = config.get("K2", K)
+            n_thresh2 = K2 - 1
+            varying_source = config.get("varying_source_criteria", False)
+
+            # -- Sample criterion2 REs first (needed for threshold construction) --
+            crit2_re_list = [rc for rc in criterion_re_configs if rc["param"] == "criterion2"]
+            varying_re_mode = config.get("crit2_re_mode", "full")
+            crit2_ls = bool(config.get("crit2_ls")) and K2 - 2 > 0
+            s2_eta = param_values.get("criterion2_scale", jnp.zeros(N))
+            c2_terms = [(u, i, c) for (u, i, c) in crit_re_contributions
+                        if c.get("param") == "criterion2"]
+
+            for crit2_re in crit2_re_list:
+                c2_group = crit2_re["group"]
+                c2_n_groups = int(crit2_re["n_groups"])
+                c2_n_dims = int(crit2_re["n_terms"])
+                c2_correlated = crit2_re.get("correlated", True)
+                c2_sd_prior = _positive_dist(parse_prior(crit2_re.get("prior_sd", "normal(0, 0.5)")))
+                c2_per_coef = crit2_re.get("prior_sd_per_coef")
+                if c2_per_coef is not None and len(c2_per_coef) == c2_n_dims:
+                    c2_sd_priors = [_positive_dist(parse_prior(p)) for p in c2_per_coef]
+                else:
+                    c2_sd_priors = [c2_sd_prior] * c2_n_dims
+
+                if c2_correlated and c2_n_dims > 1:
+                    c2_sds = jnp.zeros(c2_n_dims)
+                    for t in range(c2_n_dims):
+                        sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
+                        c2_sds = c2_sds.at[t].set(sd_t)
+                    L_corr_c2 = _re_corr_cholesky(f"criterion2_{c2_group}", crit2_re, c2_n_dims)
+                    numpyro.deterministic(f"corr_criterion2_{c2_group}", L_corr_c2 @ L_corr_c2.T)
+                    L_c2 = jnp.diag(c2_sds) @ L_corr_c2
+                    z_c2 = numpyro.sample(f"z_criterion2_{c2_group}",
+                                          dist.Normal(0, 1).expand([c2_n_dims, c2_n_groups]))
+                    u_c2 = L_c2 @ z_c2
+                else:
+                    u_c2 = jnp.zeros((c2_n_dims, c2_n_groups))
+                    for t in range(c2_n_dims):
+                        sd_t = numpyro.sample(f"sigma_criterion2_{c2_group}[{t+1}]", c2_sd_priors[t])
+                        z_t = numpyro.sample(f"z_criterion2_{c2_group}[{t+1}]",
+                                             dist.Normal(0, 1).expand([c2_n_groups]))
+                        u_c2 = u_c2.at[t].set(sd_t * z_t)
+
+                numpyro.deterministic(f"u_criterion2_{c2_group}",
+                                      u_c2[0] if c2_n_dims == 1 else u_c2.T)
+                c2_terms.append((u_c2, jnp.array(crit2_re["index"], dtype=jnp.int32) - 1, crit2_re))
+
+            # -- Build source dimension thresholds --
+            n_gaps2 = n_thresh2 - 1
+            mid2 = (n_thresh2 + 1) // 2 - 1
+            _t2_mid_fused = None
+            _t2_gaps_fused = None
+
+            if varying_source:
+                pv2 = config.get("prior_vary2") or {}
+                vbin = config.get("vbin")
+                n_vbin = int(config.get("n_vbin", K))
+                n_vcell = int(config.get("n_vcell", 1))
+                n_vset = n_vbin * n_vcell
+                v2_mid = pv2.get("mid", prior_thresh_mid2)
+                v2_mid = [v2_mid] * n_vset if isinstance(v2_mid, str) else list(v2_mid)
+                v2_gaps = pv2.get("gaps", [[prior_log_gaps2] * n_gaps2] * n_vset)
+                v2_gaps = [[g] if isinstance(g, str) else list(g) for g in v2_gaps]
+                beta_thresh_mid_2 = _grid_sample("beta_thresh_mid_2_varying", v2_mid, (n_vset,))
+
+                if n_gaps2 > 0:
+                    gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
+                    beta_log_gaps_2 = _grid_sample(gap2_name, v2_gaps, (n_vset, n_gaps2))
+                else:
+                    beta_log_gaps_2 = None
+
+                y1_idx = y - 1 if vbin is None else jnp.asarray(np.asarray(vbin, dtype=np.int32).reshape(-1) - 1)[y - 1]
+                set_idx = y1_idx
+                if n_vcell > 1:
+                    set_idx = y1_idx + n_vbin * (jnp.asarray(np.asarray(config["vcell"], dtype=np.int32).reshape(-1)) - 1)
+
+                thresh2_mid_per_obs = beta_thresh_mid_2[set_idx]
+                if beta_log_gaps_2 is not None:
+                    log_gaps2_per_obs = beta_log_gaps_2[set_idx].T
+                else:
+                    log_gaps2_per_obs = jnp.zeros((0, N))
+
+                cov2 = config.get("crit2_cov")
+                if cov2 is not None:
+                    Xc2 = _ensure_2d(jnp.array(cov2["X"], dtype=_FLOAT))
+                    P_c2 = Xc2.shape[1]
+                    b_mid_cov = _grid_sample("beta_thresh_mid_2_cov",
+                                             pv2.get("cov_mid", [prior_thresh_mid2] * P_c2), (P_c2,))
+                    thresh2_mid_per_obs = thresh2_mid_per_obs + Xc2 @ b_mid_cov
+                    if n_gaps2 > 0 and not crit2_ls:
+                        gcov_name = "beta_raw_gaps_2_cov" if gap_link == "softplus" else "beta_log_gaps_2_cov"
+                        b_gaps_cov = _grid_sample(gcov_name,
+                                                  pv2.get("cov_gaps", [[prior_log_gaps2] * P_c2] * n_gaps2),
+                                                  (n_gaps2, P_c2))
+                        log_gaps2_per_obs = log_gaps2_per_obs + b_gaps_cov @ Xc2.T
+
+                for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
+                    thresh2_mid_per_obs = thresh2_mid_per_obs + Zs_sm2 @ s_mat2[0]
+                    if not crit2_ls:
+                        for g in range(n_gaps2):
+                            log_gaps2_per_obs = log_gaps2_per_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+
+                for u_c2, idx_c2, c2_conf in c2_terms:
+                    d_mid, d_gaps = _crit2_varying_shift(u_c2, idx_c2, varying_re_mode, y1_idx,
+                                                         n_thresh2, mid2, n_gaps2, c2_conf)
+                    thresh2_mid_per_obs = thresh2_mid_per_obs + d_mid
+                    if d_gaps is not None:
+                        log_gaps2_per_obs = log_gaps2_per_obs + d_gaps
+
+                if crit2_ls:
+                    thresh2_mid_per_obs, log_gaps2_per_obs = _location_scale_criteria(
+                        thresh2_mid_per_obs, log_gaps2_per_obs, s2_eta, n_thresh2, gap_link)
+
+                thresh2 = build_thresholds_vectorized(thresh2_mid_per_obs, log_gaps2_per_obs, n_thresh2, gap_link=gap_link)
+                _t2_mid_fused = thresh2_mid_per_obs
+                _t2_gaps_fused = log_gaps2_per_obs
+
+            elif "criterion2" in params_config:
+                c2_conf = params_config["criterion2"]
+                c2_n_coef = c2_conf["n_coef"]
+                X_c2 = _ensure_2d(jnp.array(c2_conf["X"], dtype=_FLOAT))
+                c2_col_names = c2_conf.get("col_names", [f"V{i+1}" for i in range(c2_n_coef)])
+                if isinstance(c2_col_names, str):
+                    c2_col_names = [c2_col_names]
+
+                beta_thresh2_mid = jnp.zeros(c2_n_coef)
+                for j in range(c2_n_coef):
+                    prior_str = _grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)
+                    t2m_j = numpyro.sample(f"beta_thresh_mid_2[{j+1}]",
+                                           parse_prior(prior_str))
+                    beta_thresh2_mid = beta_thresh2_mid.at[j].set(t2m_j)
+
+                c2_centre = _centre_of(c2_conf)
+                if c2_centre is not None:
+                    mid2_c, beta_thresh2_mid = beta_thresh2_mid, _uncentre(beta_thresh2_mid, c2_centre)
+                    _centre_factor("beta_thresh_mid_2", lambda j: parse_prior(_grid_get(config, "prior_thresh_mid2_grid", j, None, prior_thresh_mid2)),
+                                   c2_centre, beta_thresh2_mid, mid2_c)
+                    for j in range(c2_n_coef):
+                        numpyro.deterministic(f"orig__beta_thresh_mid_2[{j+1}]", beta_thresh2_mid[j])
+                thresh2_mid_vec = X_c2 @ beta_thresh2_mid
+
+                if n_gaps2 > 0:
+                    gap2_name_ij = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
+                    g2_pri = [[_grid_get(config, "prior_log_gaps2_grid", k, j,
+                                         per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
+                               for j in range(c2_n_coef)] for k in range(n_gaps2)]
+                    g2_uniform = len({p for row in g2_pri for p in row}) == 1
+                    if crit2_ls:
+                        beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
+                        for k in range(n_gaps2):
+                            site = f"{gap2_name_ij}[{k+1}]" if c2_n_coef == 1 else f"{gap2_name_ij}[{k+1},1]"
+                            beta_log_gaps2 = beta_log_gaps2.at[k, 0].set(numpyro.sample(site, parse_prior(g2_pri[k][0])))
+                    elif c2_n_coef == 1 and not g2_uniform:
+                        beta_log_gaps2 = jnp.stack([
+                            numpyro.sample(f"{gap2_name_ij}[{k+1}]", parse_prior(g2_pri[k][0]))
+                            for k in range(n_gaps2)]).reshape(n_gaps2, 1)
+                    elif c2_n_coef == 1:
+                        beta_log_gaps2 = numpyro.sample(gap2_name_ij,
+                                                         parse_prior(g2_pri[0][0]).expand([n_gaps2])).reshape(n_gaps2, 1)
+                    else:
+                        beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
+                        for k in range(n_gaps2):
+                            for j in range(c2_n_coef):
+                                lg2_kj = numpyro.sample(f"{gap2_name_ij}[{k+1},{j+1}]",
+                                                        parse_prior(g2_pri[k][j]))
+                                beta_log_gaps2 = beta_log_gaps2.at[k, j].set(lg2_kj)
+                        if c2_centre is not None:
+                            g2_c = beta_log_gaps2
+                            beta_log_gaps2 = jnp.stack([_uncentre(g2_c[k], c2_centre) for k in range(n_gaps2)])
+                            for k in range(n_gaps2):
+                                _centre_factor(f"{gap2_name_ij}[{k+1}]", lambda j, k=k: parse_prior(g2_pri[k][j]), c2_centre,
+                                               beta_log_gaps2[k], g2_c[k])
+                                for j in range(c2_n_coef):
+                                    numpyro.deterministic(f"orig__{gap2_name_ij}[{k+1},{j+1}]", beta_log_gaps2[k, j])
+                    log_gaps2_obs = beta_log_gaps2 @ X_c2.T
+                else:
+                    log_gaps2_obs = jnp.zeros((0, N))
+
                 for u_c2, idx_c2, conf_c2 in c2_terms:
                     d_mid, d_gaps = _crit_re_shift(u_c2, idx_c2, conf_c2, n_thresh2, mid2, n_gaps2)
-                    thresh2_mid_vec_re = thresh2_mid_vec_re + d_mid
+                    thresh2_mid_vec = thresh2_mid_vec + d_mid
                     if d_gaps is not None:
-                        log_gaps2_obs_re = log_gaps2_obs_re + d_gaps
+                        log_gaps2_obs = log_gaps2_obs + d_gaps
+
                 for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
-                    thresh2_mid_vec_re = thresh2_mid_vec_re + Zs_sm2 @ s_mat2[0]
+                    thresh2_mid_vec = thresh2_mid_vec + Zs_sm2 @ s_mat2[0]
                     if n_gaps2 > 0 and not crit2_ls:
                         for g in range(n_gaps2):
-                            log_gaps2_obs_re = log_gaps2_obs_re.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+                            log_gaps2_obs = log_gaps2_obs.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+
                 if crit2_ls:
-                    thresh2_mid_vec_re, log_gaps2_obs_re = _location_scale_criteria(
-                        thresh2_mid_vec_re, log_gaps2, s2_eta, n_thresh2, gap_link)
-                thresh2 = build_thresholds_vectorized(thresh2_mid_vec_re, log_gaps2_obs_re, n_thresh2, gap_link=gap_link)
-                _t2_mid_fused = thresh2_mid_vec_re
-                _t2_gaps_fused = log_gaps2_obs_re
+                    thresh2_mid_vec, log_gaps2_obs = _location_scale_criteria(
+                        thresh2_mid_vec, beta_log_gaps2[:, 0], s2_eta, n_thresh2, gap_link)
+
+                thresh2 = build_thresholds_vectorized(thresh2_mid_vec, log_gaps2_obs, n_thresh2, gap_link=gap_link)
+                _t2_mid_fused = thresh2_mid_vec
+                _t2_gaps_fused = log_gaps2_obs
+
             else:
-                _t2_mid_fused = jnp.broadcast_to(thresh2_mid, (N,))
-                _t2_gaps_fused = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
+                thresh2_mid = numpyro.sample("beta_thresh_mid_2[1]",
+                                             parse_prior(_grid_get(config, "prior_thresh_mid2_grid", 0, None,
+                                                                   prior_thresh_mid2)))
+                if n_gaps2 > 0:
+                    gap2_name_int = "beta_raw_gaps_2" if gap_link == "softplus" else "beta_log_gaps_2"
+                    g2i_pri = [_grid_get(config, "prior_log_gaps2_grid", k, 0,
+                                         per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
+                               for k in range(n_gaps2)]
+                    if len(set(g2i_pri)) > 1:
+                        log_gaps2 = jnp.stack([
+                            numpyro.sample(f"{gap2_name_int}[{k+1}]", parse_prior(g2i_pri[k]))
+                            for k in range(n_gaps2)])
+                    else:
+                        log_gaps2 = numpyro.sample(gap2_name_int,
+                                                    parse_prior(g2i_pri[0]).expand([n_gaps2]))
+                else:
+                    log_gaps2 = jnp.zeros(n_gaps2)
 
-        log_lik = bivariate_loglik(
-            y, y2,
-            dprime=trial_params.get("dprime", jnp.zeros(N)),
-            dprime_B=trial_params.get("dprime_B"),
-            thresh1=thresh, thresh2=thresh2,
-            item_type=item_type,
-            link_name=link_name,
-            family_name=family_name,
-            sigma=trial_params.get("sigma"),
-            sigma2=trial_params.get("sigma2"),
-            sigma_B=trial_params.get("sigma_B"),
-            sigma2_B=trial_params.get("sigma2_B"),
-            rho=trial_params.get("rho"),
-            rho_B=trial_params.get("rho_B"),
-            rho_N=trial_params.get("rho_N"),
-            discrim=trial_params.get("discrim"),
-            discrim_B=trial_params.get("discrim_B"),
-            lambda_val=trial_params.get("lambda"),
-            lambda2=trial_params.get("lambda2"),
-            lambda_B=trial_params.get("lambda_B"),
-            lambda2_B=trial_params.get("lambda2_B"),
-            counts=counts,
-            dprime2=trial_params.get("dprime2"),
-            bounded=config.get("bounded", False),
-            thresh1_mid=thresh_mid_vec,
-            log_gaps1=log_gaps_obs,
-            thresh2_mid=_t2_mid_fused,
-            log_gaps2=_t2_gaps_fused,
-            gap_link=gap_link,
-        )
-    else:
-        source = jnp.array(config["source"], dtype=jnp.int32) if config.get("source") is not None else None
+                thresh2_single = build_thresholds(thresh2_mid, log_gaps2, n_thresh2, gap_link=gap_link)
+                thresh2 = jnp.broadcast_to(thresh2_single[None, :], (N, n_thresh2))
 
-        log_lik = univariate_loglik(
-            y=y,
-            dprime=trial_params.get("dprime", jnp.zeros(N)),
-            thresh=thresh,
-            is_old=is_old,
-            link_name=link_name,
-            family_name=family_name,
-            sigma=trial_params.get("sigma"),
-            lambda_val=trial_params.get("lambda"),
-            dprime2=trial_params.get("dprime2"),
-            sigma2=trial_params.get("sigma2"),
-            lambda_B=trial_params.get("lambda_B"),
-            dprime_B=trial_params.get("dprime_B"),
-            dprime_L=trial_params.get("dprime_L"),
-            sigma_L=trial_params.get("sigma_L"),
-            lambda_L=trial_params.get("lambda_L"),
-            counts=counts,
-            source=source,
-            thresh_mid=thresh_mid_vec,
-            log_gaps=log_gaps_obs,
-            gap_link=gap_link,
-            is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
-            sigma_meta=trial_params.get("sigma_meta"),
-            meta_noise=config.get("meta_noise"),
-        )
+                if c2_terms or _criterion2_smooth_s or crit2_ls:
+                    thresh2_mid_vec_re = jnp.broadcast_to(thresh2_mid, (N,))
+                    log_gaps2_obs_re = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
+                    for u_c2, idx_c2, conf_c2 in c2_terms:
+                        d_mid, d_gaps = _crit_re_shift(u_c2, idx_c2, conf_c2, n_thresh2, mid2, n_gaps2)
+                        thresh2_mid_vec_re = thresh2_mid_vec_re + d_mid
+                        if d_gaps is not None:
+                            log_gaps2_obs_re = log_gaps2_obs_re + d_gaps
+                    for (Zs_sm2, s_mat2) in _criterion2_smooth_s:
+                        thresh2_mid_vec_re = thresh2_mid_vec_re + Zs_sm2 @ s_mat2[0]
+                        if n_gaps2 > 0 and not crit2_ls:
+                            for g in range(n_gaps2):
+                                log_gaps2_obs_re = log_gaps2_obs_re.at[g].add(Zs_sm2 @ s_mat2[1 + g])
+                    if crit2_ls:
+                        thresh2_mid_vec_re, log_gaps2_obs_re = _location_scale_criteria(
+                            thresh2_mid_vec_re, log_gaps2, s2_eta, n_thresh2, gap_link)
+                    thresh2 = build_thresholds_vectorized(thresh2_mid_vec_re, log_gaps2_obs_re, n_thresh2, gap_link=gap_link)
+                    _t2_mid_fused = thresh2_mid_vec_re
+                    _t2_gaps_fused = log_gaps2_obs_re
+                else:
+                    _t2_mid_fused = jnp.broadcast_to(thresh2_mid, (N,))
+                    _t2_gaps_fused = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
+
+            log_lik = bivariate_loglik(
+                y, y2,
+                dprime=trial_params.get("dprime", jnp.zeros(N)),
+                dprime_B=trial_params.get("dprime_B"),
+                thresh1=thresh, thresh2=thresh2,
+                item_type=item_type,
+                link_name=link_name,
+                family_name=family_name,
+                sigma=trial_params.get("sigma"),
+                sigma2=trial_params.get("sigma2"),
+                sigma_B=trial_params.get("sigma_B"),
+                sigma2_B=trial_params.get("sigma2_B"),
+                rho=trial_params.get("rho"),
+                rho_B=trial_params.get("rho_B"),
+                rho_N=trial_params.get("rho_N"),
+                discrim=trial_params.get("discrim"),
+                discrim_B=trial_params.get("discrim_B"),
+                lambda_val=trial_params.get("lambda"),
+                lambda2=trial_params.get("lambda2"),
+                lambda_B=trial_params.get("lambda_B"),
+                lambda2_B=trial_params.get("lambda2_B"),
+                counts=counts,
+                dprime2=trial_params.get("dprime2"),
+                bounded=config.get("bounded", False),
+                thresh1_mid=thresh_mid_vec,
+                log_gaps1=log_gaps_obs,
+                thresh2_mid=_t2_mid_fused,
+                log_gaps2=_t2_gaps_fused,
+                gap_link=gap_link,
+            )
+        else:
+            source = jnp.array(config["source"], dtype=jnp.int32) if config.get("source") is not None else None
+
+            log_lik = univariate_loglik(
+                y=y,
+                dprime=trial_params.get("dprime", jnp.zeros(N)),
+                thresh=thresh,
+                is_old=is_old,
+                link_name=link_name,
+                family_name=family_name,
+                sigma=trial_params.get("sigma"),
+                lambda_val=trial_params.get("lambda"),
+                dprime2=trial_params.get("dprime2"),
+                sigma2=trial_params.get("sigma2"),
+                lambda_B=trial_params.get("lambda_B"),
+                dprime_B=trial_params.get("dprime_B"),
+                dprime_L=trial_params.get("dprime_L"),
+                sigma_L=trial_params.get("sigma_L"),
+                lambda_L=trial_params.get("lambda_L"),
+                counts=counts,
+                source=source,
+                thresh_mid=thresh_mid_vec,
+                log_gaps=log_gaps_obs,
+                gap_link=gap_link,
+                is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
+                sigma_meta=trial_params.get("sigma_meta"),
+                meta_noise=config.get("meta_noise"),
+            )
 
     if counts is not None:
         log_lik_unweighted = log_lik / counts

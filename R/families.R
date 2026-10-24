@@ -1307,6 +1307,87 @@ metad <- function(metac = c("absolute", "relative")) {
   )
 }
 
+#' m-Alternative Forced Choice Model
+#'
+#' Signal detection model for m-alternative forced choice with position bias
+#' (DeCarlo, 2012) and, optionally, an unequal-variance target (Kellen &
+#' Klauer, 2011). Each of the m positions yields evidence X_i; the target's is
+#' N(d', sigma^2), every lure's N(0, 1); the observer chooses the position with
+#' the largest X_i + b_i.
+#'
+#' @param alternatives `NULL` (default): every trial has m alternatives, m the
+#'   largest position in the data. Or the name of a column holding each trial's
+#'   number of alternatives, for designs that mix m.
+#'
+#' @details
+#' ## Likelihood
+#' With the target at position s, choice k and position biases b (the last
+#' position the reference, b_M = 0), a correct choice has probability
+#' \deqn{P(k = s) = \int \phi(z) \prod_{j \ne s} \Phi(\sigma z + d' + b_s - b_j) dz}
+#' and an error
+#' \deqn{P(k) = \int \phi(z) \Phi((z - d' + b_k - b_s) / \sigma) \prod_{j \ne k, s} \Phi(z + b_k - b_j) dz.}
+#' The data are the full target-by-choice table, fitted with its categorical
+#' likelihood. DeCarlo's own estimates use a product of binary likelihoods (a
+#' composite likelihood), so they differ slightly from these. Cells are
+#' computed by quadrature; m = 2 is closed form.
+#'
+#' ## Parameters
+#' \describe{
+#'   \item{dprime}{(required) Sensitivity. Identity link.}
+#'   \item{sigma}{(optional) SD of the target's evidence. Log link. If omitted,
+#'     1 (equal variance).}
+#'   \item{bias}{(optional) Position biases b_1, ..., b_(M-1), one formula for
+#'     all: each position gets its own coefficients and random effects,
+#'     correlated within a grouping factor unless
+#'     `gr(g, cor_thresholds = FALSE)`. Identity link. If omitted, 0.}
+#' }
+#'
+#' ## Formula syntax
+#' ```
+#' broc(brf(choice | target ~ cond + (1 | subj),
+#'          bias ~ 1 + (1 | subj),
+#'          family = mafc()),
+#'     data = dat)
+#' ```
+#' `choice` and `target` are positions 1, ..., m.
+#'
+#' @references
+#' DeCarlo, L. T. (2012). On a signal detection approach to m-alternative
+#'   forced choice with bias, with maximum likelihood and Bayesian approaches to
+#'   estimation. *Journal of Mathematical Psychology*, *56*(3), 196-207.
+#'
+#' Kellen, D., & Klauer, K. C. (2011). Evaluating models of recognition memory
+#'   using first- and second-choice responses. *Journal of Mathematical
+#'   Psychology*, *55*(3), 251-266.
+#'
+#' @return A `broc_family` object.
+#' @seealso [evsd()], the yes/no model with the same d'.
+#' @export
+mafc <- function(alternatives = NULL) {
+  if (!is.null(alternatives) && !(is.character(alternatives) && length(alternatives) == 1L)) {
+    stop("alternatives must be NULL or the name of a column of each trial's number of alternatives.", call. = FALSE)
+  }
+  structure(
+    list(
+      family = "mafc",
+      link = link_probit(),
+      alternatives = alternatives,
+      params = list(
+        dprime = list(required = TRUE, default = NULL, link = "identity",
+                      description = "Sensitivity d'"),
+        sigma = list(required = FALSE, default = NULL, link = "log",
+                     null_value = 0, null_description = "fixed at 1",
+                     description = "SD of the target's evidence"),
+        bias = list(required = FALSE, default = NULL, link = "identity",
+                    null_description = "no position bias",
+                    description = "Position biases, the last position the reference")
+      ),
+      description = "m-Alternative Forced Choice Model (DeCarlo 2012)"
+    ),
+    class = "broc_family"
+  )
+}
+
 #' Two-Dimensional Variable Recollection Dual Process Model
 #'
 #' Two-dimensional variable-recollection dual-process model for conjoint

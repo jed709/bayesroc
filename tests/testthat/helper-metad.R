@@ -76,3 +76,22 @@
     else stats::integrate(f, -Inf, tau[h], rel.tol = 1e-12)$value
   }, numeric(1))
 }
+
+.sim_mafc <- function(n_sub = 12, n_trial = 60, m = 3, d = 1.6, sigma = 1, bias = c(0.3, -0.2),
+                      sd_sub = c(d = 0.3, s = 0.2, b = 0.25), seed = 1) {
+  set.seed(seed)
+  dat <- expand.grid(trial = seq_len(n_trial), sub = factor(seq_len(n_sub)))
+  dat$cond <- factor(ifelse(dat$trial %% 2 == 0, "a", "b"))
+  n <- nrow(dat)
+  is <- as.integer(dat$sub)
+  dd <- d + stats::rnorm(n_sub, 0, sd_sub[["d"]])[is]
+  ss <- sigma * exp(stats::rnorm(n_sub, 0, sd_sub[["s"]]))[is]
+  b <- c(bias, 0)
+  bu <- matrix(stats::rnorm(n_sub * (m - 1), 0, sd_sub[["b"]]), n_sub, m - 1)
+  B <- sweep(cbind(bu, 0)[is, , drop = FALSE], 2, b, "+")
+  dat$target <- sample.int(m, n, TRUE)
+  X <- matrix(stats::rnorm(n * m), n, m)
+  X[cbind(seq_len(n), dat$target)] <- dd + ss * stats::rnorm(n)
+  dat$choice <- max.col(X + B, ties.method = "first")
+  dat
+}

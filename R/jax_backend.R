@@ -223,6 +223,17 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$stan_data$n_rkg)) config$n_rkg <- md$stan_data$n_rkg
   if (isTRUE(md$cdp_rho_shared)) config$cdp_rho_shared <- TRUE
   if (isTRUE(md$has_sigma_meta)) config$meta_noise <- md$meta_noise
+  if (identical(family_name, "mafc")) {
+    config$target_pos <- as.integer(md$stan_data$target_pos)
+    config$m_alt <- as.integer(md$stan_data$m_alt)
+    if (!is.null(md$bias)) {
+      b <- md$bias
+      bcols <- b$coef_names %||% paste0("V", seq_len(b$n_coef))
+      config$bias <- list(X = as.matrix(b$X), n_coef = b$n_coef, col_names = bcols,
+                          priors = stats::setNames(lapply(bcols, function(cn) get_fixed_prior(md$prior_lookup, "bias", cn)), bcols),
+                          centre = .centre_info(b$X, bcols))
+    }
+  }
   if (identical(family_name, "metadt")) {
     config$is_old_mid <- md$stan_data$is_old_mid
     config$metad_relative <- identical(md$metac, "relative")
@@ -377,11 +388,11 @@ build_numpyro_config <- function(model) {
                  "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                  "criterion2", "lambda2", "lambda2_B", "rec_crit", "know_crit",
                  "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale",
-                 "mratio", "mratio_N", "sigma_meta")
+                 "mratio", "mratio_N", "sigma_meta", "bias")
 
   for (param in re_params) {
     re_key <- paste0(param, "_random")
-    re_list <- md[[re_key]]
+    re_list <- if (param == "bias") md$bias$random else md[[re_key]]
     if (is.null(re_list) && param == "criterion" && !is.null(md$criterion$random)) {
       re_list <- md$criterion$random
     }

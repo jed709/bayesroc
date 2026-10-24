@@ -11,6 +11,7 @@
 #include "bayesroc/bvn_simd.h"
 #include "bayesroc/pcq.h"
 #include "bayesroc/lnoise.h"
+#include "bayesroc/mafc.h"
 
 static inline bvn::v4d vphi_p(bvn::v4d x);
 #include "bayesroc/tmap_kernel.h"
@@ -809,6 +810,23 @@ extern "C" void bayesroc_r_lnoise_cell(const double* a, const double* ln, const 
   if (N <= 0) return;
   r_threads(N, *threads, 256, [=](int64_t i0, int64_t i1) {
     for (int64_t i = i0; i < i1; ++i) lp[i] = lnoise::cell(a[i], ln[i], lf[i], s[i]).lp;
+  });
+}
+
+// Plain C entry for R's .C(): m-AFC choice probabilities. d, sg, target (1-based), m [n]; b [n, M]
+// column-major; out [n, M] column-major, P(choice k | target) for k < m and 0 beyond.
+extern "C" void bayesroc_r_mafc_probs(const double* d, const double* sg, const double* b, const int* m,
+                                      const int* target, const int* M, const int* n, const int* threads, double* out) {
+  const int64_t N = *n;
+  const int MM = *M;
+  if (N <= 0) return;
+  r_threads(N, *threads, 64, [=](int64_t i0, int64_t i1) {
+    double bb[mafc::kMaxAlt], db[mafc::kMaxAlt], dd, ds;
+    for (int64_t i = i0; i < i1; ++i) {
+      for (int k = 0; k < MM; ++k) bb[k] = b[i + N * k];
+      for (int k = 0; k < MM; ++k)
+        out[i + N * k] = k < m[i] ? std::exp(mafc::cell(m[i], target[i] - 1, k, d[i], sg[i], bb, dd, ds, db)) : 0.0;
+    }
   });
 }
 

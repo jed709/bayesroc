@@ -591,7 +591,7 @@ numpyro_samples_to_draws_array <- function(samples, n_chains, n_draws) {
       sibs <- nm[startsWith(nm, prefix) & grepl("^[0-9]+\\]$", substring(nm, nchar(prefix) + 1L))]
       sibs <- sibs[order(as.integer(sub("\\]$", "", substring(sibs, nchar(prefix) + 1L))))]
       done <- c(done, sibs)
-      vector_stan <- length(sibs) > 1 || startsWith(base, "criterion_")
+      vector_stan <- length(sibs) > 1 || startsWith(base, "criterion_") || startsWith(base, "bias_")
       if (kind == "sigma") {
         if (vector_stan) {
           for (s in sibs) out[[s]] <- samples[[s]]

@@ -108,6 +108,9 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     
     if (is_source_mixture) {
       lines <- c(lines, "  array[N] int<lower=0, upper=1> source;  // 0 = A, 1 = B")
+    } else if (family_name == "mafc") {
+      lines <- c(lines, "  array[N] int<lower=1, upper=K> target_pos;  // target position",
+                 "  array[N] int<lower=2, upper=K> m_alt;  // alternatives on the trial")
     } else if (!is_cumulative) {
       lines <- c(lines, "  array[N] real is_old;")
     }
@@ -126,11 +129,15 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     )
   }
   
+  if (family_name == "mafc") {
+    lines <- c(lines, .bias_stan(model_data, "data"))
+  } else {
   lines <- c(lines, "",
              "  // Criterion fixed effects design matrix", 
              "  int<lower=1> P_criterion;",
              "  matrix[N, P_criterion] X_criterion;"
   )
+  }
   
   if (model_data$has_sigma) {
     lines <- c(lines, "", "  int<lower=1> P_sigma;", "  matrix[N, P_sigma] X_sigma;")
@@ -307,6 +314,8 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
     }
   }
   
+  lines <- c(lines, .bias_stan(model_data, "transformed_data"))
+
   for (cor_id in names(model_data$cross_cor)) {
     cc <- model_data$cross_cor[[cor_id]]
     lines <- c(lines, sprintf("  int D_cross_%s_%s = %d;", cor_id, cc$group, cc$total_dim))
@@ -390,6 +399,8 @@ generate_parameters_block_v2 <- function(model_data, family) {
     lines <- c(lines,
                "  vector[P_criterion] beta_thresh_mid;  // Mid-anchor tau threshold",
                sprintf("  matrix[J-1, %s] beta_log_gaps;  // Log-gaps for tau", gap_cols))
+  } else if (family_name == "mafc") {
+    lines <- c(lines, .bias_stan(model_data, "parameters"))
   } else {
     lines <- c(lines, "  vector[P_criterion] beta_thresh_mid;")
     if (model_data$K > 2) {
@@ -555,6 +566,8 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
     }
   }
   
+  lines <- c(lines, .bias_stan(model_data, "transformed_parameters"))
+
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (is.null(re$cor_id)) {
@@ -744,9 +757,13 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     }
   }
   
+  if (family_name == "mafc") {
+    lines <- c(lines, .bias_stan(model_data, "model", pl))
+  } else {
   tg <- .thresh_prior_grid(pl, "thresh_mid", "log_gaps", model_data$criterion$coef_names, model_data$K - 2L)
   if (isTRUE(model_data$has_criterion_scale)) tg$gaps <- tg$gaps[, 1, drop = FALSE]
   lines <- c(lines, .stan_prior_vec("beta_thresh_mid", tg$mid), .stan_prior_mat("beta_log_gaps", tg$gaps))
+  }
   if (.ls_scale_coefs(model_data) > 0) {
     lines <- c(lines, generate_fixed_priors("criterion_scale", model_data$criterion_scale_fixed$coef_names,
                                             "beta_criterion_scale"))
@@ -1423,7 +1440,7 @@ generate_generated_quantities_block_v2 <- function(model_data, family, batch_inf
 }
 
 get_all_groups <- function(model_data) {
-  groups <- c(names(model_data$dprime_random), names(model_data$criterion$random))
+  groups <- c(names(model_data$dprime_random), names(model_data$criterion$random), names(model_data$bias$random))
   if (model_data$has_sigma) groups <- c(groups, names(model_data$sigma_random))
   if (model_data$has_lambda) groups <- c(groups, names(model_data$lambda_random))
   if (model_data$has_dprime2) groups <- c(groups, names(model_data$dprime2_random))
@@ -1465,6 +1482,14 @@ get_all_term_indices <- function(model_data) {
     }
   }
   
+  for (group in names(model_data$bias$random)) {
+    re <- model_data$bias$random[[group]]
+    if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
+      idx_name <- paste0("idx_bias_", group)
+      indices[[idx_name]] <- list(idx_name = idx_name, dim_name = paste0("D_idx_bias_", group), dim = re$n_cond_levels)
+    }
+  }
+
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (!is.null(re$term_idx) && !isTRUE(re$use_z_matrix)) {
@@ -1508,6 +1533,14 @@ get_all_z_matrices <- function(model_data) {
     }
   }
   
+  for (group in names(model_data$bias$random)) {
+    re <- model_data$bias$random[[group]]
+    if (isTRUE(re$use_z_matrix)) {
+      z_name <- paste0("Z_bias_", group)
+      z_matrices[[z_name]] <- list(name = z_name, dim = re$n_re_terms, param = "bias", group = group)
+    }
+  }
+
   for (group in names(model_data$criterion$random)) {
     re <- model_data$criterion$random[[group]]
     if (isTRUE(re$use_z_matrix)) {
@@ -1661,4 +1694,72 @@ generate_smooth_priors <- function(model_data) {
 print.stan_code <- function(x, ...) {
   cat(x)
   invisible(x)
+}
+
+# ============================================================================
+# m-AFC position biases: Stan declarations, assembly and priors
+# ============================================================================
+
+#' Stan lines for the bias parameter in one program block
+#' @noRd
+.bias_stan <- function(model_data, block, pl = NULL) {
+  b <- model_data$bias
+  if (is.null(b)) return(character(0))
+  out <- character(0)
+  res <- b$random %||% list()
+  if (block == "data") {
+    return(c("", "  // position-bias fixed effects design matrix", "  int<lower=1> P_bias;", "  matrix[N, P_bias] X_bias;"))
+  }
+  if (block == "transformed_data") {
+    for (group in names(res)) {
+      if (is.null(res[[group]]$cor_id)) out <- c(out, sprintf("  int D_bias_%s = %d;", group, res[[group]]$dim))
+    }
+    return(out)
+  }
+  if (block == "parameters") {
+    out <- "  matrix[K - 1, P_bias] beta_bias;  // position biases (last position the reference)"
+    for (group in names(res)) {
+      re <- res[[group]]
+      if (!is.null(re$cor_id)) next
+      out <- c(out, sprintf("  matrix[N_%s, D_bias_%s] u_bias_%s_raw;", group, group, group),
+               sprintf("  vector<lower=0>[D_bias_%s] sigma_bias_%s;", group, group),
+               .re_corr_decl(paste0("bias_", group), re))
+    }
+    return(out)
+  }
+  if (block == "transformed_parameters") {
+    for (group in names(res)) {
+      re <- res[[group]]
+      if (!is.null(re$cor_id)) next
+      if (isTRUE(re$correlated)) {
+        out <- c(out, .re_corr_assemble(paste0("bias_", group), re), sprintf(
+          "  matrix[N_%s, D_bias_%s] u_bias_%s = u_bias_%s_raw * diag_pre_multiply(sigma_bias_%s, L_corr_bias_%s)';",
+          group, group, group, group, group, group))
+      } else {
+        out <- c(out, sprintf("  matrix[N_%s, D_bias_%s] u_bias_%s;", group, group, group),
+                 sprintf("  for (d in 1:D_bias_%s) u_bias_%s[, d] = u_bias_%s_raw[, d] * sigma_bias_%s[d];",
+                         group, group, group, group))
+      }
+    }
+    return(out)
+  }
+  if (block == "model") {
+    for (p in seq_along(b$coef_names)) {
+      out <- c(out, sprintf("  beta_bias[, %d] ~ %s;", p, get_fixed_prior(pl, "bias", b$coef_names[p])))
+    }
+    for (group in names(res)) {
+      re <- res[[group]]
+      if (!is.null(re$cor_id)) next
+      sdp <- .re_sd_priors(pl, "bias", group, re)
+      if (length(unique(sdp)) == 1) {
+        out <- c(out, sprintf("  sigma_bias_%s ~ %s;", group, sdp[1]))
+      } else {
+        out <- c(out, sprintf("  sigma_bias_%s[%d] ~ %s;", group, seq_along(sdp), sdp))
+      }
+      out <- c(out, sprintf("  to_vector(u_bias_%s_raw) ~ std_normal();", group),
+               .re_corr_prior(paste0("bias_", group), re, get_cor_prior(pl, "bias", group)))
+    }
+    return(out)
+  }
+  out
 }

@@ -346,6 +346,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   mratio     <- params[["mratio"]]
   mratio_N   <- params[["mratio_N"]]
   sigma_meta <- params[["sigma_meta"]]
+  bias       <- params[["bias"]]
   criterion2 <- params[["criterion2"]]
   rec_crit   <- params[["rec_crit"]]
   know_crit  <- params[["know_crit"]]
@@ -432,7 +433,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     return(res)
   }
 
-  if (is.null(criterion)) {
+  if (is.null(criterion) && family$family != "mafc") {
     message("Note: criterion formula not specified. Using criterion ~ 1.")
     criterion <- ~ 1
   }
@@ -479,6 +480,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   mratio_is_fixed <- is.null(mratio) || identical_to_null_formula(mratio)
   mratio_N_is_fixed <- is.null(mratio_N) || identical_to_null_formula(mratio_N)
   sigma_meta_is_fixed <- is.null(sigma_meta) || identical_to_null_formula(sigma_meta)
+  bias_is_fixed <- is.null(bias) || identical_to_null_formula(bias)
   criterion2_is_fixed <- is.null(criterion2) || identical_to_null_formula(criterion2)
 
   if (sigma_is_fixed) sigma <- NULL
@@ -497,6 +499,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (mratio_is_fixed) mratio <- NULL
   if (mratio_N_is_fixed) mratio_N <- NULL
   if (sigma_meta_is_fixed) sigma_meta <- NULL
+  if (bias_is_fixed) bias <- NULL
   if (criterion2_is_fixed) criterion2 <- NULL
 
   if (is.null(rho)) cdp_rho_shared <- FALSE
@@ -516,6 +519,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     rho_N      = rho_N,
     mratio     = mratio,     mratio_N   = mratio_N,
     sigma_meta = sigma_meta,
+    bias       = bias,
     criterion_scale = criterion_scale,
     criterion2_scale = criterion2_scale
   )
@@ -708,6 +712,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     mratio = mratio,
     mratio_N = mratio_N,
     sigma_meta = sigma_meta,
+    bias = bias,
     data = data,
     family_name = family$family
   )
@@ -824,7 +829,14 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   
   N <- nrow(data)
   resp_col <- parsed$response$response
-  rc <- .code_response(data[[resp_col]], resp_col)
+  is_mafc <- family$family == "mafc"
+  mafc_coded <- NULL
+  if (is_mafc) {
+    mafc_coded <- .code_mafc(data, resp_col, parsed$response$is_old, family$alternatives)
+    rc <- list(y = mafc_coded$choice, K = mafc_coded$M, labels = as.character(seq_len(mafc_coded$M)), offset = 0)
+  } else {
+    rc <- .code_response(data[[resp_col]], resp_col)
+  }
   data[[resp_col]] <- rc$y
   K <- rc$K
   response_labels <- rc$labels
@@ -877,7 +889,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   }
   
   is_vrdp2d <- family$family == "vrdp2d"
-  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp")
+  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp", "mafc")
   has_lambda <- !is.null(parsed[["lambda"]]) && family$family %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
   has_dprime2 <- !is.null(parsed[["dprime2"]]) && family$family %in% c("mixture", "cdp", "vrdp2d")
   has_sigma2 <- !is.null(parsed[["sigma2"]]) && family$family %in% c("mixture", "bivariate_sdt", "bivariate_dp", "cdp", "vrdp2d")
@@ -936,7 +948,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
          "decision criterion and the confidence ratings sit on each side of it. The response has ", K,
          " categories.", call. = FALSE)
   }
-  if (K == 2 && family$family != "evsdt") {
+  if (K == 2 && !family$family %in% c("evsdt", "mafc")) {
     stop("Binary responses (K=2) are only supported for the evsd() family. ",
          "Models with sigma, lambda, or other parameters require K >= 3 for identifiability.")
   }
@@ -1055,6 +1067,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   } else if (is_source_mixture) {
     stan_data$source <- as.integer(data[[source_var]])
     stan_data$is_old <- NULL
+  } else if (is_mafc) {
+    stan_data$target_pos <- mafc_coded$target
+    stan_data$m_alt <- mafc_coded$m
+    stan_data$M <- mafc_coded$M
+    stan_data$is_old <- NULL
   } else {
     is_old_vals <- .code_is_old(data[[is_old_var]], is_old_var, allow_centered = TRUE)
     unique_vals <- sort(unique(is_old_vals))
@@ -1147,6 +1164,24 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   
   smooth_data <- list()
 
+  bias <- NULL
+  if (is_mafc) {
+    if (!is.null(parsed$criterion) || has_criterion_scale) {
+      stop("mafc() has no criterion: position preferences go in `bias ~ ...`.", call. = FALSE)
+    }
+    if (!is.null(parsed$bias)) {
+      if (length(parsed$bias$smooth %||% list()) > 0L) {
+        stop("Smooth terms are not available for bias.", call. = FALSE)
+      }
+      bias <- build_criterion_structure(build_formula_from_parsed(parsed$bias$fixed), parsed$bias$random, data, K - 1L,
+                                        conditional_terms = extract_conditional_from_parsed(parsed$bias),
+                                        parsed_fixed = parsed$bias$fixed)
+      stan_data$P_bias <- bias$n_coef
+      stan_data$X_bias <- bias$X
+    }
+    parsed$criterion <- parse_broc_parameter_formula(~ 1)
+  }
+
   n_thresh <- if (is_cdp) family$J else K - 1
   if (has_criterion_scale && n_thresh < 2L) {
     stop("A criterion_scale formula needs at least two criteria (three response categories): ",
@@ -1172,6 +1207,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
 
   stan_data$P_criterion <- criterion$n_coef
   stan_data$X_criterion <- criterion$X
+  if (is_mafc) {
+    criterion <- NULL
+    parsed$criterion <- NULL
+    stan_data$P_criterion <- NULL
+    stan_data$X_criterion <- NULL
+  }
   
   sigma_fixed <- NULL
   sigma_random <- NULL
@@ -1652,7 +1693,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     if (has_criterion2_scale) names(criterion2_scale_random) else NULL,
     if (has_mratio) names(mratio_random) else NULL,
     if (has_mratio_N) names(mratio_N_random) else NULL,
-    if (has_sigma_meta) names(sigma_meta_random) else NULL
+    if (has_sigma_meta) names(sigma_meta_random) else NULL,
+    names(bias$random)
   ))
 
   for (group in all_groups) {
@@ -1668,7 +1710,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                     dprime_L_random, sigma_L_random, lambda_L_random,
                                     lambda2_random, lambda2_B_random, criterion_scale_random,
                                     criterion2_scale_random, mratio_random, mratio_N_random,
-                                    sigma_meta_random)
+                                    sigma_meta_random, bias$random)
     if (!is.null(re_info)) {
       stan_data[[paste0("N_", group)]] <- re_info$n_groups
       stan_data[[group]] <- re_info$group_idx
@@ -1701,6 +1743,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   if (has_mratio) stan_data <- add_term_indices(stan_data, "mratio", mratio_random)
   if (has_mratio_N) stan_data <- add_term_indices(stan_data, "mratio_N", mratio_N_random)
   if (has_sigma_meta) stan_data <- add_term_indices(stan_data, "sigma_meta", sigma_meta_random)
+  if (!is.null(bias)) stan_data <- add_term_indices(stan_data, "bias", bias$random)
 
   for (group in names(criterion$random)) {
     re <- criterion$random[[group]]
@@ -1801,7 +1844,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                        rec_crit_random, know_crit_random,
                                        lambda2_random, lambda2_B_random,
                                        criterion_scale_random, criterion2_scale_random,
-                                       mratio_random, mratio_N_random, sigma_meta_random)
+                                       mratio_random, mratio_N_random, sigma_meta_random, bias$random)
 
   has_dprime_fixed <- dprime_fixed$n_coef > 0
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
@@ -1910,6 +1953,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     sigma_meta_random = sigma_meta_random,
     metac = if (is_metad) family$metac else NULL,
     meta_noise = meta_noise,
+    bias = bias,
+    has_bias = !is.null(bias),
     centered_coding = if (exists("centered_coding")) centered_coding else FALSE,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
@@ -1937,7 +1982,7 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
                                  dprime_L_re = NULL, sigma_L_re = NULL, lambda_L_re = NULL,
                                  lambda2_re = NULL, lambda2_B_re = NULL,
                                  criterion_scale_re = NULL, criterion2_scale_re = NULL,
-                                 mratio_re = NULL, mratio_N_re = NULL, sigma_meta_re = NULL) {
+                                 mratio_re = NULL, mratio_N_re = NULL, sigma_meta_re = NULL, bias_re = NULL) {
   if (!is.null(dprime_re) && group %in% names(dprime_re)) return(dprime_re[[group]])
   if (!is.null(criterion_re) && group %in% names(criterion_re)) return(criterion_re[[group]])
   if (!is.null(sigma_re) && group %in% names(sigma_re)) return(sigma_re[[group]])
@@ -1966,6 +2011,7 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
   if (!is.null(mratio_re) && group %in% names(mratio_re)) return(mratio_re[[group]])
   if (!is.null(mratio_N_re) && group %in% names(mratio_N_re)) return(mratio_N_re[[group]])
   if (!is.null(sigma_meta_re) && group %in% names(sigma_meta_re)) return(sigma_meta_re[[group]])
+  if (!is.null(bias_re) && group %in% names(bias_re)) return(bias_re[[group]])
   NULL
 }
 
@@ -2112,7 +2158,7 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
                                     criterion_scale_random = NULL,
                                     criterion2_scale_random = NULL,
                                     mratio_random = NULL, mratio_N_random = NULL,
-                                    sigma_meta_random = NULL) {
+                                    sigma_meta_random = NULL, bias_random = NULL) {
   if (length(parsed$cross_cor_ids) == 0) return(list())
   
   cross_cor <- list()
@@ -2149,7 +2195,8 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
       criterion2_scale = criterion2_scale_random,
       mratio = mratio_random,
       mratio_N = mratio_N_random,
-      sigma_meta = sigma_meta_random
+      sigma_meta = sigma_meta_random,
+      bias = bias_random
     )
     
     for (param_name in names(param_re_pairs)) {
@@ -3395,7 +3442,7 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
     }
     hdr <- c(sprintf('#include "%s"', core_hpp), "", model$batch_cpp$cpp_code)
     deps <- c(core_hpp, file.path(dirname(core_hpp), "..", "include", "bayesroc",
-                                  c("bvn_tail.h", "bvn_simd.h", "lnoise.h")))
+                                  c("bvn_tail.h", "bvn_simd.h", "lnoise.h", "pcq.h", "mafc.h")))
     deps <- deps[file.exists(deps)]
   }
   key <- digest_string(c(model$stan_code, hdr, unname(tools::md5sum(deps)), isTRUE(threads),

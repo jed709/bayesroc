@@ -75,6 +75,19 @@ test_that("evsd with lognormal meta-noise: smoke", {
   expect_true("sigma_meta" %in% est$parameter)
 })
 
+test_that("mafc: smoke", {
+  skip_if_no_cmdstan()
+  d <- .sim_mafc()
+  m <- suppressMessages(broc(brf(choice | target ~ 1 + (1 | sub), sigma ~ 1, bias ~ 1 + (1 | sub), family = mafc()), d))
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
+                  parallel_chains = .fast_chains,
+                  iter_warmup = .fast_iter, iter_sampling = .fast_iter)
+  .assert_post_fit_works(fit, has_roc = FALSE)
+  expect_error(plot_roc(fit), "not defined for mafc")
+  est <- estimates(fit)
+  expect_true(all(c("dprime", "sigma", "bias") %in% sub("\\[.*", "", est$parameter)))
+})
+
 test_that("uvsd: smoke", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)
