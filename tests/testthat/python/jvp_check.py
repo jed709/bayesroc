@@ -144,7 +144,21 @@ def gnoise_case(K=6, sm=(0.3, 1.6), mid=(0.6, 0.3), N=300, seed=6):
     return f, args, [1, 2, 3, 4]
 
 
+def pcq_case(n, slopes=False, N=200, seed=8):
+    rng = np.random.default_rng(seed)
+    a = _u(rng, 0.6, 1.6, (N, n)) if slopes else jnp.ones((N, n))
+    d = rng.uniform(0, 6, N)
+    b = rng.normal(0, 1, (N, n + 1))
+    c = np.where((rng.uniform(size=N) < .5)[:, None], d[:, None] + b[:, :1] - b[:, 1:],
+                 b[:, 1:2] - b[:, 1:] - np.eye(1, n)[0] * (d[:, None] + b[:, :1] - b[:, 1:2]))
+    return nb.pcq_logint, [a, jnp.asarray(c)], [0, 1]
+
+
 CASES = {
+    "pcq_m2": lambda: pcq_case(1),
+    "pcq_m4": lambda: pcq_case(3),
+    "pcq_m8_slopes": lambda: pcq_case(7, slopes=True),
+    "pcq_m21": lambda: pcq_case(20),
     "gnoise": lambda: gnoise_case(),
     "gnoise_k4_small_noise": lambda: gnoise_case(K=4, sm=(0.05, 0.3)),
     "gnoise_k8_tail": lambda: gnoise_case(K=8, mid=(3.0, 0.5)),

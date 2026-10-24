@@ -685,13 +685,14 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
+                         ("pcq", "Pcq"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
-                         ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
+                         ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
@@ -1339,6 +1340,76 @@ def _metad_cell(z_a, z_lo, z_hi, z_c, old):
     if _native_ok(z_a):
         return _native_call("metad_cell", 5, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype)])
     return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
+
+
+_PCQ_RULES = {k: np.polynomial.hermite_e.hermegauss(k) for k in (32, 48, 64, 96)}
+
+
+def _pcq_nodes(n):
+    return 32 if n <= 3 else 48 if n <= 7 else 64 if n <= 20 else 96
+
+
+def _pcq_jax(a, c):
+    """(log int phi(z) prod_j Phi(a_j z + c_j) dz, d/dc, d/da) over the trailing axis: adaptive
+    Gauss-Hermite centred at the mode of the (concave) log integrand, nodes tiered on the number
+    of terms; the pure-JAX reference of the native kernel."""
+    n = a.shape[-1]
+    Xn, Wn = _PCQ_RULES[_pcq_nodes(n)]
+    X = jnp.asarray(Xn, dtype=a.dtype)
+    LW = jnp.asarray(np.log(Wn) + 0.5 * Xn ** 2, dtype=a.dtype)
+
+    def lam(x):
+        return jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - _log_q(-x))
+
+    def h(z):
+        return -0.5 * z * z + jnp.sum(_log_q(-(a * z[..., None] + c)), -1)
+
+    def newton(_, z):
+        x = a * z[..., None] + c
+        lx = lam(x)
+        g = -z + jnp.sum(a * lx, -1)
+        h2 = -1.0 - jnp.sum(a * a * lx * (x + lx), -1)
+        return z - g / h2
+
+    z = jax.lax.fori_loop(0, 40, newton, jnp.zeros(a.shape[:-1], a.dtype))
+    x = a * z[..., None] + c
+    lx = lam(x)
+    s = 1.0 / jnp.sqrt(1.0 + jnp.sum(a * a * lx * (x + lx), -1))
+    zi = z[..., None] + s[..., None] * X
+    hz = h(z)
+    g = jax.vmap(h, in_axes=-1, out_axes=-1)(zi) - hz[..., None] + LW
+    gm = jnp.max(g, -1, keepdims=True)
+    e = jnp.exp(g - gm)
+    sm = jnp.sum(e, -1)
+    w = e / sm[..., None]
+    li = lam(a[..., None, :] * zi[..., :, None] + c[..., None, :])
+    dc = jnp.sum(w[..., None] * li, -2)
+    da = jnp.sum(w[..., None] * li * zi[..., None], -2)
+    return hz + jnp.log(s) + gm[..., 0] + jnp.log(sm) - _LOG_SQRT_2PI, dc, da
+
+
+def _pcq_raw(a, c):
+    if _native_ok(a):
+        dt = a.dtype
+        target = "bayesroc_pcq" if dt == jnp.float64 else "bayesroc_pcq_f32"
+        return tuple(jax.ffi.ffi_call(target, (jax.ShapeDtypeStruct(a.shape[:-1], dt), jax.ShapeDtypeStruct(a.shape, dt),
+                                               jax.ShapeDtypeStruct(a.shape, dt)), vmap_method="broadcast_all")(
+            jnp.asarray(a, dt), jnp.asarray(c, dt)))
+    return _pcq_jax(a, c)
+
+
+@custom_jvp
+def pcq_logint(a, c):
+    """log int phi(z) prod_j Phi(a_j z + c_j) dz over the trailing axis of [N, n] slopes a and shifts c."""
+    return _pcq_raw(a, c)[0]
+
+
+@pcq_logint.defjvp
+def _pcq_logint_jvp(primals, tangents):
+    a, c = primals
+    ta, tc = tangents
+    lp, dc, da = _pcq_raw(a, c)
+    return lp, jnp.sum(dc * tc + da * ta, -1)
 
 
 def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative):

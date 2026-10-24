@@ -9,6 +9,7 @@
 
 #include "xla/ffi/api/ffi.h"
 #include "bayesroc/bvn_simd.h"
+#include "bayesroc/pcq.h"
 
 static inline bvn::v4d vphi_p(bvn::v4d x);
 #include "bayesroc/tmap_kernel.h"
@@ -508,9 +509,28 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitCell, ProbitCellImpl,
 
 
 
+// a, c [N, n] -> lp [N] = log int phi(z) prod_j Phi(a_j z + c_j) dz, dc, da [N, n]
+template <typename T>
+ffi::Error PcqImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer c, ffi::Result<ffi::AnyBuffer> lp,
+                   ffi::Result<ffi::AnyBuffer> dc, ffi::Result<ffi::AnyBuffer> da) {
+  const int64_t N = a.dimensions()[0];
+  const int n = a.dimensions().size() > 1 ? static_cast<int>(a.dimensions()[1]) : 1;
+  if (n > pcq::kMaxTerms) return ffi::Error::InvalidArgument("bayesroc: pcq term count");
+  DBuf<T> pa(a), pc(c);
+  DOut<T> ol(lp), oc(dc), oa(da);
+  const double *A = pa.ptr, *C = pc.ptr;
+  double *L = ol.ptr, *DC = oc.ptr, *DA = oa.ptr;
+  pool_for(pool, N, 256, [=](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; ++i) L[i] = pcq::log_int(n, A + i * n, C + i * n, DC + i * n, DA + i * n);
+  });
+  return ffi::Error::Success();
+}
+
 #define BAYESROC_TMAP(NAME, IMPL, NARG, NRET)                                         XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, IMPL, ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() NARG NRET)
 #define A_ .Arg<ffi::AnyBuffer>()
 #define R_ .Ret<ffi::AnyBuffer>()
+BAYESROC_TMAP(BayesrocPcq, PcqImpl<double>, A_ A_, R_ R_ R_);
+BAYESROC_TMAP(BayesrocPcqF32, PcqImpl<float>, A_ A_, R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwd, TmapFwdImpl<double>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapFwdF32, TmapFwdImpl<float>, A_ A_ A_ A_ A_, R_ R_ R_ R_);
 BAYESROC_TMAP(BayesrocTmapBwd, TmapBwdImpl<double>, A_ A_ A_ A_ A_ A_ A_ A_ A_ A_, R_ R_ R_);
