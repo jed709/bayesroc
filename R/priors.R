@@ -109,6 +109,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "rho_target", "rho_lure",
+                     "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
                      "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
                      "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
@@ -131,6 +132,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "sigma_F") dpar <- "sigma2"
     if (dpar == "rho_target") dpar <- "rho"
     if (dpar == "rho_lure") dpar <- "rho_N"
+    if (dpar == "mratio_old") dpar <- "mratio"
+    if (dpar == "mratio_new") dpar <- "mratio_N"
   }
   
   prior <- .normalize_prior(prior, class)
@@ -405,6 +408,9 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.5)",
       rho_B = "normal(0, 0.5)",
       rho_N = "normal(0, 0.5)",
+      mratio = "normal(0, 0.5)",
+      mratio_N = "normal(0, 0.5)",
+      sigma_meta = "normal(0, 1)",
       rec_crit = "normal(2, 1)",
       know_crit = "normal(0, 1)",
       dprime_L = "normal(0, 1)",
@@ -437,6 +443,9 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       rho = "normal(0, 0.5)",
       rho_B = "normal(0, 0.5)",
       rho_N = "normal(0, 0.5)",
+      mratio = "normal(0, 0.5)",
+      mratio_N = "normal(0, 0.5)",
+      sigma_meta = "normal(0, 0.5)",
       rec_crit = "normal(0, 1)",
       know_crit = "normal(0, 1)",
       dprime_L = "normal(0, 1)",
@@ -640,7 +649,8 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
                      sigma_B = "sigma_B", sigma2_B = "sigma2_B", rho = "rho", rho_B = "rho_B", rho_N = "rho_N",
                      rec_crit = "rec_crit", know_crit = "know_crit", dprime_L = "dprime_L", sigma_L = "sigma_L",
                      lambda_L = "lambda_L", thresh_mid = "criterion", thresh_mid2 = "criterion2",
-                     criterion_scale = "criterion_scale", criterion2_scale = "criterion2_scale")
+                     criterion_scale = "criterion_scale", criterion2_scale = "criterion2_scale",
+                     mratio = "mratio", mratio_N = "mratio_N", sigma_meta = "sigma_meta")
 
 .noise_sd_dpars <- c("sigma", "sigma2", "sigma_B", "sigma2_B", "sigma_L")
 .latent_log_dpars <- c("dprime", "dprime_B", "discrim", "discrim_B", "log_gaps", "log_gaps2")
@@ -1046,6 +1056,12 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     add_fixed_priors("rho_B", "rho_B", model$model_data$rho_B_fixed$coef_names)
   if (isTRUE(model$model_data$has_rho_N))
     add_fixed_priors("rho_N", "rho_N", model$model_data$rho_N_fixed$coef_names)
+  if (isTRUE(model$model_data$has_mratio))
+    add_fixed_priors("mratio", "mratio", model$model_data$mratio_fixed$coef_names)
+  if (isTRUE(model$model_data$has_mratio_N))
+    add_fixed_priors("mratio_N", "mratio_N", model$model_data$mratio_N_fixed$coef_names)
+  if (isTRUE(model$model_data$has_sigma_meta))
+    add_fixed_priors("sigma_meta", "sigma_meta", model$model_data$sigma_meta_fixed$coef_names)
   if (isTRUE(model$model_data$has_rec_crit))
     add_fixed_priors("rec_crit", "rec_crit", model$model_data$rec_crit_fixed$coef_names)
   if (isTRUE(model$model_data$has_know_crit))
@@ -1176,6 +1192,10 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     result$dpar <- gsub("^sigma2$", "sigma_F", result$dpar)
     if (!is.null(model$family$external_aliases[["rho"]])) result$dpar <- gsub("^rho$", "rho_target", result$dpar)
     result$dpar <- gsub("^rho_N$", "rho_lure", result$dpar)
+  }
+  if (model$family$family == "metadt") {
+    if (!is.null(model$family$external_aliases[["mratio"]])) result$dpar <- gsub("^mratio$", "mratio_old", result$dpar)
+    result$dpar <- gsub("^mratio_N$", "mratio_new", result$dpar)
   }
   
   result
@@ -1374,7 +1394,7 @@ print.broc_prior_table <- function(x, ...) {
   c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
     "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
     "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale",
-    "criterion2_scale")
+    "criterion2_scale", "mratio", "mratio_N", "sigma_meta")
 }
 
 .re_list_of <- function(model_data, p) {

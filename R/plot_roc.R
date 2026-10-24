@@ -327,6 +327,13 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
       for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
       next
     }
+    if (fam == "metadt" || (fam == "evsdt" && isTRUE(model$model_data$has_sigma_meta))) {
+      th <- setup$th[, idx, , drop = FALSE]
+      surv <- (if (fam == "metadt") .metad_survival else .gnoise_survival)(tps, th, crit(th),
+                                                                          setup$data_src$is_old[idx], model$model_data)
+      for (j in seq_len(U)) acc[, j] <- acc[, j] + matrix(surv[, , j], S, r) %*% w[idx]
+      next
+    }
     ds <- list(N = r,
                is_old = setup$data_src$is_old[idx], source = setup$data_src$source[idx],
                item_type = setup$data_src$item_type[idx])
@@ -404,6 +411,7 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
 
 .univariate_margin_parts <- function(fam, link, tps, is_old, source, S, r, model) {
   if (!fam %in% c("evsdt", "uvsdt", "dpsdt", "cumulative", "cdp", "mixture", "source_mixture") || is.na(.native_link_code(link))) return(NULL)
+  if (isTRUE(model$model_data$has_sigma_meta)) return(NULL)
   one <- rep(1, S * r)
   md <- model$model_data
   vec <- function(nm, alt) if (!is.null(tps[[nm]])) as.vector(tps[[nm]]) else alt
@@ -440,6 +448,55 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   if (fam == "uvsdt" || (fam == "dpsdt" && isTRUE(md$has_sigma))) sig <- ifelse(old, as.vector(tps[["sigma"]]), 1)
   lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps[["lambda"]]), 0) else NULL
   list(mu = mu, sig = sig, lam = lam, mu_rec = NULL, kind = if (fam == "dpsdt") 1L else 0L)
+}
+
+# P(rating above t | S) along criterion values t: above the type-1 criterion c it is the "old" decision's
+# probability times the meta-level survival from t, truncated at the meta criterion; below c it is one minus the
+# "new" decision's share below t
+.metad_survival <- function(tps, th, c_path, is_old, md) {
+  S <- dim(th)[1]; r <- dim(th)[2]
+  one <- matrix(1, S, r)
+  d <- tps[["dprime"]]
+  m_old <- tps[["mratio"]] %||% one
+  m_new <- if (isTRUE(md$metad_mratio_shared)) m_old else tps[["mratio_N"]] %||% one
+  a <- matrix(is_old, S, r, byrow = TRUE)
+  q <- md$stan_data$is_old_mid
+  rel <- identical(md$metac, "relative")
+  cc <- matrix(th[, , (dim(th)[3] + 1L) %/% 2L], S, r)
+  mid <- q * d
+  side <- function(M) {
+    mu_m <- mid + M * d * (a - q)
+    list(mu_m = mu_m, s = if (rel) (M - 1) * (cc - mid) else 0)
+  }
+  o <- side(m_old); nw <- side(m_new)
+  p_old <- stats::pnorm(cc - a * d, lower.tail = FALSE)
+  out <- array(0, dim(c_path))
+  for (j in seq_len(dim(c_path)[3])) {
+    t <- matrix(c_path[, , j], S, r)
+    up <- p_old * stats::pnorm(t + o$s - o$mu_m, lower.tail = FALSE) / stats::pnorm(cc + o$s - o$mu_m, lower.tail = FALSE)
+    dn <- 1 - (1 - p_old) * stats::pnorm(t + nw$s - nw$mu_m) / stats::pnorm(cc + nw$s - nw$mu_m)
+    out[, , j] <- ifelse(t >= cc, up, dn)
+  }
+  out
+}
+
+# P(rating above t | S) under Gaussian meta-noise: P(x > c0, y > t) above the decision criterion c0, and
+# 1 - P(x < c0, y < t) below it
+.gnoise_survival <- function(tps, th, c_path, is_old, md) {
+  S <- dim(th)[1]; r <- dim(th)[2]
+  mu <- as.vector(tps[["dprime"]] * matrix(is_old, S, r, byrow = TRUE))
+  tau <- as.vector(sqrt(1 + tps[["sigma_meta"]]^2))
+  zc <- as.vector(th[, , (dim(th)[3] + 1L) %/% 2L]) - mu
+  inf <- rep(Inf, length(zc))
+  out <- array(0, dim(c_path))
+  for (j in seq_len(dim(c_path)[3])) {
+    t <- as.vector(c_path[, , j])
+    z <- (t - mu) / tau
+    up <- .bvn_rect_v(zc, inf, z, inf, 1 / tau)
+    dn <- 1 - .bvn_rect_v(-inf, zc, -inf, z, 1 / tau)
+    out[, , j] <- ifelse(t >= zc + mu, up, dn)
+  }
+  out
 }
 
 .subset_thresh2 <- function(t2, idx) {

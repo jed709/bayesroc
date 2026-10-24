@@ -11,7 +11,9 @@
   paste0(rep(c("simple", "dpsdt", "mixture", "source_mixture"), each = 3), "_",
          c("probit", "logit", "cloglog")),
   "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp",
-  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr"
+  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr",
+  "metad_abs", "metad_rel", "metad_abs_k4", "metad_rel_k8_centred", "metad_abs_tail", "metad_rel_tail",
+  "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail"
 )
 
 test_that("every fused kernel's custom JVP is the exact derivative of its value", {
@@ -31,7 +33,9 @@ test_that("with the native kernels loaded, every probit and bivariate JVP matche
   lib <- .bvn_ffi_lib()
   ks <- c(paste0(c("simple", "dpsdt", "mixture", "source_mixture"), "_probit"),
           "bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp", "vrdp2d",
-          "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr")
+          "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr",
+          "metad_abs", "metad_rel", "metad_abs_k4", "metad_rel_k8_centred", "metad_abs_tail", "metad_rel_tail",
+          "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail")
   res <- .run_py_check("native_jvp_check.py", c(lib, paste(ks, collapse = ",")))
   expect_true(res$ffi_loaded)
   for (k in ks) {

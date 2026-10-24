@@ -35,6 +35,33 @@ test_that("evsd: smoke", {
   .assert_post_fit_works(fit)
 })
 
+test_that("metad: smoke", {
+  skip_if_no_cmdstan()
+  d <- .sim_metad(m_old = 0.7)
+  m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), mratio_old ~ cond,
+                                 mratio_new ~ 1, family = metad()), d))
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
+                  parallel_chains = .fast_chains,
+                  iter_warmup = .fast_iter, iter_sampling = .fast_iter)
+  .assert_post_fit_works(fit)
+  est <- estimates(fit)
+  expect_setequal(intersect(est$parameter, c("mratio_old", "mratio_new")), c("mratio_old", "mratio_new"))
+  expect_true(all(est$estimate[est$parameter %in% c("mratio_old", "mratio_new")] > 0))
+})
+
+test_that("evsd with Gaussian meta-noise: smoke", {
+  skip_if_no_cmdstan()
+  d <- .sim_gnoise()
+  m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
+                                 family = evsd()), d))
+  fit <- fit_broc(m, backend = "stan", refresh = 50,
+                  parallel_chains = .fast_chains,
+                  iter_warmup = .fast_iter, iter_sampling = .fast_iter)
+  .assert_post_fit_works(fit)
+  est <- estimates(fit)
+  expect_true("sigma_meta" %in% est$parameter)
+})
+
 test_that("uvsd: smoke", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)

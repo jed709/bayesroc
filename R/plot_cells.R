@@ -117,8 +117,8 @@
 .roc_roles <- function(model, response) {
   fam <- model$family$family
   sd <- model$stan_data
-  if (fam %in% c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp")) {
-    return(list(signal = which(sd$is_old == 1), noise = which(sd$is_old == 0), what = "detection"))
+  if (fam %in% c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp", "metadt")) {
+    return(list(signal = which(sd$is_old > 0), noise = which(sd$is_old <= 0), what = "detection"))
   }
   if (fam == "source_mixture") {
     return(list(signal = which(sd$source == max(sd$source)), noise = which(sd$source == min(sd$source)),

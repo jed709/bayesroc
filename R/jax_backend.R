@@ -222,6 +222,11 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$stan_data$J)) config$J <- md$stan_data$J
   if (!is.null(md$stan_data$n_rkg)) config$n_rkg <- md$stan_data$n_rkg
   if (isTRUE(md$cdp_rho_shared)) config$cdp_rho_shared <- TRUE
+  if (identical(family_name, "metadt")) {
+    config$is_old_mid <- md$stan_data$is_old_mid
+    config$metad_relative <- identical(md$metac, "relative")
+    config$metad_shared <- isTRUE(md$metad_mratio_shared)
+  }
   if (!is.null(md$stan_data$n_new)) config$n_new <- md$stan_data$n_new
   if (!is.null(md$stan_data$old_level_map)) config$old_level_map <- as.integer(md$stan_data$old_level_map)
   if (!is.null(md$stan_data$new_level_map)) config$new_level_map <- as.integer(md$stan_data$new_level_map)
@@ -243,7 +248,8 @@ build_numpyro_config <- function(model) {
                   "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                   "criterion2", "lambda2", "lambda2_B",
                   "rec_crit", "know_crit",
-                  "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
+                  "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale",
+                  "mratio", "mratio_N", "sigma_meta")
 
   # the sampler centres each design's non-intercept columns (the intercept absorbs them; see
   # .centre_info); not for an ordered d' pair or a know criterion under the slack transform,
@@ -369,7 +375,8 @@ build_numpyro_config <- function(model) {
                  "dprime_B", "lambda_B", "discrim", "discrim_B",
                  "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                  "criterion2", "lambda2", "lambda2_B", "rec_crit", "know_crit",
-                 "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
+                 "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale",
+                 "mratio", "mratio_N", "sigma_meta")
 
   for (param in re_params) {
     re_key <- paste0(param, "_random")

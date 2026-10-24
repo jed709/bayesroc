@@ -369,6 +369,52 @@
     }
   }')
   
+  if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
+    lines <- c(lines, .stan_bvn_functions(), '
+  real gnoise_lpmf(int y, real dprime, real sigma_m, real is_old, int K, vector thresh) {
+    int h = K %/% 2;
+    real mu = is_old * dprime;
+    real tau = sqrt(1 + square(sigma_m));
+    real rho = 1 / tau;
+    real zc = thresh[h] - mu;
+    real lo = (y == 1 || y == h + 1) ? negative_infinity() : (thresh[y - 1] - mu) / tau;
+    real hi = (y == K || y == h) ? positive_infinity() : (thresh[y] - mu) / tau;
+    real p;
+    if (y > h) {
+      p = bvn_rect(zc, positive_infinity(), lo, hi, rho);
+    } else {
+      p = bvn_rect(negative_infinity(), zc, lo, hi, rho);
+    }
+    return log(fmax(p, 1e-300));
+  }')
+  }
+
+  if (family_name == "metadt") {
+    lines <- c(lines, '
+  real metadt_lpmf(int y, real dprime, real M_old, real M_new, real is_old, real q, int rel, int K,
+                   vector thresh) {
+    int h = K %/% 2;
+    real c = thresh[h];
+    real m = q * dprime;
+    real mu = is_old * dprime;
+    real M = y > h ? M_old : M_new;
+    real mu_m = m + M * (mu - m);
+    real s = rel == 1 ? (M - 1) * (c - m) : 0;
+    real t1;
+    real t2;
+    if (y > h) {
+      t1 = log(link_ccdf(c - mu));
+      t2 = y == K ? log(fmax(link_ccdf(thresh[y - 1] + s - mu_m), 1e-300))
+                  : log(fmax(link_diff(thresh[y - 1] + s - mu_m, thresh[y] + s - mu_m), 1e-300));
+      return t1 + t2 - log(link_ccdf(c + s - mu_m));
+    }
+    t1 = log(link_cdf(c - mu));
+    t2 = y == 1 ? log(fmax(link_cdf(thresh[1] + s - mu_m), 1e-300))
+                : log(fmax(link_diff(thresh[y - 1] + s - mu_m, thresh[y] + s - mu_m), 1e-300));
+    return t1 + t2 - log(link_cdf(c + s - mu_m));
+  }')
+  }
+
   if (family_name %in% c("uvsdt", "dpsdt", "mixture") && model_data$has_sigma) {
     lines <- c(lines, '
   real uvsdt_lpmf(int y, real dprime, real sigma, real is_old, int K, vector thresh) {
@@ -1346,6 +1392,7 @@ build_reduce_sum_args <- function(model_data, family) {
   } else if (!is_cumulative) {
     add("data array[] real is_old", "is_old")
   }
+  if (identical(model_data$family, "metadt")) add("data real is_old_mid", "is_old_mid")
 
   if (isTRUE(model_data$has_counts)) {
     add("data array[] int counts", "counts")
@@ -1400,7 +1447,7 @@ build_reduce_sum_args <- function(model_data, family) {
   param_list <- c("sigma", "lambda", "sigma2", "dprime_B", "lambda_B",
                    "discrim", "discrim_B", "sigma_B", "sigma2_B",
                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B",
-                   "rec_crit", "know_crit",
+                   "rec_crit", "know_crit", "mratio", "mratio_N", "sigma_meta",
                    "dprime_L", "sigma_L", "lambda_L")
   for (pname in param_list) {
     if (isTRUE(model_data[[paste0("has_", pname)]])) {
@@ -1440,7 +1487,7 @@ build_reduce_sum_args <- function(model_data, family) {
 
   all_re_params <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
-                      "lambda2", "lambda2_B",
+                      "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta",
                       "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L")
   for (pname in all_re_params) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -1585,6 +1632,12 @@ generate_likelihood_code <- function(model_data, family_name) {
       lines <- c(lines, "    real lambda_B_val = inv_logit(lambda_B_n);")
     }
     
+    for (mp in c("mratio", "mratio_N", "sigma_meta")) {
+      if (!isTRUE(model_data[[paste0("has_", mp)]])) next
+      lines <- c(lines, generate_param_lp(mp, model_data[[paste0(mp, "_fixed")]], model_data[[paste0(mp, "_random")]],
+                                          model_data$smooth_data[[mp]]))
+      lines <- c(lines, sprintf("    real %s_val = exp(%s_n);", mp, mp))
+    }
     lines <- c(lines, generate_thresh_code(model_data))
     lines <- c(lines, generate_likelihood_call(model_data, family_name))
   }
@@ -2456,8 +2509,15 @@ generate_likelihood_call <- function(model_data, family_name) {
     } else {
       "source_mixture_lpmf(y[n] | source[n], dprime_n, lambda_val, K, thresh)"
     }
+  } else if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
+    "gnoise_lpmf(y[n] | dprime_n, sigma_meta_val, is_old[n], K, thresh)"
   } else if (family_name == "evsdt") {
     "evsdt_lpmf(y[n] | dprime_n, is_old[n], K, thresh)"
+  } else if (family_name == "metadt") {
+    m_old <- if (isTRUE(model_data$has_mratio)) "mratio_val" else "1"
+    m_new <- if (isTRUE(model_data$metad_mratio_shared)) m_old else if (isTRUE(model_data$has_mratio_N)) "mratio_N_val" else "1"
+    sprintf("metadt_lpmf(y[n] | dprime_n, %s, %s, is_old[n], is_old_mid, %d, K, thresh)", m_old, m_new,
+            as.integer(identical(model_data$metac, "relative")))
   } else if (family_name == "uvsdt") {
     "uvsdt_lpmf(y[n] | dprime_n, sigma_val, is_old[n], K, thresh)"
   } else if (family_name == "dpsdt") {

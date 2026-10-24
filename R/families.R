@@ -17,6 +17,7 @@
     cdp                  = list(dprime = "rec", dprime2 = "fam",
                                 sigma  = "sigma_R", sigma2 = "sigma_F",
                                 rho = "rho_target", rho_N = "rho_lure"),
+    metadt               = list(mratio = "mratio_old", mratio_N = "mratio_new"),
     cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
                                 criterion = "cutpoints", criterion_scale = "cutpoints_scale",
@@ -108,7 +109,20 @@ print.broc_link <- function(x, ...) {
 #'   \item{criterion}{(required) K-1 confidence thresholds, parameterized
 #'     internally as a mid-anchor `thresh_mid` plus K-2 ordered gaps. Identity
 #'     link on the gap parameterization.}
+#'   \item{sigma_meta}{(optional) SD of Gaussian noise added to the decision
+#'     evidence before the confidence rating (Bang et al., 2019). Log link.
+#'     If omitted, the rating is read from the decision evidence itself.}
 #' }
+#'
+#' ## Gaussian meta-noise
+#' With `sigma_meta`, the decision uses the evidence x (noise N(0, 1), signal
+#' N(d', 1)) against the type-1 criterion c0, the middle threshold, and the
+#' rating uses y = x + e, e ~ N(0, sigma_meta^2), against the confidence
+#' criteria on the side of the decision; when y falls on the other side of c0
+#' the rating is the lowest confidence. Each cell is a bivariate normal
+#' rectangle with correlation 1 / sqrt(1 + sigma_meta^2). Requires the probit
+#' link and an even number of response categories (at least 4). As
+#' `sigma_meta` goes to 0 the model becomes the ordinary rating model.
 #'
 #' ## Formula syntax
 #' ```
@@ -121,6 +135,10 @@ print.broc_link <- function(x, ...) {
 #' @references
 #' Macmillan, N. A., & Creelman, C. D. (2005). *Detection theory: A user's
 #'   guide* (2nd ed.). Lawrence Erlbaum.
+#'
+#' Bang, J. W., Shekhar, M., & Rahnev, D. (2019). Sensory noise increases
+#'   metacognitive efficiency. *Journal of Experimental Psychology: General*,
+#'   *148*(3), 437-452.
 #'
 #' @return A `broc_family` object.
 #' @seealso [uvsd()] for unequal-variance extension, [dpsd()] for dual-process,
@@ -136,6 +154,9 @@ evsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        sigma_meta = list(required = FALSE, default = NULL, link = "log",
+                          null_description = "ratings read from the decision evidence",
+                          description = "SD of the Gaussian meta-noise between decision and rating"),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity")
       ),
@@ -1166,6 +1187,103 @@ cdp <- function(old_levels = NULL) {
   )
 }
 
+#' Meta-d' Model of Confidence Ratings
+#'
+#' The meta-d' model of type-2 sensitivity (Maniscalco & Lau, 2012, 2014),
+#' fitted jointly to the old/new decision and the confidence ratings, with
+#' crossed random effects available on every parameter.
+#'
+#' @param metac Where the meta criterion sits. `"absolute"` (default): at the
+#'   type-1 criterion, as in HMeta-d (Fleming, 2017), the hmetad package and
+#'   bmm. `"relative"`: scaled with the M-ratio about the midpoint of the two
+#'   distributions, so that meta-c' = c' (Maniscalco & Lau, 2014; hmetad with
+#'   `metac_absolute = FALSE`).
+#'
+#' @details
+#' ## Likelihood
+#' Responses are a K-point scale with K even and at least 4: responses
+#' 1, ..., K/2 are "new" at decreasing confidence, K/2 + 1, ..., K are "old"
+#' at increasing confidence. The decision follows equal-variance SDT with new
+#' items N(0, 1), old items N(d', 1) and the type-1 criterion c, the middle
+#' threshold \eqn{\tau_{K/2}}. With m = d'/2 the midpoint, the confidence
+#' rating given the decision comes from a second, meta-level SDT model with
+#' means \eqn{m \pm M d'/2} and confidence criteria \eqn{t_k}, truncated at
+#' the meta criterion \eqn{t_{K/2}}:
+#' \deqn{P(Y = k \mid S) = P(R \mid S) \frac{\Phi(t_k - \mu'_S) - \Phi(t_{k-1} - \mu'_S)}{P'(R \mid S)}}
+#' where \eqn{P'(R \mid S)} is the meta-level probability of the same
+#' decision. For `metac = "absolute"`, \eqn{t_k = \tau_k}. For `"relative"`,
+#' every criterion on the response side shifts by \eqn{(M - 1)(c - m)}, which
+#' puts the meta criterion at \eqn{m + M(c - m)} and keeps the confidence
+#' gaps. With M = 1 the model is [evsd()] on the same thresholds.
+#'
+#' ## Parameters
+#' \describe{
+#'   \item{dprime}{(required) Type-1 sensitivity. Identity link.}
+#'   \item{criterion}{(required) The K-1 thresholds: the middle one is the
+#'     type-1 criterion c, the others are the confidence criteria
+#'     (mid-anchor + K-2 ordered gaps). Identity link.}
+#'   \item{mratio}{(optional) M-ratio meta-d'/d', shared by both responses.
+#'     Log link.}
+#'   \item{mratio_old}{(optional) M-ratio for "old" responses. Log link.}
+#'   \item{mratio_new}{(optional) M-ratio for "new" responses. Log link.}
+#' }
+#' Give `mratio` for one M-ratio, or `mratio_old` and/or `mratio_new` for
+#' response-specific M-ratios (Maniscalco & Lau, 2014); a side that is not
+#' given is fixed at M = 1. With no M-ratio formula, M = 1 everywhere.
+#'
+#' ## Formula syntax
+#' ```
+#' broc(brf(conf | old ~ 1 + (1 | subj) + (1 | item),
+#'          criterion ~ 1 + (1 | subj) + (1 | item),
+#'          mratio ~ 1 + (1 | subj) + (1 | item),
+#'          family = metad()),
+#'     data = dat)
+#' ```
+#'
+#' @references
+#' Maniscalco, B., & Lau, H. (2012). A signal detection theoretic approach for
+#'   estimating metacognitive sensitivity from confidence ratings.
+#'   *Consciousness and Cognition*, *21*(1), 422-430.
+#'
+#' Maniscalco, B., & Lau, H. (2014). Signal detection theory analysis of type 1
+#'   and type 2 data: Meta-d', response-specific meta-d', and the
+#'   unequal variance SDT model. In S. M. Fleming & C. D. Frith (Eds.),
+#'   *The cognitive neuroscience of metacognition* (pp. 25-66). Springer.
+#'
+#' Fleming, S. M. (2017). HMeta-d: Hierarchical Bayesian estimation of
+#'   metacognitive efficiency from confidence ratings. *Neuroscience of
+#'   Consciousness*, *2017*(1), nix007.
+#'
+#' @return A `broc_family` object.
+#' @seealso [evsd()], the type-1 model it reduces to at M = 1.
+#' @export
+metad <- function(metac = c("absolute", "relative")) {
+  metac <- match.arg(metac)
+  structure(
+    list(
+      family = "metadt",
+      link = link_probit(),
+      metac = metac,
+      params = list(
+        dprime = list(required = TRUE, default = NULL, link = "identity",
+                      description = "Type-1 sensitivity d'"),
+        mratio = list(required = FALSE, default = NULL, link = "log",
+                      null_value = 0, null_description = "fixed at 1",
+                      description = "M-ratio (meta-d'/d') for \"old\" responses"),
+        mratio_N = list(required = FALSE, default = NULL, link = "log",
+                        null_value = 0, null_description = "fixed at 1",
+                        description = "M-ratio (meta-d'/d') for \"new\" responses"),
+        criterion_scale = .crit_scale_spec(),
+        criterion = list(required = TRUE, default = NULL, link = "identity",
+                         description = "Thresholds: the middle one is the type-1 criterion, the rest confidence criteria")
+      ),
+      external_aliases = .param_name_map("metadt"),
+      description = paste0("Meta-d' Model (", metac, " meta criterion)")
+    ),
+    class = "broc_family"
+  )
+}
+
 #' Two-Dimensional Variable Recollection Dual Process Model
 #'
 #' Two-dimensional variable-recollection dual-process model for conjoint
@@ -1337,7 +1455,7 @@ validate_family_params <- function(family, provided_params) {
 #' constructor name.
 #' @noRd
 family_display_name <- function(family) {
-  map <- c(evsdt = "evsd", uvsdt = "uvsd", dpsdt = "dpsd",
+  map <- c(evsdt = "evsd", uvsdt = "uvsd", dpsdt = "dpsd", metadt = "metad",
            bivariate_sdt = "bivariate_gaussian")
   if (!is.null(family) && family %in% names(map)) unname(map[family]) else family
 }

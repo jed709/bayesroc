@@ -103,7 +103,7 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
   if (!is.null(prim) && length(as.character(prim)) >= 2) {
     lhs_str <- deparse(prim[[2]])
     if (grepl("\\|", lhs_str) && family$family %in%
-        c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp")) {
+        c("evsdt", "uvsdt", "dpsdt", "mixture", "cdp", "metadt")) {
       bar_var <- trimws(strsplit(lhs_str, "\\|")[[1]][2])
       if (!grepl("^[a-zA-Z_.][a-zA-Z0-9_.]*$", bar_var)) {
       } else if (bar_var %in% cols) {
@@ -229,7 +229,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   gap_link <- match.arg(nc(gap_link, nc(brf_obj$gap_link, "log")),
                          c("log", "softplus"))
   if (!inherits(family, "broc_family")) {
-    stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), cdp(), or vrdp2d()")
+    stop("family must be created with evsd(), uvsd(), dpsd(), mixture(), cumulative(), bivariate_cumulative(), source_mixture(), bivariate_gaussian(), bivariate_dp(), cdp(), vrdp2d(), or metad()")
   }
 
 
@@ -299,6 +299,34 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                       fixed, if (fixed == "rho_target") "target" else "lure"))
     }
   }
+  metad_mratio_shared <- FALSE
+  if (family$family == "metadt") {
+    given <- names(params)[!vapply(params, identical_to_null_formula, logical(1))]
+    if ("mratio_N" %in% given) {
+      stop("'mratio_N' is not a metad parameter: the M-ratio for \"new\" responses is 'mratio_new'.",
+           call. = FALSE)
+    }
+    split <- intersect(c("mratio_old", "mratio_new"), given)
+    if ("mratio" %in% given && length(split)) {
+      stop("'mratio' sets one M-ratio shared by \"old\" and \"new\" responses, so it cannot be combined with '",
+           paste(split, collapse = "' or '"), "'. Give 'mratio' alone for a shared M-ratio, ",
+           "or 'mratio_old' and/or 'mratio_new' for response-specific ones.", call. = FALSE)
+    }
+    metad_mratio_shared <- "mratio" %in% given
+    if (metad_mratio_shared) {
+      family$external_aliases[["mratio"]] <- NULL
+      family$params$mratio$description <- "M-ratio (meta-d'/d'), shared by \"old\" and \"new\" responses"
+    }
+    priors <- .metad_mratio_prior_spelling(priors, metad_mratio_shared)
+    if (length(split) == 1L) {
+      fixed <- setdiff(c("mratio_old", "mratio_new"), split)
+      message(sprintf("Note: %s not specified - the M-ratio for \"%s\" responses is fixed at 1",
+                      fixed, if (fixed == "mratio_old") "old" else "new"))
+    } else if (!metad_mratio_shared && !length(split)) {
+      message("Note: no M-ratio formula - M is fixed at 1, so the confidence ratings follow evsd() ",
+              "on the same thresholds")
+    }
+  }
   params <- .canonical_param_formulas(params, family)
 
   criterion  <- params[["criterion"]]
@@ -315,6 +343,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   rho        <- params[["rho"]]
   rho_B      <- params[["rho_B"]]
   rho_N      <- params[["rho_N"]]
+  mratio     <- params[["mratio"]]
+  mratio_N   <- params[["mratio_N"]]
+  sigma_meta <- params[["sigma_meta"]]
   criterion2 <- params[["criterion2"]]
   rec_crit   <- params[["rec_crit"]]
   know_crit  <- params[["know_crit"]]
@@ -350,6 +381,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     } else if (family$family == "source_mixture") {
       stop("encoding_vars cannot be used with source_mixture() family. ",
            "Source mixture models use source (A/B) rather than old/new.")
+    } else if (family$family == "metadt") {
+      stop("encoding_vars cannot be used with metad(): meta-d' is defined on one pair of stimulus ",
+           "distributions per condition, and new items have no encoding condition. ",
+           "Use the condition as an ordinary predictor of dprime, criterion and mratio.", call. = FALSE)
     } else {
       stop("encoding_vars is not supported for ", family_display_name(family$family), " family.")
     }
@@ -441,6 +476,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   rho_is_fixed <- is.null(rho) || identical_to_null_formula(rho)
   rho_B_is_fixed <- is.null(rho_B) || identical_to_null_formula(rho_B)
   rho_N_is_fixed <- is.null(rho_N) || identical_to_null_formula(rho_N)
+  mratio_is_fixed <- is.null(mratio) || identical_to_null_formula(mratio)
+  mratio_N_is_fixed <- is.null(mratio_N) || identical_to_null_formula(mratio_N)
+  sigma_meta_is_fixed <- is.null(sigma_meta) || identical_to_null_formula(sigma_meta)
   criterion2_is_fixed <- is.null(criterion2) || identical_to_null_formula(criterion2)
 
   if (sigma_is_fixed) sigma <- NULL
@@ -456,9 +494,13 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   if (rho_is_fixed) rho <- NULL
   if (rho_B_is_fixed) rho_B <- NULL
   if (rho_N_is_fixed) rho_N <- NULL
+  if (mratio_is_fixed) mratio <- NULL
+  if (mratio_N_is_fixed) mratio_N <- NULL
+  if (sigma_meta_is_fixed) sigma_meta <- NULL
   if (criterion2_is_fixed) criterion2 <- NULL
 
   if (is.null(rho)) cdp_rho_shared <- FALSE
+  if (is.null(mratio)) metad_mratio_shared <- FALSE
 
   internal_arg_map <- list(
     dprime     = dprime,     dprime2    = dprime2,
@@ -472,6 +514,8 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     sigma_B    = sigma_B,    sigma2_B   = sigma2_B,
     rho        = rho,        rho_B      = rho_B,
     rho_N      = rho_N,
+    mratio     = mratio,     mratio_N   = mratio_N,
+    sigma_meta = sigma_meta,
     criterion_scale = criterion_scale,
     criterion2_scale = criterion2_scale
   )
@@ -661,6 +705,9 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     lambda2_B = lambda2_B,
     criterion_scale = criterion_scale,
     criterion2_scale = criterion2_scale,
+    mratio = mratio,
+    mratio_N = mratio_N,
+    sigma_meta = sigma_meta,
     data = data,
     family_name = family$family
   )
@@ -671,6 +718,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                                  encoding_vars = encoding_vars)
   model_data$gap_link <- gap_link
   model_data$cdp_rho_shared <- cdp_rho_shared
+  model_data$metad_mratio_shared <- metad_mratio_shared
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
   model_data$gap_link <- gap_link
@@ -843,6 +891,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   has_rho <- !is.null(parsed[["rho"]]) && (is_bivariate || is_cdp)
   has_rho_B <- !is.null(parsed[["rho_B"]]) && is_bivariate
   has_rho_N <- !is.null(parsed[["rho_N"]]) && (is_bivariate || is_cdp)
+  is_metad <- family$family == "metadt"
+  has_mratio <- !is.null(parsed[["mratio"]]) && is_metad
+  has_mratio_N <- !is.null(parsed[["mratio_N"]]) && is_metad
+  has_sigma_meta <- !is.null(parsed[["sigma_meta"]]) && family$family == "evsdt"
   has_criterion2 <- !is.null(parsed[["criterion2"]]) && (is_bivariate || is_vrdp2d)
   has_lambda2 <- !is.null(parsed[["lambda2"]]) && is_bivariate_dp
   has_lambda2_B <- !is.null(parsed[["lambda2_B"]]) && is_bivariate_dp
@@ -869,6 +921,19 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   stan_data <- list(N = N, N_ll = N, K = K)
   stan_data$y <- as.integer(data[[parsed$response$response]])
 
+  if (is_metad && (K < 4L || K %% 2L != 0L)) {
+    stop("metad() needs an even number of response categories, at least 4: K/2 confidence levels for ",
+         "\"new\" responses and K/2 for \"old\" responses. The response has ", K, " categories.", call. = FALSE)
+  }
+  if (has_sigma_meta && !identical(family$link$name, "probit")) {
+    stop("sigma_meta is the Gaussian meta-noise model (Bang et al., 2019), defined on the probit scale: ",
+         "use evsd() with the default link_probit().", call. = FALSE)
+  }
+  if (has_sigma_meta && (K < 4L || K %% 2L != 0L)) {
+    stop("sigma_meta needs an even number of response categories, at least 4: the middle threshold is the ",
+         "decision criterion and the confidence ratings sit on each side of it. The response has ", K,
+         " categories.", call. = FALSE)
+  }
   if (K == 2 && family$family != "evsdt") {
     stop("Binary responses (K=2) are only supported for the evsd() family. ",
          "Models with sigma, lambda, or other parameters require K >= 3 for identifiability.")
@@ -1011,6 +1076,14 @@ build_model_data <- function(parsed, data, family, counts = NULL,
 
     data[[is_old_var]] <- is_old_vals
     stan_data$is_old <- is_old_vals
+    if (is_metad) {
+      if (length(unique_vals) != 2L) {
+        stop("metad() needs both old and new items: `", is_old_var, "` takes only the value ",
+             paste(unique_vals, collapse = ", "), ".", call. = FALSE)
+      }
+      stan_data$is_old_mid <- mean(unique_vals)
+      stan_data$metad_relative <- as.integer(identical(family$metac, "relative"))
+    }
   }
   
   has_counts <- !is.null(counts)
@@ -1334,6 +1407,48 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     stan_data$X_rho_N <- rho_N_fixed$X
   }
   
+  mratio_fixed <- NULL
+  mratio_random <- NULL
+  if (has_mratio) {
+    mratio_fixed_formula <- build_formula_from_parsed(parsed$mratio$fixed)
+    mratio_cond <- extract_conditional_from_parsed(parsed$mratio)
+    mratio_fixed <- build_fixed_effects_matrix(mratio_fixed_formula, data, encoding_vars, is_old_var,
+                                                conditional_terms = mratio_cond,
+                                                parsed_fixed = parsed$mratio$fixed)
+    mratio_random <- build_random_effects_structure(parsed$mratio$random, data, encoding_vars, is_old_var)
+
+    stan_data$P_mratio <- mratio_fixed$n_coef
+    stan_data$X_mratio <- mratio_fixed$X
+  }
+
+  sigma_meta_fixed <- NULL
+  sigma_meta_random <- NULL
+  if (has_sigma_meta) {
+    sigma_meta_fixed_formula <- build_formula_from_parsed(parsed$sigma_meta$fixed)
+    sigma_meta_cond <- extract_conditional_from_parsed(parsed$sigma_meta)
+    sigma_meta_fixed <- build_fixed_effects_matrix(sigma_meta_fixed_formula, data, encoding_vars, is_old_var,
+                                                    conditional_terms = sigma_meta_cond,
+                                                    parsed_fixed = parsed$sigma_meta$fixed)
+    sigma_meta_random <- build_random_effects_structure(parsed$sigma_meta$random, data, encoding_vars, is_old_var)
+
+    stan_data$P_sigma_meta <- sigma_meta_fixed$n_coef
+    stan_data$X_sigma_meta <- sigma_meta_fixed$X
+  }
+
+  mratio_N_fixed <- NULL
+  mratio_N_random <- NULL
+  if (has_mratio_N) {
+    mratio_N_fixed_formula <- build_formula_from_parsed(parsed$mratio_N$fixed)
+    mratio_N_cond <- extract_conditional_from_parsed(parsed$mratio_N)
+    mratio_N_fixed <- build_fixed_effects_matrix(mratio_N_fixed_formula, data, encoding_vars, is_old_var,
+                                                  conditional_terms = mratio_N_cond,
+                                                  parsed_fixed = parsed$mratio_N$fixed)
+    mratio_N_random <- build_random_effects_structure(parsed$mratio_N$random, data, encoding_vars, is_old_var)
+
+    stan_data$P_mratio_N <- mratio_N_fixed$n_coef
+    stan_data$X_mratio_N <- mratio_N_fixed$X
+  }
+
   lambda2_fixed <- NULL
   lambda2_random <- NULL
   if (has_lambda2) {
@@ -1532,7 +1647,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     if (has_lambda2) names(lambda2_random) else NULL,
     if (has_lambda2_B) names(lambda2_B_random) else NULL,
     if (has_criterion_scale) names(criterion_scale_random) else NULL,
-    if (has_criterion2_scale) names(criterion2_scale_random) else NULL
+    if (has_criterion2_scale) names(criterion2_scale_random) else NULL,
+    if (has_mratio) names(mratio_random) else NULL,
+    if (has_mratio_N) names(mratio_N_random) else NULL,
+    if (has_sigma_meta) names(sigma_meta_random) else NULL
   ))
 
   for (group in all_groups) {
@@ -1547,7 +1665,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                     if (has_criterion2) criterion2$random else NULL,
                                     dprime_L_random, sigma_L_random, lambda_L_random,
                                     lambda2_random, lambda2_B_random, criterion_scale_random,
-                                    criterion2_scale_random)
+                                    criterion2_scale_random, mratio_random, mratio_N_random,
+                                    sigma_meta_random)
     if (!is.null(re_info)) {
       stan_data[[paste0("N_", group)]] <- re_info$n_groups
       stan_data[[group]] <- re_info$group_idx
@@ -1577,6 +1696,9 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   if (has_lambda2_B) stan_data <- add_term_indices(stan_data, "lambda2_B", lambda2_B_random)
   if (has_criterion_scale) stan_data <- add_term_indices(stan_data, "criterion_scale", criterion_scale_random)
   if (has_criterion2_scale) stan_data <- add_term_indices(stan_data, "criterion2_scale", criterion2_scale_random)
+  if (has_mratio) stan_data <- add_term_indices(stan_data, "mratio", mratio_random)
+  if (has_mratio_N) stan_data <- add_term_indices(stan_data, "mratio_N", mratio_N_random)
+  if (has_sigma_meta) stan_data <- add_term_indices(stan_data, "sigma_meta", sigma_meta_random)
 
   for (group in names(criterion$random)) {
     re <- criterion$random[[group]]
@@ -1631,7 +1753,10 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     sigma_L = if (has_sigma_L) sigma_L_fixed else NULL,
     lambda_L = if (has_lambda_L) lambda_L_fixed else NULL,
     criterion_scale = if (has_criterion_scale) criterion_scale_fixed else NULL,
-    criterion2_scale = if (has_criterion2_scale) criterion2_scale_fixed else NULL
+    criterion2_scale = if (has_criterion2_scale) criterion2_scale_fixed else NULL,
+    mratio = if (has_mratio) mratio_fixed else NULL,
+    mratio_N = if (has_mratio_N) mratio_N_fixed else NULL,
+    sigma_meta = if (has_sigma_meta) sigma_meta_fixed else NULL
   )
 
   for (pname in names(all_param_fixed)) {
@@ -1673,7 +1798,8 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                        dprime_L_random, sigma_L_random, lambda_L_random,
                                        rec_crit_random, know_crit_random,
                                        lambda2_random, lambda2_B_random,
-                                       criterion_scale_random, criterion2_scale_random)
+                                       criterion_scale_random, criterion2_scale_random,
+                                       mratio_random, mratio_N_random, sigma_meta_random)
 
   has_dprime_fixed <- dprime_fixed$n_coef > 0
   has_discrim_fixed <- if (!is.null(discrim_fixed)) discrim_fixed$n_coef > 0 else FALSE
@@ -1771,6 +1897,16 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     has_criterion2_scale = has_criterion2_scale,
     criterion2_scale_fixed = criterion2_scale_fixed,
     criterion2_scale_random = criterion2_scale_random,
+    has_mratio = has_mratio,
+    mratio_fixed = mratio_fixed,
+    mratio_random = mratio_random,
+    has_mratio_N = has_mratio_N,
+    mratio_N_fixed = mratio_N_fixed,
+    mratio_N_random = mratio_N_random,
+    has_sigma_meta = has_sigma_meta,
+    sigma_meta_fixed = sigma_meta_fixed,
+    sigma_meta_random = sigma_meta_random,
+    metac = if (is_metad) family$metac else NULL,
     centered_coding = if (exists("centered_coding")) centered_coding else FALSE,
     has_counts = has_counts,
     varying_source_criteria = isTRUE(family$varying_source_criteria),
@@ -1797,7 +1933,8 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
                                  criterion2_re = NULL,
                                  dprime_L_re = NULL, sigma_L_re = NULL, lambda_L_re = NULL,
                                  lambda2_re = NULL, lambda2_B_re = NULL,
-                                 criterion_scale_re = NULL, criterion2_scale_re = NULL) {
+                                 criterion_scale_re = NULL, criterion2_scale_re = NULL,
+                                 mratio_re = NULL, mratio_N_re = NULL, sigma_meta_re = NULL) {
   if (!is.null(dprime_re) && group %in% names(dprime_re)) return(dprime_re[[group]])
   if (!is.null(criterion_re) && group %in% names(criterion_re)) return(criterion_re[[group]])
   if (!is.null(sigma_re) && group %in% names(sigma_re)) return(sigma_re[[group]])
@@ -1823,6 +1960,9 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
   if (!is.null(lambda2_B_re) && group %in% names(lambda2_B_re)) return(lambda2_B_re[[group]])
   if (!is.null(criterion_scale_re) && group %in% names(criterion_scale_re)) return(criterion_scale_re[[group]])
   if (!is.null(criterion2_scale_re) && group %in% names(criterion2_scale_re)) return(criterion2_scale_re[[group]])
+  if (!is.null(mratio_re) && group %in% names(mratio_re)) return(mratio_re[[group]])
+  if (!is.null(mratio_N_re) && group %in% names(mratio_N_re)) return(mratio_N_re[[group]])
+  if (!is.null(sigma_meta_re) && group %in% names(sigma_meta_re)) return(sigma_meta_re[[group]])
   NULL
 }
 
@@ -1967,7 +2107,9 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
                                     lambda2_random = NULL,
                                     lambda2_B_random = NULL,
                                     criterion_scale_random = NULL,
-                                    criterion2_scale_random = NULL) {
+                                    criterion2_scale_random = NULL,
+                                    mratio_random = NULL, mratio_N_random = NULL,
+                                    sigma_meta_random = NULL) {
   if (length(parsed$cross_cor_ids) == 0) return(list())
   
   cross_cor <- list()
@@ -2001,7 +2143,10 @@ build_cross_cor_info_v2 <- function(parsed, dprime_random, sigma_random,
       lambda2 = lambda2_random,
       lambda2_B = lambda2_B_random,
       criterion_scale = criterion_scale_random,
-      criterion2_scale = criterion2_scale_random
+      criterion2_scale = criterion2_scale_random,
+      mratio = mratio_random,
+      mratio_N = mratio_N_random,
+      sigma_meta = sigma_meta_random
     )
     
     for (param_name in names(param_re_pairs)) {
@@ -2065,7 +2210,8 @@ print.broc_model <- function(x, ...) {
                    "rho", "rho_B", "rho_N", "lambda2",
                    "criterion", "criterion2",
                    "rec_crit", "know_crit",
-                   "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
+                   "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale",
+                   "mratio", "mratio_N", "sigma_meta")
   for (pname in param_order) {
     fe <- x$model_data[[paste0(pname, "_fixed")]]
     has_flag <- if (pname == "dprime") isTRUE(x$model_data$has_dprime_fixed)
@@ -3386,6 +3532,21 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
     if (is.null(inp) || !inp %in% c("rho", "rho_target", "rho_lure", "rho_N")) next
     if (shared && inp != "rho") ps[[i]]$dpar <- inp
     if (!shared && inp %in% c("rho", "rho_N")) ps[[i]]$dpar <- paste0(inp, " (shared)")
+  }
+  if (one) ps[[1]] else structure(ps, class = "broc_prior_list")
+}
+
+# a shared M-ratio is spelled mratio; response-specific ones mratio_old / mratio_new. A prior spelled for the
+# other layout keeps its spelling as its dpar, so it matches nothing and is reported as unused
+.metad_mratio_prior_spelling <- function(priors, shared) {
+  if (is.null(priors)) return(priors)
+  one <- inherits(priors, "broc_prior")
+  ps <- if (one) list(priors) else unclass(priors)
+  for (i in seq_along(ps)) {
+    inp <- ps[[i]]$dpar_input
+    if (is.null(inp) || !inp %in% c("mratio", "mratio_old", "mratio_new", "mratio_N")) next
+    if (shared && inp != "mratio") ps[[i]]$dpar <- inp
+    if (!shared && inp %in% c("mratio", "mratio_N")) ps[[i]]$dpar <- paste0(inp, " (shared)")
   }
   if (one) ps[[1]] else structure(ps, class = "broc_prior_list")
 }

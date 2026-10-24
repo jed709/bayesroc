@@ -68,6 +68,34 @@ inline CellResult edge_hi(double z) {
 }
 
 // ============================================================
+// Meta-d' cell: type-1 decision times the truncated meta-level rating
+// ============================================================
+
+struct MetadResult {
+  double lp;
+  double g_a;
+  double g_lo;
+  double g_hi;
+  double g_c;
+};
+
+inline MetadResult metad_cell(bool old_side, bool open_lo, bool open_hi,
+                              double z_a, double z_lo, double z_hi, double z_c) {
+  const double s = old_side ? -1.0 : 1.0;
+  double pa = old_side ? Qn(z_a) : Phi(z_a);
+  double pc = old_side ? Qn(z_c) : Phi(z_c);
+  double pb = open_lo ? Phi(z_hi) : open_hi ? Qn(z_lo) : Phi_diff(z_lo, z_hi);
+  double ia = pa > kPFloor ? 1.0 / pa : 0.0;
+  double ib = pb > kPFloor ? 1.0 / pb : 0.0;
+  double ic = pc > kPFloor ? 1.0 / pc : 0.0;
+  pa = std::fmax(pa, kPFloor);
+  pb = std::fmax(pb, kPFloor);
+  pc = std::fmax(pc, kPFloor);
+  return {std::log(pa) + std::log(pb / pc), s * phi(z_a) * ia, open_lo ? 0.0 : -phi(z_lo) * ib,
+          open_hi ? 0.0 : phi(z_hi) * ib, -s * phi(z_c) * ic};
+}
+
+// ============================================================
 // Threshold gradient propagation
 // ============================================================
 
@@ -646,6 +674,16 @@ inline BivariateCellResult bivariate_cell(
   return {r.lp, r.d1l * inv_P, r.d1h * inv_P, r.d2l * inv_P, r.d2h * inv_P, r.drho * inv_P};
 }
 
+
+// ============================================================
+// Gaussian meta-noise: decision on x, rating on y = x + e
+// ============================================================
+
+inline BivariateCellResult gnoise_cell(bool old_side, bool open_lo, bool open_hi, double z_c, double z_lo,
+                                       double z_hi, double rho) {
+  return old_side ? bivariate_cell(z_c, 0.0, false, true, z_lo, z_hi, open_lo, open_hi, rho)
+                  : bivariate_cell(0.0, z_c, true, false, z_lo, z_hi, open_lo, open_hi, rho);
+}
 
 // ============================================================
 // Bivariate SDT: full observation likelihood with gradients

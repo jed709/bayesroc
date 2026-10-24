@@ -126,7 +126,34 @@ def biv_case(kind, N=400, K=6, seed=3):
     return f, args, list(range(3, len(args)))
 
 
+def metad_case(relative, K=6, q=0.5, mid=(0.6, 0.3), d=(1.2, 0.6), N=400, seed=4):
+    rng = np.random.default_rng(seed)
+    f = nb._make_fused_metad_loglik(K, False, q, relative)
+    codes = np.array([0.0, 1.0]) if q == 0.5 else np.array([-0.5, 0.5])
+    args = [jnp.asarray(rng.integers(1, K + 1, N), dtype=jnp.int32), _n(rng, d[0], d[1], N),
+            _u(rng, 0.3, 1.6, N), _u(rng, 0.3, 1.6, N), jnp.asarray(codes[rng.integers(0, 2, N)]),
+            _n(rng, mid[0], mid[1], N), _n(rng, -0.4, 0.2, (N, K - 2))]
+    return f, args, [1, 2, 3, 5, 6]
+
+
+def gnoise_case(K=6, sm=(0.3, 1.6), mid=(0.6, 0.3), N=300, seed=6):
+    rng = np.random.default_rng(seed)
+    f = nb._make_fused_gnoise_loglik(K, False)
+    args = [jnp.asarray(rng.integers(1, K + 1, N), dtype=jnp.int32), _n(rng, 0.8, 0.8, N), _u(rng, sm[0], sm[1], N),
+            _n(rng, mid[0], mid[1], N), _n(rng, -0.4, 0.2, (N, K - 2))]
+    return f, args, [1, 2, 3, 4]
+
+
 CASES = {
+    "gnoise": lambda: gnoise_case(),
+    "gnoise_k4_small_noise": lambda: gnoise_case(K=4, sm=(0.05, 0.3)),
+    "gnoise_k8_tail": lambda: gnoise_case(K=8, mid=(3.0, 0.5)),
+    "metad_abs": lambda: metad_case(False),
+    "metad_rel": lambda: metad_case(True),
+    "metad_abs_k4": lambda: metad_case(False, K=4),
+    "metad_rel_k8_centred": lambda: metad_case(True, K=8, q=0.0, mid=(0.0, 0.3)),
+    "metad_abs_tail": lambda: metad_case(False, mid=(3.5, 0.5), d=(4.0, 1.0)),
+    "metad_rel_tail": lambda: metad_case(True, mid=(-3.0, 0.5), d=(3.0, 1.0)),
     "cdp_rk": lambda: cdp_case(2),
     "cdp_rkg": lambda: cdp_case(3),
     "cdp_rkg_tail": lambda: cdp_case(3, crit=(4.0, 3.5)),

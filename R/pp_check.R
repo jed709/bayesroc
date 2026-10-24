@@ -117,7 +117,7 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
   } else if (fam == "source_mixture") {
     factor(ifelse(sd$source == max(sd$source), "Source B", "Source A"), levels = c("Source A", "Source B"))
   } else if (!is.null(sd$is_old) && fam != "cumulative") {
-    factor(ifelse(sd$is_old == 1, "Targets", "Lures"), levels = c("Lures", "Targets"))
+    factor(ifelse(sd$is_old > 0, "Targets", "Lures"), levels = c("Lures", "Targets"))
   } else NULL
   if (is.null(by)) return(if (is.null(role)) factor(rep("All", length(sd$y))) else droplevels(role))
   cells <- .cell_of_rows(model, by)

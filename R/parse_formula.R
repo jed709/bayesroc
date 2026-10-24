@@ -525,6 +525,7 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
                               dprime_L = NULL, sigma_L = NULL, lambda_L = NULL,
                               lambda2 = NULL, lambda2_B = NULL,
                               criterion_scale = NULL, criterion2_scale = NULL,
+                              mratio = NULL, mratio_N = NULL, sigma_meta = NULL,
                               data = NULL, family_name = NULL) {
   dprime_str <- as.character(dprime)
   if (length(dprime_str) != 3) {
@@ -595,6 +596,18 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
   if (!is.null(rho_N)) {
     parsed$rho_N <- parse_broc_parameter_formula(rho_N)
   }
+
+  if (!is.null(mratio)) {
+    parsed$mratio <- parse_broc_parameter_formula(mratio)
+  }
+
+  if (!is.null(mratio_N)) {
+    parsed$mratio_N <- parse_broc_parameter_formula(mratio_N)
+  }
+
+  if (!is.null(sigma_meta)) {
+    parsed$sigma_meta <- parse_broc_parameter_formula(sigma_meta)
+  }
   
   if (!is.null(criterion2)) {
     parsed$criterion2 <- parse_broc_parameter_formula(criterion2)
@@ -655,7 +668,8 @@ parse_broc_formula <- function(dprime, criterion, sigma = NULL, lambda = NULL,
                        "dprime_B", "lambda_B", "discrim", "discrim_B",
                        "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
                        "rec_crit", "know_crit", "lambda2", "lambda2_B",
-                       "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale")
+                       "dprime_L", "sigma_L", "lambda_L", "criterion_scale", "criterion2_scale",
+                       "mratio", "mratio_N", "sigma_meta")
   
   encoding_vars <- character(0)
   for (pname in all_param_names) {
@@ -710,7 +724,8 @@ extract_data_info <- function(parsed, data) {
                    "dprime_B", "lambda_B", "discrim", "discrim_B",
                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",
                    "rec_crit", "know_crit", "dprime_L", "sigma_L", "lambda_L",
-                   "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
+                   "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale",
+                   "mratio", "mratio_N", "sigma_meta")
   
   for (param in param_names) {
     if (!is.null(parsed[[param]])) {
@@ -867,6 +882,18 @@ print.broc_formula <- function(x, ...) {
   if (!is.null(x[["rho_N"]])) {
     cat("\nRho_N (new item correlation):\n")
     print_parameter_formula(x[["rho_N"]])
+  }
+  if (!is.null(x[["mratio"]])) {
+    cat("\nM-ratio (meta-d'/d'):\n")
+    print_parameter_formula(x[["mratio"]])
+  }
+  if (!is.null(x[["mratio_N"]])) {
+    cat("\nM-ratio for \"new\" responses:\n")
+    print_parameter_formula(x[["mratio_N"]])
+  }
+  if (!is.null(x[["sigma_meta"]])) {
+    cat("\nSigma_meta (Gaussian meta-noise SD):\n")
+    print_parameter_formula(x[["sigma_meta"]])
   }
   if (!is.null(x[["lambda2"]])) {
     cat("\nLambda2 (source recollection probability):\n")

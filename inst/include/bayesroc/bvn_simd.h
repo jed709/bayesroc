@@ -266,6 +266,50 @@ inline void probit_cell_range(int64_t i0, int64_t i1, const double* zlo, const d
 }
 
 
+inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& ga, v4d& gl, v4d& gh,
+                        v4d& gc) {
+  const v4d zero = splat(0.0), one = splat(1.0), fl = splat(1e-300);
+  const v4i old = side > splat(0.5);
+  const v4d s = vsel(old, one, -one);
+  const v4d ua = s * za, uc = s * zc, ul = vsel(old, zl, -zh), uh = vsel(old, zh, -zl);
+  v4d Pa, da, qa, Pc, dc, qc, Pl, dl, ql, Ph, dh, qh;
+  vprobit_triple(ua, Pa, da, qa);
+  vprobit_triple(uc, Pc, dc, qc);
+  vprobit_triple(ul, Pl, dl, ql);
+  vprobit_triple(uh, Ph, dh, qh);
+  const v4d Qa = vsel(ua >= zero, qa, one - qa);
+  const v4d Qc = vsel(uc >= zero, qc, one - qc);
+  const v4d D = vsel(ul >= zero, ql - qh, Ph - Pl);
+  const v4d ia = vsel(Qa > fl, one / vmax(Qa, fl), zero);
+  const v4d ib = vsel(D > fl, one / vmax(D, fl), zero);
+  const v4d ic = vsel(Qc > fl, one / vmax(Qc, fl), zero);
+  lp = vlog(vmax(Qa, fl)) + vlog(vmax(D, fl) / vmax(Qc, fl));
+  ga = -s * da * ia;
+  gc = s * dc * ic;
+  const v4d bl = -dl * ib, bh = dh * ib;
+  gl = vsel(old, bl, -bh);
+  gh = vsel(old, bh, -bl);
+}
+
+inline void metad_array(int64_t n, const double* const* in, double* const* out) {
+  int64_t i = 0;
+  v4d a[5], r[5];
+  for (; i + 4 <= n; i += 4) {
+    for (int j = 0; j < 5; ++j) std::memcpy(&a[j], in[j] + i, 32);
+    metad_cell4(a[0], a[1], a[2], a[3], a[4], r[0], r[1], r[2], r[3], r[4]);
+    for (int j = 0; j < 5; ++j) std::memcpy(out[j] + i, &r[j], 32);
+  }
+  if (i < n) {
+    for (int j = 0; j < 5; ++j) {
+      a[j] = splat(j == 2 || j == 4 ? 1.0 : 0.0);
+      for (int64_t k = 0; i + k < n; ++k) a[j][k] = in[j][i + k];
+    }
+    metad_cell4(a[0], a[1], a[2], a[3], a[4], r[0], r[1], r[2], r[3], r[4]);
+    for (int j = 0; j < 5; ++j)
+      for (int64_t k = 0; i + k < n; ++k) out[j][i + k] = r[j][k];
+  }
+}
+
 using bvn_tail::kPhiC;
 constexpr double kPhiD[18] = {1.1854995356145523, 1.3097573132537195, 0.45298641056440525, 0.10328147437489583, 0.01295638227198467, -0.0003253821430972744, -0.0004287832995995369, -4.434221633584315e-05, 9.551609080045374e-06, 2.278034508995305e-06, -2.1182703839817368e-07, -9.437945361118253e-08, 6.090771522883504e-09, 3.89287566636132e-09, -2.7866990704357154e-10, -1.638034930910627e-10, 1.8902019919991792e-11, 7.084052091904388e-12};
 using bvn_tail::kPhiA;

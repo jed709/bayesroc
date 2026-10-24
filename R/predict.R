@@ -147,7 +147,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   gap_link <- if (!is.null(model$gap_link)) model$gap_link else "log"
 
   supported <- c("evsdt", "uvsdt", "dpsdt", "mixture", "cumulative", "source_mixture",
-                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp")
+                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp", "metadt")
   if (!family_name %in% supported) {
     stop("predict() does not yet support family '", family_display_name(family_name),
          "'. Supported: ",
@@ -456,7 +456,7 @@ build_data_source_from_model <- function(model) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                     "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     if (isTRUE(md[[paste0("has_", pname)]])) {
@@ -468,7 +468,7 @@ build_data_source_from_model <- function(model) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (!is.null(re_list)) {
@@ -525,7 +525,7 @@ get_predict_variables <- function(model, include_re = TRUE) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                     "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     has_flag <- if (pname %in% c("dprime2")) {
@@ -606,7 +606,7 @@ get_re_variables <- function(model) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next
@@ -733,6 +733,9 @@ compute_trial_params <- function(draws, model, data_src, re_formula, S, N) {
     lambda2_B  = list(has = isTRUE(md$has_lambda2_B),  link = "logis"),
     rec_crit   = list(has = isTRUE(md$has_rec_crit),   link = "identity"),
     know_crit  = list(has = isTRUE(md$has_know_crit),  link = "identity"),
+    mratio     = list(has = isTRUE(md$has_mratio),     link = "exp"),
+    mratio_N   = list(has = isTRUE(md$has_mratio_N),   link = "exp"),
+    sigma_meta = list(has = isTRUE(md$has_sigma_meta), link = "exp"),
     criterion_scale = list(has = isTRUE(md$has_criterion_scale), link = "exp",
                            stan_name = .smooth_stan_pname(model, "criterion_scale")),
     criterion2_scale = list(has = isTRUE(md$has_criterion2_scale), link = "exp",
@@ -2088,7 +2091,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       bivariate_dp   = probs_bivariate_dp(tp, th, th2, ds$item_type, S, n_chunk, K, K2, model = model),
       bivariate_cumulative = probs_bivariate_cumulative(tp, th, th2, S, n_chunk, K, K2, model = model),
       vrdp2d         = probs_vrdp2d(tp, th, th2, ds$item_type, S, n_chunk, K, K2, model = model),
-      cdp            = probs_cdp(tp, th, ds$is_old, S, n_chunk, K, model = model)
+      cdp            = probs_cdp(tp, th, ds$is_old, S, n_chunk, K, model = model),
+      metadt         = probs_metadt(tp, th, ds$is_old, S, n_chunk, K, model = model)
     )
   }
 
@@ -2154,7 +2158,8 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
                                             cd$S, n_chunk, cd$K, cd$K2, model = cd$model),
       vrdp2d         = probs_vrdp2d(cd$trial_params, cd$thresh, cd$thresh2, ds$item_type,
                                      cd$S, n_chunk, cd$K, cd$K2, model = cd$model),
-      cdp            = probs_cdp(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model)
+      cdp            = probs_cdp(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model),
+      metadt         = probs_metadt(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model)
     )
   }
   environment(.predict_worker) <- globalenv()
@@ -2195,7 +2200,62 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 #' EVSDT probabilities
 #' @noRd
 probs_evsdt <- function(params, thresh, is_old, link_name, S, N, K) {
+  if (!is.null(params[["sigma_meta"]])) {
+    return(pmax(.gnoise_cells(params[["dprime"]], params[["sigma_meta"]], thresh, matrix(is_old, S, N, byrow = TRUE),
+                              K), 1e-10))
+  }
   pmax(.ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), 1, link_name, K), 1e-10)
+}
+
+#' Meta-d' probabilities
+#' @noRd
+probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
+  md <- model$model_data
+  one <- matrix(1, S, N)
+  m_old <- params[["mratio"]] %||% one
+  m_new <- if (isTRUE(md$metad_mratio_shared)) m_old else params[["mratio_N"]] %||% one
+  pmax(.metad_cells(params[["dprime"]], m_old, m_new, thresh, matrix(is_old, S, N, byrow = TRUE),
+                    md$stan_data$is_old_mid, identical(md$metac, "relative"), K), 1e-10)
+}
+
+.metad_cells <- function(d, m_old, m_new, thresh, a, q, relative, K) {
+  h <- K %/% 2L
+  pdiff <- function(lo, hi) ifelse(lo >= 0, stats::pnorm(lo, lower.tail = FALSE) - stats::pnorm(hi, lower.tail = FALSE),
+                                   stats::pnorm(hi) - stats::pnorm(lo))
+  cc <- thresh[, , h]
+  mid <- q * d
+  mu <- a * d
+  out <- array(0, c(dim(d), K))
+  for (old in c(FALSE, TRUE)) {
+    M <- if (old) m_old else m_new
+    mu_m <- mid + M * (mu - mid)
+    s <- if (relative) (M - 1) * (cc - mid) else 0
+    t1 <- stats::pnorm(cc - mu, lower.tail = !old)
+    t2 <- stats::pnorm(cc + s - mu_m, lower.tail = !old)
+    for (k in if (old) (h + 1L):K else seq_len(h)) {
+      lo <- if (k == 1L) array(-Inf, dim(d)) else thresh[, , k - 1L] + s - mu_m
+      hi <- if (k == K) array(Inf, dim(d)) else thresh[, , k] + s - mu_m
+      out[, , k] <- t1 * pdiff(lo, hi) / t2
+    }
+  }
+  out
+}
+
+.gnoise_cells <- function(d, sm, thresh, a, K) {
+  h <- K %/% 2L
+  mu <- a * d
+  tau <- sqrt(1 + sm^2)
+  rho <- as.vector(1 / tau)
+  zc <- as.vector(thresh[, , h] - mu)
+  out <- array(0, c(dim(d), K))
+  inf <- rep(Inf, length(zc))
+  for (k in seq_len(K)) {
+    old <- k > h
+    lo <- if (k == 1L || k == h + 1L) -inf else as.vector((thresh[, , k - 1L] - mu) / tau)
+    hi <- if (k == K || k == h) inf else as.vector((thresh[, , k] - mu) / tau)
+    out[, , k] <- if (old) .bvn_rect_v(zc, inf, lo, hi, rho) else .bvn_rect_v(-inf, zc, lo, hi, rho)
+  }
+  out
 }
 
 #' UVSDT probabilities
@@ -2862,7 +2922,7 @@ rebuild_design_matrices <- function(model, newdata) {
                     "dprime_B", "lambda_B",
                     "dprime_L", "sigma_L", "lambda_L",
                     "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "rec_crit", "know_crit",
+                    "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                     "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     if (isTRUE(md[[paste0("has_", pname)]])) {
@@ -2880,7 +2940,7 @@ rebuild_design_matrices <- function(model, newdata) {
                       "dprime_B", "lambda_B",
                       "dprime_L", "sigma_L", "lambda_L", "rec_crit", "know_crit",
                       "discrim", "discrim_B", "sigma_B", "sigma2_B",
-                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
+                      "rho", "rho_B", "rho_N", "lambda2", "lambda2_B", "mratio", "mratio_N", "sigma_meta", "criterion_scale", "criterion2_scale")
   for (pname in all_re_params) {
     re_list <- md[[paste0(pname, "_random")]]
     if (is.null(re_list)) next

@@ -470,12 +470,14 @@ BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf3F32, 7, 24, (bvn::cdf_multi_array<3, 0>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
 BAYESROC_F32(BayesrocCdpCellF32, 11, 10, cdp_k);
+BAYESROC_F32(BayesrocMetadCellF32, 5, 5, bvn::metad_array);
 
 #define BAYESROC_F64(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F64Impl<NI, NO, K>),                           \
                                 ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
 
 BAYESROC_F64(BayesrocCdpCell, 11, 10, cdp_k);
+BAYESROC_F64(BayesrocMetadCell, 5, 5, bvn::metad_array);
 BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
 BAYESROC_F64(BayesrocBvnCdf, 3, 4, cdf_k);
 BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);

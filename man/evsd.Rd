@@ -37,7 +37,22 @@ old-item distributions have unit SD.
 \item{criterion}{(required) K-1 confidence thresholds, parameterized
 internally as a mid-anchor \code{thresh_mid} plus K-2 ordered gaps. Identity
 link on the gap parameterization.}
+\item{sigma_meta}{(optional) SD of Gaussian noise added to the decision
+evidence before the confidence rating (Bang et al., 2019). Log link.
+If omitted, the rating is read from the decision evidence itself.}
 }
+}
+
+\subsection{Gaussian meta-noise}{
+
+With \code{sigma_meta}, the decision uses the evidence x (noise N(0, 1), signal
+N(d', 1)) against the type-1 criterion c0, the middle threshold, and the
+rating uses y = x + e, e ~ N(0, sigma_meta^2), against the confidence
+criteria on the side of the decision; when y falls on the other side of c0
+the rating is the lowest confidence. Each cell is a bivariate normal
+rectangle with correlation 1 / sqrt(1 + sigma_meta^2). Requires the probit
+link and an even number of response categories (at least 4). As
+\code{sigma_meta} goes to 0 the model becomes the ordinary rating model.
 }
 
 \subsection{Formula syntax}{
@@ -52,6 +67,10 @@ link on the gap parameterization.}
 \references{
 Macmillan, N. A., & Creelman, C. D. (2005). \emph{Detection theory: A user's
 guide} (2nd ed.). Lawrence Erlbaum.
+
+Bang, J. W., Shekhar, M., & Rahnev, D. (2019). Sensory noise increases
+metacognitive efficiency. \emph{Journal of Experimental Psychology: General},
+\emph{148}(3), 437-452.
 }
 \seealso{
 \code{\link[=uvsd]{uvsd()}} for unequal-variance extension, \code{\link[=dpsd]{dpsd()}} for dual-process,

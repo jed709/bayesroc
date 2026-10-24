@@ -176,6 +176,18 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   if (isTRUE(model_data$has_rho_N)) {
     lines <- c(lines, "", "  int<lower=1> P_rho_N;", "  matrix[N, P_rho_N] X_rho_N;")
   }
+  if (identical(model_data$family, "metadt")) {
+    lines <- c(lines, "  real is_old_mid;  // midpoint of the old/new coding")
+  }
+  if (isTRUE(model_data$has_mratio)) {
+    lines <- c(lines, "", "  int<lower=1> P_mratio;", "  matrix[N, P_mratio] X_mratio;")
+  }
+  if (isTRUE(model_data$has_mratio_N)) {
+    lines <- c(lines, "", "  int<lower=1> P_mratio_N;", "  matrix[N, P_mratio_N] X_mratio_N;")
+  }
+  if (isTRUE(model_data$has_sigma_meta)) {
+    lines <- c(lines, "", "  int<lower=1> P_sigma_meta;", "  matrix[N, P_sigma_meta] X_sigma_meta;")
+  }
   if (isTRUE(model_data$has_rec_crit)) {
     lines <- c(lines, "", "  // rec_crit (recollection criterion) fixed effects",
                "  int<lower=1> P_rec_crit;", "  matrix[N, P_rec_crit] X_rec_crit;")
@@ -266,7 +278,7 @@ generate_transformed_data_block_v2 <- function(model_data, family) {
   lines <- c("transformed data {")
   
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
-                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
+                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -400,6 +412,9 @@ generate_parameters_block_v2 <- function(model_data, family) {
   if (isTRUE(model_data$has_rho)) lines <- c(lines, "  vector[P_rho] beta_rho;  // Fisher z scale")
   if (isTRUE(model_data$has_rho_B)) lines <- c(lines, "  vector[P_rho_B] beta_rho_B;  // Fisher z scale")
   if (isTRUE(model_data$has_rho_N)) lines <- c(lines, "  vector[P_rho_N] beta_rho_N;  // Fisher z scale")
+  if (isTRUE(model_data$has_mratio)) lines <- c(lines, "  vector[P_mratio] beta_mratio;  // log scale")
+  if (isTRUE(model_data$has_mratio_N)) lines <- c(lines, "  vector[P_mratio_N] beta_mratio_N;  // log scale")
+  if (isTRUE(model_data$has_sigma_meta)) lines <- c(lines, "  vector[P_sigma_meta] beta_sigma_meta;  // log scale")
   if (isTRUE(model_data$has_lambda2)) lines <- c(lines, "  vector[P_lambda2] beta_lambda2;  // R_S source recollection (logit scale)")
   if (isTRUE(model_data$has_lambda2_B)) lines <- c(lines, "  vector[P_lambda2_B] beta_lambda2_B;  // R_S_B source recollection for Source B (logit scale)")
   if (isTRUE(model_data$has_rec_crit)) {
@@ -433,7 +448,7 @@ generate_parameters_block_v2 <- function(model_data, family) {
   }
   
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
-                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
+                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -527,7 +542,7 @@ generate_transformed_parameters_block_v2 <- function(model_data, family) {
   
   
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
-                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
+                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -791,6 +806,15 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
     rho_N_coefs <- model_data$rho_N_fixed$coef_names
     lines <- c(lines, generate_fixed_priors("rho_N", rho_N_coefs, "beta_rho_N"))
   }
+  if (isTRUE(model_data$has_mratio)) {
+    lines <- c(lines, generate_fixed_priors("mratio", model_data$mratio_fixed$coef_names, "beta_mratio"))
+  }
+  if (isTRUE(model_data$has_mratio_N)) {
+    lines <- c(lines, generate_fixed_priors("mratio_N", model_data$mratio_N_fixed$coef_names, "beta_mratio_N"))
+  }
+  if (isTRUE(model_data$has_sigma_meta)) {
+    lines <- c(lines, generate_fixed_priors("sigma_meta", model_data$sigma_meta_fixed$coef_names, "beta_sigma_meta"))
+  }
   if (isTRUE(model_data$has_lambda2)) {
     lambda2_coefs <- model_data$lambda2_fixed$coef_names
     lines <- c(lines, generate_fixed_priors("lambda2", lambda2_coefs, "beta_lambda2"))
@@ -838,7 +862,7 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
   }
   
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
-                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "rec_crit", "know_crit",
+                   "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta", "rec_crit", "know_crit",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -1341,7 +1365,7 @@ generate_generated_quantities_block_v2 <- function(model_data, family, batch_inf
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                     "rec_crit", "know_crit",
                     "dprime_B", "lambda_B", "discrim", "discrim_B",
-                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
+                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta",
                     "lambda2", "lambda2_B", "dprime_L", "sigma_L", "lambda_L")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -1410,7 +1434,7 @@ get_all_groups <- function(model_data) {
     groups <- c(groups, names(model_data$criterion2$random))
   }
   for (pname in c("dprime_B", "lambda_B", "discrim", "discrim_B",
-                  "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
+                  "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta",
                   "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")) {
     re_list <- model_data[[paste0(pname, "_random")]]
     if (!is.null(re_list)) groups <- c(groups, names(re_list))
@@ -1426,7 +1450,7 @@ get_all_term_indices <- function(model_data) {
   
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2", "rec_crit", "know_crit",
                    "dprime_B", "lambda_B", "discrim", "discrim_B",
-                   "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
+                   "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta",
                    "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]
@@ -1470,7 +1494,7 @@ get_all_z_matrices <- function(model_data) {
   param_names <- c("dprime", "sigma", "lambda", "dprime2", "sigma2",
                     "rec_crit", "know_crit",
                     "dprime_B", "lambda_B", "discrim", "discrim_B",
-                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N",
+                    "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "mratio", "mratio_N", "sigma_meta",
                     "dprime_L", "sigma_L", "lambda_L", "lambda2", "lambda2_B", "criterion_scale", "criterion2_scale")
   for (pname in param_names) {
     re_list <- model_data[[paste0(pname, "_random")]]

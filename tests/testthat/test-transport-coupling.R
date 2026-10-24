@@ -43,7 +43,13 @@
     cor_thresholds = brf(conf | old ~ 1 + (1 | subj), criterion ~ g + (1 + x | gr(subj, cor_thresholds = FALSE)) +
                            (1 | gr(item, cor_thresholds = FALSE)), family = evsd()),
     encoding = brf(conf | old ~ 0 + a + (0 + a | subj), sigma ~ a + (1 | subj), criterion ~ 1 + (1 | subj),
-                   family = uvsd())
+                   family = uvsd()),
+    metad_shared = rhs("conf | old", c("criterion", "mratio"), nest, metad()),
+    metad_split = brf(conf | old ~ 1 + (1 | subj) + (1 | item), criterion ~ x + (1 | subj),
+                      mratio_old ~ 0 + g + (1 | p | subj), mratio_new ~ 1 + (1 | p | subj) + (1 | item),
+                      family = metad("relative")),
+    metad_one_side = brf(conf | old ~ 1 + (1 | subj), criterion ~ 1 + (1 | subj),
+                         mratio_new ~ x + (1 + x | subj) + (1 | item), family = metad())
   )
 }
 

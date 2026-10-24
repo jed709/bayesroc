@@ -374,6 +374,13 @@ def _param_rows(config, param, N):
     with the population coefficients on those rows only."""
     if config.get("family") in ("cumulative", "bivariate_cumulative", "source_mixture"):
         return None
+    if config.get("family") == "metadt":
+        if param not in ("mratio", "mratio_N") or config.get("metad_shared"):
+            return None
+        side = 2 * np.asarray(config["y"], dtype=int).reshape(-1) > int(config["K"])
+        if len(side) != N:
+            return None
+        return side if param == "mratio" else ~side
     if param not in _OLD_ONLY and param not in _NEW_ONLY:
         return None
     if param == "rho" and config.get("cdp_rho_shared"):

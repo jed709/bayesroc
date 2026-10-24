@@ -541,32 +541,27 @@ _DW_TIER_NODES = (8, 10, 12, 14, 16, 20, 28, 32, 40, 48, 64, 80, 96, 128)
 
 
 def _dw_nodes(rho, m):
+    """The Gauss-Legendre nodes of the sine-rule integral on a trailing axis of length m."""
     r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
     A = _asin(r)
     X, W = _DW_RULES[m]
-    nodes = []
-    for j in range(m):
-        xp = (X[j] + 1.0) / 2.0
-        s = _sin_halfpi(A * xp)
-        ic2 = 1.0 / (1.0 - s * s)
-        nodes.append((float(W[j]), s, ic2, s * ic2, float(W[j] * xp) * jnp.sqrt(ic2)))
-    return r, A, nodes
+    xp = jnp.asarray((X + 1.0) / 2.0, dtype=A.dtype)
+    w = jnp.asarray(W, dtype=A.dtype)
+    s = _sin_halfpi(A[..., None] * xp)
+    ic2 = 1.0 / (1.0 - s * s)
+    return r, A, (w, s, ic2, s * ic2, w * xp * jnp.sqrt(ic2))
 
 
 def _dw_corner(h, k, A, nodes):
-    a = (h * h + k * k) / 2.0
-    b = h * k
-    S0 = 0.0
-    S1 = 0.0
-    S2 = 0.0
-    T = 0.0
-    for (w, s, ic2, sic, wdq) in nodes:
-        e = jnp.exp(-a * ic2 + b * sic)
-        we = w * e
-        S0 = S0 + we
-        S1 = S1 + we * ic2
-        S2 = S2 + we * sic
-        T = T + e * wdq * (b - 2.0 * a * sic + 2.0 * b * s * sic)
+    w, s, ic2, sic, wdq = nodes
+    a = ((h * h + k * k) / 2.0)[..., None]
+    b = (h * k)[..., None]
+    e = jnp.exp(-a * ic2 + b * sic)
+    we = w * e
+    S0 = jnp.sum(we, -1)
+    S1 = jnp.sum(we * ic2, -1)
+    S2 = jnp.sum(we * sic, -1)
+    T = jnp.sum(e * wdq * (b - 2.0 * a * sic + 2.0 * b * s * sic), -1)
     c = A / (4.0 * jnp.pi)
     return c * S0, -c * (h * S1 - k * S2), -c * (k * S1 - h * S2), (S0 + A * T) / (4.0 * jnp.pi)
 
@@ -689,14 +684,14 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
-                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"),
+                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
-                         ("cdp_cell", "CdpCell"),
+                         ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
@@ -1289,6 +1284,196 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
         return val, tangent_out
 
     return _batch_fused
+
+
+def _thresh_layout(K):
+    """The mid-anchor + gaps threshold layout for K categories: (n_thresh, mid_idx, gap_mask,
+    build), gap_mask[g, t] the sign with which gap g enters threshold t, build(mid, gap_vals) the
+    [N, n_thresh] thresholds."""
+    n_thresh = K - 1
+    n_gaps = n_thresh - 1
+    mid_idx = (n_thresh - 1) // 2
+    n_upper = n_thresh - mid_idx - 1
+    gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
+    for g in range(n_gaps):
+        if g < n_upper:
+            gap_mask[g, mid_idx + 1 + g:] = 1.0
+        else:
+            gap_mask[g, :mid_idx - (g - n_upper)] = -1.0
+
+    def build(thresh_mid, gap_vals):
+        parts = []
+        if mid_idx > 0:
+            parts.append(thresh_mid[:, None] - jnp.cumsum(gap_vals[:, n_upper:], axis=1)[:, ::-1])
+        parts.append(thresh_mid[:, None])
+        if n_upper > 0:
+            parts.append(thresh_mid[:, None] + jnp.cumsum(gap_vals[:, :n_upper], axis=1))
+        return jnp.concatenate(parts, axis=1)
+
+    return n_thresh, mid_idx, gap_mask, build
+
+
+def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
+    """(lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c) of log P(R | S) + log P'(cell) - log P'(R | S), every
+    term an upper-tail probability after reflecting "new" responses."""
+    s = jnp.where(old, 1.0, -1.0).astype(z_a.dtype)
+    ua, uc = s * z_a, s * z_c
+    ul, uh = jnp.where(old, z_lo, -z_hi), jnp.where(old, z_hi, -z_lo)
+    fl = _pfloor()
+    Pa, da, qa = _probit_triple(ua)
+    Pc, dc, qc = _probit_triple(uc)
+    Pl, dl, ql = _probit_triple(ul)
+    Ph, dh, qh = _probit_triple(uh)
+    Qa = jnp.where(ua >= 0, qa, 1.0 - qa)
+    Qc = jnp.where(uc >= 0, qc, 1.0 - qc)
+    D = jnp.where(ul >= 0, ql - qh, Ph - Pl)
+    ia = jnp.where(Qa > fl, 1.0 / jnp.maximum(Qa, fl), 0.0)
+    ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
+    ic = jnp.where(Qc > fl, 1.0 / jnp.maximum(Qc, fl), 0.0)
+    lp = jnp.log(jnp.maximum(Qa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Qc, fl))
+    bl, bh = -dl * ib, dh * ib
+    return lp, -s * da * ia, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), s * dc * ic
+
+
+def _metad_cell(z_a, z_lo, z_hi, z_c, old):
+    if _native_ok(z_a):
+        return _native_call("metad_cell", 5, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype)])
+    return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
+
+
+def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative):
+    """Meta-d' log-likelihood over [N] trials with custom JVP: the type-1 decision and the
+    meta-level rating truncated at the meta criterion, the confidence criteria shifted by
+    (M - 1)(c - q d) under the relative anchor."""
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    half = K // 2
+
+    def _pieces(y, d, m_old, m_new, a, thresh_mid, gaps):
+        gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
+        thresh = build(thresh_mid, gap_vals)
+        old = y > half
+        M = jnp.where(old, m_old, m_new)
+        c = thresh_mid
+        a_c = a - q
+        mu_m = q * d + M * d * a_c
+        c_mid = c - q * d
+        off = ((M - 1.0) * c_mid if relative else 0.0) - mu_m
+        k_hi = jnp.clip(y - 1, 0, n_thresh - 1)
+        k_lo = jnp.clip(y - 2, 0, n_thresh - 1)
+        rows = jnp.arange(y.shape[0])
+        z_lo = jnp.where(y > 1, thresh[rows, k_lo] + off, -_OPEN)
+        z_hi = jnp.where(y < K, thresh[rows, k_hi] + off, _OPEN)
+        out = _metad_cell(c - a * d, z_lo, z_hi, c + off, old)
+        return out, (old, M, a_c, c_mid, k_lo, k_hi, gap_vals)
+
+    @custom_jvp
+    def _metad(y, d, m_old, m_new, a, thresh_mid, gaps):
+        return _pieces(y, d, m_old, m_new, a, thresh_mid, gaps)[0][0]
+
+    @_metad.defjvp
+    def _metad_jvp(primals, tangents):
+        y, d, m_old, m_new, a, thresh_mid, gaps = primals
+        _, t_d, t_mo, t_mn, _, t_mid, t_gaps = tangents
+        (lp, g_a, g_lo, g_hi, g_c), (old, M, a_c, c_mid, k_lo, k_hi, gap_vals) = _pieces(*primals)
+        g_lo = jnp.where(y > 1, g_lo, 0.0)
+        g_hi = jnp.where(y < K, g_hi, 0.0)
+        G = g_lo + g_hi + g_c
+        if relative:
+            d_mid = g_a + g_c + (M - 1.0) * G
+            d_d = -a * g_a - G * M * a
+            d_M = G * (c_mid - d * a_c)
+        else:
+            d_mid = g_a + g_c
+            d_d = -a * g_a - G * (q + M * a_c)
+            d_M = -G * d * a_c
+        gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
+        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
+        d_gaps = (gm[:, k_lo].T * g_lo[:, None] + gm[:, k_hi].T * g_hi[:, None]) * gap_d
+        tan = (d_d * t_d + jnp.where(old, d_M, 0.0) * t_mo + jnp.where(old, 0.0, d_M) * t_mn +
+               (d_mid + g_lo + g_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        return lp, tan
+
+    return _metad
+
+
+def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
+    """Gaussian meta-noise (evsd with sigma_meta) log-likelihood with custom JVP: the decision on
+    x ~ N(mu, 1) against the middle threshold, the rating on y = x + e, e ~ N(0, s^2), a bivariate
+    normal rectangle with correlation 1 / sqrt(1 + s^2); y on the other side of the decision
+    criterion gives the lowest confidence."""
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    half = K // 2
+
+    def _pieces(y, mu, sm, thresh_mid, gaps):
+        gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
+        thresh = build(thresh_mid, gap_vals)
+        old = y > half
+        tau = jnp.sqrt(1.0 + sm * sm)
+        inv_tau = 1.0 / tau
+        open_lo = jnp.where(old, y == half + 1, y == 1)
+        open_hi = jnp.where(old, y == K, y == half)
+        k_hi = jnp.clip(y - 1, 0, n_thresh - 1)
+        k_lo = jnp.clip(y - 2, 0, n_thresh - 1)
+        rows = jnp.arange(y.shape[0])
+        z_lo = jnp.where(open_lo, -_OPEN, (thresh[rows, k_lo] - mu) * inv_tau)
+        z_hi = jnp.where(open_hi, _OPEN, (thresh[rows, k_hi] - mu) * inv_tau)
+        z_c = thresh_mid - mu
+        z1_lo = jnp.where(old, z_c, -_OPEN)
+        z1_hi = jnp.where(old, _OPEN, z_c)
+        out = _bvn_rect(z1_lo, z1_hi, z_lo, z_hi, inv_tau)
+        return out, (old, open_lo, open_hi, z_lo, z_hi, inv_tau, k_lo, k_hi, gap_vals)
+
+    @custom_jvp
+    def _gnoise(y, mu, sm, thresh_mid, gaps):
+        p = _pieces(y, mu, sm, thresh_mid, gaps)[0][0]
+        return jnp.log(jnp.clip(p, _pfloor()))
+
+    @_gnoise.defjvp
+    def _gnoise_jvp(primals, tangents):
+        y, mu, sm, thresh_mid, gaps = primals
+        _, t_mu, t_sm, t_mid, t_gaps = tangents
+        (p, d1l, d1h, d2l, d2h, drho), (old, open_lo, open_hi, z_lo, z_hi, inv_tau, k_lo, k_hi, gap_vals) = \
+            _pieces(*primals)
+        prob = jnp.clip(p, _pfloor())
+        inv_p = jnp.where(p > _pfloor(), 1.0 / prob, 0.0)
+        g_c = jnp.where(old, d1l, d1h) * inv_p
+        g_lo = jnp.where(open_lo, 0.0, d2l * inv_p)
+        g_hi = jnp.where(open_hi, 0.0, d2h * inv_p)
+        zl = jnp.where(open_lo, 0.0, z_lo)
+        zh = jnp.where(open_hi, 0.0, z_hi)
+        d_mu = -g_c - (g_lo + g_hi) * inv_tau
+        d_tau = -(g_lo * zl + g_hi * zh) * inv_tau - drho * inv_p * inv_tau * inv_tau
+        d_sm = d_tau * sm * inv_tau
+        gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
+        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
+        a_lo, a_hi = g_lo * inv_tau, g_hi * inv_tau
+        d_gaps = (gm[:, k_lo].T * a_lo[:, None] + gm[:, k_hi].T * a_hi[:, None]) * gap_d
+        tan = (d_mu * t_mu + d_sm * t_sm + (g_c + a_lo + a_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        return jnp.log(prob), tan
+
+    return _gnoise
+
+
+def fused_loglik_gnoise(y, K, mu, sm, thresh_mid, gaps, gap_link="log"):
+    """Gaussian meta-noise log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
+    N = y.shape[0]
+    is_softplus = gap_link == "softplus"
+    gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
+    key = ("gnoise", int(K), bool(is_softplus))
+    if key not in _fused_cache:
+        _fused_cache[key] = _make_fused_gnoise_loglik(int(K), bool(is_softplus))
+    return _fused_cache[key](y, mu, sm, thresh_mid, gaps_per_obs)
+
+
+def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link="log", q=0.5, relative=False):
+    """Meta-d' log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
+    N = y.shape[0]
+    is_softplus = gap_link == "softplus"
+    gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
+    key = ("metad", int(K), bool(is_softplus), float(q), bool(relative))
+    if key not in _fused_cache:
+        _fused_cache[key] = _make_fused_metad_loglik(int(K), bool(is_softplus), float(q), bool(relative))
+    return _fused_cache[key](y, d, m_old, m_new, is_old, thresh_mid, gaps_per_obs)
 
 
 def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
@@ -3497,6 +3682,12 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     has_fused_inputs = (thresh_mid is not None and log_gaps is not None)
     is_simple = family_name in ("evsdt", "uvsdt", "cumulative")
 
+    if family_name == "evsdt" and kwargs.get("sigma_meta") is not None and has_fused_inputs:
+        log_lik = fused_loglik_gnoise(y, K, is_old * mu_signal, kwargs["sigma_meta"], thresh_mid, log_gaps, gap_link)
+        if counts is not None:
+            log_lik = log_lik * counts
+        return log_lik
+
     if is_simple and has_fused_inputs and lambda_val is None:
         mu_per_obs = is_old * mu_signal
         sd_per_obs = jnp.where(is_old > 0, sd_signal, sd_noise)
@@ -4725,6 +4916,16 @@ def sdt_model(config):
                 corr=cdp_corr,
             )
 
+    elif family_name == "metadt":
+        ones = jnp.ones(N, dtype=_FLOAT)
+        m_old = trial_params.get("mratio", ones)
+        m_new = m_old if config.get("metad_shared") else trial_params.get("mratio_N", ones)
+        log_lik = fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
+                                     is_old, thresh_mid_vec, log_gaps_obs, gap_link,
+                                     q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")))
+        if counts is not None:
+            log_lik = log_lik * counts
+
     elif is_bivariate:
         y2 = jnp.array(config["y2"], dtype=jnp.int32)
         item_type = jnp.array(config["item_type"], dtype=jnp.int32)
@@ -5027,6 +5228,7 @@ def sdt_model(config):
             log_gaps=log_gaps_obs,
             gap_link=gap_link,
             is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
+            sigma_meta=trial_params.get("sigma_meta"),
         )
 
     if counts is not None:
