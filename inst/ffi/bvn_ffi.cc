@@ -515,9 +515,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitCell, ProbitCellImpl,
 template <typename T>
 ffi::Error PcqImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer c, ffi::Result<ffi::AnyBuffer> lp,
                    ffi::Result<ffi::AnyBuffer> dc, ffi::Result<ffi::AnyBuffer> da) {
-  const int64_t N = a.dimensions()[0];
-  const int n = a.dimensions().size() > 1 ? static_cast<int>(a.dimensions()[1]) : 1;
+  const auto dims = a.dimensions();
+  const int n = dims.size() > 1 ? static_cast<int>(dims[dims.size() - 1]) : 1;
   if (n > pcq::kMaxTerms) return ffi::Error::InvalidArgument("bayesroc: pcq term count");
+  const int64_t N = a.element_count() / n;
   DBuf<T> pa(a), pc(c);
   DOut<T> ol(lp), oc(dc), oa(da);
   const double *A = pa.ptr, *C = pc.ptr;
