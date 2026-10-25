@@ -896,7 +896,10 @@ print.broc_formula <- function(x, ...) {
     print_parameter_formula(x[["mratio_N"]])
   }
   if (!is.null(x[["sigma_meta"]])) {
-    cat("\nSigma_meta (Gaussian meta-noise SD):\n")
+    fam <- attr(x, ".broc_family")
+    cat(if (identical(fam$family, "lineup")) "\nSigma_b (SD of the evidence shared by a lineup's faces):\n"
+        else if (identical(fam$meta_noise, "lognormal")) "\nSigma_meta (lognormal meta-noise SD):\n"
+        else "\nSigma_meta (Gaussian meta-noise SD):\n")
     print_parameter_formula(x[["sigma_meta"]])
   }
   if (!is.null(x[["bias"]])) {
