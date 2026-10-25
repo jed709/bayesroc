@@ -88,22 +88,6 @@ test_that("mafc: smoke", {
   expect_true(all(c("dprime", "sigma", "bias") %in% sub("\\[.*", "", est$parameter)))
 })
 
-test_that("lineup: smoke", {
-  skip_if_no_cmdstan()
-  d <- .sim_lineup(n_set = 8, n_per = 25, sigma_b = 0.3)
-  m <- suppressMessages(broc(brf(resp(id, conf) | present ~ 1 + (1 | set), criterion ~ 1, sigma ~ 1, dprime_innocent ~ 1,
-                                 sigma_b ~ 1, family = lineup(size = "k", suspect = "designated")), d))
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  parallel_chains = .fast_chains,
-                  iter_warmup = .fast_iter, iter_sampling = .fast_iter)
-  .assert_post_fit_works(fit)
-  p <- predict(fit, newdata = d[1:6, ], summary = FALSE, ndraws = 10)
-  expect_identical(dim(p), c(10L, 6L, 8L))
-  expect_equal(apply(p, 1:2, sum), matrix(1, 10, 6), tolerance = 1e-8)
-  est <- estimates(fit)
-  expect_true(all(c("dprime", "sigma", "dprime_innocent", "sigma_b") %in% est$parameter))
-})
-
 test_that("uvsd: smoke", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)

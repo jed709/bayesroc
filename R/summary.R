@@ -89,8 +89,7 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
   groups <- unique(vapply(blocks, function(b) b$group, character(1)))
   result$model_info <- list(
     family = model$family$family, link = model$family$link$name,
-    formula = .formula_lines(model), N = model$model_data$N,
-    K = if (!is.null(model$model_data$lineup)) length(model$model_data$lineup$code_labels) else model$model_data$K,
+    formula = .formula_lines(model), N = model$model_data$N, K = model$model_data$K,
     K2 = model$model_data$K2, counts = !is.null(model$stan_data$counts),
     n_obs = sum(.row_weights(model)),
     groups = stats::setNames(vapply(groups, function(g) length(unique(model$data[[g]])), integer(1)), groups),

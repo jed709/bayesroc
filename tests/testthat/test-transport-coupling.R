@@ -14,12 +14,6 @@
   d$source <- factor(sample(c("A", "B"), n, TRUE))
   d$y1 <- sample(1:4, n, TRUE); d$y2 <- sample(1:4, n, TRUE)
   d$pchoice <- sample(1:3, n, TRUE); d$ptarget <- sample(1:3, n, TRUE)
-  d$k <- sample(c(1L, 3L, 6L), n, TRUE)
-  d$des <- d$old == 0 & stats::runif(n) < 0.5
-  d$lid <- sample(c("reject", "suspect", "filler"), n, TRUE)
-  d$lid[d$k == 1L & d$lid == "filler"] <- "suspect"
-  d$lid[d$old == 0 & !d$des & d$k > 1L & d$lid == "suspect"] <- "filler"
-  d$lconf <- ifelse(d$lid == "reject", sample(1:2, n, TRUE), sample(1:3, n, TRUE))
   d
 }
 
@@ -61,11 +55,7 @@
     lnoise = brf(conf | old ~ 1 + (1 | subj) + (1 | item), criterion ~ x + (1 | subj),
                  sigma_meta ~ 0 + g + (1 | p | subj) + (1 | item), family = evsd(meta_noise = "lognormal")),
     mafc = rhs("pchoice | ptarget", c("sigma", "bias"), nest, mafc()),
-    mafc_slopes = brf(pchoice | ptarget ~ x + (1 | subj), bias ~ x + (1 + x | subj) + (1 | item), family = mafc()),
-    lineup = rhs("resp(lid, lconf) | old", c("criterion", "sigma", "dprime_innocent", "sigma_innocent", "sigma_b"), nest,
-                 lineup(size = "k", suspect = "des")),
-    lineup_slopes = brf(resp(lid, lconf) | old ~ x + (1 + x | subj), criterion ~ 1 + (1 | subj),
-                        dprime_innocent ~ x + (1 | item), family = lineup(size = "k", suspect = "des"))
+    mafc_slopes = brf(pchoice | ptarget ~ x + (1 | subj), bias ~ x + (1 + x | subj) + (1 | item), family = mafc())
   )
 }
 

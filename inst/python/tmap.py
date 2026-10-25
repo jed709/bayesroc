@@ -385,15 +385,6 @@ def _param_rows(config, param, N):
     with the population coefficients on those rows only."""
     if config.get("family") in ("cumulative", "bivariate_cumulative", "source_mixture"):
         return None
-    if config.get("family") == "lineup":
-        slot = np.asarray(config.get("lu_slot", []), dtype=int).reshape(-1)
-        if len(slot) != N:
-            return None
-        if param in ("dprime", "sigma"):
-            return slot == 1
-        if param in ("dprime_L", "sigma_L"):
-            return slot == 2
-        return None
     if config.get("family") == "metadt":
         if param not in ("mratio", "mratio_N") or config.get("metad_shared"):
             return None

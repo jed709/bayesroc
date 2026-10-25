@@ -18,7 +18,7 @@ generate_batch_cpp <- function(model_data, family) {
   family_name <- if (is.list(family)) family$family else family
 
   supported <- c("evsdt", "uvsdt", "cumulative", "dpsdt", "mixture", "source_mixture", "vrdp2d",
-                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "cdp", "metadt", "mafc", "lineup")
+                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "cdp", "metadt", "mafc")
   if (!(family_name %in% supported)) return(NULL)
 
   params <- collect_batch_params(model_data, family_name)
@@ -64,7 +64,7 @@ collect_batch_params <- function(model_data, family_name) {
   is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "bivariate_cumulative")
   is_cdp <- family_name %in% c("cdp")
 
-  if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc", "lineup") && isTRUE(model_data$has_sigma)) {
+  if (family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc") && isTRUE(model_data$has_sigma)) {
     params[["sigma"]] <- list(
       fixed  = model_data$sigma_fixed,
       random = model_data$sigma_random,
@@ -128,8 +128,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if ((family_name == "mixture" && isTRUE(model_data$has_lure_mixture)) ||
-      (family_name == "lineup" && isTRUE(model_data$has_dprime_L))) {
+  if (family_name == "mixture" && isTRUE(model_data$has_lure_mixture)) {
     params[["dprime_L"]] <- list(
       fixed  = model_data$dprime_L_fixed,
       random = model_data$dprime_L_random,
@@ -137,7 +136,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if (family_name %in% c("mixture", "lineup") && isTRUE(model_data$has_sigma_L)) {
+  if (family_name == "mixture" && isTRUE(model_data$has_sigma_L)) {
     params[["sigma_L"]] <- list(
       fixed  = model_data$sigma_L_fixed,
       random = model_data$sigma_L_random,
@@ -203,7 +202,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if (family_name %in% c("evsdt", "lineup") && isTRUE(model_data$has_sigma_meta)) {
+  if (family_name == "evsdt" && isTRUE(model_data$has_sigma_meta)) {
     params[["sigma_meta"]] <- list(
       fixed  = model_data$sigma_meta_fixed,
       random = model_data$sigma_meta_random,
@@ -284,8 +283,7 @@ collect_batch_params <- function(model_data, family_name) {
 
   params[[".family"]]      <- family_name
   params[[".has_counts"]]  <- isTRUE(model_data$has_counts)
-  params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc", "lineup")
-  params[[".is_lineup"]]   <- family_name == "lineup"
+  params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc")
   params[[".is_mafc"]]     <- family_name == "mafc"
   params[[".has_bias"]]    <- family_name == "mafc" && isTRUE(model_data$has_bias)
   params[[".has_lambda"]]  <- isTRUE(model_data$has_lambda) && family_name %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
@@ -296,8 +294,8 @@ collect_batch_params <- function(model_data, family_name) {
     family_name %in% c("source_mixture", "bivariate_dp")
   params[[".has_lambda_B_dp"]] <- isTRUE(model_data$has_lambda_B) && family_name == "bivariate_dp"
   params[[".has_lure_mixture"]] <- isTRUE(model_data$has_lure_mixture) && family_name == "mixture"
-  params[[".has_dprime_L"]] <- isTRUE(model_data$has_dprime_L) && family_name %in% c("mixture", "lineup")
-  params[[".has_sigma_L"]]  <- isTRUE(model_data$has_sigma_L) && family_name %in% c("mixture", "lineup")
+  params[[".has_dprime_L"]] <- isTRUE(model_data$has_dprime_L) && family_name == "mixture"
+  params[[".has_sigma_L"]]  <- isTRUE(model_data$has_sigma_L) && family_name == "mixture"
   params[[".has_lambda_L"]] <- isTRUE(model_data$has_lambda_L) && family_name == "mixture"
   params[[".is_cumulative"]] <- family_name == "cumulative"
   params[[".has_dp_fixed"]] <- !is.null(model_data$dprime_fixed) && model_data$dprime_fixed$n_coef > 0
@@ -315,8 +313,8 @@ collect_batch_params <- function(model_data, family_name) {
   params[[".has_rho_N"]]    <- isTRUE(model_data$has_rho_N) && (is_bivariate || is_cdp)
   params[[".cdp_rho_shared"]] <- is_cdp && isTRUE(model_data$cdp_rho_shared)
   params[[".is_metad"]]     <- family_name == "metadt"
-  params[[".has_sigma_meta"]] <- isTRUE(model_data$has_sigma_meta) && family_name %in% c("evsdt", "lineup")
-  params[[".lnoise"]] <- params[[".has_sigma_meta"]] && family_name == "evsdt" && identical(model_data$meta_noise, "lognormal")
+  params[[".has_sigma_meta"]] <- isTRUE(model_data$has_sigma_meta) && family_name == "evsdt"
+  params[[".lnoise"]] <- params[[".has_sigma_meta"]] && identical(model_data$meta_noise, "lognormal")
   params[[".has_mratio"]]   <- isTRUE(model_data$has_mratio) && family_name == "metadt"
   params[[".has_mratio_N"]] <- isTRUE(model_data$has_mratio_N) && family_name == "metadt"
   params[[".metad_shared"]] <- family_name == "metadt" && isTRUE(model_data$metad_mratio_shared)
@@ -421,11 +419,6 @@ build_batch_signature <- function(model_data, family_name, params) {
     add_data("const std::vector<int>&",  "array[] int",  "m_alt")
   } else if (!isTRUE(params[[".is_cumulative"]])) {
     add_data("const std::vector<double>&", "array[] real", "is_old_d")
-  }
-  if (isTRUE(params[[".is_lineup"]])) {
-    add_data("const std::vector<int>&",  "array[] int",  "lu_kind")
-    add_data("const std::vector<int>&",  "array[] int",  "lu_slot")
-    add_data("const std::vector<int>&",  "array[] int",  "lu_size")
   }
   if (isTRUE(params[[".is_metad"]])) {
     add_data("const double&",            "real",         "is_old_mid")
@@ -1456,8 +1449,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
 
   if (isTRUE(params[[".is_mafc"]])) {
     emit_likelihood_mafc(L, params)
-  } else if (isTRUE(params[[".is_lineup"]])) {
-    emit_likelihood_lineup(L, params)
   } else if (family_name == "vrdp2d") {
     emit_likelihood_vrdp2d(L, params)
   } else if (isTRUE(params[[".is_bivariate"]])) {
@@ -1478,8 +1469,6 @@ generate_batch_cpp_code <- function(model_data, family_name, params, sig) {
   L$add("    if constexpr (is_autodiff) {")
   if (isTRUE(params[[".is_mafc"]])) {
     emit_gradient_accumulation_mafc(L, model_data, params)
-  } else if (isTRUE(params[[".is_lineup"]])) {
-    emit_gradient_accumulation_lineup(L, model_data, params, has_crit_re)
   } else if (family_name == "vrdp2d") {
     emit_gradient_accumulation_vrdp2d(L, model_data, params, has_crit_re, has_crit2_re)
   } else if (isTRUE(params[[".is_bivariate"]])) {
@@ -6763,91 +6752,4 @@ emit_bias_operands <- function(L, params) {
     re <- params[["bias"]]$random[[group]]
     emit_pack_mat(L, re_var_name("bias", group, re$cor_id), sprintf("grad_u_bias%d", i))
   }
-}
-
-# ============================================================================
-# Lineup (Independent Observations): likelihood and gradient
-# ============================================================================
-
-#' Emit the lineup cell log-likelihood
-#' @noRd
-emit_likelihood_lineup <- function(L, params) {
-  dpl <- if (isTRUE(params[[".has_dprime_L"]])) "dprime_L_n" else "0.0"
-  sg <- if (isTRUE(params[[".has_sigma"]])) "sigma_val" else "1.0"
-  sgl <- if (isTRUE(params[[".has_sigma_L"]])) "sigma_L_val" else "1.0"
-  sb <- if (isTRUE(params[[".has_sigma_meta"]])) "sigma_meta_val" else "0.0"
-  L$add("    const int slot_n = lu_slot[n];")
-  L$add(sprintf("    const double lu_m = slot_n == 1 ? dprime_n : slot_n == 2 ? %s : 0.0;", dpl))
-  L$add(sprintf("    const double lu_s = slot_n == 1 ? %s : slot_n == 2 ? %s : 1.0;", sg, sgl))
-  L$add("    const bool open_lo = yn == 1, open_hi = yn == K;")
-  L$add("    const int k_lo = open_lo ? -1 : yn - 2;")
-  L$add("    const int k_hi = open_hi ? -1 : yn - 1;")
-  L$add("    const lineup::Cell res = lineup::cell(static_cast<lineup::Kind>(lu_kind[n]), lu_size[n], lu_m, lu_s,")
-  L$add(sprintf("        open_lo ? 0.0 : thresh_n(k_lo), open_hi ? 0.0 : thresh_n(k_hi), %s, open_lo, open_hi);", sb))
-  if (params[[".has_counts"]]) {
-    L$add("    total_lp += res.lp * count_n;")
-  } else {
-    L$add("    total_lp += res.lp;")
-  }
-  L$add("    if (batch_ll_out) (*batch_ll_out)(n - n_start) = res.lp;")
-}
-
-#' Emit lineup gradient accumulation
-#' @noRd
-emit_gradient_accumulation_lineup <- function(L, model_data, params, has_crit_re) {
-  crit <- model_data$criterion
-  is_crit_intercept_only <- isTRUE(crit$is_intercept_only) || crit$n_coef == 1
-  w <- if (params[[".has_counts"]]) " * count_n" else ""
-  L$add(sprintf("    double d_dprime_n = (slot_n == 1 ? res.dm : 0.0)%s;", w))
-  if (isTRUE(params[[".has_dp_fixed"]])) {
-    L$add("    for (int p = 0; p < P_dp; ++p) grad_beta_dp(p) += d_dprime_n * X_dp_d(n, p);")
-  }
-  re_idx <- 0
-  for (group in names(params[["dprime"]]$random)) {
-    re_idx <- re_idx + 1
-    emit_re_gradient(L, dp_re_tag(re_idx), params[["dprime"]]$random[[group]], group, "d_dprime_n", "dprime", re_idx, "dp")
-  }
-  if (isTRUE(params[[".has_sigma"]])) {
-    L$add(sprintf("    double d_sigma_n = (slot_n == 1 ? res.ds * sigma_val : 0.0)%s;", w))
-    L$add("    for (int p = 0; p < P_sig; ++p) grad_beta_sig(p) += d_sigma_n * X_sig_d(n, p);")
-    re_idx <- 0
-    for (group in names(params[["sigma"]]$random)) {
-      re_idx <- re_idx + 1
-      emit_re_gradient(L, sig_re_tag(re_idx), params[["sigma"]]$random[[group]], group, "d_sigma_n", "sigma", re_idx, "sig")
-    }
-  }
-  if (isTRUE(params[[".has_dprime_L"]])) {
-    L$add(sprintf("    double d_dprime_L_n = (slot_n == 2 ? res.dm : 0.0)%s;", w))
-    L$add("    for (int p = 0; p < P_dpL; ++p) grad_beta_dpL(p) += d_dprime_L_n * X_dpL_d(n, p);")
-    re_idx <- 0
-    for (group in names(params[["dprime_L"]]$random)) {
-      re_idx <- re_idx + 1
-      emit_re_gradient(L, dpL_re_tag(re_idx), params[["dprime_L"]]$random[[group]], group, "d_dprime_L_n", "dprime_L",
-                       re_idx, "dpL")
-    }
-  }
-  if (isTRUE(params[[".has_sigma_L"]])) {
-    L$add(sprintf("    double d_sigma_L_n = (slot_n == 2 ? res.ds * sigma_L_val : 0.0)%s;", w))
-    L$add("    for (int p = 0; p < P_sigL; ++p) grad_beta_sigL(p) += d_sigma_L_n * X_sigL_d(n, p);")
-    re_idx <- 0
-    for (group in names(params[["sigma_L"]]$random)) {
-      re_idx <- re_idx + 1
-      emit_re_gradient(L, sigL_re_tag(re_idx), params[["sigma_L"]]$random[[group]], group, "d_sigma_L_n", "sigma_L",
-                       re_idx, "sigL")
-    }
-  }
-  if (isTRUE(params[[".has_sigma_meta"]])) {
-    L$add(sprintf("    double d_sigma_meta_n = res.dsb * sigma_meta_val%s;", w))
-    L$add("    for (int p = 0; p < P_sgm; ++p) grad_beta_sgm(p) += d_sigma_meta_n * X_sgm_d(n, p);")
-    re_idx <- 0
-    for (group in names(params[["sigma_meta"]]$random)) {
-      re_idx <- re_idx + 1
-      emit_re_gradient(L, sgm_re_tag(re_idx), params[["sigma_meta"]]$random[[group]], group, "d_sigma_meta_n",
-                       "sigma_meta", re_idx, "sgm")
-    }
-  }
-  L$add("")
-  L$add("    // Gradient: d_lp / d_thresh")
-  emit_thresh_propagation(L, model_data, params, has_crit_re, paste0("res.dlo", w), paste0("res.dhi", w),
-                          is_crit_intercept_only)
 }

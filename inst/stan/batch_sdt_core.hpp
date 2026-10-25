@@ -11,7 +11,6 @@
 #include "../include/bayesroc/bvn_tail.h"
 #include "../include/bayesroc/lnoise.h"
 #include "../include/bayesroc/mafc.h"
-#include "../include/bayesroc/lineup.h"
 
 namespace batch_sdt {
 

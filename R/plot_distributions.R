@@ -62,7 +62,6 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   setup$cache <- new.env(parent = emptyenv())
   w <- .row_weights(model)
   parts <- if (fam == "mafc") list(.mafc_distribution_curves(setup, cells, w))
-           else if (fam == "lineup") list(.lineup_distribution_curves(model, setup, cells, w))
            else lapply(responses, function(resp) .distribution_curves(model, setup, cells, w, by, resp, fam, bivariate))
   df <- do.call(rbind, lapply(parts, `[[`, "df"))
   crit <- do.call(rbind, lapply(parts, `[[`, "crit"))
@@ -147,47 +146,6 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
        what = "detection", dim = "Evidence")
 }
 
-# lineup: the evidence of one face, b + W, for the guilty suspect, a designated innocent suspect and a filler,
-# mixed over draws and rows, with the criteria the largest face is compared with
-.lineup_distribution_curves <- function(model, setup, cells, w) {
-  S <- setup$S
-  N <- length(cells)
-  slot <- setup$data_src$lu_slot
-  one <- matrix(1, S, N)
-  zero <- matrix(0, S, N)
-  sb2 <- (setup$tp[["sigma_meta"]] %||% zero)^2
-  d <- setup$tp[["dprime"]]
-  sg <- sqrt((setup$tp[["sigma"]] %||% one)^2 + sb2)
-  dl <- setup$tp[["dprime_L"]] %||% zero
-  sgl <- sqrt((setup$tp[["sigma_L"]] %||% one)^2 + sb2)
-  sf <- sqrt(1 + sb2)
-  levs <- levels(cells)
-  rng <- c(min(-4, stats::quantile(d - 4 * sg, 0.02)), max(4, stats::quantile(d + 4 * sg, 0.98)))
-  grid <- seq(rng[1], rng[2], length.out = 220)
-  mix <- function(mu, s, r) {
-    wr <- w[r] / sum(w[r])
-    vapply(grid, function(x) mean(stats::dnorm(x, mu[, r, drop = FALSE], s[, r, drop = FALSE]) %*% wr), numeric(1))
-  }
-  curves <- lapply(levs, function(l) {
-    r <- which(cells == l & slot == 1L)
-    if (!length(r)) return(NULL)
-    data.frame(x = grid, y = mix(d, sg, r), item = "Guilty suspect", cell = l)
-  })
-  all_rows <- seq_len(N)
-  df <- rbind(do.call(rbind, curves), data.frame(x = grid, y = mix(zero, sf, all_rows), item = "Fillers", cell = "Fillers"))
-  noise <- "Fillers"
-  if (any(slot == 2L)) {
-    r <- which(slot == 2L)
-    df <- rbind(df, data.frame(x = grid, y = mix(dl, sgl, r), item = "Innocent suspect", cell = "Innocent suspect"))
-    noise <- c("Innocent suspect", "Fillers")
-  }
-  df$dim <- "Evidence of one face"
-  crit <- .criteria_by_cell(setup$th, cells, w, levs)
-  crit$dim <- "Evidence of one face"
-  list(df = df, crit = crit, shared = TRUE, levs = levs, noise_name = noise, signal_name = "Guilty suspect",
-       what = "lineup", dim = "Evidence of one face", id_crit = model$model_data$lineup$R)
-}
-
 # Mean criterion locations per cell (data-weighted over rows, averaged over draws). Criteria that vary with
 # the detection response ([S, N, K1, J] thresholds) give one set per detection response (`set`); otherwise
 # `set` is 0.
@@ -223,7 +181,6 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   keys <- if (multi) levs else signal_names
   cols <- if (multi) stats::setNames(.broc_palette(length(levs)), levs) else stats::setNames(rep(.broc_accent, length(keys)), keys)
   if (length(noise_names)) cols <- c(cols, stats::setNames(rep("grey45", length(noise_names)), noise_names))
-  if ("Innocent suspect" %in% names(cols)) cols[["Innocent suspect"]] <- "#c0392b"
   df$key <- if (!length(noise_names)) df$cell else ifelse(df$item %in% noise_names, df$item, df$cell)
   df$panel <- if (shared || !multi) "" else df$cell
   key_levels <- if (two) unlist(lapply(parts, function(p) c(p$noise_name, if (multi) levs else p$signal_name)))
@@ -274,8 +231,6 @@ plot_distributions <- function(fit, by = NULL, response = NULL, type = c("margin
   else if (panels) p <- p + ggplot2::facet_wrap(~ panel, ncol = 1)
   xlab <- if (two) "Latent strength" else p1$dim
   sub <- if (fam == "mafc") "Evidence of the target and of each lure; the choice is the largest evidence plus position bias"
-         else if (fam == "lineup") paste0("Evidence of one face; the largest face is compared with the criteria, c",
-                                          parts[[1]]$id_crit %||% "", " the identification criterion")
          else if (fam == "dpsdt") "Familiarity, scaled by the probability of not recollecting; dashed lines are criteria"
          else if (varying) "Dashed lines are the response criteria; the source criteria are one set per detection response"
          else "Dashed lines are the response criteria"

@@ -147,7 +147,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
   gap_link <- if (!is.null(model$gap_link)) model$gap_link else "log"
 
   supported <- c("evsdt", "uvsdt", "dpsdt", "mixture", "cumulative", "source_mixture",
-                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp", "metadt", "mafc", "lineup")
+                  "bivariate_sdt", "bivariate_dp", "bivariate_cumulative", "vrdp2d", "cdp", "metadt", "mafc")
   if (!family_name %in% supported) {
     stop("predict() does not yet support family '", family_display_name(family_name),
          "'. Supported: ",
@@ -227,7 +227,6 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
                                       thresh2 = thresh2, cores = cores, margin = margin)
     if (is_bivariate && identical(as.integer(margin), 2L) && !one_response) return(probs)
   }
-  if (family_name == "lineup") K <- dim(probs)[3]
   if (one_response) {
     K <- dim(probs)[3]
     is_bivariate <- FALSE
@@ -479,10 +478,6 @@ build_data_source_from_model <- function(model) {
   }
 
   src$criterion_random <- md$criterion$random
-  if (identical(model$family$family, "lineup")) {
-    src$lu_slot <- md$stan_data$lu_slot
-    src$lu_size <- md$stan_data$lu_size
-  }
   if (identical(model$family$family, "mafc")) {
     src$target_pos <- md$stan_data$target_pos
     src$m_alt <- md$stan_data$m_alt
@@ -2099,9 +2094,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       source = if (!is.null(data_src$source)) data_src$source[idx] else NULL,
       item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL,
       target_pos = if (!is.null(data_src$target_pos)) data_src$target_pos[idx] else NULL,
-      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL,
-      lu_slot = if (!is.null(data_src$lu_slot)) data_src$lu_slot[idx] else NULL,
-      lu_size = if (!is.null(data_src$lu_size)) data_src$lu_size[idx] else NULL
+      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL
     )
 
     switch(family_name,
@@ -2118,8 +2111,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       vrdp2d         = probs_vrdp2d(tp, th, th2, ds$item_type, S, n_chunk, K, K2, model = model),
       cdp            = probs_cdp(tp, th, ds$is_old, S, n_chunk, K, model = model),
       metadt         = probs_metadt(tp, th, ds$is_old, S, n_chunk, K, model = model),
-      mafc           = probs_mafc(tp, th, ds, S, n_chunk, K),
-      lineup         = probs_lineup(tp, th, ds, S, n_chunk, model)
+      mafc           = probs_mafc(tp, th, ds, S, n_chunk, K)
     )
   }
 
@@ -2146,9 +2138,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
       source = if (!is.null(data_src$source)) data_src$source[idx] else NULL,
       item_type = if (!is.null(data_src$item_type)) data_src$item_type[idx] else NULL,
       target_pos = if (!is.null(data_src$target_pos)) data_src$target_pos[idx] else NULL,
-      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL,
-      lu_slot = if (!is.null(data_src$lu_slot)) data_src$lu_slot[idx] else NULL,
-      lu_size = if (!is.null(data_src$lu_size)) data_src$lu_size[idx] else NULL
+      m_alt = if (!is.null(data_src$m_alt)) data_src$m_alt[idx] else NULL
     )
   })
 
@@ -2170,8 +2160,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 
   .predict_worker <- function(cd) {
     n_chunk <- length(cd$idx)
-    ds <- list(is_old = cd$is_old, source = cd$source, item_type = cd$item_type, target_pos = cd$target_pos, m_alt = cd$m_alt,
-               lu_slot = cd$lu_slot, lu_size = cd$lu_size)
+    ds <- list(is_old = cd$is_old, source = cd$source, item_type = cd$item_type, target_pos = cd$target_pos, m_alt = cd$m_alt)
     switch(cd$family_name,
       evsdt          = probs_evsdt(cd$trial_params, cd$thresh, ds$is_old, cd$link_name, cd$S, n_chunk, cd$K,
                                    cd$model$model_data$meta_noise),
@@ -2193,8 +2182,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
                                      cd$S, n_chunk, cd$K, cd$K2, model = cd$model),
       cdp            = probs_cdp(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model),
       metadt         = probs_metadt(cd$trial_params, cd$thresh, ds$is_old, cd$S, n_chunk, cd$K, model = cd$model),
-      mafc           = probs_mafc(cd$trial_params, cd$thresh, ds, cd$S, n_chunk, cd$K),
-      lineup         = probs_lineup(cd$trial_params, cd$thresh, ds, cd$S, n_chunk, cd$model)
+      mafc           = probs_mafc(cd$trial_params, cd$thresh, ds, cd$S, n_chunk, cd$K)
     )
   }
   environment(.predict_worker) <- globalenv()
@@ -3031,8 +3019,6 @@ rebuild_design_matrices <- function(model, newdata) {
       stop("newdata is missing required columns: ", family$alternatives, call. = FALSE)
     }
     src <- .mafc_newdata(model, newdata, src)
-  } else if (family_name == "lineup") {
-    src <- .lineup_newdata(model, newdata, src)
   } else if (!is_cumulative && !is_bivariate && !is_vrdp2d && !is.null(parsed$response$is_old)) {
     src$is_old <- .code_is_old(newdata[[parsed$response$is_old]], parsed$response$is_old, allow_centered = TRUE)
   } else if (is_cumulative) {
@@ -3685,109 +3671,6 @@ rebuild_z_matrix <- function(re, newdata, encoding_vars, is_old_var) {
     }
   }
   src
-}
-
-.lineup_newdata <- function(model, newdata, src) {
-  fam <- model$family
-  pv <- model$parsed$response$is_old
-  for (v in c(pv, if (is.character(fam$size)) fam$size, fam$suspect)) {
-    if (!v %in% names(newdata)) stop("newdata is missing required columns: ", v, call. = FALSE)
-  }
-  present <- .code_is_old(newdata[[pv]], pv, allow_centered = FALSE)
-  k <- if (is.character(fam$size)) .code_position(newdata[[fam$size]], fam$size) else rep(as.integer(fam$size), nrow(newdata))
-  des <- if (is.null(fam$suspect)) rep(FALSE, nrow(newdata)) else {
-    sv <- newdata[[fam$suspect]]
-    if (is.logical(sv)) sv else as.numeric(as.character(sv)) != 0
-  }
-  src$is_old <- present
-  src$lu_size <- k
-  src$lu_slot <- ifelse(present == 1, 1L, ifelse(des, 2L, 0L))
-  src
-}
-
-#' Lineup category probabilities [S, N, R + 2J]: rejections by confidence, then suspect and filler
-#' identifications by confidence
-#' @noRd
-probs_lineup <- function(params, thresh, ds, S, N, model) {
-  lu <- model$model_data$lineup
-  R <- lu$R
-  J <- lu$J
-  Kt <- R + J
-  n <- S * N
-  slot <- rep(as.integer(ds$lu_slot), each = S)
-  k <- rep(as.integer(ds$lu_size), each = S)
-  one <- rep(1, n)
-  zero <- rep(0, n)
-  d <- as.vector(params[["dprime"]])
-  m <- ifelse(slot == 1L, d, ifelse(slot == 2L, as.vector(params[["dprime_L"]] %||% zero), 0))
-  s <- ifelse(slot == 1L, as.vector(params[["sigma"]] %||% one), ifelse(slot == 2L, as.vector(params[["sigma_L"]] %||% one), 1))
-  sb <- as.vector(params[["sigma_meta"]] %||% zero)
-  th <- matrix(thresh, n, Kt - 1L)
-  out <- array(0, c(S, N, R + 2L * J))
-  for (c in seq_len(R + 2L * J)) {
-    pos <- if (c <= R) c else if (c <= R + J) c else c - J
-    kind <- if (c <= R) rep(2L, n) else if (c <= R + J) ifelse(slot == 0L, ifelse(k == 1L, 2L, -1L), 0L)
-            else ifelse(k == 1L, -1L, ifelse(slot == 0L, 2L, 1L))
-    ok <- kind >= 0L
-    if (!any(ok)) next
-    lo <- if (pos == 1L) zero else th[, pos - 1L]
-    hi <- if (pos == Kt) zero else th[, pos]
-    pr <- .lineup_cells(kind[ok], k[ok], m[ok], s[ok], lo[ok], hi[ok], sb[ok], pos == 1L, pos == Kt)
-    v <- zero
-    v[ok] <- pr
-    out[, , c] <- v
-  }
-  pmax(out, 1e-10)
-}
-
-.lineup_cells <- function(kind, k, m, s, lo, hi, sb, lo_open, hi_open) {
-  n <- length(kind)
-  if (.bvn_native_ready() && !is.null(.bvn_native$sym_lineup)) {
-    return(.C(.bvn_native$sym_lineup, as.integer(kind), as.integer(k), as.double(m), as.double(s), as.double(lo),
-              as.double(hi), as.double(sb), rep(as.integer(lo_open), n), rep(as.integer(hi_open), n), as.integer(n),
-              .native_threads(), p = double(n), NAOK = TRUE)$p)
-  }
-  vapply(seq_len(n), function(i) .lineup_cell_r(kind[i], k[i], m[i], s[i], lo[i], hi[i], sb[i], lo_open, hi_open),
-         numeric(1))
-}
-
-.log_interval_r <- function(zl, zh) {
-  ifelse(zl > 0, stats::pnorm(zl, lower.tail = FALSE, log.p = TRUE) +
-                   log1p(-exp(stats::pnorm(zh, lower.tail = FALSE, log.p = TRUE) - stats::pnorm(zl, lower.tail = FALSE, log.p = TRUE))),
-         ifelse(zh < 0, stats::pnorm(zh, log.p = TRUE) + log1p(-exp(stats::pnorm(zl, log.p = TRUE) - stats::pnorm(zh, log.p = TRUE))),
-                log1p(-stats::pnorm(zl) - stats::pnorm(zh, lower.tail = FALSE))))
-}
-
-# R fallback of the native lineup cell: the integrand scaled by its maximum, integrated piecewise over a
-# window about the mode, split at the criteria
-.lineup_cell_r <- function(kind, k, m, s, lo, hi, sb, lo_open, hi_open) {
-  if (lo_open) lo <- -Inf
-  if (hi_open) hi <- Inf
-  if (k == 1L) {
-    t <- sqrt(s^2 + sb^2)
-    return(exp(.log_interval_r((lo - m) / t, (hi - m) / t)))
-  }
-  lg <- if (sb > 0) function(w) .log_interval_r((lo - w) / sb, (hi - w) / sb) else function(w) 0
-  a <- if (sb > 0) -Inf else lo
-  b <- if (sb > 0) Inf else hi
-  one <- function(filler) {
-    lh <- if (filler) function(w) stats::dnorm(w, log = TRUE) + (k - 2) * stats::pnorm(w, log.p = TRUE) +
-                                  stats::pnorm(w, m, s, log.p = TRUE) + lg(w)
-          else function(w) stats::dnorm(w, m, s, log = TRUE) + (k - 1) * stats::pnorm(w, log.p = TRUE) + lg(w)
-    sa <- if (filler) 1 else s
-    win <- 10 * (sa + sb) + 10
-    lo_w <- max(a, -win + min(0, m)); hi_w <- min(b, win + max(0, m))
-    zm <- stats::optimize(lh, c(lo_w, hi_w), maximum = TRUE, tol = 1e-10)$maximum
-    hm <- lh(zm)
-    br <- sort(unique(c(lo_w, hi_w, zm, if (sb > 0) c(lo, hi, lo + c(-6, 6) * sb, hi + c(-6, 6) * sb))))
-    br <- br[is.finite(br) & br >= lo_w & br <= hi_w]
-    tot <- sum(vapply(seq_len(length(br) - 1L), function(i) {
-      stats::integrate(function(w) exp(lh(w) - hm), br[i], br[i + 1L], rel.tol = 1e-12, abs.tol = 0,
-                       subdivisions = 1000L)$value
-    }, numeric(1)))
-    exp(hm) * tot
-  }
-  switch(as.character(kind), "0" = one(FALSE), "1" = (k - 1) * one(TRUE), one(FALSE) + (k - 1) * one(TRUE))
 }
 
 #' Position biases for all draws: [S, N, M], the last position 0

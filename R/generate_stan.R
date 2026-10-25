@@ -114,11 +114,6 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
     } else if (!is_cumulative) {
       lines <- c(lines, "  array[N] real is_old;")
     }
-    if (family_name == "lineup") {
-      lines <- c(lines, "  array[N] int<lower=0, upper=2> lu_kind;  // 0 suspect, 1 a filler, 2 any face wins",
-                 "  array[N] int<lower=0, upper=2> lu_slot;  // suspect slot: 0 filler, 1 guilty, 2 innocent",
-                 "  array[N] int<lower=1> lu_size;  // lineup size")
-    }
   }
   
   if (isTRUE(model_data$has_counts)) {
