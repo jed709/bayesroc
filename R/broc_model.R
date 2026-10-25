@@ -890,7 +890,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   }
   
   is_vrdp2d <- family$family == "vrdp2d"
-  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp", "mafc")
+  has_sigma <- !is.null(parsed[["sigma"]]) && family$family %in% c("uvsdt", "dpsdt", "mixture", "bivariate_sdt", "bivariate_dp", "vrdp2d", "cdp")
   has_lambda <- !is.null(parsed[["lambda"]]) && family$family %in% c("dpsdt", "mixture", "source_mixture", "vrdp2d", "bivariate_dp")
   has_dprime2 <- !is.null(parsed[["dprime2"]]) && family$family %in% c("mixture", "cdp", "vrdp2d")
   has_sigma2 <- !is.null(parsed[["sigma2"]]) && family$family %in% c("mixture", "bivariate_sdt", "bivariate_dp", "cdp", "vrdp2d")

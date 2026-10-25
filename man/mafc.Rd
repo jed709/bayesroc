@@ -16,31 +16,37 @@ A \code{broc_family} object.
 }
 \description{
 Signal detection model for m-alternative forced choice with position bias
-(DeCarlo, 2012) and, optionally, an unequal-variance target (Kellen &
-Klauer, 2011). Each of the m positions yields evidence X_i; the target's is
-N(d', sigma^2), every lure's N(0, 1); the observer chooses the position with
-the largest X_i + b_i.
+(DeCarlo, 2012). Each of the m positions yields evidence X_i; the target's is
+N(d', 1), every lure's N(0, 1); the observer chooses the position with the
+largest X_i + b_i.
 }
 \details{
 \subsection{Likelihood}{
 
 With the target at position s, choice k and position biases b (the last
 position the reference, b_M = 0), a correct choice has probability
-\deqn{P(k = s) = \int \phi(z) \prod_{j \ne s} \Phi(\sigma z + d' + b_s - b_j) dz}
+\deqn{P(k = s) = \int \phi(z) \prod_{j \ne s} \Phi(z + d' + b_s - b_j) dz}
 and an error
-\deqn{P(k) = \int \phi(z) \Phi((z - d' + b_k - b_s) / \sigma) \prod_{j \ne k, s} \Phi(z + b_k - b_j) dz.}
+\deqn{P(k) = \int \phi(z) \Phi(z - d' + b_k - b_s) \prod_{j \ne k, s} \Phi(z + b_k - b_j) dz.}
 The data are the full target-by-choice table, fitted with its categorical
 likelihood. DeCarlo's own estimates use a product of binary likelihoods (a
 composite likelihood), so they differ slightly from these. Cells are
 computed by quadrature; m = 2 is closed form.
 }
 
+\subsection{Equal variance}{
+
+The target's evidence has the lures' SD. A first choice among m alternatives
+does not identify an unequal-variance target: at m = 2 only d'/sqrt(1 +
+sigma^2) enters, and at m >= 3 without position bias only the proportion
+correct does. Identifying sigma takes second choices or rankings (Kellen &
+Klauer, 2011), which this family does not model.
+}
+
 \subsection{Parameters}{
 
 \describe{
 \item{dprime}{(required) Sensitivity. Identity link.}
-\item{sigma}{(optional) SD of the target's evidence. Log link. If omitted,
-1 (equal variance).}
 \item{bias}{(optional) Position biases b_1, ..., b_(M-1), one formula for
 all: each position gets its own coefficients and random effects,
 correlated within a grouping factor unless

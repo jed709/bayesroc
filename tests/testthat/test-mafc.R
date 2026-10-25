@@ -76,16 +76,16 @@ test_that("mafc batch and plain Stan agree on log density and gradient for every
               transform(.sim_mafc(n_sub = 6, n_trial = 20, m = 4, bias = c(0.2, -0.3, 0.1), seed = 4), nalt = 4L))
   agg <- stats::aggregate(list(n = rep(1, nrow(d3))), d3[c("choice", "target", "cond")], sum)
   cfgs <- list(
-    re = list(f = brf(choice | target ~ 1 + (1 | sub), sigma ~ 1, bias ~ 1 + (1 | sub), family = mafc()), d = d3),
+    re = list(f = brf(choice | target ~ 1 + (1 | sub), bias ~ 1 + (1 | sub), family = mafc()), d = d3),
     m2 = list(f = brf(choice | target ~ cond, bias ~ cond, family = mafc()),
               d = .sim_mafc(n_sub = 6, n_trial = 40, m = 2, bias = 0.3)),
-    m4_uv = list(f = brf(choice | target ~ 1 + (1 | sub), sigma ~ 1 + (1 | sub), bias ~ 1, family = mafc()),
-                 d = .sim_mafc(n_sub = 6, n_trial = 40, m = 4, sigma = 1.6, bias = c(0.2, -0.3, 0.1))),
+    m4 = list(f = brf(choice | target ~ 1 + (1 | sub), bias ~ 1, family = mafc()),
+              d = .sim_mafc(n_sub = 6, n_trial = 40, m = 4, bias = c(0.2, -0.3, 0.1))),
     slope = list(f = brf(choice | target ~ x + (1 | sub), bias ~ x + (1 + x | sub), family = mafc()), d = d3),
     factor_slope = list(f = brf(choice | target ~ cond + (1 | sub), bias ~ cond + (0 + cond | sub), family = mafc()), d = d3),
     uncor = list(f = brf(choice | target ~ 1 + (1 | sub), bias ~ 1 + (1 | gr(sub, cor_thresholds = FALSE)),
                          family = mafc()), d = d3),
-    cross = list(f = brf(choice | target ~ 1 + (1 | p | sub), sigma ~ 1 + (1 | p | sub), bias ~ 1 + (1 | p | sub),
+    cross = list(f = brf(choice | target ~ 1 + (1 | p | sub), bias ~ 1 + (1 | p | sub),
                          family = mafc()), d = d3),
     mixed_m = list(f = brf(choice | target ~ 1 + (1 | sub), bias ~ 1 + (1 | sub), family = mafc(alternatives = "nalt")),
                    d = dm),
@@ -103,8 +103,8 @@ test_that("mafc batch and plain Stan agree on log density and gradient for every
 
 test_that("mafc through the JAX transport map (f64 and f32) recovers Stan's posterior", {
   skip_if_no_cmdstan(); skip_if_no_jax()
-  d <- .sim_mafc(n_sub = 14, n_trial = 60, m = 3, sigma = 1.3, seed = 2)
-  m <- suppressMessages(broc(brf(choice | target ~ 1 + (1 | sub), sigma ~ 1 + (1 | sub), bias ~ 1 + (1 | sub),
+  d <- .sim_mafc(n_sub = 14, n_trial = 60, m = 3, seed = 2)
+  m <- suppressMessages(broc(brf(choice | target ~ 1 + (1 | sub), bias ~ 1 + (1 | sub),
                                  family = mafc()), data = d))
   sm <- function(f) {
     da <- f$draws(format = "draws_array")
@@ -122,4 +122,9 @@ test_that("mafc through the JAX transport map (f64 and f32) recovers Stan's post
     z <- abs(js$mean - rs$mean) / sqrt(js$mcse_mean^2 + rs$mcse_mean^2)
     expect_lt(max(z), 4, label = paste(prec, "max |z|"))
   }
+})
+
+test_that("mafc() is equal variance: sigma is not a parameter of the family", {
+  expect_error(broc(brf(choice | target ~ 1, sigma ~ 1, family = mafc()), data = .sim_mafc()),
+               "Parameter 'sigma' not valid for family 'mafc'")
 })

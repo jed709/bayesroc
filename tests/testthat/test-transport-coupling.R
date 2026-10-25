@@ -54,7 +54,7 @@
     gnoise = rhs("conf | old", c("criterion", "sigma_meta"), nest, evsd()),
     lnoise = brf(conf | old ~ 1 + (1 | subj) + (1 | item), criterion ~ x + (1 | subj),
                  sigma_meta ~ 0 + g + (1 | p | subj) + (1 | item), family = evsd(meta_noise = "lognormal")),
-    mafc = rhs("pchoice | ptarget", c("sigma", "bias"), nest, mafc()),
+    mafc = rhs("pchoice | ptarget", "bias", nest, mafc()),
     mafc_slopes = brf(pchoice | ptarget ~ x + (1 | subj), bias ~ x + (1 + x | subj) + (1 | item), family = mafc())
   )
 }
