@@ -68,6 +68,7 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "data {",
       "  int<lower=1> N;",
       "  int<lower=0, upper=N> N_ll;",
+      "  int<lower=0, upper=1> prior_only;",
       "  int<lower=2> K1;  // Item response categories",
       "  int<lower=2> K2;  // Source response categories",
       "  array[N] int<lower=1, upper=K1> y;   // Item responses",
@@ -87,6 +88,7 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "data {",
       "  int<lower=1> N;",
       "  int<lower=0, upper=N> N_ll;",
+      "  int<lower=0, upper=1> prior_only;",
       "  int<lower=2> K;  // Total confidence levels",
       sprintf("  int<lower=1> J;  // Number of old confidence levels (=%d)", J),
       sprintf("  int<lower=1> n_new;  // Number of new confidence levels (=%d)", n_new),
@@ -102,6 +104,7 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
       "data {",
       "  int<lower=1> N;",
       "  int<lower=0, upper=N> N_ll;",
+      "  int<lower=0, upper=1> prior_only;",
       "  int<lower=2> K;",
       "  array[N] int<lower=1, upper=K> y;"
     )
@@ -987,15 +990,13 @@ generate_model_block_v2 <- function(model_data, family, batch_info = NULL) {
 
   ls_rows <- .ls_block(model_data, family)
   if (!is.null(batch_info) && isTRUE(model_data$threads)) {
-    lines <- c(lines, "", if (length(ls_rows)) "  {", ls_rows, batch_info$stan_call_threaded,
-               if (length(ls_rows)) "  }")
+    lik <- c(ls_rows, batch_info$stan_call_threaded)
   } else if (!is.null(batch_info)) {
-    lines <- c(lines, "", "  // Batch C++ likelihood (single autodiff node)",
-               if (length(ls_rows)) "  {", ls_rows, batch_info$stan_call, if (length(ls_rows)) "  }")
+    lik <- c("  // Batch C++ likelihood (single autodiff node)", ls_rows, batch_info$stan_call)
   } else {
-    lines <- c(lines, .plain_stan_dev(".plain_model_likelihood")(model_data, family, family_name))
+    lik <- .plain_stan_dev(".plain_model_likelihood")(model_data, family, family_name)
   }
-  lines <- c(lines, "}")
+  lines <- c(lines, "", "  if (!prior_only) {", lik, "  }", "}")
 
   paste(lines, collapse = "\n")
 }

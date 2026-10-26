@@ -117,17 +117,27 @@ def _trim_rows(config, n_keep):
     return rows
 
 
+_TRIM_ABOVE = 4096
+
+
 def _trim_config(config, n_keep=1):
     """A tiny copy of config (n_keep rows, see _trim_rows). u_*/corr_*/params are
     data-independent, so constraining against this yields identical draws with no per-obs
-    likelihood cost. Slices length-N arrays without copying the full data."""
+    likelihood cost. Slices length-N arrays without copying the full data. A list of dicts
+    (one per random-effect block, ...) is structure, never rows. A config of at most
+    _TRIM_ABOVE rows is returned whole: trimming saves little there, and a short structural
+    list of numbers (one per threshold, coefficient, ...) could have the length of the data."""
     n = config.get("N")
+    if n is not None and n <= _TRIM_ABOVE:
+        return dict(config)
     rows = _trim_rows(config, n_keep) if n is not None else list(range(n_keep))
+
+    def per_row(v):
+        return isinstance(v, list) and n is not None and len(v) == n and not any(isinstance(it, dict) for it in v)
 
     def t(o):
         if isinstance(o, dict):
-            return {k: ([v[i] for i in rows] if isinstance(v, list) and n is not None
-                        and len(v) == n else t(v)) for k, v in o.items()}
+            return {k: ([v[i] for i in rows] if per_row(v) else t(v)) for k, v in o.items()}
         if isinstance(o, list):
             return [t(it) if isinstance(it, dict) else it for it in o]
         return o
@@ -577,8 +587,8 @@ def _adapt_stages(vg, vg_s, tm, D, chains, warmup, seed, ctrl, parallel, progres
     if slow.any():
         if progress_bar:
             print(f"[DR-G-HMC] chains still disagree on {int(slow.sum())} scale parameter(s); "
-                  f"extending warmup by {rest // 2 + wf + rest} iterations", flush=True)
-        imm, eps, tht, _ = _self_adapt(vg_m(aux), D, chains, rest // 2, seed + 5, ctrl, parallel, progress_bar,
+                  f"extending warmup by {max(H, rest // 2) + wf + rest} iterations", flush=True)
+        imm, eps, tht, _ = _self_adapt(vg_m(aux), D, chains, max(H, rest // 2), seed + 5, ctrl, parallel, progress_bar,
                                        th0=tht, aux=tm.parts(aux), cache=mapped(aux), pooled=True, init=init,
                                        stage="extended")
         th, aux = build(tm.forward_chains(tht, aux), wf, seed + 6, tm.flags(aux))
@@ -1210,7 +1220,7 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
     return np.asarray(jax.random.uniform(base, (chains, D), minval=-r, maxval=r))
 
 
-def run_drghmc(model, config, chains=4, warmup=2500, samples=10000, seed=0,
+def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
                thinning=1, chain_method="parallel", progress_bar=True,
                init_strategy="numeric", init_radius=0.0, control=None,
                save_loglik=True, keep_re=False, save_state=False, init_z=None):

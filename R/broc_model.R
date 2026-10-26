@@ -931,7 +931,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
   
   needs_ordered_dprime <- has_dprime2 && family$family == "mixture"
   
-  stan_data <- list(N = N, N_ll = N, K = K)
+  stan_data <- list(N = N, N_ll = N, prior_only = 0L, K = K)
   stan_data$y <- as.integer(data[[parsed$response$response]])
 
   if (is_metad && (K < 4L || K %% 2L != 0L)) {
@@ -2378,10 +2378,21 @@ get_numpyro_config <- function(x, json = FALSE) {
 }
 
 
+#' @noRd
+.stan_fallback <- function() {
+  if (!isTRUE(.jax_state$fallback_told)) {
+    message("No Python with JAX and NumPyro was found, so this fit uses the Stan backend with NUTS. ",
+            "Run install_jax_backend() for the default JAX backend (DR-G-HMC with a transport map).")
+    .jax_state$fallback_told <- TRUE
+  }
+  "stan"
+}
+
+
 #' Compile and Fit a Bayesian ROC Model
 #'
 #' Takes a `broc_model` object (from [broc()]) and runs MCMC sampling via
-#' Stan (cmdstanr) or JAX (NumPyro). Returns a `broc_fit` object that wraps
+#' JAX (NumPyro; the default) or Stan (cmdstanr). Returns a `broc_fit` object that wraps
 #' the backend-specific result and provides a uniform interface for downstream
 #' analysis (`summary(fit)`, `predict(fit)`, `pp_check(fit)`, etc.).
 #'
@@ -2392,7 +2403,7 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   devices when `parallel_chains >= chains`, and sequentially on one device
 #'   when `parallel_chains < chains`.
 #' @param iter_warmup Number of warmup/adaptation iterations per chain. Default
-#'   2000 for `sampler = "nuts"`, 2500 for `"drghmc"`.
+#'   2000 for `sampler = "nuts"`, 1000 for `"drghmc"`.
 #' @param iter_sampling Number of post-warmup draws per chain (default 2000 for
 #'   `sampler = "nuts"`, 10000 for `"drghmc"`), or `"auto"` to sample until every
 #'   monitored parameter reaches the ESS and R-hat targets in `control` (JAX backend;
@@ -2400,8 +2411,9 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param thin Period for saving samples (default 1). `thin = k` keeps every
 #'   `k`-th post-warmup draw. With `iter_sampling = "auto"` the draws are thinned
 #'   as they are sampled and `control$max_kept` is ignored.
-#' @param sampler Sampling algorithm: `"nuts"` (default) or `"drghmc"`, a
-#'   delayed-rejection generalized HMC sampler (JAX backend only).
+#' @param sampler Sampling algorithm: `"drghmc"` (the default on the JAX backend), a
+#'   delayed-rejection generalized HMC sampler (JAX backend only), or `"nuts"` (the
+#'   default on the Stan backend).
 #' @param control Named list of sampler tuning parameters (defaults in
 #'   parentheses; an unknown key is an error):
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
@@ -2439,9 +2451,12 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   process's CPU affinity; the draws are the same whatever the limit. Supported on
 #'   Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
 #'   fit uses every CPU, with a warning.
-#' @param backend Inference backend: `"stan"` (default, via cmdstanr) or `"jax"`
-#'   (via NumPyro). The JAX backend requires a configured Python environment
-#'   (see [install_jax_backend()]). It caches compiled XLA programs under
+#' @param backend Inference backend: `"jax"` (default, via NumPyro) or `"stan"`
+#'   (via cmdstanr). The JAX backend requires a configured Python environment
+#'   (see [install_jax_backend()]). When `backend` is not given and no Python with
+#'   JAX and NumPyro is found, the fit falls back to Stan with NUTS and says so once
+#'   per session; it does not fall back when `sampler = "drghmc"` or
+#'   `iter_sampling = "auto"` is requested. It caches compiled XLA programs under
 #'   `tools::R_user_dir("bayesroc", "cache")`; set
 #'   `options(bayesroc.xla_cache = FALSE)` to disable the cache or to a path to
 #'   move it.
@@ -2465,6 +2480,11 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   [loo()] works on the fit and on a fit saved with [save_broc_fit()] or `file =`.
 #'   With `FALSE` it is dropped; `loo = TRUE` still computes PSIS-LOO first and
 #'   stores the result on the fit.
+#' @param sample_prior `"no"` (default) samples the posterior. `"only"` switches the
+#'   likelihood off and samples the prior, on every backend and sampler, with every row of
+#'   the data kept, so [predict()] and [pp_check()] on the fit give the prior predictive
+#'   distribution of the design. The log-likelihood is not kept unless `save_loglik = TRUE`
+#'   is given, and `loo = TRUE` is an error.
 #' @param loo If `TRUE`, PSIS-LOO is computed at fit time and stored on the fit
 #'   (`fit$.loo`, also saved with the fit). Default `FALSE`.
 #' @param loo_cores Number of worker processes used when `loo = TRUE` (default 4).
@@ -2562,13 +2582,13 @@ fit_broc <- function(model,
                     iter_warmup = NULL,
                     iter_sampling = NULL,
                     thin = 1,
-                    sampler = c("nuts", "drghmc"),
+                    sampler = c("drghmc", "nuts"),
                     control = list(),
                     init = 0,
                     refresh = 100,
                     threads_per_chain = NULL,
                     total_cores = NULL,
-                    backend = c("stan", "jax"),
+                    backend = c("jax", "stan"),
                     python = NULL,
                     progress_bar = TRUE,
                     seed = NULL,
@@ -2581,7 +2601,19 @@ fit_broc <- function(model,
                     keep_re = FALSE,
                     re_store = c("f64", "f32", "int16", "int8"),
                     resume = NULL,
+                    sample_prior = c("no", "only"),
                     ...) {
+  sample_prior <- match.arg(sample_prior)
+  if (sample_prior == "only") {
+    if (isTRUE(loo)) stop("`loo = TRUE` needs the likelihood; a fit with sample_prior = \"only\" has none.", call. = FALSE)
+    if (missing(save_loglik)) save_loglik <- FALSE
+  }
+  if (inherits(model, "broc_model")) {
+    model$stan_data$prior_only <- as.integer(sample_prior == "only")
+    model$model_data$stan_data$prior_only <- model$stan_data$prior_only
+  }
+  backend_missing <- missing(backend)
+  sampler_missing <- missing(sampler)
   loglik_precision <- match.arg(loglik_precision)
   re_store <- match.arg(re_store)
   if (!is.logical(save_loglik) || length(save_loglik) != 1L || is.na(save_loglik)) {
@@ -2602,7 +2634,12 @@ fit_broc <- function(model,
       }
     }
   }
+  if (backend_missing && is.null(resume)) {
+    jax_only <- (!sampler_missing && identical(sampler, "drghmc")) || identical(iter_sampling, "auto")
+    backend <- if (jax_only || .jax_ready(python)) "jax" else .stan_fallback()
+  }
   backend <- match.arg(backend)
+  if (sampler_missing && is.null(resume)) sampler <- if (backend == "jax") "drghmc" else "nuts"
   sampler <- match.arg(sampler)
   auto <- identical(iter_sampling, "auto")
   if (!auto && !is.null(iter_sampling) &&
@@ -2641,7 +2678,7 @@ fit_broc <- function(model,
   }
 
 
-  if (is.null(iter_warmup))   iter_warmup   <- if (sampler == "drghmc") 2500L else 2000L
+  if (is.null(iter_warmup))   iter_warmup   <- if (sampler == "drghmc") 1000L else 2000L
   if (is.null(iter_sampling)) iter_sampling <- if (sampler == "drghmc") 10000L else 2000L
 
   .ctrl <- if (is.list(control)) control else list()

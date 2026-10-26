@@ -91,6 +91,7 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
     family = model$family$family, link = model$family$link$name,
     formula = .formula_lines(model), N = model$model_data$N, K = model$model_data$K,
     K2 = model$model_data$K2, counts = !is.null(model$stan_data$counts),
+    prior_only = isTRUE(model$stan_data$prior_only == 1L),
     n_obs = sum(.row_weights(model)),
     groups = stats::setNames(vapply(groups, function(g) length(unique(model$data[[g]])), integer(1)), groups),
     n_chains = fit$num_chains(), n_iter = fit$metadata()$iter_sampling,
@@ -199,6 +200,7 @@ print.broc_summary <- function(x, ...) {
                       "; ", mi$K, " response categories", if (!is.null(mi$K2)) paste0(" x ", mi$K2) else "")
   if (length(mi$groups)) data_line <- paste0(data_line, "; ", paste0(names(mi$groups), ": ", mi$groups, " levels", collapse = ", "))
   cat("Data:    ", data_line, "\n", sep = "")
+  if (isTRUE(mi$prior_only)) cat("Prior:   sampled from the prior only (sample_prior = \"only\"); the data did not enter\n")
   cat("Draws:   ", mi$n_chains, " chains x ", mi$n_iter, " post-warmup",
       if ((mi$thin_stride %||% 1L) > 1L) paste0(", every ", .ordinal(mi$thin_stride), " of ", mi$draws_per_chain),
       "\n", sep = "")

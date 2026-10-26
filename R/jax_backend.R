@@ -212,7 +212,8 @@ build_numpyro_config <- function(model) {
     N = md$N,
     K = md$K,
     y = as.integer(md$stan_data$y),
-    is_old = if (!is.null(md$stan_data$is_old)) as.numeric(md$stan_data$is_old) else NULL
+    is_old = if (!is.null(md$stan_data$is_old)) as.numeric(md$stan_data$is_old) else NULL,
+    prior_only = isTRUE(md$stan_data$prior_only == 1L)
   )
 
   if (!is.null(md$K2)) config$K2 <- md$K2

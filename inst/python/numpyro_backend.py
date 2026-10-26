@@ -5715,6 +5715,8 @@ def sdt_model(config):
         log_lik_unweighted = log_lik
     numpyro.deterministic("log_lik", log_lik_unweighted)
 
+    if config.get("prior_only"):
+        return
     ll_offset = config.get("_ll_offset")
     numpyro.factor("obs", jnp.sum(log_lik) if ll_offset is None else jnp.sum(log_lik - ll_offset))
 
@@ -5871,7 +5873,7 @@ class FastNUTS(NUTS):
         return init_params
 
 
-_MAP_WARMUP = 2500
+_MAP_WARMUP = 1000
 
 
 class NutsCoords:

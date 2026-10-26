@@ -458,7 +458,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       criterion_scale = "normal(0, 0.5)",
       criterion2_scale = "normal(0, 0.5)"
     ),
-    sd_gap = "normal(0, 0.5)",
+    sd_gap = "normal(0, 1)",
     sd_group = list(),
     sd_dpar_group = list(),
     sd_dpar_coef = list(),
@@ -704,7 +704,7 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
       pl$b[[nm]] <- .rescale_normal(pl$b[[nm]], shift = log(k))
     }
   }
-  if (softplus) pl$sd_gap <- "normal(0, 0.75)"
+  if (softplus) pl$sd_gap <- "normal(0, 1.5)"
   pl
 }
 

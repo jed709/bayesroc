@@ -1,7 +1,7 @@
 # bayesroc
 
-Bayesian signal detection models in R, with a formula-based API. Compiles models
-to Stan (via [`cmdstanr`](https://mc-stan.org/cmdstanr/)) or [`NumPyro`](https://github.com/pyro-ppl/numpyro)
+Bayesian signal detection models in R, with a formula-based API. Fits models with
+[`NumPyro`](https://github.com/pyro-ppl/numpyro) (the default) or Stan (via [`cmdstanr`](https://mc-stan.org/cmdstanr/))
 and supports multiple univariate and bivariate model families with fixed and
 random effects on any model parameter.
 
@@ -24,7 +24,7 @@ install.packages("cmdstanr",
 cmdstanr::install_cmdstan()
 ```
 
-The optional JAX backend runs in a managed Python virtual environment. bayesroc
+The default JAX backend runs in a managed Python virtual environment. bayesroc
 creates the environment but does not install Python, so Python 3.10 or later must
 already be installed. On macOS/Linux a `python.org`,
 Homebrew (`brew install python`), pyenv, or conda interpreter all work and are
@@ -37,7 +37,9 @@ bayesroc::install_jax_backend()   # creates a managed venv with jax + numpyro
 bayesroc::check_jax_backend()     # confirms the backend is ready ("ok")
 ```
 
-Once installed, switch backends with `fit_broc(model, backend = "jax")`.
+Once it is installed, `fit_broc()` uses it by default. Without it, `fit_broc()` falls
+back to Stan with NUTS and says so; `fit_broc(model, backend = "stan")` chooses Stan
+explicitly.
 
 If `install_jax_backend()` cannot find Python, point it at one explicitly with
 `install_jax_backend(python = "/path/to/python")`, or set the interpreter used
@@ -70,7 +72,7 @@ m <- broc(brf(resp | cond ~ 1 + (1|s|sub) + (1|i|item),
               sigma ~ 1 + (1|s|sub) + (1|i|item),
               family = uvsd()),
           data = first20)
-fit <- fit_broc(m, backend = "stan")
+fit <- fit_broc(m)
 
 summary(fit)
 plot(fit)          # parameter estimates on their natural scale
@@ -90,7 +92,7 @@ m <- broc(brf(resp | cond ~ 1 + (1|s|sub),
               family = uvsd()),
               counts = "count",
           data = agg)
-fit <- fit_broc(m, backend = "stan")
+fit <- fit_broc(m)
 ```
 
 See the [vignette](https://jed709.github.io/bayesroc/articles/univariate-recognition.html) for an in-depth example.
@@ -102,8 +104,10 @@ no extra toolchain beyond `cmdstanr`. The Stan backend is single-threaded
 by default; `fit_broc(threads_per_chain = N)` with N > 1 compiles a `reduce_sum`
 version of the model and runs each chain on N threads.
 
-The NumPyro backend (`fit_broc(m, backend = "jax")`) is generally faster than Stan and 
-uses analytic custom JVPs. Each chain runs on several threads; the number depends on
+The NumPyro backend (the default) is generally faster than Stan and uses analytic
+custom JVPs. It samples with a delayed-rejection generalized HMC sampler
+(`sampler = "drghmc"`) and draws random effects through a per-group transport map;
+`sampler = "nuts"` selects NUTS. Each chain runs on several threads; the number depends on
 the model family, the fixed- and random-effects structure and the dataset size, and
 cannot be set directly. The NumPyro backend currently runs on CPU only.
 

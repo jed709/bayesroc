@@ -11,13 +11,13 @@ fit_broc(
   iter_warmup = NULL,
   iter_sampling = NULL,
   thin = 1,
-  sampler = c("nuts", "drghmc"),
+  sampler = c("drghmc", "nuts"),
   control = list(),
   init = 0,
   refresh = 100,
   threads_per_chain = NULL,
   total_cores = NULL,
-  backend = c("stan", "jax"),
+  backend = c("jax", "stan"),
   python = NULL,
   progress_bar = TRUE,
   seed = NULL,
@@ -44,7 +44,7 @@ devices when \code{parallel_chains >= chains}, and sequentially on one device
 when \code{parallel_chains < chains}.}
 
 \item{iter_warmup}{Number of warmup/adaptation iterations per chain. Default
-2000 for \code{sampler = "nuts"}, 2500 for \code{"drghmc"}.}
+2000 for \code{sampler = "nuts"}, 1000 for \code{"drghmc"}.}
 
 \item{iter_sampling}{Number of post-warmup draws per chain (default 2000 for
 \code{sampler = "nuts"}, 10000 for \code{"drghmc"}), or \code{"auto"} to sample until every
@@ -55,8 +55,9 @@ see \emph{Adaptive-length sampling} below).}
 \code{k}-th post-warmup draw. With \code{iter_sampling = "auto"} the draws are thinned
 as they are sampled and \code{control$max_kept} is ignored.}
 
-\item{sampler}{Sampling algorithm: \code{"nuts"} (default) or \code{"drghmc"}, a
-delayed-rejection generalized HMC sampler (JAX backend only).}
+\item{sampler}{Sampling algorithm: \code{"drghmc"} (the default on the JAX backend), a
+delayed-rejection generalized HMC sampler (JAX backend only), or \code{"nuts"} (the
+default on the Stan backend).}
 
 \item{control}{Named list of sampler tuning parameters (defaults in
 parentheses; an unknown key is an error):
@@ -102,9 +103,12 @@ process's CPU affinity; the draws are the same whatever the limit. Supported on
 Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
 fit uses every CPU, with a warning.}
 
-\item{backend}{Inference backend: \code{"stan"} (default, via cmdstanr) or \code{"jax"}
-(via NumPyro). The JAX backend requires a configured Python environment
-(see \code{\link[=install_jax_backend]{install_jax_backend()}}). It caches compiled XLA programs under
+\item{backend}{Inference backend: \code{"jax"} (default, via NumPyro) or \code{"stan"}
+(via cmdstanr). The JAX backend requires a configured Python environment
+(see \code{\link[=install_jax_backend]{install_jax_backend()}}). When \code{backend} is not given and no Python with
+JAX and NumPyro is found, the fit falls back to Stan with NUTS and says so once
+per session; it does not fall back when \code{sampler = "drghmc"} or
+\code{iter_sampling = "auto"} is requested. It caches compiled XLA programs under
 \code{tools::R_user_dir("bayesroc", "cache")}; set
 \code{options(bayesroc.xla_cache = FALSE)} to disable the cache or to a path to
 move it.}
@@ -176,7 +180,7 @@ A \code{broc_fit} object. It carries low-level accessors \verb{$draws()},
 }
 \description{
 Takes a \code{broc_model} object (from \code{\link[=broc]{broc()}}) and runs MCMC sampling via
-Stan (cmdstanr) or JAX (NumPyro). Returns a \code{broc_fit} object that wraps
+JAX (NumPyro; the default) or Stan (cmdstanr). Returns a \code{broc_fit} object that wraps
 the backend-specific result and provides a uniform interface for downstream
 analysis (\code{summary(fit)}, \code{predict(fit)}, \code{pp_check(fit)}, etc.).
 }
