@@ -120,8 +120,8 @@ test_that("lambda2 and lambda2_B smooths: batch and plain Stan agree", {
 test_that("lambda2 and lambda2_B smooths: R reproduces the JAX log-likelihood", {
   skip_if_no_jax()
   m <- suppressMessages(.l2_smooth_model())
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
-                                 iter_sampling = 10, seed = 1, progress_bar = FALSE))
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                 iter_sampling = 5, seed = 1, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)
 })
@@ -154,8 +154,8 @@ test_that("bivariate_dp with lambda_B and lambda2_B: R reproduces the JAX log-li
   m <- suppressMessages(broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
                                  lambda ~ 1, lambda_B ~ 1 + x, lambda2 ~ 1, lambda2_B ~ 1 + x,
                                  family = bivariate_dp()), bv))
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
-                                 iter_sampling = 10, seed = 2, progress_bar = FALSE))
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                 iter_sampling = 5, seed = 2, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)
 })

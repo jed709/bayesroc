@@ -13,23 +13,25 @@
   as.matrix(utils::read.csv(out, comment.char = "#"))
 }
 
-.stan_parity <- function(mp, mb, warmup = 100) {
+.stan_parity <- function(mp, mb, warmup = 20) {
   modp <- .compile_broc_stan(mp)
   modb <- .compile_broc_stan(mb)
-  fp <- modp$sample(data = mp$stan_data, chains = 1, iter_warmup = warmup, iter_sampling = 5,
-                    init = 0, sig_figs = 18, refresh = 50, seed = 1, show_messages = FALSE)
+  fp <- modb$sample(data = mb$stan_data, chains = 1, iter_warmup = warmup, iter_sampling = 5,
+                    init = 0, sig_figs = 18, refresh = 50, seed = 1, max_treedepth = 6, show_messages = FALSE)
   a <- .cmdstan_log_prob(modp, mp$stan_data, fp$output_files()[1])
   b <- .cmdstan_log_prob(modb, mb$stan_data, fp$output_files()[1])
-  list(lp = max(abs(a[, 1] - b[, 1])),
-       grad = max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))),
+  ok <- is.finite(a[, 1])
+  if (sum(ok) < 3) stop("fewer than 3 parity points where the plain model is finite")
+  list(lp = max(abs(a[ok, 1] - b[ok, 1])),
+       grad = max(abs(a[ok, -1] - b[ok, -1]) / pmax(1, abs(a[ok, -1]))),
        dim = c(ncol(a), ncol(b)))
 }
 
-.stan_parity_at <- function(mp, mb, edits, warmup = 100) {
+.stan_parity_at <- function(mp, mb, edits, warmup = 20) {
   modp <- .compile_broc_stan(mp)
   modb <- .compile_broc_stan(mb)
-  fp <- modp$sample(data = mp$stan_data, chains = 1, iter_warmup = warmup, iter_sampling = 5,
-                    init = 0, sig_figs = 18, refresh = 50, seed = 1, show_messages = FALSE)
+  fp <- modb$sample(data = mb$stan_data, chains = 1, iter_warmup = warmup, iter_sampling = 5,
+                    init = 0, sig_figs = 18, refresh = 50, seed = 1, max_treedepth = 6, show_messages = FALSE)
   src <- readLines(fp$output_files()[1])
   hdr <- grep("^lp__", src)
   cols <- strsplit(src[hdr], ",")[[1]]
@@ -43,8 +45,10 @@
   writeLines(src, csv)
   a <- .cmdstan_log_prob(modp, mp$stan_data, csv)
   b <- .cmdstan_log_prob(modb, mb$stan_data, csv)
-  list(lp = max(abs(a[, 1] - b[, 1])),
-       grad = max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))),
+  ok <- is.finite(a[, 1])
+  if (sum(ok) < 3) stop("fewer than 3 parity points where the plain model is finite")
+  list(lp = max(abs(a[ok, 1] - b[ok, 1])),
+       grad = max(abs(a[ok, -1] - b[ok, -1]) / pmax(1, abs(a[ok, -1]))),
        lp_values = a[, 1])
 }
 

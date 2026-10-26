@@ -44,7 +44,19 @@ test_that("criterion smooth builds valid batch C++ that indexes the coefficient 
   expect_length(grep("propagate_thresh_grad[^;]*pop_exp_gaps", paste(l, collapse = " ")), 0)
 })
 
+test_that("criterion smooth: JAX log_lik matches the R reference", {
+  skip_if_no_jax()
+  d <- fixture_criterion_smooth()
+  m <- broc(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d)
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+                                 seed = 1, progress_bar = FALSE))
+  dm <- posterior::as_draws_matrix(f$draws())
+  ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))
+  expect_lt(max(abs(ll_j - .obs_loglik_r(m, build_data_source_from_model(m), dm, NULL))), 1e-5)
+})
+
 test_that("criterion smooth agrees across batch C++, plain Stan and JAX", {
+  skip_if_not_slow()
   skip_on_cran()
   skip_if_no_cmdstan()
   skip_if_no_jax()
@@ -56,7 +68,7 @@ test_that("criterion smooth agrees across batch C++, plain Stan and JAX", {
                  iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 50)
   fp <- fit_broc(m_plain, backend = "stan", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 11, refresh = 50)
-  fj <- fit_broc(m_batch, backend = "jax", chains = 2, parallel_chains = 2,
+  fj <- fit_broc(m_batch, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 11, progress_bar = FALSE)
 
   a <- pop_means(fb); b <- pop_means(fp); j <- pop_means(fj)

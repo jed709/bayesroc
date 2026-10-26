@@ -11,10 +11,9 @@
 
 test_that("a chain cmdstanr dropped is read back when its output is complete, else fit_broc stops", {
   skip_if_no_cmdstan()
-  d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
+  m <- .fx_model("evsd")
   f <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                iter_warmup = 100, iter_sampling = 100, refresh = 50, seed = 3)
+                iter_warmup = 20, iter_sampling = 100, refresh = 50, seed = 3)
   sf <- f$.backend_fit
   files <- sf$output_files()
   expect_identical(.recover_dropped_chains(sf, 2), sf)

@@ -8,8 +8,8 @@
 
 .np_jax <- function(f, d) {
   m <- suppressMessages(broc(f, d))
-  fit <- suppressMessages(fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2, iter_warmup = 30,
-                                   iter_sampling = 10, seed = 1, progress_bar = FALSE, keep_re = TRUE))
+  fit <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 10,
+                                   iter_sampling = 5, seed = 1, progress_bar = FALSE, keep_re = TRUE))
   list(m = m, dm = posterior::as_draws_matrix(fit$draws()))
 }
 

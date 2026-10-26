@@ -41,7 +41,7 @@ test_that("location-scale thresholds: R reproduces the sampler's log-likelihood 
   d <- .ls_data()
   for (gl in c("log", "softplus")) {
     m <- suppressMessages(broc(.ls_formula(), d, gap_link = if (gl == "softplus") "softplus"))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
                                    iter_sampling = 20, seed = 1, progress_bar = FALSE))
     dm <- f$draws(format = "matrix")
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), dm, re_formula = NULL)
@@ -101,7 +101,7 @@ test_that("criterion2_scale: R reproduces the JAX log-likelihood", {
   skip_if_no_jax()
   for (nm in names(cs <- .ls2_cases())) {
     m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
                                    iter_sampling = 10, seed = 1, progress_bar = FALSE))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5, label = nm)
@@ -131,7 +131,7 @@ test_that("criterion2_scale with cell-means varying source criteria: R reproduce
                                  criterion2 ~ 0 + g + (1 | sub), criterion2_scale ~ x,
                                  family = vrdp2d(source_criteria = "varying")), bv))
   expect_equal(m$stan_data$n_vcell, 2L)
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
                                  iter_sampling = 10, seed = 1, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)

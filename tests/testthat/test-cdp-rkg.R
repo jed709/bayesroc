@@ -27,7 +27,28 @@ cdp_rkg_model <- function(d) {
        data = d)
 }
 
+.cdp_rkg_jax_fit <- function() {
+  .fx_memo("cdp_rkg:jax", suppressMessages(fit_broc(cdp_rkg_model(fixture_cdp_rkg()), backend = "jax", sampler = "drghmc",
+                                                     chains = 1, iter_warmup = 50, iter_sampling = 5, seed = 5,
+                                                     progress_bar = FALSE)))
+}
+
+test_that("cdp R/K/G: JAX and batch Stan log-likelihoods match R", {
+  skip_if_no_cmdstan()
+  skip_if_no_jax()
+  d <- fixture_cdp_rkg()
+  m <- cdp_rkg_model(d)
+  fj <- .cdp_rkg_jax_fit()
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5, label = "JAX vs R log_lik")
+  fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
+                                  seed = 3, refresh = 50, show_messages = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fs), 1L, m$model_data$N))), 1e-5, label = "Stan vs R log_lik")
+})
+
 test_that("cdp R/K/G agrees across Stan and JAX backends at high rho", {
+  skip_if_not_slow()
   skip_on_cran()
   skip_if_no_cmdstan()
   skip_if_no_jax()
@@ -36,7 +57,7 @@ test_that("cdp R/K/G agrees across Stan and JAX backends at high rho", {
 
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
                  iter_warmup = 400, iter_sampling = 400, seed = 3, refresh = 50)
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                  iter_warmup = 400, iter_sampling = 400, seed = 3,
                  progress_bar = FALSE)
 
@@ -58,12 +79,8 @@ test_that("cdp R/K/G agrees across Stan and JAX backends at high rho", {
 test_that("cdp R/K/G predicted probabilities are finite and sum to one", {
   skip_on_cran()
   skip_if_no_jax()
-  d <- fixture_cdp_rkg()
-  m <- cdp_rkg_model(d)
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
-                 iter_warmup = 300, iter_sampling = 300, seed = 5,
-                 progress_bar = FALSE)
-  p <- predict(fj, type = "response", ndraws = 20)
+  fj <- .cdp_rkg_jax_fit()
+  p <- predict(fj, type = "response", ndraws = 5)
   expect_true(all(is.finite(p$mean)))
   totals <- as.vector(tapply(p$mean, p$trial, sum))
   expect_equal(totals, rep(1, length(totals)), tolerance = 1e-6)
@@ -149,7 +166,7 @@ test_that("JAX honours a user init for the reparameterised know criterion", {
               list(beta_rec_crit = 0.9, beta_know_crit = 0.3, beta_dprime = 1.1))
   msgs <- character(0)
   f <- withCallingHandlers(
-    fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2, iter_warmup = 200, iter_sampling = 200,
+    fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 100, iter_sampling = 20,
              seed = 4, init = ini, progress_bar = FALSE),
     message = function(e) { msgs <<- c(msgs, conditionMessage(e)); invokeRestart("muffleMessage") })
   expect_false(any(grepl("ignored", msgs)))

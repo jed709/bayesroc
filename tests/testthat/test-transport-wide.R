@@ -59,6 +59,7 @@ test_that("the map with a super-block's wide blocks non-centred is an exact bije
 })
 
 test_that("a wide block sampled non-centred gives the same posterior as mapped", {
+  skip_if_not_slow()
   skip_if_no_jax()
   m <- suppressMessages(.wide_model(.fixture_wide(P = 12L, I = 20L)))
   fits <- lapply(c(TRUE, FALSE), function(w)

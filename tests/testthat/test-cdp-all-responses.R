@@ -64,7 +64,27 @@ test_that("cdp on all responses: batch C++ matches plain Stan (R/K and R/K/G, wi
   }
 })
 
+test_that("cdp on all responses: JAX and batch Stan log-likelihoods match R and predictions sum to one", {
+  skip_if_no_cmdstan()
+  skip_if_no_jax()
+  d <- fixture_cdp_all(3L, n_sub = 20, n_item = 60)
+  m <- suppressMessages(broc(cdp_all_formula(3L), data = d))
+  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                  iter_sampling = 5, seed = 3, progress_bar = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5, label = "JAX vs R log_lik")
+  fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
+                                  seed = 3, refresh = 50, show_messages = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fs), 1L, m$model_data$N))), 1e-5, label = "Stan vs R log_lik")
+  p <- predict(fj, type = "response", ndraws = 5)
+  expect_equal(as.vector(tapply(p$mean, p$trial, sum)), rep(1, nrow(d)), tolerance = 1e-6)
+  pr <- predict(fj, type = "response", ndraws = 5, summary = FALSE, response = 2)
+  expect_equal(range(apply(pr, c(1, 2), sum)), c(1, 1), tolerance = 1e-8)
+})
+
 test_that("cdp on all responses: Stan and JAX agree and recover the generating values", {
+  skip_if_not_slow()
   skip_on_cran()
   skip_if_no_cmdstan()
   skip_if_no_jax()
@@ -72,7 +92,7 @@ test_that("cdp on all responses: Stan and JAX agree and recover the generating v
   m <- suppressMessages(broc(cdp_all_formula(3L), data = d))
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
                  iter_warmup = 400, iter_sampling = 400, seed = 3, refresh = 50)
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                  iter_warmup = 400, iter_sampling = 400, seed = 3, progress_bar = FALSE)
   strip_idx <- function(v) sub("\\[[0-9]+(,[0-9]+)?\\]$", "", v)
   tab <- function(f) {

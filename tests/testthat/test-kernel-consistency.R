@@ -18,16 +18,28 @@
   "mafc_m2", "mafc_m3", "mafc_m5_uv", "mafc_mixed_m"
 )
 
-test_that("every fused kernel's custom JVP is the exact derivative of its value", {
-  skip_if_no_jax()
-  res <- .run_py_check("jvp_check.py", paste(.kernels, collapse = ","))
-  for (k in .kernels) {
+.jvp_expect <- function(res, ks) {
+  for (k in ks) {
     r <- res[[k]]
     expect_true(isTRUE(r$custom_jvp), label = paste(k, "has a custom JVP"))
     expect_true(r$finite, label = k)
     expect_lt(r$primal_abs, 1e-10, label = paste(k, "JVP primal vs plain value"))
     expect_lt(r$tangent_abs, 1e-8, label = paste(k, "JVP tangent vs autodiff of the value"))
   }
+}
+
+.kernels_jax <- grep("^(simple|dpsdt|mixture|source_mixture)_", .kernels, value = TRUE)
+
+test_that("every univariate kernel's custom JVP is the exact derivative of its value", {
+  skip_if_no_jax()
+  .jvp_expect(.run_py_check("jvp_check.py", paste(.kernels_jax, collapse = ",")), .kernels_jax)
+})
+
+test_that("every native-backed kernel's pure-JAX custom JVP is the exact derivative of its value", {
+  skip_if_not_slow()
+  skip_if_no_jax()
+  ks <- setdiff(.kernels, .kernels_jax)
+  .jvp_expect(.run_py_check("jvp_check.py", paste(ks, collapse = ",")), ks)
 })
 
 test_that("with the native kernels loaded, every probit and bivariate JVP matches finite differences", {

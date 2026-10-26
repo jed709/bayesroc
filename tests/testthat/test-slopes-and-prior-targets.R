@@ -65,7 +65,7 @@ test_that("slope-only random effects agree across plain Stan, batch Stan and R, 
     expect_lt(r$lp, 1e-8, label = paste(nm, "plain vs batch log density"))
     expect_lt(r$grad, 1e-8, label = paste(nm, "plain vs batch gradient"))
 
-    f <- suppressMessages(fit_broc(mb, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 3,
+    f <- suppressMessages(fit_broc(mb, backend = "stan", chains = 1, iter_warmup = 20, iter_sampling = 3,
                                    seed = 1, refresh = 50, show_messages = FALSE))
     dm <- posterior::as_draws_matrix(f$draws())
     src <- build_data_source_from_model(mb)
@@ -91,7 +91,7 @@ test_that("slope-only random effects: JAX log_lik matches R", {
   for (nm in names(cs)) {
     c1 <- cs[[nm]]
     m <- suppressMessages(broc(c1[[1]], c1[[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 50, iter_sampling = 2,
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 2,
                                    seed = 1, progress_bar = FALSE))
     dm <- posterior::as_draws_matrix(f$draws())
     ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))

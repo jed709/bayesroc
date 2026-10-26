@@ -1,5 +1,6 @@
 
 test_that("drghmc: posterior means agree with nuts (jax)", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
@@ -20,10 +21,9 @@ test_that("drghmc: posterior means agree with nuts (jax)", {
 
 test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
   skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
   fj <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 1,
-                 iter_warmup = 800, iter_sampling = 1500, chains = 4,
+                 iter_warmup = 50, iter_sampling = 20, chains = 2, parallel_chains = 2,
                  progress_bar = FALSE)
   dd <- fj$diagnostic_summary()
   expect_true(all(c("accept", "dr_stage") %in% names(dd)))
@@ -36,8 +36,7 @@ test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
 
 test_that("drghmc: control knobs plumb through; unknown keys and short warmup error", {
   skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
   expect_error(
     fit_broc(m, backend = "jax", sampler = "drghmc", control = list(bogus = 1),
              iter_warmup = 200, iter_sampling = 200, chains = 4,
@@ -47,6 +46,13 @@ test_that("drghmc: control knobs plumb through; unknown keys and short warmup er
     fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 5,
              iter_sampling = 200, chains = 4, progress_bar = FALSE),
     "needs iter_warmup >= control")
+})
+
+test_that("drghmc: f32 control converges on a small model", {
+  skip_if_not_slow()
+  skip_if_no_jax()
+  d <- .fixture_univariate(sigma = 1.3)
+  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   fj <- fit_broc(m, backend = "jax", sampler = "drghmc",
                  control = list(precision = "f32"), seed = 1,
                  iter_warmup = 800, iter_sampling = 1500, chains = 4,
@@ -64,21 +70,22 @@ test_that("drghmc requires the jax backend", {
 
 test_that("drghmc accepts sample counts that are not a multiple of the chunk length", {
   skip_if_no_jax()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), .fixture_univariate())
-  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
-                iter_warmup = 200, iter_sampling = 1001, seed = 3, progress_bar = FALSE)
-  expect_equal(posterior::niterations(f$.draws_array), 1001L)
-  f2 <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
-                 iter_warmup = 200, iter_sampling = 1001, thin = 7, seed = 3, progress_bar = FALSE)
-  expect_equal(posterior::niterations(f2$.draws_array), 143L)
+  m <- .fx_model("evsd")
+  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+                iter_warmup = 50, iter_sampling = 301, seed = 3, progress_bar = FALSE)
+  expect_equal(posterior::niterations(f$.draws_array), 301L)
+  f2 <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+                 iter_warmup = 50, iter_sampling = 301, thin = 7, seed = 3, progress_bar = FALSE)
+  expect_equal(posterior::niterations(f2$.draws_array), 43L)
 })
 
 test_that("drghmc recovers NUTS posterior means and SDs for dr_k 2 and 3", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3, n_per = 400)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   vars <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  ref <- fit_broc(m, backend = "jax", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
+  ref <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
                   seed = 5, progress_bar = FALSE)
   rs <- posterior::summarise_draws(posterior::subset_draws(ref$.draws_array, variable = vars),
                                    "mean", "sd", "mcse_mean")
@@ -96,17 +103,26 @@ test_that("drghmc recovers NUTS posterior means and SDs for dr_k 2 and 3", {
 
 test_that("drghmc seeds do not share random streams", {
   skip_if_no_jax()
-  m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), .fixture_univariate())
-  a <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
-                iter_warmup = 100, iter_sampling = 100, seed = 1, progress_bar = FALSE)
-  b <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2,
-                iter_warmup = 100, iter_sampling = 100, seed = 94, progress_bar = FALSE)
+  m <- .fx_model("evsd")
+  a <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+                iter_warmup = 50, iter_sampling = 10, seed = 1, progress_bar = FALSE)
+  b <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+                iter_warmup = 50, iter_sampling = 10, seed = 94, progress_bar = FALSE)
   v <- "beta_dprime[1]"
   expect_false(isTRUE(all.equal(as.numeric(a$.draws_array[, , v]),
                                 as.numeric(b$.draws_array[, , v]))))
 })
 
 test_that("drghmc runs chains sequentially when parallel_chains < chains", {
+  skip_if_no_jax()
+  m <- .fx_model("uvsd")
+  fs <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 7, chains = 2, parallel_chains = 1,
+                 iter_warmup = 50, iter_sampling = 20, progress_bar = FALSE)
+  expect_equal(dim(fs$.draws_array)[1:2], c(20L, 2L))
+})
+
+test_that("drghmc sequential and parallel chains sample the same posterior", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
@@ -122,12 +138,25 @@ test_that("drghmc runs chains sequentially when parallel_chains < chains", {
   expect_lt(max(abs(ms - mp)), 0.05)
 })
 
+test_that("f32 fits (NUTS and DR-G-HMC) run without divergences and return finite draws", {
+  skip_if_no_jax()
+  m <- .fx_model("uvsd")
+  v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
+  for (smp in c("nuts", "drghmc")) {
+    f <- fit_broc(m, backend = "jax", sampler = smp, seed = 3, chains = 1, parallel_chains = 1,
+                  iter_warmup = 50, iter_sampling = 20, control = list(precision = "f32"), progress_bar = FALSE)
+    expect_equal(sum(f$diagnostic_summary()$num_divergent), 0, label = smp)
+    expect_true(all(is.finite(posterior::as_draws_matrix(f$draws(variables = v)))), label = smp)
+  }
+})
+
 test_that("f32 fits (NUTS and DR-G-HMC) sum the likelihood relative to a warmed-up offset", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  ref <- fit_broc(m, backend = "jax", seed = 3, chains = 2, iter_warmup = 300, iter_sampling = 600,
+  ref <- fit_broc(m, backend = "jax", sampler = "nuts", seed = 3, chains = 2, iter_warmup = 300, iter_sampling = 600,
                   progress_bar = FALSE)
   mr <- colMeans(posterior::as_draws_matrix(ref$draws(variables = v)))
   sr <- apply(posterior::as_draws_matrix(ref$draws(variables = v)), 2, sd)
@@ -141,10 +170,11 @@ test_that("f32 fits (NUTS and DR-G-HMC) sum the likelihood relative to a warmed-
 })
 
 test_that("drghmc samples weakly identified standard deviations from the NUTS posterior", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_crossed()
   m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub) + (1 | item), family = evsd()), d)
-  ref <- fit_broc(m, backend = "jax", chains = 4, iter_warmup = 1000, iter_sampling = 6000,
+  ref <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 6000,
                   seed = 3, progress_bar = FALSE, control = list(adapt_delta = 0.99))
   f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 4, iter_warmup = 1500,
                 iter_sampling = 12000, seed = 4, progress_bar = FALSE)

@@ -15,6 +15,7 @@
   thr <- outer(rep(1, n), c(-1.0, -0.35, 0.3, 0.95, 1.7)) + 0.45 * sin(1.6 * d$x)
   d$conf <- as.integer(1L + rowSums(lat > thr))
   d$sub <- factor(d$sub)
+  d$z <- round(rnorm(n), 3)
   d
 }
 
@@ -26,6 +27,7 @@
   mu2 <- ifelse(d$item_type == "A", -1.0, ifelse(d$item_type == "B", 1.0, 0))
   d$det <- as.integer(1L + rowSums(outer(rnorm(n, mu1), c(-1.0, -0.3, 0.4, 1.1, 1.8), ">")))
   d$src <- as.integer(1L + rowSums((rnorm(n, mu2) - 0.5 * sin(d$x)) > outer(rep(1, n), c(-0.9, -0.25, 0.45, 1.2))))
+  d$z <- round(rnorm(n), 3)
   d
 }
 
@@ -35,10 +37,7 @@ test_that("batch C++ gradients match finite differences: univariate, both gap li
   for (gl in c("log", "softplus")) {
     specs <- list(
       brf(conf | old ~ 1, family = evsd(), gap_link = gl),
-      brf(conf | old ~ 1, sigma ~ 1, family = uvsd(), gap_link = gl),
-      brf(conf | old ~ 1, criterion ~ 1 + x, family = evsd(), gap_link = gl),
-      brf(conf | old ~ 1, criterion ~ s(x), family = evsd(), gap_link = gl),
-      brf(conf | old ~ 1, criterion ~ 1 + (1 | sub), family = evsd(), gap_link = gl)
+      brf(conf | old ~ 1, sigma ~ 1, criterion ~ 1 + z + s(x) + (1 | sub), family = uvsd(), gap_link = gl)
     )
     for (i in seq_along(specs)) {
       m <- broc(specs[[i]], data = d)
@@ -54,9 +53,7 @@ test_that("batch C++ gradients match finite differences: bivariate criterion2 de
     specs <- list(
       brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
           family = bivariate_gaussian(), gap_link = gl),
-      brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1 + x,
-          family = bivariate_gaussian(), gap_link = gl),
-      brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ s(x),
+      brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1 + z + s(x),
           family = bivariate_gaussian(), gap_link = gl)
     )
     for (i in seq_along(specs)) {

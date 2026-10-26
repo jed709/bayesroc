@@ -36,8 +36,8 @@ test_that("criterion2 smooth: batch and plain Stan agree, and predict() matches 
   expect_lt(r$lp, 1e-8)
   expect_lt(r$grad, 1e-8)
 
-  fit <- fit_broc(mb, backend = "stan", refresh = 50, chains = 2, parallel_chains = 2,
-                  iter_warmup = 250, iter_sampling = 250, seed = 3)
+  fit <- fit_broc(mb, backend = "stan", refresh = 50, chains = 1,
+                  iter_warmup = 15, iter_sampling = 5, seed = 3)
   sd <- mb$stan_data
   ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))
   pr <- predict(fit, type = "response", summary = FALSE)
@@ -45,14 +45,28 @@ test_that("criterion2 smooth: batch and plain Stan agree, and predict() matches 
   expect_lt(max(abs(obs - exp(ll))), 1e-4)
 })
 
+test_that("criterion2 smooth: JAX log_lik matches the R reference", {
+  skip_if_no_jax()
+  d <- .smooth_data()
+  m <- suppressMessages(broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
+                                 criterion ~ 1, criterion2 ~ 1 + s(w, k = 5),
+                                 family = bivariate_gaussian()), d))
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+                                 seed = 5, progress_bar = FALSE))
+  dm <- posterior::as_draws_matrix(f$draws())
+  ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))
+  expect_lt(max(abs(ll_j - .obs_loglik_r(m, build_data_source_from_model(m), dm, NULL))), 1e-5)
+})
+
 test_that("criterion2 smooth: JAX and Stan agree", {
+  skip_if_not_slow()
   skip_if_no_cmdstan()
   skip_if_no_jax()
   d <- .smooth_data(seed = 42, n = 1500)
   m <- suppressMessages(broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
                                  criterion ~ 1, criterion2 ~ 1 + s(w, k = 5),
                                  family = bivariate_gaussian()), d))
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2, iter_warmup = 500,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 500,
                  iter_sampling = 500, seed = 5, progress_bar = FALSE)
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, refresh = 50,
                  iter_warmup = 500, iter_sampling = 500, seed = 5)

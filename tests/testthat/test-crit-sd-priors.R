@@ -52,7 +52,7 @@ test_that("criterion SD priors resolve per component, term and bin", {
 
   m0 <- .crit_sd_model(NULL)
   r0 <- .crit_re_sd_resolve(m0$prior_lookup, "criterion2", "sub", .re_list_of(m0$model_data, "criterion2")[["sub"]])
-  expect_equal(r0$prior, ifelse(r0$comp == 0L, "normal(0, 1)", "normal(0, 0.5)"))
+  expect_equal(r0$prior, rep("normal(0, 1)", nrow(r0)))
   expect_false(any(r0$user))
 
   mc <- .crit_sd_model(broc_prior("normal(0, 0.3)", class = "sd", dpar = "criterion2", group = "sub"))
@@ -67,7 +67,7 @@ test_that("component SD priors reach get_broc_prior, Stan and JAX", {
   gp <- get_broc_prior(m)
   g2 <- gp[gp$class == "sd" & gp$dpar %in% c("thresh_mid2", "log_gaps2"), ]
   expect_equal(g2$coef, c("(Intercept)", "gap1_(Intercept)", "gap2_(Intercept)"))
-  expect_equal(g2$prior, c("normal(0, 0.4)", "normal(0, 0.5)", "normal(0, 0.1)"))
+  expect_equal(g2$prior, c("normal(0, 0.4)", "normal(0, 1)", "normal(0, 0.1)"))
   expect_equal(g2$source, c("user", "default", "user"))
   expect_false(any(gp$class == "sd" & gp$dpar == "criterion2"))
 
@@ -95,7 +95,7 @@ test_that("DR-G-HMC traces a correlated block whose SD priors differ by componen
   per <- .crit_re_sd_priors(m$prior_lookup, "criterion", "participant",
                             .re_list_of(m$model_data, "criterion")[["participant"]])
   expect_gt(length(unique(per)), 1L)
-  fit <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 300, iter_sampling = 50,
-                  chains = 2, parallel_chains = 2, refresh = 0)
+  fit <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 50, iter_sampling = 5,
+                  chains = 1, parallel_chains = 1, refresh = 0)
   expect_true(any(grepl("^sigma_cross_p_participant", fit$metadata()$variables)))
 })

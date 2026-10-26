@@ -27,7 +27,26 @@ test_that("predictors go on the cutpoints, as per-cutpoint effects or one shift 
                "Variable 'one' has a single level")
 })
 
+test_that("the random-intercept ordinal model: JAX and batch Stan log-likelihoods match R", {
+  skip_if_no_jax()
+  skip_if_no_cmdstan()
+  d <- .sim_ordinal()
+  m <- broc(brf(rating ~ 1, cutpoints ~ grp + (1 | rater) + (1 | item), cutpoints_scale ~ 1, family = cumulative()), d)
+  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                  iter_sampling = 5, seed = 2, progress_bar = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5, label = "JAX vs R log_lik")
+  fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
+                                  seed = 2, refresh = 50, show_messages = FALSE))
+  dm <- posterior::as_draws_matrix(fs$draws())
+  ll_s <- as.matrix(dm[, grep("^log_lik\\[", colnames(dm)), drop = FALSE])
+  if (!ncol(ll_s)) ll_s <- .read_loglik_SN_cols(.loglik_path(fs), 1L, m$model_data$N)
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), dm, re_formula = NULL)
+  expect_lt(max(abs(ll_s - ll_r)), 1e-5, label = "Stan vs R log_lik")
+})
+
 test_that("the random-intercept ordinal model fits on both backends and recovers its structure", {
+  skip_if_not_slow()
   skip_if_no_jax()
   skip_if_no_cmdstan()
   d <- .sim_ordinal()

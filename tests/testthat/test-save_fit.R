@@ -13,11 +13,10 @@
 
 test_that("Stan: save_broc_fit()/load_broc_fit() survive loss of temp CSVs", {
   skip_if_no_cmdstan()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
   fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
-                  parallel_chains = 2, chains = 2,
-                  iter_warmup = 200, iter_sampling = 200)
+                  parallel_chains = 1, chains = 1,
+                  iter_warmup = 30, iter_sampling = 20)
   ref <- .draws_mean(fit)
 
   f <- tempfile(fileext = ".rds")
@@ -32,26 +31,25 @@ test_that("Stan: save_broc_fit()/load_broc_fit() survive loss of temp CSVs", {
 
 test_that("fit_broc(file=) saves, reloads instead of refitting, and refits on demand", {
   skip_if_no_cmdstan()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
 
   path <- tempfile()
   rds  <- paste0(path, ".rds")
 
   fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
-                  parallel_chains = 2, chains = 2,
-                  iter_warmup = 200, iter_sampling = 200, file = path)
+                  parallel_chains = 1, chains = 1,
+                  iter_warmup = 30, iter_sampling = 20, file = path)
   expect_true(file.exists(rds))
   ref <- .draws_mean(fit)
 
   fit_loaded <- fit_broc(m, backend = "stan", refresh = 50, seed = 999,
-                         parallel_chains = 2, chains = 2,
-                         iter_warmup = 200, iter_sampling = 200, file = path)
+                         parallel_chains = 1, chains = 1,
+                         iter_warmup = 30, iter_sampling = 20, file = path)
   expect_equal(.draws_mean(fit_loaded), ref, tolerance = 1e-8)
 
   fit_refit <- fit_broc(m, backend = "stan", refresh = 50, seed = 7,
-                        parallel_chains = 2, chains = 2,
-                        iter_warmup = 200, iter_sampling = 200,
+                        parallel_chains = 1, chains = 1,
+                        iter_warmup = 30, iter_sampling = 20,
                         file = path, file_refit = TRUE)
   expect_s3_class(fit_refit, "broc_fit")
   expect_no_error(summary(fit_refit))
@@ -59,18 +57,17 @@ test_that("fit_broc(file=) saves, reloads instead of refitting, and refits on de
 
 test_that("fit_broc(file=) works on the JAX backend", {
   skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
   path <- tempfile()
 
-  fit <- fit_broc(m, backend = "jax", chains = 2L,
-                  iter_warmup = 200L, iter_sampling = 200L,
+  fit <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L,
+                  iter_warmup = 30L, iter_sampling = 20L,
                   seed = 1, progress_bar = FALSE, file = path)
   expect_true(file.exists(paste0(path, ".rds")))
   ref <- .draws_mean(fit)
 
-  fit_loaded <- fit_broc(m, backend = "jax", chains = 2L,
-                         iter_warmup = 200L, iter_sampling = 200L,
+  fit_loaded <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L,
+                         iter_warmup = 30L, iter_sampling = 20L,
                          seed = 2, progress_bar = FALSE, file = path)
   expect_equal(.draws_mean(fit_loaded), ref, tolerance = 1e-8)
 })

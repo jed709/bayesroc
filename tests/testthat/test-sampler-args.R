@@ -3,58 +3,48 @@
   mean(posterior::as_draws_matrix(f$draws(variables = "beta_dprime[1]"))[, 1])
 }
 
-test_that("Stan: seed makes fits reproducible", {
+test_that("Stan: seed makes fits reproducible and thin keeps every k-th draw", {
   skip_if_no_cmdstan()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
+  m <- .fx_model("uvsd")
   a <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 200, iter_sampling = 200, refresh = 50)
+                iter_warmup = 50, iter_sampling = 40, thin = 2, refresh = 50)
   b <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 200, iter_sampling = 200, refresh = 50)
+                iter_warmup = 50, iter_sampling = 40, thin = 2, refresh = 50)
   expect_identical(.bd1(a), .bd1(b))
+  expect_equal(nrow(posterior::as_draws_matrix(a$draws(variables = "beta_dprime[1]"))), 40)
 })
 
-test_that("Stan: thin keeps every k-th draw", {
-  skip_if_no_cmdstan()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fs <- fit_broc(m, backend = "stan", seed = 1, chains = 2, parallel_chains = 2,
-                 iter_warmup = 200, iter_sampling = 400, thin = 2, refresh = 50)
-  expect_equal(nrow(posterior::as_draws_matrix(fs$draws(variables = "beta_dprime[1]"))), 400)
-})
-
-test_that("JAX: thin keeps every k-th draw", {
+test_that("JAX: thin, parallel_chains = 1 and the cmdstanr-only `...` warning", {
   skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fj <- fit_broc(m, backend = "jax", chains = 2L, iter_warmup = 200L,
-                 iter_sampling = 400L, thin = 2L, seed = 1, progress_bar = FALSE)
-  expect_equal(fj$.iter_sampling, 200L)
-})
-
-test_that("JAX: parallel_chains = 1 runs sequentially, same draws shape", {
-  skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fs <- fit_broc(m, backend = "jax", chains = 2L, parallel_chains = 1L,
-                 iter_warmup = 100L, iter_sampling = 100L, seed = 1, progress_bar = FALSE)
-  fp <- fit_broc(m, backend = "jax", chains = 2L, parallel_chains = 2L,
-                 iter_warmup = 100L, iter_sampling = 100L, seed = 1, progress_bar = FALSE)
+  m <- .fx_model("uvsd")
+  expect_warning(
+    fp <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L, parallel_chains = 2L, iter_warmup = 30L,
+                   iter_sampling = 40L, thin = 2L, seed = 1, progress_bar = FALSE, sig_figs = 5),
+    "forwarded to cmdstanr"
+  )
+  expect_equal(fp$.iter_sampling, 20L)
+  fs <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L, parallel_chains = 1L, iter_warmup = 30L,
+                 iter_sampling = 40L, thin = 2L, seed = 1, progress_bar = FALSE)
   expect_identical(dim(fs$draws()), dim(fp$draws()))
 })
 
-test_that("JAX warns that `...` is cmdstanr-only", {
+test_that("one chain, or chains run one at a time, compile and sample on both JAX samplers", {
   skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.2)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  expect_warning(
-    fit_broc(m, backend = "jax", chains = 2L, iter_warmup = 100L,
-             iter_sampling = 100L, seed = 1, progress_bar = FALSE, sig_figs = 5),
-    "forwarded to cmdstanr"
-  )
+  m <- suppressMessages(broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = uvsd()),
+                             .fixture_crossed(n_sub = 8, n_item = 16)))
+  runs <- list(list("drghmc", 30, 1), list("nuts", 30, 1), list("drghmc", 30, 2), list("drghmc", "auto", 1))
+  for (r in runs) {
+    s <- r[[1]]; it <- r[[2]]; ch <- r[[3]]
+    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = s, chains = ch, parallel_chains = 1,
+                                   iter_warmup = 50, iter_sampling = it, seed = 1, progress_bar = FALSE,
+                                   control = if (identical(it, "auto")) list(check_every = 50, max_draws = 100)))
+    expect_true(all(is.finite(posterior::as_draws_matrix(f$draws(variables = "beta_dprime")))),
+                label = paste(s, it, ch, "chains"))
+  }
 })
 
-test_that("one chain, or chains run one at a time, compile and sample on both JAX samplers", {
+test_that("one chain, or chains run one at a time, compile and sample on both JAX samplers (full grid)", {
+  skip_if_not_slow()
   skip_if_no_jax()
   m <- suppressMessages(broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = uvsd()),
                              .fixture_crossed(n_sub = 8, n_item = 16)))

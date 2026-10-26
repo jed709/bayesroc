@@ -21,13 +21,60 @@
   mean(dr[[sprintf("sigma_criterion2_%s[2]", g)]])
 }
 
-test_that("JAX applies every criterion2 random-effect grouping factor", {
+.ll_vs_r <- function(m, f) {
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
+  max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N)))
+}
+
+test_that("JAX applies every criterion2 random-effect grouping factor in the likelihood", {
   skip_if_no_jax()
   d <- .sim_crit2_crossed()
   m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
                 criterion2 ~ 1 + (1 | sub) + (1 | item),
                 family = bivariate_gaussian()), d)
-  f <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                 iter_sampling = 5, seed = 3, progress_bar = FALSE))
+  vars <- posterior::variables(f$.draws_array)
+  expect_true(any(grepl("^u_criterion2_sub\\[", vars)))
+  expect_true(any(grepl("^u_criterion2_item\\[", vars)))
+  expect_lt(.ll_vs_r(m, f), 1e-5, label = "JAX vs R log_lik")
+})
+
+test_that("batch Stan applies every criterion2 random-effect grouping factor in the likelihood", {
+  skip_if_no_cmdstan()
+  d <- .sim_crit2_crossed(seed = 22)
+  m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
+                criterion2 ~ 1 + (1 | sub) + (1 | item),
+                family = bivariate_gaussian()), d)
+  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
+                                 seed = 4, refresh = 50, show_messages = FALSE))
+  vars <- posterior::variables(f$draws())
+  expect_true(any(grepl("^u_criterion2_sub\\[", vars)))
+  expect_true(any(grepl("^u_criterion2_item\\[", vars)))
+  expect_lt(.ll_vs_r(m, f), 1e-5, label = "Stan vs R log_lik")
+})
+
+test_that("cross-correlated criterion2 effects enter the JAX likelihood as R computes them", {
+  skip_if_no_jax()
+  d <- .sim_crit2_crossed(seed = 23, n_item = 30, sd_item = 0)
+  m <- broc(brf(resp(y1, y2) | item_type ~ 1 + (1 | p | sub), discrim ~ 1, rho ~ 1,
+                criterion ~ 1, criterion2 ~ 1 + (1 | p | sub),
+                family = bivariate_gaussian()), d)
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                 iter_sampling = 5, seed = 5, progress_bar = FALSE))
+  u2 <- grep("^u_criterion2_sub_from_p\\[", posterior::variables(f$.draws_array), value = TRUE)
+  expect_gt(length(u2), 0)
+  expect_lt(.ll_vs_r(m, f), 1e-5, label = "JAX vs R log_lik")
+})
+
+test_that("JAX applies every criterion2 random-effect grouping factor", {
+  skip_if_not_slow()
+  skip_if_no_jax()
+  d <- .sim_crit2_crossed()
+  m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
+                criterion2 ~ 1 + (1 | sub) + (1 | item),
+                family = bivariate_gaussian()), d)
+  f <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                 iter_warmup = 500, iter_sampling = 500, seed = 3, progress_bar = FALSE)
   expect_gt(.mid_sd(f, "sub"), 0.8)
   expect_gt(.mid_sd(f, "item"), 0.8)
@@ -37,13 +84,14 @@ test_that("JAX applies every criterion2 random-effect grouping factor", {
 })
 
 test_that("JAX and Stan agree on crossed criterion2 random effects", {
+  skip_if_not_slow()
   skip_if_no_jax()
   skip_if_no_cmdstan()
   d <- .sim_crit2_crossed(seed = 22)
   m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
                 criterion2 ~ 1 + (1 | sub) + (1 | item),
                 family = bivariate_gaussian()), d)
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                  iter_warmup = 500, iter_sampling = 500, seed = 4, progress_bar = FALSE)
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, refresh = 50,
                  iter_warmup = 500, iter_sampling = 500, seed = 4)
@@ -53,12 +101,13 @@ test_that("JAX and Stan agree on crossed criterion2 random effects", {
 })
 
 test_that("cross-correlated criterion2 effects move source, not detection, thresholds", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .sim_crit2_crossed(seed = 23, n_item = 30, sd_item = 0)
   m <- broc(brf(resp(y1, y2) | item_type ~ 1 + (1 | p | sub), discrim ~ 1, rho ~ 1,
                 criterion ~ 1, criterion2 ~ 1 + (1 | p | sub),
                 family = bivariate_gaussian()), d)
-  f <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  f <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                 iter_warmup = 500, iter_sampling = 500, seed = 5, progress_bar = FALSE)
   dr <- posterior::as_draws_df(f$.draws_array)
   u2 <- grep("^u_criterion2_sub_from_p\\[", names(dr), value = TRUE)

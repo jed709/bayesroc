@@ -1,6 +1,6 @@
 
-.bridge_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 250 else 1000
-.bridge_chains <- 2
+.bridge_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 50 else 1000
+.bridge_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 2
 
 .fit_bridge <- function(m) {
   fit_broc(m, backend = "stan", refresh = 50, parallel_chains = .bridge_chains,

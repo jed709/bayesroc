@@ -19,13 +19,14 @@ def fd_check(f, args, cont_idx, seed=0, h=1e-5):
     native kernels loaded."""
     rng = np.random.default_rng(seed)
     fj = jax.jit(f)
+    jv = jax.jit(lambda a, t: jax.jvp(f, a, t))
     worst = 0.0
     for i in cont_idx:
         v = jnp.asarray(rng.normal(size=np.shape(args[i])))
         tangents = [jnp.zeros_like(a) if jnp.issubdtype(a.dtype, jnp.floating)
                     else np.zeros(np.shape(a), dtype=jax.dtypes.float0) for a in args]
         tangents[i] = v
-        _, tan = jax.jit(lambda a, t: jax.jvp(f, a, t))(tuple(args), tuple(tangents))
+        _, tan = jv(tuple(args), tuple(tangents))
         up = list(args)
         dn = list(args)
         up[i] = args[i] + h * v

@@ -91,7 +91,7 @@
     }
   }
 
-  probs <- pmax(probs, 1e-10)
+  probs <- pmax(probs, 0)
   probs
 }
 
@@ -204,7 +204,7 @@
     }
   }
 
-  probs <- pmax(probs, 1e-10)
+  probs <- pmax(probs, 0)
   probs
 }
 

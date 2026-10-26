@@ -45,7 +45,25 @@ test_that("batch C++ uses per-observation gaps in the criterion2 gradient", {
   expect_length(grad_lines, 0)
 })
 
+test_that("criterion2 linear covariate: JAX and batch Stan log-likelihoods match R", {
+  skip_if_no_cmdstan()
+  skip_if_no_jax()
+  d <- fixture_crit2()
+  m <- broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
+                criterion ~ 1, criterion2 ~ 1 + x, family = bivariate_gaussian()),
+            data = d)
+  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                  iter_sampling = 5, seed = 13, progress_bar = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5, label = "JAX vs R log_lik")
+  fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
+                                  seed = 13, refresh = 50, show_messages = FALSE))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fs), 1L, m$model_data$N))), 1e-5, label = "Stan vs R log_lik")
+})
+
 test_that("criterion2 linear covariate agrees across Stan and JAX", {
+  skip_if_not_slow()
   skip_on_cran()
   skip_if_no_cmdstan()
   skip_if_no_jax()
@@ -56,7 +74,7 @@ test_that("criterion2 linear covariate agrees across Stan and JAX", {
 
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 13, refresh = 50)
-  fj <- fit_broc(m, backend = "jax", chains = 2, parallel_chains = 2,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
                  iter_warmup = 600, iter_sampling = 600, seed = 13, progress_bar = FALSE)
 
   a <- by_name(fs, "^beta_thresh_mid_2|^beta_log_gaps_2|^beta_discrim")

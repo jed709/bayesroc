@@ -10,14 +10,14 @@ test_that("criterion RE: new subject samples from prior under allow_new_levels",
                sub = factor(s, levels = seq_len(ns)))
   }))
   m <- broc(brf(item_resp | is_old ~ 1, criterion ~ 1 + (1 | sub), family = evsd()), d)
-  f <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                iter_warmup = 300, iter_sampling = 300, refresh = 50, seed = 1)
+  f <- fit_broc(m, backend = "stan", chains = 1,
+                iter_warmup = 100, iter_sampling = 100, refresh = 50, seed = 1)
   nd <- data.frame(item_resp = 1L, is_old = c(0L, 1L), sub = "99")
 
   expect_error(predict(f, newdata = nd, summary = FALSE, ndraws = 100),
                "allow_new_levels")
   pT <- predict(f, newdata = nd, allow_new_levels = TRUE, summary = FALSE,
-                ndraws = 300, seed = 2)
+                ndraws = 100, seed = 2)
   expect_false(anyNA(pT))
   expect_equal(dim(pT)[2:3], c(2L, 5L))
 })
@@ -30,11 +30,11 @@ test_that("cumulative cutpoints RE supports new levels", {
                                         c(-Inf, -1, -0.3, 0.3, 1, Inf))),
                sub = factor(s, levels = seq_len(ns)))))
   m <- broc(brf(rating ~ 1, cutpoints ~ 1 + (1 | sub), family = cumulative()), d)
-  f <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                iter_warmup = 300, iter_sampling = 300, refresh = 50, seed = 1)
+  f <- fit_broc(m, backend = "stan", chains = 1,
+                iter_warmup = 100, iter_sampling = 100, refresh = 50, seed = 1)
   nd <- data.frame(rating = 1L, sub = "99")
   p <- predict(f, newdata = nd, allow_new_levels = TRUE, summary = FALSE,
-               ndraws = 200, seed = 2)
+               ndraws = 100, seed = 2)
   expect_false(anyNA(p))
 })
 
@@ -47,8 +47,8 @@ test_that("smooth by-factor: new by-level is prior-sampled, adds variance", {
                                              c(-Inf, -1, -0.3, 0.3, 1, Inf))),
                   is_old = rep(0:1, length.out = n), x = x, g = g)
   m <- broc(brf(item_resp | is_old ~ s(x, by = g), criterion ~ 1, family = evsd()), d)
-  f <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
-                iter_warmup = 250, iter_sampling = 250, refresh = 50, seed = 1)
+  f <- fit_broc(m, backend = "stan", chains = 1,
+                iter_warmup = 100, iter_sampling = 250, refresh = 50, seed = 1)
   nd <- data.frame(item_resp = 1L, is_old = 1L, x = c(-1.5, 1.5),
                    g = factor("r", levels = c("p", "q", "r")))
   pT <- predict(f, newdata = nd, allow_new_levels = TRUE,  summary = FALSE, ndraws = 250, seed = 2)

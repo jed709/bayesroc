@@ -74,7 +74,54 @@ test_that("smooth_info blocks equal the curvature of the log-likelihood in the s
   expect_lt(max(abs(I - H)) / max(abs(H)), 1e-3)
 })
 
+test_that("smooth_info is an exact reparameterisation of the smooth in Stan", {
+  skip_if_no_cmdstan()
+  d <- .si_data()
+  m_off <- suppressMessages(broc(.si_formula(), d))
+  m_on <- suppressMessages(broc(.si_formula(), d, smooth_info = TRUE))
+  f <- suppressMessages(fit_broc(m_on, backend = "stan", chains = 1, iter_warmup = 20, iter_sampling = 5,
+                                 seed = 3, refresh = 50, show_messages = FALSE))
+  csv <- f$.backend_fit$output_files()[1]
+  src <- readLines(csv)
+  hdr <- grep("^lp__", src)
+  cols <- strsplit(src[hdr], ",")[[1]]
+  rows <- which(seq_along(src) > hdr & !startsWith(src, "#") & nzchar(src))
+  I <- m_on$stan_data$Ism_criterion_sw_1
+  nt <- dim(I)[1]; K <- dim(I)[2]
+  ld <- numeric(length(rows))
+  for (i in seq_along(rows)) {
+    v <- as.numeric(strsplit(src[rows[i]], ",")[[1]])
+    for (t in seq_len(nt)) {
+      sds <- v[match(sprintf("sds_criterion_sw_1.%d", t), cols)]
+      zc <- match(sprintf("zs_criterion_sw_1.%d.%d", t, seq_len(K)), cols)
+      sc <- match(sprintf("s_criterion_sw_1.%d.%d", t, seq_len(K)), cols)
+      expect_false(anyNA(c(sds, zc, sc)))
+      v[zc] <- v[sc] / sds
+      ld[i] <- ld[i] + sum(log(diag(chol(diag(K) + sds^2 * I[t, , ]))))
+    }
+    src[rows[i]] <- paste(sprintf("%.17g", v), collapse = ",")
+  }
+  csv_off <- tempfile(fileext = ".csv")
+  writeLines(src, csv_off)
+  lp_on <- .cmdstan_log_prob(.compile_broc_stan(m_on), m_on$stan_data, csv)
+  lp_off <- .cmdstan_log_prob(.compile_broc_stan(m_off), m_off$stan_data, csv_off)
+  expect_equal(nrow(lp_on), nrow(lp_off))
+  expect_lt(max(abs(lp_on[, 1] - lp_off[, 1] + ld)), 1e-6)
+  expect_true(all(ld > 0))
+})
+
+test_that("smooth_info: JAX log_lik matches the R reference", {
+  skip_if_no_jax()
+  m <- suppressMessages(broc(.si_formula(), .si_data(), smooth_info = TRUE))
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+                                 seed = 3, progress_bar = FALSE))
+  dm <- posterior::as_draws_matrix(f$draws())
+  ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))
+  expect_lt(max(abs(ll_j - .obs_loglik_r(m, build_data_source_from_model(m), dm, NULL))), 1e-5)
+})
+
 test_that("smooth_info leaves the posterior unchanged and Stan and JAX agree", {
+  skip_if_not_slow()
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .si_data()
   m_off <- suppressMessages(broc(.si_formula(), d))

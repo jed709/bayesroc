@@ -49,9 +49,7 @@ test_that("get_numpyro_config exposes the JAX config as list and JSON", {
 test_that("plot() default dpar and summary() diagnostics banner work", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50, seed = 1,
-                  parallel_chains = 4, iter_warmup = 300, iter_sampling = 300)
+  fit <- .fx_fit("uvsd", "stan")
 
   p <- plot(fit)
   expect_s3_class(p, "ggplot")

@@ -1,4 +1,5 @@
-.jp_iter <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 300 else 1000
+.jp_iter <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 100 else 1000
+.jp_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 4
 .jp_renders <- function(g) {
   expect_s3_class(g, "ggplot")
   expect_no_error(ggplot2::ggplot_build(g))
@@ -30,7 +31,7 @@ test_that("joint displays draw for a bivariate family and agree with the family'
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_gaussian()), d)
   fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  parallel_chains = 4,
+                  chains = .jp_chains,
                   iter_warmup = .jp_iter, iter_sampling = .jp_iter)
   .jp_renders(plot_distributions(fit, type = "joint", ndraws = 20))
   .jp_renders(plot_roc(fit, type = "conditional", ndraws = 20))
@@ -84,7 +85,7 @@ test_that("the CDP latent plane draws and other families refuse the joint displa
   m <- broc(brf(resp(rating, rk) | is_old ~ condition - 1, fam ~ condition - 1, criterion ~ condition - 1,
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1, family = cdp(old_levels = 2:6)), d, counts = "count")
   fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  parallel_chains = 4,
+                  chains = .jp_chains,
                   iter_warmup = .jp_iter, iter_sampling = .jp_iter)
   .jp_renders(plot_distributions(fit, type = "joint", ndraws = 20))
   .jp_renders(plot_distributions(fit, type = "joint", by = "condition", ndraws = 20))
@@ -97,14 +98,14 @@ test_that("the joint pp_check draws for a bivariate family and the latent plane 
   d <- .fixture_bivariate_sdt()
   m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_gaussian()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50, parallel_chains = 4, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
+  fit <- fit_broc(m, backend = "stan", refresh = 50, chains = .jp_chains, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
   .jp_renders(pp_check(fit, type = "joint", ndraws = 20))
   blk <- .ppc_joint_block(fit, .plot_model(fit), NULL, 20, NULL, 1, "bivariate_sdt")
   expect_equal(sum(blk$df$observed), nrow(d))
   expect_equal(nrow(blk$df), 3L * 4L * 4L)
   d2 <- .fixture_bivariate_cumulative()
   m2 <- broc(brf(resp(y1, y2) ~ 1, mu2 ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()), d2)
-  fit2 <- fit_broc(m2, backend = "stan", refresh = 50, parallel_chains = 4, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
+  fit2 <- fit_broc(m2, backend = "stan", refresh = 50, chains = .jp_chains, iter_warmup = .jp_iter, iter_sampling = .jp_iter)
   .jp_renders(pp_check(fit2, type = "joint", ndraws = 20))
   .jp_renders(plot_distributions(fit2, type = "joint", ndraws = 20))
   .jp_renders(plot_distributions(fit2, ndraws = 20))            # both ordinal dimensions in one figure

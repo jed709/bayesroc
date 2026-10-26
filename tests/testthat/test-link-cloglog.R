@@ -49,10 +49,11 @@ test_that("non-probit links: batch C++ matches plain Stan in value and gradient"
 })
 
 test_that("evsd + cloglog recovers a Gumbel-min location shift (JAX)", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_gumbel_min()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
-  fj <- fit_broc(m, backend = "jax", iter_warmup = 500, iter_sampling = 500,
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts", iter_warmup = 500, iter_sampling = 500,
                  chains = 4, refresh = 50)
   dp <- posterior::as_draws_matrix(fj$draws(variables = "beta_dprime[1]"))[, 1]
   expect_lt(abs(mean(dp) - 1.0), 3 * sd(dp) + 0.02)
@@ -69,6 +70,21 @@ test_that("evsd + cloglog recovers a Gumbel-min location shift (JAX)", {
   }
 })
 
+test_that("evsd + cloglog (JAX): predictions are complete distributions and R reproduces the JAX log-likelihood", {
+  skip_if_no_jax()
+  d <- .fixture_gumbel_min(n_per = 150)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
+  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", iter_warmup = 30, iter_sampling = 20,
+                                  chains = 1, seed = 1, progress_bar = FALSE))
+  ep <- posterior_epred(fj, ndraws = 20)
+  expect_true(all(is.finite(ep)))
+  pr <- predict(fj, ndraws = 20)
+  expect_equal(nrow(pr), nrow(d) * 6)
+  expect_equal(as.numeric(tapply(pr$mean, pr$trial, sum)), rep(1, nrow(d)), tolerance = 1e-6)
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5)
+})
+
 test_that("R-side cloglog CDF matches the Gumbel-min CDF and the JAX clamp", {
   x <- c(-800, -30, -1, 0, 1, 3.5, 10, 800)
   expect_equal(link_cdf_r(x, "cloglog"), 1 - exp(-exp(pmin(x, 700))), tolerance = 1e-15)
@@ -76,16 +92,28 @@ test_that("R-side cloglog CDF matches the Gumbel-min CDF and the JAX clamp", {
 })
 
 test_that("evsd + cloglog: Stan and JAX posterior means agree", {
+  skip_if_not_slow()
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_gumbel_min(n_per = 400)
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
-  fj <- fit_broc(m, backend = "jax",
+  fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
   for (v in c("beta_dprime[1]", "beta_thresh_mid[1]")) {
     ms <- mean(posterior::as_draws_matrix(fs$draws(variables = v))[, 1])
     mj <- mean(posterior::as_draws_matrix(fj$draws(variables = v))[, 1])
     expect_lt(abs(ms - mj), 0.05, label = sprintf("|stan - jax| for %s", v))
   }
+})
+
+test_that("evsd + cloglog: R reproduces the Stan log-likelihood", {
+  skip_if_no_cmdstan()
+  d <- .fixture_gumbel_min(n_per = 150)
+  m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
+  fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 20, iter_sampling = 5,
+                                  seed = 1, refresh = 50, show_messages = FALSE))
+  ll_stan <- as.matrix(posterior::as_draws_matrix(fs$draws(variables = "log_lik")))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(unname(ll_stan) - ll_r)), 1e-5)
 })

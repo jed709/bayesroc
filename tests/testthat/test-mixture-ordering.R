@@ -38,8 +38,8 @@ test_that("mixture ordering: batch and plain Stan agree", {
   mb <- suppressMessages(.mixture_model(d, batch = TRUE))
   modp <- .compile_broc_stan(mp)
   modb <- .compile_broc_stan(mb)
-  fp <- modp$sample(data = mp$stan_data, chains = 1, iter_warmup = 100, iter_sampling = 5,
-                    init = 0.5, sig_figs = 18, refresh = 50, seed = 1, show_messages = FALSE)
+  fp <- modb$sample(data = mb$stan_data, chains = 1, iter_warmup = 20, iter_sampling = 5,
+                    init = 0.5, sig_figs = 18, refresh = 50, seed = 1, max_treedepth = 6, show_messages = FALSE)
   a <- .cmdstan_log_prob(modp, mp$stan_data, fp$output_files()[1])
   b <- .cmdstan_log_prob(modb, mb$stan_data, fp$output_files()[1])
   expect_lt(max(abs(a[, 1] - b[, 1])), 1e-8)
@@ -50,8 +50,8 @@ test_that("mixture ordering: JAX keeps the average order in every draw and R rep
   skip_if_no_jax()
   d <- .sim_mixture()
   m <- suppressMessages(.mixture_model(d))
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 200,
-                                 iter_sampling = 50, seed = 1, progress_bar = FALSE))
+  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                 iter_sampling = 20, seed = 1, progress_bar = FALSE))
   dr <- f$draws(format = "matrix")
   b1 <- dr[, c("beta_dprime[1]", "beta_dprime[2]"), drop = FALSE]
   b2 <- dr[, c("beta_dprime2[1]", "beta_dprime2[2]"), drop = FALSE]
@@ -70,8 +70,8 @@ test_that("lure-only mixture: batch and plain Stan agree, and R reproduces the J
   expect_lt(r$grad, 1e-8)
   skip_if_no_jax()
   m <- suppressMessages(broc(f, d))
-  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 150,
-                                  iter_sampling = 10, seed = 1, progress_bar = FALSE))
+  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+                                  iter_sampling = 5, seed = 1, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5)
 })

@@ -30,8 +30,8 @@ test_that("threads_per_chain builds the reduce_sum variant at fit time", {
   expect_true(grepl("reduce_sum", mc$stan_code, fixed = TRUE))
   expect_false(grepl("criterion", mc$stan_code, fixed = TRUE))
   skip_if_no_cmdstan()
-  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, iter_warmup = 200,
-                                 iter_sampling = 200, seed = 1, refresh = 50, threads_per_chain = 2))
+  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 20,
+                                 iter_sampling = 10, seed = 1, refresh = 50, threads_per_chain = 2))
   expect_s3_class(f, "broc_fit")
   expect_true(grepl("reduce_sum", attr(f, "broc_model")$stan_code, fixed = TRUE))
 })
@@ -41,8 +41,8 @@ test_that("keep_re drops raw random-effect draws on the Stan backend, including 
   d <- .fixture_crossed()
   m <- suppressMessages(broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), d))
   for (kr in c(FALSE, TRUE)) {
-    f <- suppressMessages(fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, iter_warmup = 200,
-                                   iter_sampling = 200, seed = 1, refresh = 50, keep_re = kr))
+    f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 30,
+                                   iter_sampling = 10, seed = 1, refresh = 50, keep_re = kr))
     v <- posterior::variables(f$draws())
     expect_identical(any(grepl("^u_dprime_sub_raw", v)), kr)
     expect_true(any(grepl("^u_dprime_sub\\[", v)))
@@ -56,10 +56,7 @@ test_that("keep_re drops raw random-effect draws on the Stan backend, including 
 
 test_that("seed makes pp_check and plot_roc draw subsets reproducible", {
   skip_if_no_cmdstan()
-  d <- .fixture_univariate()
-  m <- suppressMessages(broc(brf(item_resp | is_old ~ 1, family = evsd()), d))
-  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, iter_warmup = 200,
-                                 iter_sampling = 200, seed = 1, refresh = 50))
+  f <- .fx_fit("evsd", "stan")
   a <- ggplot2::ggplot_build(pp_check(f, ndraws = 20, seed = 4))$data
   b <- ggplot2::ggplot_build(pp_check(f, ndraws = 20, seed = 4))$data
   expect_equal(a, b)
