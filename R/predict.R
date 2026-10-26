@@ -312,7 +312,7 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
     rk_labels <- if (n_rkg == 3) c("Remember", "Know", "Guess") else c("Remember", "Know")
 
     if (type == "prediction") {
-      pred_rk <- matrix(.pp_draw_categories(matrix(pmax(rk_probs, 1e-10), S * N, n_rkg), n_rkg), S, N)
+      pred_rk <- matrix(.pp_draw_categories(matrix(pmax(rk_probs, 0), S * N, n_rkg), n_rkg), S, N)
       if (summary) {
         return(data.frame(
           trial = seq_len(N),
@@ -1770,7 +1770,7 @@ probs_source_margin <- function(family_name, params, thresh, thresh2, item_type,
   per <- max(1L, as.integer(2e6 %/% S))
 
   if (family_name == "vrdp2d") {
-    one_cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+    one_cell <- function(mu, sig, lo, hi) .cell_v((lo - mu) / sig, (hi - mu) / sig)
     for (b0 in seq(1L, N, by = per)) {
       cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
       it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
@@ -1806,7 +1806,7 @@ probs_source_margin <- function(family_name, params, thresh, thresh2, item_type,
         for (k in seq_len(K2)) out[, cols, k] <- acc[[k]]
       }
     }
-    return(pmax(out, 1e-10))
+    return(pmax(out, 0))
   }
 
   if (family_name == "bivariate_cumulative") {
@@ -1816,10 +1816,10 @@ probs_source_margin <- function(family_name, params, thresh, thresh2, item_type,
       for (k in seq_len(K2)) {
         c_lo <- if (k > 1L) as.vector(thresh2[, cols, k - 1L]) else rep(-Inf, L)
         c_hi <- if (k < K2) as.vector(thresh2[, cols, k]) else rep(Inf, L)
-        out[, cols, k] <- .pnorm_v(c_hi - mu2) - .pnorm_v(c_lo - mu2)
+        out[, cols, k] <- .cell_v(c_lo - mu2, c_hi - mu2)
       }
     }
-    return(pmax(out, 1e-10))
+    return(pmax(out, 0))
   }
 
   dp <- family_name == "bivariate_dp"
@@ -1872,14 +1872,14 @@ probs_source_margin <- function(family_name, params, thresh, thresh2, item_type,
         i <- iold
         c_lo <- edge(K1, k - 1L); c_hi <- edge(K1, k)
         src <- if (bounded) .bounded_marginal_source_v(c_lo[i], c_hi[i], mu1[i], mu2[i], sig1[i], sig2[i], rho[i])
-               else .pnorm_v((c_hi[i] - mu2[i]) / sig2[i]) - .pnorm_v((c_lo[i] - mu2[i]) / sig2[i])
+               else .cell_v((c_lo[i] - mu2[i]) / sig2[i], (c_hi[i] - mu2[i]) / sig2[i])
         corner <- (st$it[i] == 2L & k == 1L) | (st$it[i] == 3L & k == K2)
         v[i] <- (1 - lam[i]) * v[i] + lam[i] * (1 - lam2[i]) * src + corner * lam[i] * lam2[i]
       }
       out[, cols, k] <- v
     }
   }
-  pmax(out, 1e-10)
+  pmax(out, 0)
 }
 
 # P(source response above the criterion path) for a bivariate family, [S, N, U], directly: for each grid
@@ -1898,7 +1898,7 @@ probs_source_survival <- function(family_name, params, thresh, path, item_type, 
   }
 
   if (family_name == "vrdp2d") {
-    cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+    cell <- function(mu, sig, lo, hi) .cell_v((lo - mu) / sig, (hi - mu) / sig)
     for (b0 in seq(1L, N, by = per)) {
       cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
       it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
@@ -2021,7 +2021,7 @@ probs_source_survival <- function(family_name, params, thresh, path, item_type, 
   out[, , 1L] <- 1 - sv[, , 1L]
   if (J2 > 1L) for (k in 2:J2) out[, , k] <- sv[, , k - 1L] - sv[, , k]
   out[, , K2] <- sv[, , J2]
-  pmax(out, 1e-10)
+  pmax(out, 0)
 }
 
 # Type-7 quantiles of every column of m at `probs`, as a length(probs) x ncol(m) matrix: one sort per
@@ -2226,9 +2226,9 @@ probs_evsdt <- function(params, thresh, is_old, link_name, S, N, K, meta_noise =
   if (!is.null(params[["sigma_meta"]])) {
     cells <- if (identical(meta_noise, "lognormal")) .lnoise_cells else .gnoise_cells
     return(pmax(cells(params[["dprime"]], params[["sigma_meta"]], thresh, matrix(is_old, S, N, byrow = TRUE), K),
-                1e-10))
+                0))
   }
-  pmax(.ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), 1, link_name, K), 1e-10)
+  .ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), 1, link_name, K)
 }
 
 #' Meta-d' probabilities
@@ -2239,7 +2239,7 @@ probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
   m_old <- params[["mratio"]] %||% one
   m_new <- if (isTRUE(md$metad_mratio_shared)) m_old else params[["mratio_N"]] %||% one
   pmax(.metad_cells(params[["dprime"]], m_old, m_new, thresh, matrix(is_old, S, N, byrow = TRUE),
-                    md$stan_data$is_old_mid, identical(md$metac, "relative"), K, model$family$link$name), 1e-10)
+                    md$stan_data$is_old_mid, identical(md$metac, "relative"), K, model$family$link$name), 0)
 }
 
 .link_p <- function(x, link = "probit", lower.tail = TRUE) {
@@ -2432,7 +2432,7 @@ probs_metadt <- function(params, thresh, is_old, S, N, K, model) {
 probs_uvsdt <- function(params, thresh, is_old, link_name, S, N, K) {
   s <- params[["sigma"]]
   s[, is_old <= 0] <- 1
-  pmax(.ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), s, link_name, K), 1e-10)
+  .ordinal_cells(thresh, sweep(params[["dprime"]], 2, is_old, "*"), s, link_name, K)
 }
 
 #' DPSDT probabilities
@@ -2448,7 +2448,7 @@ probs_dpsdt <- function(params, thresh, is_old, link_name, S, N, K, has_sigma) {
     p[, , K] <- p[, , K] + lam
     probs[, old, ] <- p
   }
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 #' Mixture SDT probabilities
@@ -2486,13 +2486,13 @@ probs_mixture <- function(params, thresh, is_old, link_name, S, N, K, model) {
       probs[, new, ] <- .ordinal_cells(th, io * cols(dprime, new), 1, link_name, K)
     }
   }
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 #' Cumulative ordinal probabilities
 #' @noRd
 probs_cumulative <- function(params, thresh, link_name, S, N, K) {
-  pmax(.ordinal_cells(thresh, params[["dprime"]], 1, link_name, K), 1e-10)
+  .ordinal_cells(thresh, params[["dprime"]], 1, link_name, K)
 }
 
 #' Source mixture SDT probabilities
@@ -2506,7 +2506,7 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
   if (any(B) && isTRUE(md$has_lambda_B)) lam[, B] <- params[["lambda_B"]][, B]
   probs <- .ordinal_cells(thresh, d, 1, link_name, K) * as.vector(lam) +
     .ordinal_cells(thresh, 0, 1, link_name, K) * as.vector(1 - lam)
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 .link_cdf_v <- function(x, link_name) {
@@ -2518,15 +2518,31 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
   )
 }
 
+.link_ccdf_v <- function(x, link_name) {
+  switch(link_name,
+    probit = .pnorm_v(-x),
+    logit = 1 / (1 + .exp_v(x)),
+    cloglog = .exp_v(-.exp_v(pmin(x, 700))),
+    stop("Unknown link: ", link_name)
+  )
+}
+
+.cell_v <- function(lo, hi, link_name = "probit") {
+  Flo <- .link_cdf_v(lo, link_name)
+  out <- .link_cdf_v(hi, link_name) - Flo
+  up <- which(Flo > 0.5)
+  if (length(up)) out[up] <- .link_ccdf_v(lo[up], link_name) - .link_ccdf_v(hi[up], link_name)
+  pmax(out, 0)
+}
+
 .ordinal_cells <- function(thresh, mu, s, link_name, K) {
   d <- dim(thresh)
-  F <- .link_cdf_v((thresh - as.vector(mu)) / as.vector(s), link_name)
-  dim(F) <- d
-  probs <- array(0, dim = c(d[1], d[2], K))
-  probs[, , 1] <- F[, , 1]
-  if (K > 2) probs[, , 2:(K - 1)] <- F[, , 2:(K - 1), drop = FALSE] - F[, , 1:(K - 2), drop = FALSE]
-  probs[, , K] <- 1 - F[, , K - 1]
-  probs
+  z <- (thresh - as.vector(mu)) / as.vector(s)
+  dim(z) <- d
+  nb <- d[1] * d[2]
+  lo <- c(rep(-Inf, nb), as.vector(z[, , seq_len(K - 1L), drop = FALSE]))
+  hi <- c(as.vector(z[, , seq_len(K - 1L), drop = FALSE]), rep(Inf, nb))
+  array(.cell_v(lo, hi, link_name), c(d[1], d[2], K))
 }
 
 #' VRDP2D probabilities (2D Variable Recollection Dual-Process)
@@ -2554,13 +2570,9 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
   probs <- array(0, dim = c(S, N, K1, K2))
 
   univar_cell_vec <- function(j, K, mu_s, sig_s, thresh_sn) {
-    if (j == 1) {
-      pnorm((thresh_sn[, 1] - mu_s) / sig_s)
-    } else if (j == K) {
-      1 - pnorm((thresh_sn[, K - 1] - mu_s) / sig_s)
-    } else {
-      pnorm((thresh_sn[, j] - mu_s) / sig_s) - pnorm((thresh_sn[, j - 1] - mu_s) / sig_s)
-    }
+    lo <- if (j == 1) -Inf else (thresh_sn[, j - 1] - mu_s) / sig_s
+    hi <- if (j == K) Inf else (thresh_sn[, j] - mu_s) / sig_s
+    .cell_v(rep_len(lo, length(mu_s)), rep_len(hi, length(mu_s)))
   }
 
   for (n in seq_len(N)) {
@@ -2618,7 +2630,7 @@ probs_source_mixture <- function(params, thresh, source, link_name, S, N, K, mod
     }
   }
 
-  probs <- pmax(probs, 1e-10)
+  probs <- pmax(probs, 0)
   probs
 }
 
@@ -2652,7 +2664,7 @@ probs_bivariate_cumulative <- function(params, thresh, thresh2, S, N, K1, K2, mo
     }
   }
 
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 #' Bivariate SDT probabilities
@@ -2731,7 +2743,7 @@ probs_bivariate_sdt <- function(params, thresh, thresh2, item_type, S, N, K1, K2
     }
   }
 
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 #' Bivariate Dual-Process probabilities
@@ -2826,7 +2838,7 @@ probs_bivariate_dp <- function(params, thresh, thresh2, item_type, S, N, K1, K2,
     }
   }
 
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 
@@ -2837,7 +2849,7 @@ probs_vrdp2d <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model
   varying <- isTRUE(md$varying_source_criteria)
   probs <- array(0, dim = c(S, N, K1, K2))
   per <- max(1L, as.integer(2e6 %/% S))
-  cell <- function(mu, sig, lo, hi) .pnorm_v((hi - mu) / sig) - .pnorm_v((lo - mu) / sig)
+  cell <- function(mu, sig, lo, hi) .cell_v((lo - mu) / sig, (hi - mu) / sig)
   for (b0 in seq(1L, N, by = per)) {
     cols <- b0:min(N, b0 + per - 1L); nc <- length(cols); L <- S * nc
     it <- rep(item_type[cols], each = S); isB <- it == 3L; isnew <- it == 1L
@@ -2867,7 +2879,7 @@ probs_vrdp2d <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model
       }
     }
   }
-  pmax(probs, 1e-10)
+  pmax(probs, 0)
 }
 
 #' CDP (Continuous Dual-Process) probabilities
@@ -2924,7 +2936,7 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
     }
   }
 
-  probs <- pmax(probs, 1e-10)
+  probs <- pmax(probs, 0)
   probs <- probs / as.vector(apply(probs, c(1, 2), sum))
   attr(probs, "p_remember") <- p_remember
   if (n_rkg == 3) attr(probs, "p_know") <- p_know
@@ -2949,7 +2961,7 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
             as.integer(old_levels), as.integer(new_levels),
             probs = double(S * N * K), prem = double(S * N * K), pknow = double(S * N * K), NAOK = TRUE)
   probs <- array(res$probs, c(S, N, K))
-  probs <- pmax(probs, 1e-10)
+  probs <- pmax(probs, 0)
   probs <- probs / as.vector(rowSums(probs, dims = 2L))
   attr(probs, "p_remember") <- array(res$prem, c(S, N, K))
   if (n_rkg == 3) attr(probs, "p_know") <- array(res$pknow, c(S, N, K))
@@ -3711,7 +3723,7 @@ probs_mafc <- function(params, bias, ds, S, N, M) {
   } else {
     .mafc_probs_r(d, sg, b, m, tgt, M)
   }
-  pmax(array(p, c(S, N, M)), 1e-10)
+  pmax(array(p, c(S, N, M)), 0)
 }
 
 .mafc_probs_r <- function(d, sg, b, m, tgt, M) {
