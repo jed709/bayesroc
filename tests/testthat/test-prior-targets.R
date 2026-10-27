@@ -102,8 +102,8 @@ test_that("source-mixture defaults put source A on the negative side and B on th
   d$src <- factor(sample(c("A", "B"), nrow(d), TRUE))
   t <- get_broc_prior(suppressMessages(broc(brf(conf | src ~ 1, criterion ~ 1, lambda ~ 1, dprime_B ~ 1,
                                                 family = source_mixture()), d)))
-  expect_equal(t$prior[t$dpar == "dprime"], "normal(-1, 1)")
-  expect_equal(t$prior[t$dpar == "dprime_B"], "normal(1, 1)")
+  expect_equal(t$prior[t$dpar == "dprime"], "normal(-1.5, 0.75)")
+  expect_equal(t$prior[t$dpar == "dprime_B"], "normal(1.5, 0.75)")
   expect_equal(t$prior[t$dpar == "thresh_mid"], "normal(0, 0.75)")
 })
 

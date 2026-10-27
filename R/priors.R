@@ -567,7 +567,7 @@ build_prior_lookup <- function(user_priors, family = NULL) {
   }
 
   fam_defaults <- switch(family$family %||% "",
-    source_mixture = list(dprime = "normal(-1, 1)", dprime_B = "normal(1, 1)", thresh_mid = "normal(0, 0.75)"),
+    source_mixture = list(dprime = "normal(-1.5, 0.75)", dprime_B = "normal(1.5, 0.75)", thresh_mid = "normal(0, 0.75)"),
     cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)"),
     bivariate_cumulative = list(dprime = "normal(0, 1)", thresh_mid = "normal(0, 1.5)",
                                 thresh_mid2 = "normal(0, 1.5)", log_gaps2 = "normal(-0.5, 0.5)"),
