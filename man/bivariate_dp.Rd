@@ -2,11 +2,10 @@
 % Please edit documentation in R/families.R
 \name{bivariate_dp}
 \alias{bivariate_dp}
-\title{Bivariate Dual Process Signal Detection Model}
+\title{Bounded Bivariate Dual Process Signal Detection Model}
 \usage{
 bivariate_dp(
   source_criteria = c("common", "varying", "varying_shared_new"),
-  bounded = FALSE,
   old_levels = NULL
 )
 }
@@ -20,10 +19,6 @@ responses; requires \code{old_levels}. Covariates, smooths and random effects on
 \code{criterion2} apply to every set, and a random effect on \code{criterion2} gives
 each source threshold of each set its own effect.}
 
-\item{bounded}{If \code{TRUE}, fit the BBDP variant (conditional source mean
-clamped at the new-item baseline). If \code{FALSE} (default), fit the BDP
-variant with standard bivariate Gaussian familiarity.}
-
 \item{old_levels}{Integer vector of detection response values that count as
 "old" judgements, in the data's own coding (e.g. \code{old_levels = 4:6} for a
 1-6 scale, or \code{3:5} if the same scale is coded 0-5); the rest are "new".
@@ -33,8 +28,10 @@ Required when \code{source_criteria = "varying_shared_new"}; not used otherwise.
 A \code{broc_family} object.
 }
 \description{
-Bivariate dual-process model: Gaussian familiarity plus discrete item and
-source recollection (Starns et al., 2014).
+Bounded bivariate dual-process model (BBDP): Gaussian familiarity with the
+conditional source mean clamped at the new-item baseline, plus discrete item
+and source recollection (Starns et al., 2014). The model is published only in
+its bounded form, so there is no unbounded variant.
 }
 \details{
 Same source labeling convention as \code{\link[=bivariate_gaussian]{bivariate_gaussian()}}: source A = low
@@ -66,9 +63,8 @@ identified source under recollection.
 \eqn{P_{\mathrm{F}}} alone with new-item parameters.
 }
 
-In the bounded (BBDP) variant, the bivariate piece uses the source-mean
-clamping of Starns et al. (2014); otherwise (BDP) the standard
-bivariate normal applies.
+The bivariate piece uses the source-mean clamping of Starns et al. (2014),
+as in \code{\link[=bivariate_gaussian]{bivariate_gaussian()}} with \code{bounded = TRUE}.
 }
 
 \subsection{Parameters}{
@@ -86,6 +82,9 @@ Logit link.}
 \item{lambda2_B}{(optional) Source-recollection probability for Source B. If
 omitted, constrained \code{lambda2_B = lambda2}.}
 }
+As in the bounded \code{\link[=bivariate_gaussian]{bivariate_gaussian()}}, \code{dprime} and \code{discrim} use log
+links (positive magnitudes; A on the negative source axis, B on the positive)
+and \code{rho} a logistic link on (0, 1).
 Defaults for the bivariate parameters match \code{\link[=bivariate_gaussian]{bivariate_gaussian()}}, e.g.
 \code{dprime_B} defaults to \code{dprime}, \code{sigma} defaults to fixed at 1,
 \code{discrim_B} defaults to mirror-symmetric.

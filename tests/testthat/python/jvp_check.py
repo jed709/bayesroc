@@ -114,12 +114,11 @@ def biv_case(kind, N=400, K=6, seed=3):
     else:
         base = [_n(rng, 1.0, 0.7, N), _n(rng, 0.5, 0.7, N), _u(rng, 0.7, 1.5, N),
                 _u(rng, 0.7, 1.5, N), _u(rng, -0.7, 0.7, N)]
-        if kind in ("bivariate_dp", "bounded_bivariate_dp"):
+        if kind == "bounded_bivariate_dp":
             base += [_u(rng, -0.7, 0.7, N), _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N),
                      _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N)]
         f = {"bivariate_sdt": nb._make_fused_batch_bivariate_sdt_loglik,
              "bounded_bivariate_sdt": nb._make_fused_batch_bounded_bivariate_sdt_loglik,
-             "bivariate_dp": nb._make_fused_batch_bivariate_dp_loglik,
              "bounded_bivariate_dp": nb._make_fused_batch_bounded_bivariate_dp_loglik}[kind](K, K, False)
         cont = base
     args = ints + cont + th
@@ -206,7 +205,7 @@ CASES = {
 for _k in ("simple", "dpsdt", "mixture", "source_mixture"):
     for _l in ("probit", "logit", "cloglog"):
         CASES[f"{_k}_{_l}"] = (lambda k=_k, l=_l: uni_case(k, l))
-for _k in ("bivariate_sdt", "bounded_bivariate_sdt", "bivariate_dp", "bounded_bivariate_dp", "vrdp2d"):
+for _k in ("bivariate_sdt", "bounded_bivariate_sdt", "bounded_bivariate_dp", "vrdp2d"):
     CASES[_k] = (lambda k=_k: biv_case(k))
 
 if __name__ == "__main__":

@@ -804,7 +804,7 @@ inline BivariateResult bivariate_sdt_cell(
 
 
 // ============================================================
-// Bivariate DP: full observation likelihood with gradients
+// Bivariate DP: result type (bounded_bivariate_dp_cell)
 // ============================================================
 
 // Result for a single bivariate DP observation
@@ -826,175 +826,6 @@ struct BivariateDpResult {
   int k2_lo, k2_hi;
   double d_thresh2_lo, d_thresh2_hi;
 };
-
-// Compute bivariate DP log-likelihood for one observation.
-// BDP model: P = (1-R_I)*biv_prob + R_I*(1-R_S)*marg_item*delta_src + R_I*R_S*delta_both
-// For old items:
-//   p1: both from familiarity = (1-R_I) * bivariate_cell_prob
-//   p2: item recollected (y1==K1), source from familiarity = R_I*(1-R_S)*marg_source
-//   p3: both recollected (y1==K1, y2==1 for A or y2==K2 for B) = R_I*R_S
-inline BivariateDpResult bivariate_dp_cell(
-    int y1, int y2, int item_type, int K1, int K2,
-    double mu1, double mu2, double sigma1, double sigma2, double rho,
-    double R_I, double R_S, double R_I_B, double R_S_B,
-    const double* thresh1, int n_thresh1,
-    const double* thresh2, int n_thresh2) {
-
-  BivariateDpResult res = {};
-  res.k1_lo = -1; res.k1_hi = -1;
-  res.k2_lo = -1; res.k2_hi = -1;
-
-  // Set threshold index tracking
-  if (y1 == 1) { res.k1_hi = 0; }
-  else if (y1 == K1) { res.k1_lo = n_thresh1 - 1; }
-  else { res.k1_lo = y1 - 2; res.k1_hi = y1 - 1; }
-
-  if (y2 == 1) { res.k2_hi = 0; }
-  else if (y2 == K2) { res.k2_lo = n_thresh2 - 1; }
-  else { res.k2_lo = y2 - 2; res.k2_hi = y2 - 1; }
-
-  if (item_type == 1) {
-    // New items: standard bivariate, no recollection
-    // rho is rho_N for new items (passed in as rho)
-    auto bv = bivariate_sdt_cell(y1, y2, K1, K2, 0.0, 0.0, 1.0, 1.0, rho,
-                                  thresh1, n_thresh1, thresh2, n_thresh2);
-    res.lp = bv.lp;
-    res.d_rho = bv.d_rho;
-    res.d_thresh1_lo = bv.d_thresh1_lo;
-    res.d_thresh1_hi = bv.d_thresh1_hi;
-    res.d_thresh2_lo = bv.d_thresh2_lo;
-    res.d_thresh2_hi = bv.d_thresh2_hi;
-    return res;
-  }
-
-  // Per-source effective recollection probabilities. With R_I_B = R_I and
-  // R_S_B = R_S (supplied by the caller) both sources share one pair of
-  // recollection parameters. When item_type == 2 the
-  // gradient flows back into R_I/R_S (lambda); when item_type == 3 it
-  // flows into R_I_B/R_S_B (lambda_B). The result struct keeps the four
-  // gradient slots separate so the caller can route them to the correct
-  // beta/RE accumulators without needing to know which source produced
-  // this observation.
-  double R_I_eff = (item_type == 2) ? R_I : R_I_B;
-  double R_S_eff = (item_type == 2) ? R_S : R_S_B;
-
-  // Old items
-  double inv_s1 = 1.0 / sigma1;
-  double inv_s2 = 1.0 / sigma2;
-
-  bool is_lo1 = (y1 == 1), is_hi1 = (y1 == K1);
-  bool is_lo2 = (y2 == 1), is_hi2 = (y2 == K2);
-  double z1_lo = is_lo1 ? -8.0 : (thresh1[y1 - 2] - mu1) * inv_s1;
-  double z1_hi = is_hi1 ?  8.0 : (thresh1[y1 - 1] - mu1) * inv_s1;
-  double z2_lo = is_lo2 ? -8.0 : (thresh2[y2 - 2] - mu2) * inv_s2;
-  double z2_hi = is_hi2 ?  8.0 : (thresh2[y2 - 1] - mu2) * inv_s2;
-
-  auto bc = bivariate_cell(z1_lo, z1_hi, is_lo1, is_hi1,
-                            z2_lo, z2_hi, is_lo2, is_hi2, rho);
-
-  // d_log(biv_prob) / d_param_biv (chain rule into SDT params)
-  double d_biv_dmu1 = -(bc.d_z1_lo + bc.d_z1_hi) * inv_s1;
-  double d_biv_dmu2 = -(bc.d_z2_lo + bc.d_z2_hi) * inv_s2;
-  double d_biv_dsigma1 = 0.0;
-  if (!is_lo1) d_biv_dsigma1 += bc.d_z1_lo * (-z1_lo * inv_s1);
-  if (!is_hi1) d_biv_dsigma1 += bc.d_z1_hi * (-z1_hi * inv_s1);
-  double d_biv_dsigma2 = 0.0;
-  if (!is_lo2) d_biv_dsigma2 += bc.d_z2_lo * (-z2_lo * inv_s2);
-  if (!is_hi2) d_biv_dsigma2 += bc.d_z2_hi * (-z2_hi * inv_s2);
-  double d_biv_dthresh1_lo = bc.d_z1_lo * inv_s1;
-  double d_biv_dthresh1_hi = bc.d_z1_hi * inv_s1;
-  double d_biv_dthresh2_lo = bc.d_z2_lo * inv_s2;
-  double d_biv_dthresh2_hi = bc.d_z2_hi * inv_s2;
-
-  // Fast path: y1 != K1 -> p2 == p3 == 0, mixture collapses to
-  // (1 - R_I_eff) * biv_prob. log P = log(1 - R_I_eff) + bc.lp; SDT-param
-  // gradients equal bivariate gradients exactly.
-  if (y1 != K1) {
-    res.lp = std::log(1.0 - R_I_eff) + bc.lp;
-    double d_RI_eff = -1.0 / (1.0 - R_I_eff);
-    if (item_type == 2) {
-      res.d_lambda   = d_RI_eff;
-      res.d_lambda_B = 0.0;
-    } else {
-      res.d_lambda   = 0.0;
-      res.d_lambda_B = d_RI_eff;
-    }
-    res.d_lambda2   = 0.0;
-    res.d_lambda2_B = 0.0;
-    res.d_dprime = d_biv_dmu1;
-    res.d_discrim = d_biv_dmu2;
-    res.d_sigma1 = d_biv_dsigma1;
-    res.d_sigma2 = d_biv_dsigma2;
-    res.d_rho = bc.d_rho;
-    res.d_thresh1_lo = d_biv_dthresh1_lo;
-    res.d_thresh1_hi = d_biv_dthresh1_hi;
-    res.d_thresh2_lo = d_biv_dthresh2_lo;
-    res.d_thresh2_hi = d_biv_dthresh2_hi;
-    return res;
-  }
-
-  // Slow path: y1 == K1 — full mixture; uni_cell is evaluated once.
-  double biv_prob = std::exp(bc.lp);
-  double p1 = (1.0 - R_I_eff) * biv_prob;
-
-  auto uc = uni_cell(y2, K2, mu2, sigma2, thresh2, n_thresh2);
-  double p2 = R_I_eff * (1.0 - R_S_eff) * uc.p;
-
-  // Recollection success cells: Source A items at the low
-  // end of the source axis (y2 = 1, "sure A"); Source B items at the high
-  // end (y2 = K2, "sure B").
-  bool is_corner = (item_type == 2 && y2 == 1) || (item_type == 3 && y2 == K2);
-  double p3 = is_corner ? R_I_eff * R_S_eff : 0.0;
-
-  double P = p1 + p2 + p3;
-  if (P < kPFloor) {
-    res.lp = std::log(kPFloor);
-    return res;
-  }
-
-  res.lp = std::log(P);
-  double inv_P = 1.0 / P;
-
-  double dp_dRI_eff = -biv_prob + (1.0 - R_S_eff) * uc.p;
-  if (is_corner) dp_dRI_eff += R_S_eff;
-  double d_RI_eff = dp_dRI_eff * inv_P;
-
-  double dp_dRS_eff = -R_I_eff * uc.p;
-  if (is_corner) dp_dRS_eff += R_I_eff;
-  double d_RS_eff = dp_dRS_eff * inv_P;
-
-  // Route per-source gradients into the matching slots. Source-A items
-  // (item_type == 2) feed lambda/lambda2; Source-B items (item_type == 3)
-  // feed lambda_B/lambda2_B. Default constrained-equal callers just see
-  // the gradient routed identically since R_I_B == R_I etc.
-  if (item_type == 2) {
-    res.d_lambda    = d_RI_eff;
-    res.d_lambda_B  = 0.0;
-    res.d_lambda2   = d_RS_eff;
-    res.d_lambda2_B = 0.0;
-  } else {
-    res.d_lambda    = 0.0;
-    res.d_lambda_B  = d_RI_eff;
-    res.d_lambda2   = 0.0;
-    res.d_lambda2_B = d_RS_eff;
-  }
-
-  double w1 = (1.0 - R_I_eff) * biv_prob * inv_P;
-  double w2 = R_I_eff * (1.0 - R_S_eff) * inv_P;
-
-  res.d_dprime = w1 * d_biv_dmu1;
-  res.d_discrim = w1 * d_biv_dmu2 + w2 * uc.d_mu;
-  res.d_sigma1 = w1 * d_biv_dsigma1;
-  res.d_sigma2 = w1 * d_biv_dsigma2 + w2 * uc.d_sigma;
-  res.d_rho = w1 * bc.d_rho;
-
-  res.d_thresh1_lo = w1 * d_biv_dthresh1_lo;
-  res.d_thresh1_hi = w1 * d_biv_dthresh1_hi;
-  res.d_thresh2_lo = w1 * d_biv_dthresh2_lo + w2 * uc.d_thresh_lo;
-  res.d_thresh2_hi = w1 * d_biv_dthresh2_hi + w2 * uc.d_thresh_hi;
-
-  return res;
-}
 
 // ============================================================
 // CDP (Continuous Dual-Process) helpers
@@ -1860,8 +1691,8 @@ inline BoundedMarginalResult bounded_marginal_source(
 // ============================================================
 // Bounded Bivariate DP: full observation likelihood with gradients
 // ============================================================
-// Same as bivariate_dp_cell but uses bounded_bivariate_sdt_cell for p1
-// and bounded_marginal_source for p2 (old items only).
+// P = (1-R_I)*bounded_biv_prob + R_I*(1-R_S)*bounded_marg_source + R_I*R_S*corner,
+// using bounded_bivariate_sdt_cell for p1 and bounded_marginal_source for p2 (old items only).
 
 inline BivariateDpResult bounded_bivariate_dp_cell(
     int y1, int y2, int item_type, int K1, int K2,
@@ -1896,7 +1727,7 @@ inline BivariateDpResult bounded_bivariate_dp_cell(
     return res;
   }
 
-  // Per-source effective recollection (see bivariate_dp_cell for details).
+  // Per-source effective recollection: Source A uses R_I/R_S, Source B R_I_B/R_S_B.
   double R_I_eff = (item_type == 2) ? R_I : R_I_B;
   double R_S_eff = (item_type == 2) ? R_S : R_S_B;
 

@@ -1000,14 +1000,6 @@
 
   if (family_name == "bivariate_dp") {
     lines <- c(lines, '
-  real univariate_cell_prob(int resp, int K, real mu, real sigma, vector thresh) {
-    real lo = resp == 1 ? negative_infinity() : (thresh[resp - 1] - mu) / sigma;
-    real hi = resp == K ? positive_infinity() : (thresh[resp] - mu) / sigma;
-    return link_diff(lo, hi);
-  }')
-
-    if (isTRUE(model_data$bounded)) {
-      lines <- c(lines, '
   // Bounded marginal source probability for p2 component (item recollected, source from familiarity)
   real compute_bounded_marginal_source(int resp_src, int K2,
                                        real mu_I, real mu_S,
@@ -1024,16 +1016,10 @@
                + bvn_log_interval(bvn_std(s_lo, 0, sigma_cond), bvn_std(s_hi, 0, sigma_cond)))
            + bvn_rect(z_cp, positive_infinity(), bvn_std(s_lo, mu_S, sigma_S), bvn_std(s_hi, mu_S, sigma_S), rho);
   }')
-    }
 
-    bounded <- isTRUE(model_data$bounded)
-    biv_fn <- if (bounded) "compute_bounded_prob" else "compute_bivariate_prob"
-    marg_fn <- if (bounded) "compute_bounded_marginal_source" else "univariate_cell_prob"
-    dp_src_A <- if (bounded) {
-      "mu1 = dprime_A; mu2 = -discrim_A; sigma1 = sigma1_A; sigma2 = sigma2_A; rho = -rho_A;"
-    } else {
-      "mu1 = dprime_A; mu2 = discrim_A; sigma1 = sigma1_A; sigma2 = sigma2_A; rho = rho_A;"
-    }
+    biv_fn <- "compute_bounded_prob"
+    dp_src_A <- "mu1 = dprime_A; mu2 = -discrim_A; sigma1 = sigma1_A; sigma2 = sigma2_A; rho = -rho_A;"
+    dp_p2 <- '\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);'
     dp_src_B <- "mu1 = dprime_B; mu2 = discrim_B; sigma1 = sigma1_B; sigma2 = sigma2_B; rho = rho_B;"
 
     lines <- c(lines, sprintf('
@@ -1079,12 +1065,7 @@
     }
 
     return log(fmax(p1 + p2 + p3, 1e-300));
-  }', dp_src_A, dp_src_B, biv_fn,
-    if (bounded) {
-      sprintf('\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);')
-    } else {
-      '\n      p2 = R_I_eff * (1.0 - R_S_eff) * univariate_cell_prob(y2, K2, mu2, sigma2, c2);'
-    }))
+  }', dp_src_A, dp_src_B, biv_fn, dp_p2))
 
     if (isTRUE(model_data$varying_source_criteria)) {
       lines <- c(lines, sprintf('
@@ -1128,12 +1109,7 @@
     }
 
     return log(fmax(p1 + p2 + p3, 1e-300));
-  }', dp_src_A, dp_src_B, biv_fn,
-      if (bounded) {
-        '\n      p2 = R_I_eff * (1.0 - R_S_eff) * compute_bounded_marginal_source(y2, K2, mu1, mu2, sigma1, sigma2, rho, c2);'
-      } else {
-        '\n      p2 = R_I_eff * (1.0 - R_S_eff) * univariate_cell_prob(y2, K2, mu2, sigma2, c2);'
-      }))
+  }', dp_src_A, dp_src_B, biv_fn, dp_p2))
     }
 
   }

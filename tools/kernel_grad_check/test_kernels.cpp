@@ -234,20 +234,6 @@ int main() {
     chk("cdp_strip_upper","d_z_hi",r.d_z_hi, cfd([&](double x){return cdp_strip_upper(zc,zl,x,rho).p;},zh));
     chk("cdp_strip_upper","d_rho",r.d_rho, cfd([&](double x){return cdp_strip_upper(zc,zl,zh,x).p;},rho)); }
 
-  // ---------- bivariate_dp_cell : full mixture (fast/slow/corner, item 2/3/new) ----------
-  { double t1[5]={-1.0,-0.3,0.2,0.7,1.4}, t2[5]={-0.9,-0.2,0.3,0.6,1.3}; int K1=6,K2=6,n1=5,n2=5;
-    struct C{int y1,y2,it;}; C cs[]={{3,4,2},{6,4,2},{6,1,2},{6,6,3},{6,3,3},{2,5,1}};
-    for(auto&c:cs){ double mu1=1.1,mu2=0.6,s1=1.2,s2=0.9,rho=0.4,RI=0.35,RS=0.5;
-      auto bd=[&](double a,double b,double e,double f,double g,double h,double i,double j,double k){return bivariate_dp_cell(c.y1,c.y2,c.it,K1,K2,a,b,e,f,g,h,i,j,k,t1,n1,t2,n2).lp;};
-      auto r=bivariate_dp_cell(c.y1,c.y2,c.it,K1,K2,mu1,mu2,s1,s2,rho,RI,RS,RI,RS,t1,n1,t2,n2);
-      chk("bivariate_dp_cell","d_dprime",r.d_dprime,cfd([&](double x){return bd(x,mu2,s1,s2,rho,RI,RS,RI,RS);},mu1));
-      chk("bivariate_dp_cell","d_discrim",r.d_discrim,cfd([&](double x){return bd(mu1,x,s1,s2,rho,RI,RS,RI,RS);},mu2));
-      chk("bivariate_dp_cell","d_sigma2",r.d_sigma2,cfd([&](double x){return bd(mu1,mu2,s1,x,rho,RI,RS,RI,RS);},s2));
-      chk("bivariate_dp_cell","d_rho",r.d_rho,cfd([&](double x){return bd(mu1,mu2,s1,s2,x,RI,RS,RI,RS);},rho));
-      if(c.it==2){chk("bivariate_dp_cell","d_lambda",r.d_lambda,cfd([&](double x){return bd(mu1,mu2,s1,s2,rho,x,RS,RI,RS);},RI));
-                  chk("bivariate_dp_cell","d_lambda2",r.d_lambda2,cfd([&](double x){return bd(mu1,mu2,s1,s2,rho,RI,x,RI,RS);},RS));}
-      else if(c.it==3){chk("bivariate_dp_cell","d_lambda_B",r.d_lambda_B,cfd([&](double x){return bd(mu1,mu2,s1,s2,rho,RI,RS,x,RS);},RI));
-                  chk("bivariate_dp_cell","d_lambda2_B",r.d_lambda2_B,cfd([&](double x){return bd(mu1,mu2,s1,s2,rho,RI,RS,RI,x);},RS));} } }
   // ---------- bounded_bivariate_sdt_cell ----------
   { double t1[5]={-1.2,-0.5,0.1,0.7,1.4}, t2[5]={-1.0,-0.3,0.2,0.6,1.3}; int K1=6,K2=6,n1=5,n2=5;
     for(int y1:{3,6})for(int y2:{2,4}){ double mu1=1.1,mu2=0.6,s1=1.2,s2=0.9,rho=0.4;

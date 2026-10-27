@@ -869,10 +869,12 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
   )
 }
 
-#' Bivariate Dual Process Signal Detection Model
+#' Bounded Bivariate Dual Process Signal Detection Model
 #'
-#' Bivariate dual-process model: Gaussian familiarity plus discrete item and
-#' source recollection (Starns et al., 2014).
+#' Bounded bivariate dual-process model (BBDP): Gaussian familiarity with the
+#' conditional source mean clamped at the new-item baseline, plus discrete item
+#' and source recollection (Starns et al., 2014). The model is published only in
+#' its bounded form, so there is no unbounded variant.
 #'
 #' Same source labeling convention as [bivariate_gaussian()]: source A = low
 #' source ratings, source B = high.
@@ -889,10 +891,6 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
 #'   "old" judgements, in the data's own coding (e.g. `old_levels = 4:6` for a
 #'   1-6 scale, or `3:5` if the same scale is coded 0-5); the rest are "new".
 #'   Required when `source_criteria = "varying_shared_new"`; not used otherwise.
-#' @param bounded If `TRUE`, fit the BBDP variant (conditional source mean
-#'   clamped at the new-item baseline). If `FALSE` (default), fit the BDP
-#'   variant with standard bivariate Gaussian familiarity.
-#' @inheritParams bivariate_gaussian
 #'
 #' @details
 #' ## Likelihood
@@ -919,9 +917,8 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
 #' - For new items: lambda = lambda_2 = 0, so the likelihood reduces to
 #'   \eqn{P_{\mathrm{F}}} alone with new-item parameters.
 #'
-#' In the bounded (BBDP) variant, the bivariate piece uses the source-mean
-#' clamping of Starns et al. (2014); otherwise (BDP) the standard
-#' bivariate normal applies.
+#' The bivariate piece uses the source-mean clamping of Starns et al. (2014),
+#' as in [bivariate_gaussian()] with `bounded = TRUE`.
 #'
 #' ## Parameters
 #' All parameters of [bivariate_gaussian()] (`dprime`, `dprime_B`, `discrim`,
@@ -937,6 +934,9 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
 #'   \item{lambda2_B}{(optional) Source-recollection probability for Source B. If
 #'     omitted, constrained `lambda2_B = lambda2`.}
 #' }
+#' As in the bounded [bivariate_gaussian()], `dprime` and `discrim` use log
+#' links (positive magnitudes; A on the negative source axis, B on the positive)
+#' and `rho` a logistic link on (0, 1).
 #' Defaults for the bivariate parameters match [bivariate_gaussian()], e.g.
 #' `dprime_B` defaults to `dprime`, `sigma` defaults to fixed at 1,
 #' `discrim_B` defaults to mirror-symmetric.
@@ -965,22 +965,22 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
 #' @seealso [bivariate_gaussian()], [vrdp2d()].
 #' @export
 bivariate_dp <- function(source_criteria = c("common", "varying", "varying_shared_new"),
-                         bounded = FALSE, old_levels = NULL) {
+                         old_levels = NULL) {
   link <- link_probit()
   sc <- .source_criteria_arg(source_criteria, old_levels)
-  dprime_link <- if (bounded) "log" else "identity"
-  discrim_link <- if (bounded) "log" else "identity"
-  rho_link <- if (bounded) "logis" else "fisherz"
-  dprime_desc <- if (bounded) "d' for Source A detection (log scale, always positive)" else "d' for Source A detection"
-  discrim_desc <- if (bounded) "Source A discrimination (log scale, always positive)" else "Source A discrimination (signed source-axis position)"
-  rho_desc <- if (bounded) "rho_A correlation for Source A (logistic scale, bounded to (0,1))" else "rho_A correlation for Source A (Fisher z)"
+  dprime_link <- "log"
+  discrim_link <- "log"
+  rho_link <- "logis"
+  dprime_desc <- "d' for Source A detection (log scale, always positive)"
+  discrim_desc <- "Source A discrimination (log scale, always positive)"
+  rho_desc <- "rho_A correlation for Source A (logistic scale, bounded to (0,1))"
   structure(
     list(
       family = "bivariate_dp",
       link = link,
       source_criteria = sc$source_criteria,
       varying_source_criteria = sc$varying,
-      bounded = bounded,
+      bounded = TRUE,
       old_levels = sc$old_levels,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = dprime_link,
@@ -1041,11 +1041,7 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Discrimination thresholds (c2)")
       ),
-      description = if (bounded) {
-        "Bounded Bivariate Dual Process Signal Detection Model"
-      } else {
-        "Bivariate Dual Process Signal Detection Model"
-      }
+      description = "Bounded Bivariate Dual Process Signal Detection Model"
     ),
     class = "broc_family"
   )

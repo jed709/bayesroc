@@ -23,6 +23,7 @@
 
 test_that("vectorised bivariate cell probabilities equal the per-row, per-draw reference", {
   grid <- expand.grid(bounded = c(FALSE, TRUE), varying = c(FALSE, TRUE), dp = c(FALSE, TRUE), extras = c(FALSE, TRUE))
+  grid <- grid[grid$bounded | !grid$dp, ]
   for (native in c(FALSE, TRUE)) {
     withr::local_options(bayesroc.native_predict = native)
     .bvn_native$ok <- NULL
@@ -47,8 +48,10 @@ test_that("vectorised bivariate cell probabilities equal the per-row, per-draw r
 test_that("the detection margin of every bivariate family equals the joint summed over source", {
   .bvn_native$ok <- FALSE
   on.exit(.bvn_native$ok <- NULL)
-  for (r in 1:8) {
-    g <- expand.grid(bounded = c(FALSE, TRUE), varying = c(FALSE, TRUE), dp = c(FALSE, TRUE))[r, ]
+  grid <- expand.grid(bounded = c(FALSE, TRUE), varying = c(FALSE, TRUE), dp = c(FALSE, TRUE))
+  grid <- grid[grid$bounded | !grid$dp, ]
+  for (r in seq_len(nrow(grid))) {
+    g <- grid[r, ]
     cs <- .rand_bivariate_case(200 + r, bounded = g$bounded, varying = g$varying, dp = g$dp)
     fam <- if (g$dp) "bivariate_dp" else "bivariate_sdt"
     joint <- do.call(if (g$dp) probs_bivariate_dp else probs_bivariate_sdt,
@@ -73,7 +76,8 @@ test_that("native detection survival equals the R path along the criterion path 
   skip_if_not(.bvn_native_ready())
   on.exit(.bvn_native$ok <- NULL)
   for (fam in c("bivariate_sdt", "bivariate_dp", "vrdp2d")) {
-    cs <- .rand_bivariate_case(400, S = 6, N = 11, dp = fam != "bivariate_sdt", varying = TRUE)
+    cs <- .rand_bivariate_case(400, S = 6, N = 11, dp = fam != "bivariate_sdt", bounded = fam == "bivariate_dp",
+                               varying = TRUE)
     if (fam == "vrdp2d") cs$params$dprime2 <- matrix(runif(66, 0.5, 3), 6)
     cs$model$family <- list(family = fam, link = list(name = "probit"))
     setup <- list(S = cs$S, tp = cs$params, th = cs$thresh, th2 = NULL, data_src = list(item_type = cs$item_type))

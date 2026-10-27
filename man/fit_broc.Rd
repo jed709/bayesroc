@@ -30,6 +30,7 @@ fit_broc(
   keep_re = FALSE,
   re_store = c("f64", "f32", "int16", "int8"),
   resume = NULL,
+  sample_prior = c("no", "only"),
   ...
 )
 }
@@ -166,6 +167,12 @@ taken. The sampler and number of chains are those of \code{resume}. A fit saved 
 \code{\link[=save_broc_fit]{save_broc_fit()}} keeps its sampler state as \verb{<file>_state.pkl} (a Python pickle,
 which can run code when loaded: only resume fits that bayesroc wrote on your
 own machine).}
+
+\item{sample_prior}{\code{"no"} (default) samples the posterior. \code{"only"} switches the
+likelihood off and samples the prior, on every backend and sampler, with every row of
+the data kept, so \code{\link[=predict]{predict()}} and \code{\link[=pp_check]{pp_check()}} on the fit give the prior predictive
+distribution of the design. The log-likelihood is not kept unless \code{save_loglik = TRUE}
+is given, and \code{loo = TRUE} is an error.}
 
 \item{...}{Additional arguments forwarded to cmdstanr's \verb{$sample()} (Stan
 backend only; a warning is issued if any are passed with \code{backend = "jax"}).}

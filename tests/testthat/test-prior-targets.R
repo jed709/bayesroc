@@ -132,7 +132,7 @@ test_that("source-axis defaults centre on the new-item baseline and follow the A
   bdB <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime_B ~ 1, discrim ~ 1, rho ~ 1, lambda ~ 1, lambda2 ~ 1,
                                    criterion ~ 1, criterion2 ~ 1, family = bivariate_dp()), d))
   expect_equal(pr(bdB, "dprime_B"), pr(bdB, "dprime"))
-  expect_equal(pr(bdB, "dprime"), "normal(1, 0.75)")
+  expect_equal(pr(bdB, "dprime"), "normal(0, 0.5)")
   expect_equal(pr(vr, "dprime"), "normal(1, 0.75)")
   odd <- suppressMessages(broc(brf(resp(det, src3) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
                                    family = bivariate_gaussian()), d))
@@ -186,9 +186,8 @@ test_that("rho defaults: directional only for the unbounded bivariate Gaussian, 
     expect_equal(unname(p["rho (Intercept)"]), "normal(-0.5, 0.5)")
     expect_equal(unname(p["rho condc2"]), "normal(0, 0.5)")
     if (asym) expect_equal(unname(p[c("rho_B (Intercept)", "rho_B condc2")]), c("normal(0.5, 0.5)", "normal(0, 0.5)"))
-    for (fam in list(bivariate_gaussian(bounded = TRUE), bivariate_dp(bounded = TRUE)))
+    for (fam in list(bivariate_gaussian(bounded = TRUE), bivariate_dp()))
       expect_true(all(pri(fam, asym, "1 + cond") == "normal(0, 1)"))
-    expect_true(all(pri(bivariate_dp(), asym, "1 + cond") == "normal(0, 0.5)"))
   }
 })
 

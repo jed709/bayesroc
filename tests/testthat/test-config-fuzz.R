@@ -44,7 +44,8 @@
                   rho ~ 1, criterion2 ~ 1)
     if (fam == "bivariate_dp") {
       parts <- c(parts, lambda ~ 1, lambda2 ~ 1)
-      parts$family <- bivariate_dp(bounded = bounded, source_criteria = if (varying) "varying" else "common")
+      bounded <- TRUE
+      parts$family <- bivariate_dp(source_criteria = if (varying) "varying" else "common")
     } else {
       parts$family <- bivariate_gaussian(bounded = bounded, source_criteria = if (varying) "varying" else "common")
     }

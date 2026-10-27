@@ -76,18 +76,10 @@ test_that("bridge: bivariate_gaussian (bounded) -- guards bounded sign flip", {
   .expect_predict_ok(.fit_bridge(m))
 })
 
-test_that("bridge: bivariate_dp (unbounded) -- guards corner-cell swap", {
+test_that("bridge: bivariate_dp -- guards bounded p1/p2, sign flip and corner cells", {
   skip_if_no_cmdstan()
   d <- .fixture_bivariate_sdt()
   m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp()), d)
-  .expect_predict_ok(.fit_bridge(m))
-})
-
-test_that("bridge: bivariate_dp (bounded) -- guards bounded p1/p2 + sign flip", {
-  skip_if_no_cmdstan()
-  d <- .fixture_bivariate_sdt()
-  m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp(bounded = TRUE)),
-            d)
   .expect_predict_ok(.fit_bridge(m))
 })
 

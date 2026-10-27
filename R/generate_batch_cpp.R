@@ -5920,15 +5920,8 @@ emit_likelihood_bivariate <- function(L, params) {
   L$add("    }")
   L$add("")
 
-  if (is_dp && bounded) {
+  if (is_dp) {
     L$add("    auto bv = batch_sdt::bounded_bivariate_dp_cell(")
-    L$add("        yn, yn2, item_type_n, K1, K2,")
-    L$add("        mu1, mu2, s1, s2, rho_eff,")
-    L$add("        R_I_val, R_S_val, R_I_B_val, R_S_B_val,")
-    L$add("        thresh1_n.data(), n_thresh1,")
-    L$add("        thresh2_n.data(), n_thresh2);")
-  } else if (is_dp) {
-    L$add("    auto bv = batch_sdt::bivariate_dp_cell(")
     L$add("        yn, yn2, item_type_n, K1, K2,")
     L$add("        mu1, mu2, s1, s2, rho_eff,")
     L$add("        R_I_val, R_S_val, R_I_B_val, R_S_B_val,")
