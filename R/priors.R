@@ -441,12 +441,12 @@ build_prior_lookup <- function(user_priors, family = NULL) {
       discrim_B = "normal(0, 1)",
       sigma_B = "normal(0, 0.3)",
       sigma2_B = "normal(0, 0.3)",
-      rho = "normal(0, 0.5)",
-      rho_B = "normal(0, 0.5)",
-      rho_N = "normal(0, 0.5)",
+      rho = "normal(0, 1)",
+      rho_B = "normal(0, 1)",
+      rho_N = "normal(0, 1)",
       mratio = "normal(0, 0.5)",
       mratio_N = "normal(0, 0.5)",
-      sigma_meta = "normal(0, 0.5)",
+      sigma_meta = "normal(0, 1)",
       bias = "normal(0, 0.5)",
       rec_crit = "normal(0, 1)",
       know_crit = "normal(0, 1)",
@@ -669,8 +669,8 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
     identity = paste0("normal(0, ", .fmt_num(k), ")"),
     logit = "normal(0, 1)",
     logis = "normal(0, 1)",
-    fisherz = "normal(0, 0.5)",
-    log = if (pname %in% .noise_sd_dpars) "normal(0, 0.3)" else "normal(0, 0.5)",
+    fisherz = "normal(0, 1)",
+    log = if (pname %in% .noise_sd_dpars) "normal(0, 0.3)" else if (pname == "sigma_meta") "normal(0, 1)" else "normal(0, 0.5)",
     NULL)
 }
 
