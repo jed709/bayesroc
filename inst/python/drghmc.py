@@ -230,6 +230,11 @@ def _programs(sig, fresh=False):
     return store
 
 
+def _sampler_key(tm):
+    """Store key of the sampler built on `tm` (its flag configuration), None without a map."""
+    return None if tm is None else tuple(int(f) for f in tm.static)
+
+
 def _verify_store(vg, store, th0, chains, D):
     """Programs reused from an earlier fit of the same signature: their plain potential at the
     starting point against the model evaluated eagerly there."""
@@ -1445,7 +1450,7 @@ def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
             if progress_bar:
                 print("[DR-G-HMC] compiling sampler (overlapped with "
                       "adaptation)...", flush=True)
-            smp_thread = start_sampler(None, tm, vg_s, _res, setup_ready)
+            smp_thread = start_sampler(_sampler_key(tm), tm, vg_s, _res, setup_ready)
             phases.mark("sampler lowered")
             init = _setup_init(setup_ready, _res, _th0, _off0)
             if tm is not None:

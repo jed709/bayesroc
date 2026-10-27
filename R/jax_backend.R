@@ -870,6 +870,7 @@ read_npy <- function(path) {
 # One worker process per R session (option bayesroc.jax_worker, default TRUE): imports and the
 # compiled programs of every fit of the same structure are reused by the next fit.
 .jax_session_worker <- function(python, chains, chain_method, sampler, control) {
+  python <- python %||% find_python_with_jax()
   key <- paste(normalizePath(python, winslash = "/", mustWork = FALSE), chains, chain_method, sampler,
                identical(control$precision, "f32"), sep = "|")
   w <- .jax_state$worker

@@ -240,7 +240,22 @@ class _Nuts(_InProcess):
                 "aux": self.coords.aux_flat}
 
 
-def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None, on_decide=None):
+def _dr_store(s, model, config, a, ctrl, seed):
+    """The compiled-program store of this session's signature, verified against the model at
+    the starting point when it comes from an earlier fit (drghmc._verify_store)."""
+    sig = dr._signature(config, s.chains, s.parallel, ctrl, s.b)
+    store = dr._programs(sig)
+    if store["plain"] is not None:
+        th0 = dr._initial_positions(model, config, s.keys, s.off, s.D, s.chains, seed,
+                                    a.get("init_strategy", "numeric"), a.get("init_radius", 0.0),
+                                    s.init_z, s.unflatten.to_sampled)
+        if not dr._verify_store(s.vg, store, th0, s.chains, s.D):
+            store = dr._programs(sig, fresh=True)
+    s.store = store
+    return store
+
+
+def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=None, on_decide=None, store=None):
     """(imm, eps, positions in sampler coordinates, momenta, transport anchors)."""
     if resume is not None:
         return (np.asarray(resume["imm"]), float(resume["eps"]), np.asarray(resume["th"]),
@@ -251,7 +266,7 @@ def _dr_adapt(s, model, config, a, ctrl, resume, seed, tm=None, vg_s=None, init=
                                 s.init_z, s.unflatten.to_sampled)
     imm, eps, th, aux, _ = dr._adapt(model, config, s.keys, s.off, s.vg, vg_s, tm, s.D, s.chains,
                                      int(a["warmup"]), seed, ctrl, s.parallel, s.progress, th0,
-                                     user_init=s.init_z is not None, init=init, on_decide=on_decide)
+                                     user_init=s.init_z is not None, init=init, on_decide=on_decide, store=store)
     return np.asarray(imm), float(eps), np.asarray(th), None, aux
 
 
@@ -280,6 +295,7 @@ class _Dr(_InProcess):
         if tm is not None and resume is not None and resume.get("aux") is not None:
             tm = tm.cheap_of(resume["aux"])
             vg_s = tm.wrap(tm.pot_off)
+        store = _dr_store(s, model, config, a, ctrl, self.seed)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
         off0 = s.vg.OFF0
@@ -291,12 +307,13 @@ class _Dr(_InProcess):
                     chunk.lower((z0, z0, jnp.zeros(C), z0), jnp.arange(s.b), jnp.ones(s.b, bool), ck, jnp.ones(D),
                                 jnp.ones(D), jnp.asarray(1e-3), off0, aux0))
 
-        def compile_on_thread(low, comp, ready):
+        def compile_on_thread(flags, low, comp, ready):
             def _compile():
                 try:
                     comp["setup"] = low[0].compile()
                     ready.set()
                     comp["chunk"] = low[1].compile()
+                    store["sampler"][flags] = dict(setup=comp["setup"], chunk=comp["chunk"])
                     msg = dr.memory_check(comp["chunk"], C, s.parallel)
                     if msg is not None:
                         print(f"[auto] warning: {msg}", flush=True)
@@ -307,23 +324,33 @@ class _Dr(_InProcess):
             t.start()
             return t
 
+        def start(flags, tm_v, vg_v, comp, ready):
+            hit = store["sampler"].get(flags)
+            if hit is not None:
+                comp.update(hit)
+                ready.set()
+                return None
+            return compile_on_thread(flags, lower(tm_v, vg_v), comp, ready)
+
         comp, final = {}, {}
         setup_ready = threading.Event()
-        th_c = compile_on_thread(lower(tm, vg_s), comp, setup_ready)
+        th_c = start(dr._sampler_key(tm), tm, vg_s, comp, setup_ready)
 
         def on_decide(flags):
             if any(flags):
                 final["tm"] = tm.view(flags)
-                final["thread"] = compile_on_thread(lower(final["tm"], final["tm"].wrap(tm.pot_off)), final,
-                                                    threading.Event())
+                final["thread"] = start(tuple(int(f) for f in flags), final["tm"], final["tm"].wrap(tm.pot_off),
+                                        final, threading.Event())
 
         imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s,
-                                           dr._setup_init(setup_ready, comp, z0, off0), on_decide)
-        th_c.join()
+                                           dr._setup_init(setup_ready, comp, z0, off0), on_decide, store=store)
+        if th_c is not None:
+            th_c.join()
         if "err" in comp:
             raise comp["err"]
         if final:
-            final["thread"].join()
+            if final["thread"] is not None:
+                final["thread"].join()
             if "err" in final:
                 raise final["err"]
             comp, tm = final, final["tm"]
@@ -380,7 +407,9 @@ class _DrF32:
         try:
             tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
             vg_s = dr._sampler_vg(s.vg, tm)
-            imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s)
+            store = _dr_store(s, model, config, a, ctrl, self.seed)
+            imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s,
+                                               store=store)
             off = None if resume is None else resume.get("offset")
             donor = os.path.join(self.tmp, "donor.pkl")
             with open(donor + ".tmp", "wb") as fh:
@@ -547,6 +576,7 @@ class AutoSession:
         self.stride = int(a.get("stride") or 1)
         self.burn = int(a.get("burnin") or 0)
         self.config = config
+        self.store = None
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config)
         itemsize = 8 if jax.config.jax_enable_x64 else 4
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
@@ -571,8 +601,8 @@ class AutoSession:
         self.carry = self.ad.carry0
         self.tot = _Totals(C, a.get("totals"))
 
-        full1 = lambda z: self.pp(self.unflatten(z), self.vg.data)
-        shapes = jax.eval_shape(full1, jnp.zeros(self.D))
+        full1 = lambda z, d: self.pp(self.unflatten(z), d)
+        shapes = jax.eval_shape(full1, jnp.zeros(self.D), self.vg.data)
         self.mon_keys = sorted(k for k in shapes if not _UNMONITORED.match(k))
         self.mon_shapes = {k: list(shapes[k].shape) for k in self.mon_keys}
         self.mon_cols = None
@@ -601,19 +631,33 @@ class AutoSession:
         round compiles, and numpyro's handler stack is global, so for NUTS this runs before
         the first round instead of beside it."""
         try:
-            _, _, trim_post = dr._model_info(model, dr._trim_config(config))
-            trim1 = lambda z: trim_post(self.unflatten(z), self.vg.trim)
+            cache = None if self.store is None else self.store.setdefault("auto", {})
+            if cache is not None and "verify" in cache:
+                trim1, fa_fn, fb_fn = cache["verify"]
+            else:
+                _, _, trim_post = dr._model_info(model, dr._trim_config(config))
+                trim1 = lambda z, d: trim_post(self.unflatten(z), d)
+                fa_fn, fb_fn = jax.jit(jax.vmap(full1, (0, None))), jax.jit(jax.vmap(trim1, (0, None)))
+                if cache is not None:
+                    cache["verify"] = (trim1, fa_fn, fb_fn)
             pos = jnp.asarray(self.ad.positions)
-            fa = jax.jit(jax.vmap(full1))(pos)
-            fb = jax.jit(jax.vmap(trim1))(pos)
+            fa = fa_fn(pos, self.vg.data)
+            fb = fb_fn(pos, self.vg.trim)
             ok = set(fa) - {"log_lik"} == set(fb) - {"log_lik"} and all(
                 np.allclose(np.asarray(fa[k]), np.asarray(fb[k]), rtol=1e-10 if itemsize == 8 else 1e-5,
                             atol=1e-12 if itemsize == 8 else 1e-6)
                 for k in fa if k != "log_lik" and not k.startswith(("z_", "L_corr_")))
             self.trim1 = trim1 if ok else None
+            self.mon_data = self.vg.trim if ok else self.vg.data
             base = trim1 if ok else full1
             mk = self.mon_keys
-            self.mon_fn = jax.jit(jax.vmap(lambda z: {k: v for k, v in base(z).items() if k in mk}))
+            key = ("mon", bool(ok), tuple(mk))
+            if cache is not None and key in cache:
+                self.mon_fn = cache[key]
+            else:
+                self.mon_fn = jax.jit(jax.vmap(lambda z, d: {k: v for k, v in base(z, d).items() if k in mk}, (0, None)))
+                if cache is not None:
+                    cache[key] = self.mon_fn
         finally:
             self.mon_ready.set()
 
@@ -668,7 +712,7 @@ class AutoSession:
     def _mon(self, z):
         C, m, D = z.shape
         out = {}
-        for i, cnt, blk in _padded_rows(self.mon_fn, z.reshape(C * m, D), _MON_CHUNK):
+        for i, cnt, blk in _padded_rows(lambda r: self.mon_fn(r, self.mon_data), z.reshape(C * m, D), _MON_CHUNK):
             for k, v in blk.items():
                 if k not in out:
                     out[k] = np.empty((C * m,) + v.shape[1:], dtype=v.dtype)
@@ -815,16 +859,24 @@ class AutoSession:
         with open(os.path.join(out_dir, "state.pkl"), "wb") as fh:
             pickle.dump(self.ad.state(self.carry, self.T), fh)
         rows = self.rows[:, :self.n]
-        base = (lambda z: self.pp(self.unflatten(z), self.vg.data)) if (save_loglik or self.trim1 is None) \
-            else self.trim1
+        use_trim = not save_loglik and self.trim1 is not None
+        base = self.trim1 if use_trim else (lambda z, d: self.pp(self.unflatten(z), d))
+        dat = self.vg.trim if use_trim else self.vg.data
         keep = lambda k: not ((k.startswith("z_") and not keep_re) or (k == "log_lik" and not save_loglik))
-        one = lambda z: {k: v for k, v in base(z).items() if keep(k)}
-        shapes = jax.eval_shape(one, jax.ShapeDtypeStruct(rows.shape[2:], rows.dtype))
+        one = lambda z, d: {k: v for k, v in base(z, d).items() if keep(k)}
+        shapes = jax.eval_shape(one, jax.ShapeDtypeStruct(rows.shape[2:], rows.dtype), dat)
         per_draw = sum(int(np.prod(v.shape)) * np.dtype(v.dtype).itemsize for v in shapes.values())
         chunk = int(max(1, min(_FINAL_CHUNK, dr._CONSTRAIN_BYTES // max(1, per_draw * self.chains))))
-        batch = jax.vmap(one)
-        par = self.chains > 1 and jax.local_device_count() >= self.chains
-        fn = jax.pmap(batch, axis_name="chain") if par else jax.jit(jax.vmap(batch))
+        cache = None if self.store is None else self.store.setdefault("auto", {})
+        key = ("finish", use_trim, bool(save_loglik), bool(keep_re))
+        if cache is not None and key in cache:
+            fn = cache[key]
+        else:
+            batch = jax.vmap(one, (0, None))
+            par = self.chains > 1 and jax.local_device_count() >= self.chains
+            fn = jax.pmap(batch, axis_name="chain", in_axes=(0, None)) if par else jax.jit(jax.vmap(batch, (0, None)))
+            if cache is not None:
+                cache[key] = fn
 
         old_ll, old_sel = f.get("old_loglik"), None
         if save_loglik and old_ll:
@@ -837,7 +889,7 @@ class AutoSession:
         out, files = {}, {}
         centred = {k[6:] for k in shapes if k.startswith("orig__")}
         bar = dr._pbar(-(-self.n // chunk), "Constraining draws", unit="chunks") if self.progress and self.n else None
-        for i, m, blk in _padded_chains(fn, rows, chunk):
+        for i, m, blk in _padded_chains(lambda b: fn(b, dat), rows, chunk):
             for k, v in blk.items():
                 if k.startswith("z_") and not keep_re:
                     continue

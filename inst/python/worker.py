@@ -134,6 +134,10 @@ def run_auto(op, args_path, out_dir, held, token):
             sess.finish(out_dir, args)
         finally:
             sess.close()
+    elif op == "auto_close":
+        sess = held.pop(("auto", token), None)
+        if sess is not None:
+            sess.close()
     else:
         raise ValueError(f"unknown worker op {op!r}")
 

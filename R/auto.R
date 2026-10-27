@@ -245,9 +245,7 @@
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1)
 
   sampler_ctrl <- ctrl[setdiff(names(ctrl), .auto_keys)]
-  worker <- .jax_worker_start(python = python, chains = chains, chain_method = chain_method,
-                              sampler = sampler, control = sampler_ctrl)
-  on.exit(.jax_worker_stop(worker), add = TRUE)
+  worker <- .jax_session_worker(python, chains, chain_method, sampler, sampler_ctrl)
   .prog_reset()
   on.exit(.prog_done(), add = TRUE)
   token <- basename(tempfile("auto_"))
@@ -263,6 +261,8 @@
     .jax_worker_run(worker, af, out, token = token, op = op)
     out
   }
+  on.exit(if (worker$proc$is_alive()) try(suppressMessages(request("auto_close", list())), silent = TRUE),
+          add = TRUE, after = FALSE)
 
   label <- if (sampler == "drghmc") "DR-G-HMC" else "NumPyro NUTS"
   if (!is.null(fixed_draws)) {
