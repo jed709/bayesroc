@@ -156,8 +156,20 @@ def _watch_stop(control_dir):
     threading.Thread(target=watch, daemon=True).start()
 
 
+def _crash_once(var):
+    """Test hook: BAYESROC_WORKER_CRASH_AT_START / BAYESROC_WORKER_CRASH_ONCE name a marker file;
+    the first worker to see the marker absent creates it and dies on the spot."""
+    marker = os.environ.get(var, "")
+    if marker == "always":
+        os._exit(3)
+    if marker and not os.path.exists(marker):
+        open(marker, "w").close()
+        os._exit(3)
+
+
 def serve(control_dir):
     held = {}
+    _crash_once("BAYESROC_WORKER_CRASH_AT_START")
     _watch_stop(control_dir)
     try:
         import autorun
@@ -182,6 +194,7 @@ def serve(control_dir):
         out_dir = job["out"]
         phases.reset()
         phases.mark("request received")
+        _crash_once("BAYESROC_WORKER_CRASH_ONCE")
         try:
             op = job.get("op") or "fit"
             if op == "fit":

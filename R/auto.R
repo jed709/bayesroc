@@ -224,6 +224,18 @@
                       thin, init, init_strategy, init_values, python, progress_bar, seed,
                       save_loglik, loglik_precision, keep_re, adapt_delta, max_treedepth,
                       step_size, resume, total_cores = NULL) {
+  args <- as.list(environment())
+  tryCatch(do.call(.fit_auto_once, args), bayesroc_worker_fault = function(e) {
+    .jax_worker_discard()
+    message("The JAX worker process stopped during sampling; restarting it and the fit.")
+    do.call(.fit_auto_once, args)
+  })
+}
+
+.fit_auto_once <- function(model, chains, chain_method, iter_warmup, sampler, ctrl, auto, fixed_draws,
+                           thin, init, init_strategy, init_values, python, progress_bar, seed,
+                           save_loglik, loglik_precision, keep_re, adapt_delta, max_treedepth,
+                           step_size, resume, total_cores = NULL) {
   rs <- if (!is.null(resume)) .resume_info(resume, model, sampler, chains) else NULL
   if (!is.null(rs) && save_loglik &&
       (is.null(rs$fit$.loglik_path) || !file.exists(rs$fit$.loglik_path))) {
@@ -245,7 +257,13 @@
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1)
 
   sampler_ctrl <- ctrl[setdiff(names(ctrl), .auto_keys)]
-  worker <- .jax_session_worker(python, chains, chain_method, sampler, sampler_ctrl)
+  if (.jax_worker_enabled()) {
+    worker <- .jax_session_worker(python, chains, chain_method, sampler, sampler_ctrl)
+  } else {
+    worker <- .jax_worker_start(python = python, chains = chains, chain_method = chain_method,
+                                sampler = sampler, control = sampler_ctrl)
+    on.exit(.jax_worker_stop(worker), add = TRUE)
+  }
   .prog_reset()
   on.exit(.prog_done(), add = TRUE)
   token <- basename(tempfile("auto_"))

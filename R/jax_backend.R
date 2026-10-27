@@ -647,34 +647,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     stop("Package 'processx' is required for the JAX backend.\n",
          "Install it with: install.packages('processx')")
   }
-  if (isTRUE(getOption("bayesroc.jax_worker", TRUE))) {
-    worker <- .jax_session_worker(python, chains, chain_method, sampler, control)
-    .prog_reset()
-    on.exit(.prog_done(), add = TRUE)
-    .jax_worker_run(worker, config_file, tmp_dir, op = "fit")
-    .profile_mark("worker done")
-  } else {
-    env <- .jax_env(python, chains, chain_method, sampler, control)
-    proc <- processx::process$new(
-      python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
-      env = env, wd = dirname(py_script),
-      stdout = "|", stderr = "|",
-      cleanup = TRUE, cleanup_tree = TRUE
-    )
-    on.exit({
-      if (proc$is_alive()) {
-        message("\nKilling NumPyro subprocess...")
-        proc$kill_tree()
-      }
-    }, add = TRUE)
-    .stream_process(proc)
-    .profile_mark("worker exited")
-    exit_code <- proc$get_exit_status()
-    if (exit_code != 0) {
-      stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
-           "Check the Python output above for details.")
-    }
-  }
+  .jax_run_fit(python, chains, chain_method, sampler, control, config_file, tmp_dir, py_script)
 
   if (!file.exists(result_file)) {
     stop("NumPyro fitting did not produce results. Check Python output.")
@@ -867,8 +840,76 @@ read_npy <- function(path) {
   structure(list(proc = proc, ctrl = ctrl, python = python), class = "bayesroc_worker")
 }
 
-# One worker process per R session (option bayesroc.jax_worker, default TRUE): imports and the
-# compiled programs of every fit of the same structure are reused by the next fit.
+.jax_worker_enabled <- function() {
+  !Sys.getenv("BAYESROC_JAX_WORKER", "") %in% c("0", "false", "FALSE")
+}
+
+.worker_fault <- function(message) {
+  structure(class = c("bayesroc_worker_fault", "error", "condition"),
+            list(message = message, call = NULL))
+}
+
+.jax_worker_discard <- function() {
+  w <- .jax_state$worker
+  if (!is.null(w)) try(.jax_worker_stop(w), silent = TRUE)
+  .jax_state$worker <- NULL
+  .jax_state$worker_key <- NULL
+  invisible(NULL)
+}
+
+.jax_run_fit <- function(python, chains, chain_method, sampler, control, config_file, tmp_dir, py_script) {
+  result_file <- file.path(tmp_dir, "results.json")
+  if (.jax_worker_enabled()) {
+    for (attempt in 1:2) {
+      worker <- tryCatch(.jax_session_worker(python, chains, chain_method, sampler, control),
+                         error = function(e) NULL)
+      if (is.null(worker)) break
+      .prog_reset()
+      fault <- tryCatch({
+        .jax_worker_run(worker, config_file, tmp_dir, op = "fit")
+        .prog_done()
+        meta <- try(jsonlite::read_json(result_file), silent = TRUE)
+        if (inherits(meta, "try-error") || is.null(meta$samples)) {
+          .worker_fault("The JAX worker returned no readable result.")
+        } else NULL
+      }, bayesroc_worker_fault = function(e) {
+        .prog_done()
+        e
+      })
+      if (is.null(fault)) {
+        .profile_mark("worker done")
+        return(invisible(tmp_dir))
+      }
+      .jax_worker_discard()
+      unlink(list.files(tmp_dir, full.names = TRUE,
+                        pattern = "^(results\\.json|DONE|ERROR|sample_.*|extra_.*|state\\.pkl)$"))
+      message(if (attempt == 1L) "The JAX worker process stopped; restarting it."
+              else "The JAX worker could not be restarted; running this fit in its own process.")
+    }
+  }
+  env <- .jax_env(python, chains, chain_method, sampler, control)
+  proc <- processx::process$new(
+    python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
+    env = env, wd = dirname(py_script),
+    stdout = "|", stderr = "|",
+    cleanup = TRUE, cleanup_tree = TRUE
+  )
+  on.exit({
+    if (proc$is_alive()) {
+      message("\nKilling NumPyro subprocess...")
+      proc$kill_tree()
+    }
+  }, add = TRUE)
+  .stream_process(proc)
+  .profile_mark("worker exited")
+  exit_code <- proc$get_exit_status()
+  if (exit_code != 0) {
+    stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
+         "Check the Python output above for details.")
+  }
+  invisible(tmp_dir)
+}
+
 .jax_session_worker <- function(python, chains, chain_method, sampler, control) {
   python <- python %||% find_python_with_jax()
   key <- paste(normalizePath(python, winslash = "/", mustWork = FALSE), chains, chain_method, sampler,
@@ -927,7 +968,7 @@ read_npy <- function(path) {
       }
       if (!worker$proc$is_alive()) {
         .prog_done()
-        stop("The JAX worker process exited before returning a result.", call. = FALSE)
+        stop(.worker_fault("The JAX worker process exited before returning a result."))
       }
     },
     interrupt = function(e) {
