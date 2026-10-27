@@ -266,23 +266,23 @@ def _resume_ctrl(ctrl, resume):
     return ctrl
 
 
-def _model_positions(tm, th, aux):
-    return np.asarray(th) if tm is None else tm.forward_chains(th, aux)
+def _model_positions(tm, th, aux, trim):
+    return np.asarray(th) if tm is None else tm.forward_chains(th, aux, trim)
 
 
 class _Dr(_InProcess):
     def __init__(self, s, model, config, a, resume):
         ctrl = _resume_ctrl(dr._merge_control(a.get("control")), resume)
-        C, D, N = s.chains, s.D, int(config["N"])
+        C, D = s.chains, s.D
         self.seed = int(resume["seed"]) if resume is not None else int(a["seed"])
         tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
-        vg_s = dr._sampler_vg(model, config, s.unflatten, tm)
+        vg_s = dr._sampler_vg(s.vg, tm)
         if tm is not None and resume is not None and resume.get("aux") is not None:
             tm = tm.cheap_of(resume["aux"])
             vg_s = tm.wrap(tm.pot_off)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
-        off0 = jnp.zeros(N)
+        off0 = s.vg.OFF0
 
         def lower(tm_v, vg_v):
             setup_p, chunk = dr._sampler_fns(vg_v, D, ctrl, s.parallel, tm_v)
@@ -342,7 +342,7 @@ class _Dr(_InProcess):
         self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0, dr.aux_in(tm, self.aux))
         self.carry0 = jax.tree.map(np.asarray, comp["setup"](jnp.asarray(th), jnp.asarray(rho), off0,
                                                              dr.aux_in(tm, self.aux)))
-        self.positions = _model_positions(tm, th, self.aux)
+        self.positions = _model_positions(tm, th, self.aux, s.vg.trim)
 
     def block(self, carry, t, keep):
         ck, IMM, MSQ, E0, OFF, AUX = self.args
@@ -379,7 +379,7 @@ class _DrF32:
                                       "_dr_f32_server", argfile], env=env)
         try:
             tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
-            vg_s = dr._sampler_vg(model, config, s.unflatten, tm)
+            vg_s = dr._sampler_vg(s.vg, tm)
             imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s)
             off = None if resume is None else resume.get("offset")
             donor = os.path.join(self.tmp, "donor.pkl")
@@ -393,7 +393,7 @@ class _DrF32:
         self.imm, self.eps, self.aux = imm, eps, aux
         self.transport = tm is not None
         self.carry0 = dict(th=th, rho=rho, offset=off)
-        self.positions = _model_positions(tm, th, aux)
+        self.positions = _model_positions(tm, th, aux, s.vg.trim)
         self.n = 0
 
     def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0, show=False):
@@ -457,16 +457,14 @@ def _dr_f32_server(argfile):
     C, b, seed, d = int(p["chains"]), int(p["b"]), int(p["seed"]), p["dir"]
     vg, unflatten, keys, off, D, pp = dr._build(nb.sdt_model, config)
     tm = dr._transport(nb.sdt_model, config, p["ctrl"], off, unflatten)
-    setup_p, chunk = dr._sampler_fns(dr._sampler_vg(nb.sdt_model, config, unflatten, tm), D,
-                                     p["ctrl"], bool(p["parallel"]), tm)
+    setup_p, chunk = dr._sampler_fns(dr._sampler_vg(vg, tm), D, p["ctrl"], bool(p["parallel"]), tm)
     ck = jax.random.split(dr._tagged(seed, 1), C)
-    N = int(config["N"])
     z0 = jnp.zeros((C, D))
     aux0 = dr.aux_zeros(tm, C)
-    c0 = setup_p(z0, z0, jnp.zeros(N), aux0)
+    c0 = setup_p(z0, z0, vg.OFF0, aux0)
     c0 = jax.tree.map(np.asarray, c0)
     jax.block_until_ready(chunk(c0, jnp.arange(b), jnp.ones(b, bool), ck, jnp.ones(D), jnp.ones(D),
-                                jnp.asarray(1e-3), jnp.zeros(N), aux0))
+                                jnp.asarray(1e-3), vg.OFF0, aux0))
     stop = os.path.join(d, "stop")
     donor = os.path.join(d, "donor.pkl")
     while not os.path.exists(donor):
@@ -480,9 +478,11 @@ def _dr_f32_server(argfile):
         tm = tm.cheap_of(don["aux"])
         setup_p, chunk = dr._sampler_fns(tm.wrap(tm.pot_off), D, p["ctrl"], bool(p["parallel"]), tm)
     AUX = dr.aux_in(tm, don["aux"] if don.get("aux") is not None else np.zeros(1))
-    OFF = (jnp.asarray(don["offset"]) if don.get("offset") is not None
-           else dr.ll_offset(pp, unflatten, config,
-                             (th[:1] if tm is None else tm.forward_chains(th[:1], np.asarray(don["aux"])[:1]))[0]))
+    OFF = {**vg.OFF0, "off": (jnp.asarray(don["offset"]) if don.get("offset") is not None
+                              else dr.ll_offset(pp, unflatten, config,
+                                                (th[:1] if tm is None
+                                                 else tm.forward_chains(th[:1], np.asarray(don["aux"])[:1], vg.trim))[0],
+                                                vg.data))}
     IMM = jnp.asarray(don["imm"])
     MSQ = jnp.sqrt(1.0 / IMM)
     E0 = jnp.asarray(p["ctrl"]["eps_c"] * float(don["eps"]))
@@ -525,7 +525,7 @@ def _dr_f32_server(argfile):
         tmp = os.path.join(d, f"res_{n}.part.npz")
         np.savez(tmp, z=np.concatenate(zs, 1), t=np.concatenate(ts), stage=np.concatenate(ss, 1),
                  energy=np.concatenate(es, 1), th=np.asarray(carry[0]), rho=np.asarray(carry[1]),
-                 offset=np.asarray(OFF))
+                 offset=np.asarray(OFF["off"]))
         os.replace(tmp, os.path.join(d, f"res_{n}.npz"))
         n += 1
 
@@ -571,7 +571,7 @@ class AutoSession:
         self.carry = self.ad.carry0
         self.tot = _Totals(C, a.get("totals"))
 
-        full1 = lambda z: self.pp(self.unflatten(z))
+        full1 = lambda z: self.pp(self.unflatten(z), self.vg.data)
         shapes = jax.eval_shape(full1, jnp.zeros(self.D))
         self.mon_keys = sorted(k for k in shapes if not _UNMONITORED.match(k))
         self.mon_shapes = {k: list(shapes[k].shape) for k in self.mon_keys}
@@ -602,7 +602,7 @@ class AutoSession:
         the first round instead of beside it."""
         try:
             _, _, trim_post = dr._model_info(model, dr._trim_config(config))
-            trim1 = lambda z: trim_post(self.unflatten(z))
+            trim1 = lambda z: trim_post(self.unflatten(z), self.vg.trim)
             pos = jnp.asarray(self.ad.positions)
             fa = jax.jit(jax.vmap(full1))(pos)
             fb = jax.jit(jax.vmap(trim1))(pos)
@@ -815,7 +815,7 @@ class AutoSession:
         with open(os.path.join(out_dir, "state.pkl"), "wb") as fh:
             pickle.dump(self.ad.state(self.carry, self.T), fh)
         rows = self.rows[:, :self.n]
-        base = (lambda z: self.pp(self.unflatten(z))) if (save_loglik or self.trim1 is None) \
+        base = (lambda z: self.pp(self.unflatten(z), self.vg.data)) if (save_loglik or self.trim1 is None) \
             else self.trim1
         keep = lambda k: not ((k.startswith("z_") and not keep_re) or (k == "log_lik" and not save_loglik))
         one = lambda z: {k: v for k, v in base(z).items() if keep(k)}

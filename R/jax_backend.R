@@ -591,7 +591,9 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     python <- find_python_with_jax()
   }
   py_script <- find_backend_script()
+  .profile_mark("fit_jax start")
   config <- build_numpyro_config(model)
+  .profile_mark("config built")
 
   if (is.null(seed)) seed <- sample.int(.Machine$integer.max, 1)
 
@@ -630,6 +632,7 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
   # matrices go through jsonlite's own row-major encoding, which is much faster than a list of rows
   jsonlite::write_json(fit_args, config_file, auto_unbox = TRUE,
                        digits = 17, null = "null")
+  .profile_mark("config json written")
 
   chain_note <- if (identical(chain_method, "sequential")) ", sequential" else ""
   if (identical(sampler, "drghmc")) {
@@ -644,31 +647,47 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
     stop("Package 'processx' is required for the JAX backend.\n",
          "Install it with: install.packages('processx')")
   }
-  env <- .jax_env(python, chains, chain_method, sampler, control)
-  proc <- processx::process$new(
-    python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
-    env = env, wd = dirname(py_script),
-    stdout = "|", stderr = "|",
-    cleanup = TRUE, cleanup_tree = TRUE
-  )
-  on.exit({
-    if (proc$is_alive()) {
-      message("\nKilling NumPyro subprocess...")
-      proc$kill_tree()
+  if (isTRUE(getOption("bayesroc.jax_worker", TRUE))) {
+    worker <- .jax_session_worker(python, chains, chain_method, sampler, control)
+    .prog_reset()
+    on.exit(.prog_done(), add = TRUE)
+    .jax_worker_run(worker, config_file, tmp_dir, op = "fit")
+    .profile_mark("worker done")
+  } else {
+    env <- .jax_env(python, chains, chain_method, sampler, control)
+    proc <- processx::process$new(
+      python, args = c(file.path(dirname(py_script), "worker.py"), config_file, tmp_dir),
+      env = env, wd = dirname(py_script),
+      stdout = "|", stderr = "|",
+      cleanup = TRUE, cleanup_tree = TRUE
+    )
+    on.exit({
+      if (proc$is_alive()) {
+        message("\nKilling NumPyro subprocess...")
+        proc$kill_tree()
+      }
+    }, add = TRUE)
+    .stream_process(proc)
+    .profile_mark("worker exited")
+    exit_code <- proc$get_exit_status()
+    if (exit_code != 0) {
+      stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
+           "Check the Python output above for details.")
     }
-  }, add = TRUE)
-  .stream_process(proc)
-  exit_code <- proc$get_exit_status()
-  if (exit_code != 0) {
-    stop("NumPyro fitting failed (exit code ", exit_code, ").\n",
-         "Check the Python output above for details.")
   }
 
   if (!file.exists(result_file)) {
     stop("NumPyro fitting did not produce results. Check Python output.")
   }
 
-  .read_jax_results(tmp_dir, loglik_precision)
+  res <- .read_jax_results(tmp_dir, loglik_precision)
+  .profile_mark("results read")
+  res
+}
+
+.profile_mark <- function(what) {
+  if (!Sys.getenv("BAYESROC_PROFILE", "") %in% c("", "0"))
+    message(sprintf("[profile R] %8.3fs %s", proc.time()[["elapsed"]], what))
 }
 
 .read_jax_results <- function(dir, loglik_precision = "f32") {
@@ -846,6 +865,31 @@ read_npy <- function(path) {
     env = .jax_env(python, chains, chain_method, sampler, control), wd = py_dir,
     stdout = "|", stderr = "|", cleanup = TRUE, cleanup_tree = TRUE)
   structure(list(proc = proc, ctrl = ctrl, python = python), class = "bayesroc_worker")
+}
+
+# One worker process per R session (option bayesroc.jax_worker, default TRUE): imports and the
+# compiled programs of every fit of the same structure are reused by the next fit.
+.jax_session_worker <- function(python, chains, chain_method, sampler, control) {
+  key <- paste(normalizePath(python, winslash = "/", mustWork = FALSE), chains, chain_method, sampler,
+               identical(control$precision, "f32"), sep = "|")
+  w <- .jax_state$worker
+  if (!is.null(w) && (!identical(.jax_state$worker_key, key) || !w$proc$is_alive())) {
+    .jax_worker_stop(w)
+    w <- NULL
+  }
+  if (is.null(w)) {
+    w <- .jax_worker_start(python = python, chains = chains, chain_method = chain_method,
+                           sampler = sampler, control = control)
+    .jax_state$worker <- w
+    .jax_state$worker_key <- key
+  }
+  w
+}
+
+.onUnload <- function(libpath) {
+  w <- .jax_state$worker
+  if (!is.null(w)) try(.jax_worker_stop(w), silent = TRUE)
+  .jax_state$worker <- NULL
 }
 
 .jax_worker_stop <- function(worker) {

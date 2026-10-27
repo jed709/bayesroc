@@ -4365,6 +4365,7 @@ def _rkg_knob(config):
     beta = B_perp w + t v and t is solved last as max over Guess trials of the bound plus
     exp(slack): an exact bijection onto the feasible set whose coordinates never meet a
     wall. Returns None when no Guess response constrains the model."""
+    config = config.get("_static", config)
     if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
         return None
     # fixed-effects bounds only: with random effects on the thresholds or criteria the bound
@@ -5148,7 +5149,8 @@ def sdt_model(config):
                     c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
                     n_rkg=n_rkg, counts=counts,
                     thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
-                    gap_link=gap_link, rk_static=np.asarray(config["rk"]), y_static=np.asarray(config["y"]),
+                    gap_link=gap_link, rk_static=np.asarray(config.get("_static", config)["rk"]),
+                    y_static=np.asarray(config.get("_static", config)["y"]),
                     corr=cdp_corr,
                 )
 
@@ -5464,7 +5466,8 @@ def sdt_model(config):
                 thresh_mid=thresh_mid_vec,
                 log_gaps=log_gaps_obs,
                 gap_link=gap_link,
-                is_old_static=None if config.get("is_old") is None else np.asarray(config["is_old"], dtype=float),
+                is_old_static=None if config.get("is_old") is None
+                else np.asarray(config.get("_static", config)["is_old"], dtype=float),
                 sigma_meta=trial_params.get("sigma_meta"),
                 meta_noise=config.get("meta_noise"),
             )
@@ -5665,12 +5668,13 @@ class NutsCoords:
                 aux, self.start = _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy,
                                                init_radius, init_z)
             elif aux is None:
-                vg_s = dr._sampler_vg(sdt_model, config, self.unflatten, tm)
+                vg_s = dr._sampler_vg(self.vg, tm)
                 _, _, tht, aux_c, _ = dr._adapt(sdt_model, config, self.keys, self.off, self.vg, vg_s, tm,
                                                 self.D, chains, _MAP_WARMUP, seed, ctrl, parallel, progress_bar,
                                                 th0, user_init=init_z is not None, title="Transport map warmup")
                 aux = np.asarray(aux_c)[:1]
-                self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c), np.repeat(aux, chains, 0))
+                self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c, self.vg.trim), np.repeat(aux, chains, 0),
+                                               self.vg.trim)
             self.aux_flat = np.asarray(aux)[:1]
             self.tm = tm.cheap_of(self.aux_flat)
             self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
@@ -5680,7 +5684,7 @@ class NutsCoords:
 
     def model_v(self, z):
         v = self.flat(z)
-        return v if self.tm is None else self.tm.forward(v, self.aux)[0]
+        return v if self.tm is None else self.tm.forward(v, self.aux, self.vg.trim)[0]
 
     def model_z(self, z):
         return self.unflatten(self.model_v(z))
@@ -5688,7 +5692,7 @@ class NutsCoords:
     def potential(self, cfg, z):
         from numpyro.infer.util import potential_energy
         v = self.flat(z)
-        th, ld = (v, 0.0) if self.tm is None else self.tm.forward(v, self.aux)
+        th, ld = (v, 0.0) if self.tm is None else self.tm.forward(v, self.aux, self.vg.trim)
         return potential_energy(sdt_model, (cfg,), {}, self.unflatten(th)) - self.unflatten.log_jac(th) + ld
 
     def init_params(self, chains):

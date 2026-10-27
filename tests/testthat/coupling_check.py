@@ -31,7 +31,7 @@ def audit(path):
     unmapped = sorted(want - mapped)
     rng = np.random.default_rng(3)
     ths = [rng.normal(0.0, 0.4, D) for _ in range(3)]
-    ll = jax.jit(lambda v: post(unflatten(v))["log_lik"])
+    ll = jax.jit(lambda v: post(unflatten(v), vg.data)["log_lik"])
     Js = [np.array(jax.jacrev(ll)(jnp.asarray(th))) for th in ths]
     if "dprime_order_loggap" in off:
         f = off["dprime_order_loggap"][0].start
@@ -47,7 +47,7 @@ def audit(path):
                 bflats.append(sl.start + i)
     bflats = np.array(bflats, int)
     col = {f: j for j, f in enumerate(bflats)}
-    psts = [tm.post(jnp.asarray(th)) for th in ths] if tm is not None else None
+    psts = [tm.post(jnp.asarray(th), vg.trim) for th in ths] if tm is not None else None
     issues = []
     for sb in sbs:
         Ainvs = [np.linalg.inv(np.asarray(sb.A(p))) for p in psts]

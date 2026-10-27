@@ -4,6 +4,7 @@ run_one() executes a fit described by the JSON written by R's fit_jax() and writ
 the results next to it. serve() keeps one process alive across fits so imports and
 compiled programs are reused; the auto-sampling session (autorun.AutoSession) lives in
 `held` between requests."""
+import phases
 import glob
 import json
 import os
@@ -13,6 +14,8 @@ import time
 import traceback
 
 import numpy as np
+
+phases.mark("worker imports")
 
 _MATRIX_KEYS = ("X", "Z", "X_crit")
 
@@ -72,11 +75,13 @@ def _limit_cpus(n, announce):
 
 def run_one(config_path, out_dir):
     from numpyro_backend import fit_model
+    phases.mark("numpyro_backend imported")
 
     with open(config_path) as fh:
         args = json.load(fh)
     config = args["config"]
     _convert_matrices(config)
+    phases.mark("config parsed")
     kw = dict(args["fit_kwargs"])
     _limit_cpus(kw.pop("total_cores", None), kw.get("progress_bar", True))
     result = fit_model(config=config, **kw)
@@ -94,6 +99,7 @@ def run_one(config_path, out_dir):
         output["state"] = "state.pkl"
     with open(os.path.join(out_dir, "results.json"), "w") as fh:
         json.dump(output, fh)
+    phases.mark("results written")
     for w in _warnings(result["extra_fields"], kw.get("sampler", "nuts"),
                        kw.get("max_tree_depth", 10)):
         print(w, flush=True)
@@ -170,6 +176,8 @@ def serve(control_dir):
             time.sleep(0.05)
             continue
         out_dir = job["out"]
+        phases.reset()
+        phases.mark("request received")
         try:
             op = job.get("op") or "fit"
             if op == "fit":

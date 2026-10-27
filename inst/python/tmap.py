@@ -1055,11 +1055,12 @@ class TMap:
         L = jnp.linalg.cholesky(Lam + Q[None])
         return A, Ainv, L, solve_triangular(L, r[..., None], lower=True)[..., 0]
 
-    def forward(self, tht, aux):
+    def forward(self, tht, aux, trim):
         """Sampler coordinates -> the model's unconstrained coordinates, and log|dz/dzeta|^-1.
-        `aux`: one chain's anchors as parts() gives them."""
+        `aux`: one chain's anchors as parts() gives them; `trim`: the data of the trimmed config
+        the scales are constrained against (vg.trim)."""
         ans = self._unpack(aux, tht.dtype)
-        post = self.post(tht)
+        post = self.post(tht, trim)
         th, ld, us = tht, 0.0, {}
         native = _native()
         for k, sb in enumerate(self.sbs):
@@ -1097,9 +1098,9 @@ class TMap:
             ld = ld + ldg
         return th, ld
 
-    def inverse(self, th, aux):
+    def inverse(self, th, aux, trim):
         ans = self._unpack(aux, th.dtype)
-        post = self.post(th)
+        post = self.post(th, trim)
         tht, us = th, {}
         for k, sb in enumerate(self.sbs):
             an = ans[k]
@@ -1138,44 +1139,45 @@ class TMap:
     def wrap(self, pot_off):
         """pot_off(v, OFF) -> value_and_grad of the mapped potential, (v, OFF, AUX) -> (U, g)."""
         def pot(v, OFF, AUX):
-            th, ld = self.forward(v, AUX)
+            th, ld = self.forward(v, AUX, OFF["trim"])
             return pot_off(th, OFF) + ld
         return jax.value_and_grad(pot)
 
-    def forward_chains(self, tht, aux):
+    def forward_chains(self, tht, aux, trim):
         """Sampler -> model coordinates for positions [chains, D] with anchors [chains, A], in
         the configuration the anchors' flags name."""
         v = self.cheap_of(aux)
         if v._fwd is None:
-            v._fwd = jax.jit(lambda x, a: v.forward(x, a)[0])
+            v._fwd = jax.jit(lambda x, a, t: v.forward(x, a, t)[0])
         P = self.parts(aux)
-        return np.stack([np.asarray(v._fwd(jnp.asarray(x), tuple(p[c] for p in P)))
+        return np.stack([np.asarray(v._fwd(jnp.asarray(x), tuple(p[c] for p in P), trim))
                          for c, x in enumerate(np.asarray(tht))])
 
-    def inverse_chains(self, th, aux):
+    def inverse_chains(self, th, aux, trim):
         v = self.cheap_of(aux)
         if v._inv is None:
             v._inv = jax.jit(v.inverse)
         P = self.parts(aux)
-        return np.stack([np.asarray(v._inv(jnp.asarray(x), tuple(p[c] for p in P)))
+        return np.stack([np.asarray(v._inv(jnp.asarray(x), tuple(p[c] for p in P), trim))
                          for c, x in enumerate(np.asarray(th))])
 
-    def lower_anchors(self, vg, chains, D, parallel=True):
+    def lower_anchors(self, vg, chains, D, OFF, parallel=True):
         """The anchors program over the chains (pmap, or lax.map under jit when not parallel),
-        lowered and ready to compile."""
-        f = lambda th: self.anchors(vg, th)
-        prog = jax.pmap(f, axis_name="chain") if parallel else jax.jit(lambda r: jax.lax.map(f, r))
-        return prog.lower(jnp.zeros((chains, D)))
+        lowered and ready to compile; it takes the runtime bundle as its second argument."""
+        f = lambda th, OFF: self.anchors(vg, th, OFF)
+        prog = (jax.pmap(f, axis_name="chain", in_axes=(0, None)) if parallel
+                else jax.jit(lambda r, OFF: jax.lax.map(lambda t: f(t, OFF), r)))
+        return prog.lower(jnp.zeros((chains, D)), OFF)
 
-    def anchors_chains(self, vg, ref, parallel=True):
+    def anchors_chains(self, vg, ref, OFF, parallel=True):
         """Packed anchors [chains, A], each chain's from its own reference position. The
         dimension order, which defines the coordinate system, is pooled over the chains, so
         every chain samples in the same coordinates with the shared mass matrix."""
         ref = np.asarray(ref, dtype=np.float64)
         C = ref.shape[0]
         if self._anch is None:
-            self._anch = self.lower_anchors(vg, C, ref.shape[1], parallel).compile()
-        raw = jax.tree.map(np.asarray, self._anch(jnp.asarray(ref)))
+            self._anch = self.lower_anchors(vg, C, ref.shape[1], OFF, parallel).compile()
+        raw = jax.tree.map(np.asarray, self._anch(jnp.asarray(ref), OFF))
         packed, kept = [[] for _ in range(C)], [[] for _ in range(C)]
         for sb, r in zip(self.sbs, raw):
             Lam = r["Lam"]
@@ -1194,7 +1196,7 @@ class TMap:
                     kept[c].append(np.asarray(_tile(jnp.asarray(Lp[:, ks1][:, :, ks1]))).reshape(-1))
         return np.stack([np.concatenate(p + q + [np.zeros(len(self.sbs))]) for p, q in zip(packed, kept)])
 
-    def anchors(self, vg, th):
+    def anchors(self, vg, th, OFF):
         """Raw anchors at one position th (model coordinates), one dict per super-block: each
         group's log-likelihood expanded to second order in its effects near that group's
         conditional mode (up to _NEWTON capped Newton steps from its effects at th with
@@ -1203,7 +1205,7 @@ class TMap:
         Traceable: the
         expansion's D + 1 gradients run in a lax.map and the Newton steps in a fori_loop, so the
         gradient is compiled once per super-block."""
-        post0 = self.post(th)
+        post0 = self.post(th, OFF["trim"])
         out = []
         for sb in self.sbs:
             A = sb.A(post0)
@@ -1214,7 +1216,7 @@ class TMap:
 
             def neg_grad(u):
                 z = solve_triangular(A, u, lower=True)
-                g = sb.get(vg(sb.put(th, z))[1]) - z
+                g = sb.get(vg(sb.put(th, z), OFF)[1]) - z
                 return solve_triangular(A.T, g, lower=False)
 
             def expand(u):
@@ -1257,4 +1259,4 @@ def build(model, config, off, unflatten, split=False, links=True):
         for sb in sbs:
             sb.links = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
-    return TMap(sbs, lambda th: post_trim(unflatten(th)))
+    return TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
