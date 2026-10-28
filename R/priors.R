@@ -573,8 +573,8 @@ build_prior_lookup <- function(user_priors, family = NULL) {
                                 thresh_mid2 = "normal(0, 1.5)", log_gaps2 = "normal(-0.5, 0.5)"),
     bivariate_sdt = list(discrim = "normal(-1, 1)", discrim_B = "normal(1, 1)", dprime_B = "normal(1.5, 0.75)",
                          rho = "normal(-0.5, 0.5)", rho_B = "normal(0.5, 0.5)"),
-    vrdp2d = list(discrim = "normal(-1, 1)", discrim_B = "normal(1, 1)", dprime = "normal(1, 0.75)",
-                  dprime2 = "normal(2, 1)"),
+    vrdp2d = list(discrim = "normal(-1.5, 0.75)", discrim_B = "normal(1.5, 0.75)", dprime = "normal(1, 0.75)",
+                  dprime2 = "normal(2.5, 1)"),
     cdp = list(dprime = "normal(1, 0.75)", dprime2 = "normal(1, 0.75)"),
     mixture = list(dprime2 = "normal(0.5, 0.5)"),
     list())

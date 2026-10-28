@@ -116,7 +116,7 @@ test_that("source-axis defaults centre on the new-item baseline and follow the A
   pr <- function(m, dp) { t <- get_broc_prior(m); t$prior[t$dpar == dp & t$class == "b"][1] }
   vr <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime2 ~ 1, discrim ~ 1, lambda ~ 1,
                                   criterion ~ 1, criterion2 ~ 1, family = vrdp2d()), d))
-  expect_equal(pr(vr, "discrim"), "normal(-1, 1)")
+  expect_equal(pr(vr, "discrim"), "normal(-1.5, 0.75)")
   expect_equal(pr(vr, "thresh_mid2"), "normal(0, 0.75)")
   expect_equal(pr(vr, "log_gaps2"), "normal(0, 0.75)")
   bg <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
@@ -125,7 +125,7 @@ test_that("source-axis defaults centre on the new-item baseline and follow the A
   bb <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
                                   family = bivariate_gaussian(bounded = TRUE)), d))
   expect_equal(pr(bb, "discrim"), "normal(-1.5, 0.75)")
-  expect_equal(pr(vr, "dprime2"), "normal(2, 1)")
+  expect_equal(pr(vr, "dprime2"), "normal(2.5, 1)")
   bgB <- suppressMessages(broc(brf(resp(det, src) | type ~ 1, dprime_B ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
                                    criterion2 ~ 1, family = bivariate_gaussian()), d))
   expect_equal(pr(bgB, "dprime_B"), pr(bgB, "dprime"))
