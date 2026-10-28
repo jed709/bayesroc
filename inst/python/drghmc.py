@@ -5,6 +5,7 @@ value_and_grad(potential_fn), so every family's custom-JVP kernel is reused
 unchanged. run_drghmc returns the same dict contract as fit_model's NUTS path.
 """
 import os, sys, json, time, pickle, subprocess, tempfile, shutil
+import functools
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import numpy as np
 import jax
@@ -942,15 +943,14 @@ def _self_adapt(vg, D, chains, warmup, seed, ctrl, parallel, progress_bar=False,
     # fresh inputs go through an identity map first: pmap compiles its program once for
     # host-placed arguments and again for its own outputs, so every window call must see
     # the same placement
-    ident = _map(lambda x: x)
+    ident = _ident_map(parallel)
     th = ident(jnp.zeros((chains, D)) if th0 is None else jnp.asarray(th0))
     AX = jnp.zeros((chains, 1)) if aux is None else jax.tree.map(jnp.asarray, aux)
     if init is not None:
         U, g = init(th, AX)
     else:
         U, g = vg0(th, OFF) if aux is None else vg0(th, AX, OFF)
-    rho = _map(lambda k: jax.random.normal(k, (D,)))(
-        jax.random.split(_tagged(seed, 4), chains))
+    rho = _normal_map(D, parallel)(jax.random.split(_tagged(seed, 4), chains))
     imm = jnp.ones(D) if imm0 is None else jnp.asarray(imm0)
     le = ident(jnp.asarray(np.full(chains, np.log(0.02 if eps0 is None else eps0))))
     acc_mean = np.zeros((chains, D)); acc_m2 = np.zeros((chains, D))
@@ -1110,6 +1110,26 @@ def _sampler_fns(vg_off, D, ctrl, parallel, tm=None):
     ax = None if tm is None else 0
     return (_chain_map(setup, (0, 0, None, ax), parallel),
             _chain_map(scanner, (0, None, None, 0, None, None, None, None, ax), parallel))
+
+
+def _identity(x):
+    return x
+
+
+def _normal(k, D):
+    return jax.random.normal(k, (D,))
+
+
+@functools.lru_cache(maxsize=None)
+def _ident_map(parallel):
+    """The identity over chains, built once per process: pmap keeps every function it has
+    wrapped, so a fresh one per call would hold a compiled program per adaptation stage."""
+    return _chain_map(_identity, None, parallel)
+
+
+@functools.lru_cache(maxsize=None)
+def _normal_map(D, parallel):
+    return _chain_map(functools.partial(_normal, D=D), None, parallel)
 
 
 def _chain_map(f, in_axes=None, parallel=True):
