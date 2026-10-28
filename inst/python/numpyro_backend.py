@@ -5797,6 +5797,7 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     numpyro.set_host_device_count(chains if chain_method == "parallel" else 1)
     rng_key = random.PRNGKey(seed)
 
+    t0 = time.time()
     coords = NutsCoords(config, chains, seed, chain_method == "parallel" and chains > 1, progress_bar,
                         init_strategy, init_radius, init_z, transport=bool((control or {}).get("transport", True)))
     init_params = coords.init_params(chains)
@@ -5820,7 +5821,6 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
 
     f32 = not jax.config.jax_enable_x64
     offset = None
-    t0 = time.time()
     par = chain_method == "parallel" and chains > 1
     if f32:
         with progress.nuts(chains, par, desc="NUTS warmup"):
