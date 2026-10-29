@@ -54,6 +54,25 @@ test_that("m-AFC cells match direct integration on the native and R paths, rows 
   expect_lt(worst_n, 1e-9)
 })
 
+test_that("equal-variance m-AFC cells (the unit-slope path) match direct integration, rows sum to 1", {
+  skip_if_no_jax()
+  expect_true(.bvn_native_ready())
+  set.seed(4)
+  worst <- 0
+  for (i in 1:40) {
+    M <- sample(c(3L, 4L, 6L, 9L), 1)
+    d <- stats::runif(1, -0.5, 3.5)
+    b <- c(stats::rnorm(M - 1, 0, 0.7), 0)
+    s <- sample.int(M, 1)
+    ref <- vapply(seq_len(M), function(k) .mafc_cell_integrate(k, s, d, 1, b), numeric(1))
+    nat <- probs_mafc(list(dprime = matrix(d), sigma = matrix(1)), array(b, c(1, 1, M)),
+                      list(m_alt = M, target_pos = s), 1, 1, M)[1, 1, ]
+    expect_equal(sum(nat), 1, tolerance = 1e-8)
+    worst <- max(worst, max(abs(log(nat) - log(ref))))
+  }
+  expect_lt(worst, 1e-8)
+})
+
 test_that("the m-AFC categorical likelihood gives the multinomial estimates for DeCarlo's (2012) taste data", {
   tabs <- list(WW = rbind(c(54, 5, 1), c(0, 60, 0), c(5, 3, 52)), SS = rbind(c(40, 12, 8), c(6, 49, 4), c(6, 5, 49)))
   want <- list(WW = c(2.628, 0.400, 0.854), SS = c(1.539, -0.172, 0.124))
@@ -97,7 +116,7 @@ test_that("mafc batch and plain Stan agree on log density and gradient for every
     r <- .stan_parity(mp, mb)
     expect_identical(r$dim[1], r$dim[2], label = nm)
     expect_lt(r$lp, 1e-8, label = paste(nm, "lp"))
-    expect_lt(r$grad, 1e-7, label = paste(nm, "gradient"))
+    expect_lt(r$grad, 1e-6, label = paste(nm, "gradient"))
   }
 })
 

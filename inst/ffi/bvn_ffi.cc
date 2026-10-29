@@ -523,7 +523,7 @@ ffi::Error PcqImpl(ffi::ThreadPool pool, ffi::AnyBuffer a, ffi::AnyBuffer c, ffi
   DOut<T> ol(lp), oc(dc), oa(da);
   const double *A = pa.ptr, *C = pc.ptr;
   double *L = ol.ptr, *DC = oc.ptr, *DA = oa.ptr;
-  pool_for(pool, N, 256, [=](int64_t i0, int64_t i1) {
+  pool_for(pool, N, 64, [=](int64_t i0, int64_t i1) {
     for (int64_t i = i0; i < i1; ++i) L[i] = pcq::log_int(n, A + i * n, C + i * n, DC + i * n, DA + i * n);
   });
   return ffi::Error::Success();
