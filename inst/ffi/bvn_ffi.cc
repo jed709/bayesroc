@@ -49,16 +49,6 @@ void pool_for(ffi::ThreadPool& pool, int64_t n, int64_t grain, F body) {
   while (st->done.load(std::memory_order_acquire) < nchunks) std::this_thread::yield();
 }
 
-template <typename F>
-void chunk_for(ffi::ThreadPool& pool, int64_t n, int64_t G, F body) {
-  const int64_t nch = (n + G - 1) / G;
-  pool_for(pool, nch, 1, [&](int64_t c0, int64_t c1) {
-    for (int64_t c = c0; c < c1; ++c) body(c * G, std::min(n, (c + 1) * G));
-  });
-}
-
-constexpr int64_t kCellChunk = 2048;
-
 // ---- transport map: fused per-group factor / solves and their adjoint ----
 
 template <typename T>
@@ -407,7 +397,7 @@ ffi::Error F64Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
     if (b.has_error()) return b.error();
     out[a] = static_cast<double*>(b.value()->untyped_data());
   }
-  chunk_for(pool, n, kCellChunk, [&](int64_t i0, int64_t i1) {
+  pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
     const double* ci[NI];
     double* co[NO];
     for (int a = 0; a < NI; ++a) ci[a] = in[a] + i0;
@@ -440,7 +430,7 @@ ffi::Error F32Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
     if (b.has_error()) return b.error();
     fout[a] = static_cast<float*>(b.value()->untyped_data());
   }
-  chunk_for(pool, n, kCellChunk, [&](int64_t i0, int64_t i1) {
+  pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
     const int64_t m = i1 - i0;
     thread_local std::vector<double> buf;
     if (buf.size() < size_t((NI + NO) * m)) buf.resize((NI + NO) * m);
