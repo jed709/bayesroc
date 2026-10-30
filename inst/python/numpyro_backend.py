@@ -4162,9 +4162,26 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
 # CDP Log-Likelihood
 # =============================================================================
 
+def _cdp_index(rk, N):
+    rk = np.asarray(rk).reshape(-1)
+    cap_u, cap_j = _cdp_caps(rk, N)
+    pad = lambda ix, cap: np.concatenate([ix, np.full(cap - len(ix), N)]).astype(np.int32)
+    return pad(np.flatnonzero(rk == 0), cap_u), pad(np.flatnonzero(rk != 0), cap_j)
+
+
+def _cdp_caps(rk, N):
+    if N <= 256:
+        return N, N
+    u = int((np.asarray(rk).reshape(-1) == 0).sum())
+    if u == 0:
+        return 0, N
+    cap_u = min(N, -(-u // 256) * 256)
+    return cap_u, min(N, N - cap_u + 256)
+
+
 def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
                c_R, c_K, J, old_level_map, n_rkg, counts=None,
-               thresh_mid=None, log_gaps=None, gap_link="log", rk_static=None, y_static=None, corr=None):
+               thresh_mid=None, log_gaps=None, gap_link="log", rk_static=None, corr=None, part=None):
     """Compute log-likelihood for CDP (Continuous Dual-Process) model.
 
     Args:
@@ -4196,31 +4213,41 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
         is_old_resp = jnp.any(match, axis=1).astype(_FLOAT)
         old_idx = jnp.argmax(match, axis=1)
 
-        def judged_ll(i):
+        def judged_ll(i, y_i, rk_i, old_idx_i, is_old_resp_i):
             return fused_loglik_cdp(
-                y=y[i], rk=rk[i], is_old=is_old[i],
-                old_idx=old_idx[i], is_old_resp=is_old_resp[i],
+                y=y_i, rk=rk_i, is_old=is_old[i],
+                old_idx=old_idx_i, is_old_resp=is_old_resp_i,
                 K=K, J=J,
                 mu_R=mu_R[i], sigma_R=sigma_R[i], mu_F=mu_F[i], sigma_F=sigma_F[i],
                 c_R=c_R[i], c_K=c_K[i],
                 thresh_mid=thresh_mid[i], gaps=_gap_rows(log_gaps, i),
                 gap_link=gap_link, n_rkg=n_rkg, corr=None if corr is None else corr[i])
 
-        unjudged = None if rk_static is None else np.asarray(rk_static) == 0
-        y_np = None if y_static is None else np.asarray(y_static)
-        if unjudged is None or not unjudged.any():
-            log_lik = judged_ll(jnp.arange(N))
+        if part is not None:
+            u, j = part
+            cap_u, cap_j = int(u.shape[0]), int(j.shape[0])
         else:
-            hit = y_np[:, None] == np.asarray(old_level_map)[None, :]
-            y_band = jnp.asarray(np.where(hit.any(axis=1), hit.argmax(axis=1) + 2, 1), dtype=jnp.int32)
+            cap_u, cap_j = (0, N) if rk_static is None else _cdp_caps(rk_static, N)
+            u = jnp.nonzero(rk == 0, size=cap_u, fill_value=N)[0]
+            j = jnp.nonzero(rk != 0, size=cap_j, fill_value=N)[0]
+        if cap_u == 0:
+            log_lik = judged_ll(jnp.arange(N), y, rk, old_idx, is_old_resp)
+        else:
+            unjudged = rk == 0
+            y_band = jnp.where(match.any(axis=1), old_idx + 2, 1).astype(jnp.int32)
             mu_M = mu_R + mu_F
             sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 + (0.0 if corr is None else 2.0 * corr * sigma_R * sigma_F))
-            u, j = np.flatnonzero(unjudged), np.flatnonzero(~unjudged)
+            ug = jnp.minimum(u, N - 1)
             log_lik = jnp.zeros(N, dtype=_FLOAT).at[u].set(
-                fused_loglik_simple(y_band[u], J + 1, mu_M[u], sd_M[u], thresh_mid[u], _gap_rows(log_gaps, u),
-                                    gap_link))
-            if len(j):
-                log_lik = log_lik.at[j].set(judged_ll(j))
+                fused_loglik_simple(y_band[ug], J + 1, mu_M[ug], sd_M[ug], thresh_mid[ug], _gap_rows(log_gaps, ug),
+                                    gap_link), mode="drop")
+            if cap_j:
+                jg = jnp.minimum(j, N - 1)
+                y_j = jnp.where(unjudged[jg], old_level_map_0[0], y[jg])
+                match_j = y_j[:, None] == old_level_map_0[None, :]
+                log_lik = log_lik.at[j].set(
+                    judged_ll(jg, y_j, jnp.where(unjudged[jg], 1, rk[jg]), jnp.argmax(match_j, axis=1),
+                              jnp.any(match_j, axis=1).astype(_FLOAT)), mode="drop")
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik
@@ -5150,7 +5177,7 @@ def sdt_model(config):
                     n_rkg=n_rkg, counts=counts,
                     thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
                     gap_link=gap_link, rk_static=np.asarray(config.get("_static", config)["rk"]),
-                    y_static=np.asarray(config.get("_static", config)["y"]),
+                    part=(config["cdp_u"], config["cdp_j"]) if config.get("cdp_u") is not None else None,
                     corr=cdp_corr,
                 )
 

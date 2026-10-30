@@ -166,6 +166,9 @@ def _data_of(config):
            for rc in (config.get("random_effects") or [])]
     extra = {k: arr(config[k]["X"]) for k in ("bias", "crit2_cov")
              if config.get(k) is not None and config[k].get("X") is not None}
+    if config.get("family") == "cdp" and int(config.get("n_rkg", 2)) != 3 and config.get("rk") is not None:
+        import numpyro_backend as backend
+        top["cdp_u"], top["cdp_j"] = (jnp.asarray(ix) for ix in backend._cdp_index(config["rk"], int(config["N"])))
     return dict(top=top, params=params, re=res, extra=extra)
 
 
@@ -197,8 +200,8 @@ def _off0(config, data=None, trim=None):
 
 
 _PROGRAMS = {}
-_PROGRAMS_MAX = 8
-_STRUCTURAL_RESPONSES = ("cdp", "metadt")
+_PROGRAMS_MAX = 16
+_STRUCTURAL_RESPONSES = ("metadt",)
 
 
 def _signature(config, chains, parallel, ctrl, step):
@@ -207,8 +210,13 @@ def _signature(config, chains, parallel, ctrl, step):
     count, the control and the sampler's chunk length. Everything else that shapes a program
     (design, priors, grouping) is in the config."""
     import hashlib
-    keep = config.get("family") in _STRUCTURAL_RESPONSES or bool(config.get("varying_source_criteria"))
+    family = config.get("family")
+    keep = (family in _STRUCTURAL_RESPONSES or bool(config.get("varying_source_criteria"))
+            or (family == "cdp" and int(config.get("n_rkg", 2)) == 3))
     c = {k: v for k, v in config.items() if k != "_static"}
+    if family == "cdp" and not keep and config.get("rk") is not None:
+        import numpyro_backend as backend
+        c["<cdp caps>"] = list(backend._cdp_caps(config["rk"], int(config["N"])))
     for k in ("y", "y2", "rk"):
         if not keep and isinstance(c.get(k), list):
             c[k] = ["<rows>", len(c[k])]

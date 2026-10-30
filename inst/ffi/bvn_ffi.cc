@@ -380,6 +380,12 @@ void cdp_k(int64_t n, const double* const* i, double* const* o) {
   }
 }
 
+struct FlushDenormals {
+  unsigned saved;
+  FlushDenormals() : saved(_mm_getcsr()) { _mm_setcsr(saved | 0x8040); }
+  ~FlushDenormals() { _mm_setcsr(saved); }
+};
+
 template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
 ffi::Error F64Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
   if (args.size() != NI || rets.size() != NO) return ffi::Error::InvalidArgument("bayesroc: f64 arity");
@@ -398,6 +404,7 @@ ffi::Error F64Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
     out[a] = static_cast<double*>(b.value()->untyped_data());
   }
   pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
+    FlushDenormals ftz;
     const double* ci[NI];
     double* co[NO];
     for (int a = 0; a < NI; ++a) ci[a] = in[a] + i0;
@@ -406,12 +413,6 @@ ffi::Error F64Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
   });
   return ffi::Error::Success();
 }
-
-struct FlushDenormals {
-  unsigned saved;
-  FlushDenormals() : saved(_mm_getcsr()) { _mm_setcsr(saved | 0x8040); }
-  ~FlushDenormals() { _mm_setcsr(saved); }
-};
 
 template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>
 ffi::Error F32Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
