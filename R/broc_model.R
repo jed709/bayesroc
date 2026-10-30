@@ -974,30 +974,33 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     }
     judged <- sort(unique(stan_data$y[has_rk]))
     if (is.null(family$old_levels)) {
-      thr_levels <- judged
+      thr_levels <- if (min(judged) == 1L) seq.int(K %/% 2L + 1L, K) else judged
     } else {
       if (any(family$old_levels < 1L | family$old_levels > K)) {
         stop("cdp(old_levels = ...) must be response values within the data's range (",
              paste(range(rc$labels), collapse = " to "), ", in the data's own coding).", call. = FALSE)
       }
-      thr_levels <- sort(union(family$old_levels, judged))
+      thr_levels <- family$old_levels
     }
     thr_levels <- seq.int(max(min(thr_levels), 2L), K)
     if (is.null(family$old_levels)) {
-      message("cdp(): remember/know judgements found on responses ",
-              paste(rc$labels[range(judged)], collapse = " to "), "; ",
-              if (min(judged) == 1L) "modelling every confidence level."
-              else paste0("responses below ", rc$labels[min(thr_levels)], " are treated as one \"new\" category."))
-    } else if (!identical(as.integer(thr_levels), as.integer(family$old_levels))) {
-      message("cdp(): remember/know judgements were given on responses ",
-              paste(rc$labels[range(judged)], collapse = " to "), ", beyond old_levels (",
-              paste(rc$labels[range(family$old_levels)], collapse = " to "), "); fitting judgements on all of them, ",
-              if (min(thr_levels) == 2L) "with every confidence level modelled."
-              else paste0("with responses below ", rc$labels[min(thr_levels)], " treated as one \"new\" category."))
+      message("cdp(): old_levels = ", paste(rc$labels[range(thr_levels)], collapse = " to "),
+              ", inferred from the remember/know judgements.")
+    }
+    outside <- has_rk & !(stan_data$y %in% thr_levels)
+    if (any(outside)) {
+      message("cdp(): ", sum(outside), " remember/know judgement(s) given on responses below ",
+              rc$labels[min(thr_levels)], " are not part of the model and are ignored; ",
+              "those trials enter through their confidence rating.")
+      rk_numeric[outside] <- NA_integer_
+      has_rk <- !outside & has_rk
+    }
+    if (!any(has_rk)) {
+      stop("No response in old_levels has a usable remember/know value in `", rk_var, "`.", call. = FALSE)
     }
     family$old_levels <- as.integer(thr_levels)
     family$J <- length(thr_levels)
-    family$rk_levels <- if (any(has_rk & !(stan_data$y %in% thr_levels))) seq_len(K) else as.integer(thr_levels)
+    family$rk_levels <- as.integer(thr_levels)
 
     n_rkg <- max(rk_numeric, na.rm = TRUE)
     if (!n_rkg %in% c(2L, 3L) || any(rk_numeric[has_rk] < 1L)) {

@@ -1076,16 +1076,12 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
 #' so graded new-side ratings are pooled rather than modelled separately.
 #'
 #' ## Judgements on "new" responses
-#' The remember/know rule is defined on R and F for every item, so it applies to
-#' any confidence band. When the data carry a judgement on responses outside
-#' `old_levels`, the model switches to the full confidence scale automatically:
-#' `criterion` then has K - 1 thresholds for K confidence levels, the lowest band
-#' is \eqn{M < \tau_1}, and every response with a judgement contributes the cell
-#' \eqn{P(\tau_j < M < \tau_{j+1}, \mathrm{judgement})} with the same criteria
-#' \eqn{c_R} and \eqn{c_K}. No parameters are added. A response with a missing
-#' judgement, at any confidence level, contributes its band probability
-#' \eqn{P(\tau_j < M < \tau_{j+1})} alone.
+#' The remember/know rule applies to "old" responses only. Judgements given on
+#' responses outside `old_levels` are ignored, with a message, and those trials
+#' enter through their confidence band. An "old" response with a missing
+#' judgement contributes its band probability \eqn{P(\tau_j < M < \tau_{j+1})} alone.
 #'
+#' ## Remember/know cells
 #' With two `rk` levels the joint cell is a strip of the \eqn{(R, M)} plane:
 #' \deqn{P(Y = j, \mathrm{R}) = P(R > c_R,\; \tau_j < M < \tau_{j+1}), \quad
 #'       P(Y = j, \mathrm{K}) = P(R \le c_R,\; \tau_j < M < \tau_{j+1}).}
