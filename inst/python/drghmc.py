@@ -109,7 +109,7 @@ def _trim_rows(config, n_keep):
     model's parameterisation the same as on the full data (the CDP R/K/G know-criterion
     slack transform exists only when a Guess trial is present)."""
     rows = list(range(n_keep))
-    if config.get("family") == "cdp" and int(config.get("n_rkg", 2)) == 3:
+    if _rkg_structural(config):
         y = np.asarray(config["y"]); rk = np.asarray(config["rk"])
         olm = np.asarray(config["old_level_map"])
         live = np.ones(y.shape[0], bool) if config.get("counts") is None else np.asarray(config["counts"]) > 0
@@ -166,7 +166,7 @@ def _data_of(config):
            for rc in (config.get("random_effects") or [])]
     extra = {k: arr(config[k]["X"]) for k in ("bias", "crit2_cov")
              if config.get(k) is not None and config[k].get("X") is not None}
-    if config.get("family") == "cdp" and int(config.get("n_rkg", 2)) != 3 and config.get("rk") is not None:
+    if config.get("family") == "cdp" and config.get("rk") is not None and not _rkg_structural(config):
         import numpyro_backend as backend
         top["cdp_u"], top["cdp_j"] = (jnp.asarray(ix) for ix in backend._cdp_index(config["rk"], int(config["N"])))
     return dict(top=top, params=params, re=res, extra=extra)
@@ -204,16 +204,24 @@ _PROGRAMS_MAX = 16
 _STRUCTURAL_RESPONSES = ("metadt",)
 
 
-def _signature(config, chains, parallel, ctrl, step):
+def _rkg_structural(config):
+    import numpyro_backend as backend
+    return (config.get("family") == "cdp" and int(config.get("n_rkg", 2)) == 3
+            and backend._rkg_knob(config) is not None)
+
+
+def _signature(config, chains, parallel, ctrl, step, map_key=None):
     """Key of the compiled programs a fit can reuse: the config with its responses replaced by
     their lengths (kept whole for the families whose program structure reads them), the chain
     count, the control and the sampler's chunk length. Everything else that shapes a program
     (design, priors, grouping) is in the config."""
     import hashlib
     family = config.get("family")
-    keep = (family in _STRUCTURAL_RESPONSES or bool(config.get("varying_source_criteria"))
-            or (family == "cdp" and int(config.get("n_rkg", 2)) == 3))
+    keep = (family in _STRUCTURAL_RESPONSES or (bool(config.get("varying_source_criteria")) and map_key is None)
+            or _rkg_structural(config))
     c = {k: v for k, v in config.items() if k != "_static"}
+    if map_key is not None and config.get("varying_source_criteria"):
+        c["<map structure>"] = map_key
     if family == "cdp" and not keep and config.get("rk") is not None:
         import numpyro_backend as backend
         c["<cdp caps>"] = list(backend._cdp_caps(config["rk"], int(config["N"])))
@@ -244,17 +252,29 @@ def _sampler_key(tm):
     return None if tm is None else tuple(int(f) for f in tm.static)
 
 
-def _verify_store(vg, store, th0, chains, D):
-    """Programs reused from an earlier fit of the same signature: their plain potential at the
-    starting point against the model evaluated eagerly there."""
-    th = jnp.asarray(np.asarray(th0, dtype=np.float64))
-    U = np.asarray(store["plain"]["vg0"](th, jnp.zeros((chains, D + 1)), vg.OFF0)[0])
-    with jax.disable_jit():
-        U0 = float(vg.pot(th[0], vg.OFF0))
-    ok = bool(np.isfinite(U0) and abs(float(U[0]) - U0) <= 1e-6 * max(1.0, abs(U0)))
-    phases.mark(f"program cache {'verified' if ok else 'REJECTED'}")
-    if not ok:
-        print("[DR-G-HMC] cached programs disagree with the model at the starting point; recompiling", flush=True)
+def _potential_key(vg, th0):
+    """Hash of the traced potential (its jaxpr and every constant it closes over): programs
+    reused under a signature must come from the same trace."""
+    import hashlib
+    closed = jax.make_jaxpr(vg.pot)(jnp.asarray(np.asarray(th0, dtype=np.float64))[0], vg.OFF0)
+    h = hashlib.sha256(str(closed.jaxpr).encode())
+    for c in closed.consts:
+        a = np.asarray(c)
+        h.update(repr((a.shape, str(a.dtype))).encode())
+        h.update(np.ascontiguousarray(a).tobytes())
+    return h.hexdigest()
+
+
+def _verify_store(vg, store, th0):
+    """Programs reused from an earlier fit of the same signature: the potential traced for this
+    fit against the trace they were compiled from."""
+    key = _potential_key(vg, th0)
+    ok = store["plain"] is None or store.get("pot_key") == key
+    if store["plain"] is not None:
+        phases.mark(f"program cache {'verified' if ok else 'REJECTED'}")
+        if not ok:
+            print("[DR-G-HMC] cached programs were traced from a different model; recompiling", flush=True)
+    store["pot_key"] = key
     return ok
 
 
@@ -1402,8 +1422,6 @@ def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
     parallel = chain_method == "parallel"
     _convert_matrices(config)
     t0 = time.time()
-    sig = _signature(config, chains, parallel, ctrl, _chunk_len(samples))
-    store = _programs(sig)
 
     f32_proc = None
     if ctrl["precision"] == "f32":
@@ -1422,11 +1440,15 @@ def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
         phases.mark("model built")
         tm = _transport(model, config, ctrl, off, unflatten, progress_bar)
         phases.mark("transport map built")
+        sig = _signature(config, chains, parallel, ctrl, _chunk_len(samples),
+                         None if tm is None else tm.structure_key())
+        store = _programs(sig)
         vg_s = _sampler_vg(vg, tm)
         th_init = _initial_positions(model, config, keys, off, D, chains, seed,
                                      init_strategy, init_radius, init_z, unflatten.to_sampled)
-        if store["plain"] is not None and not _verify_store(vg, store, th_init, chains, D):
+        if not _verify_store(vg, store, th_init):
             store = _programs(sig, fresh=True)
+            _verify_store(vg, store, th_init)
 
         smp_thread, init, on_decide, final = None, None, None, {}
         if ctrl["precision"] != "f32":

@@ -240,17 +240,17 @@ class _Nuts(_InProcess):
                 "aux": self.coords.aux_flat}
 
 
-def _dr_store(s, model, config, a, ctrl, seed):
-    """The compiled-program store of this session's signature, verified against the model at
-    the starting point when it comes from an earlier fit (drghmc._verify_store)."""
-    sig = dr._signature(config, s.chains, s.parallel, ctrl, s.b)
+def _dr_store(s, model, config, a, ctrl, seed, tm=None):
+    """The compiled-program store of this session's signature, checked against the traced
+    potential when it comes from an earlier fit (drghmc._verify_store)."""
+    sig = dr._signature(config, s.chains, s.parallel, ctrl, s.b, None if tm is None else tm.structure_key())
     store = dr._programs(sig)
-    if store["plain"] is not None:
-        th0 = dr._initial_positions(model, config, s.keys, s.off, s.D, s.chains, seed,
-                                    a.get("init_strategy", "numeric"), a.get("init_radius", 0.0),
-                                    s.init_z, s.unflatten.to_sampled)
-        if not dr._verify_store(s.vg, store, th0, s.chains, s.D):
-            store = dr._programs(sig, fresh=True)
+    th0 = dr._initial_positions(model, config, s.keys, s.off, s.D, s.chains, seed,
+                                a.get("init_strategy", "numeric"), a.get("init_radius", 0.0),
+                                s.init_z, s.unflatten.to_sampled)
+    if not dr._verify_store(s.vg, store, th0):
+        store = dr._programs(sig, fresh=True)
+        dr._verify_store(s.vg, store, th0)
     s.store = store
     return store
 
@@ -295,7 +295,7 @@ class _Dr(_InProcess):
         if tm is not None and resume is not None and resume.get("aux") is not None:
             tm = tm.cheap_of(resume["aux"])
             vg_s = tm.wrap(tm.pot_off)
-        store = _dr_store(s, model, config, a, ctrl, self.seed)
+        store = _dr_store(s, model, config, a, ctrl, self.seed, tm)
         ck = jax.random.split(dr._tagged(self.seed, 1), C)
         z0 = jnp.zeros((C, D))
         off0 = s.vg.OFF0
@@ -407,7 +407,7 @@ class _DrF32:
         try:
             tm = dr._transport(model, config, ctrl, s.off, s.unflatten, s.progress)
             vg_s = dr._sampler_vg(s.vg, tm)
-            store = _dr_store(s, model, config, a, ctrl, self.seed)
+            store = _dr_store(s, model, config, a, ctrl, self.seed, tm)
             imm, eps, th, rho, aux = _dr_adapt(s, model, config, a, ctrl, resume, self.seed, tm, vg_s,
                                                store=store)
             off = None if resume is None else resume.get("offset")

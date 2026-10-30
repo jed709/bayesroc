@@ -839,6 +839,37 @@ class TMap:
         self.static = (0,) * len(sbs)
         self._views = {self.static: self}
         self._fwd = self._inv = self._anch = None
+        self.weights, self._gi, self._lg, self._lgk = [], [], [], []
+        for sb in sbs:
+            ws = []
+            self._gi.append(None)
+            if len(sb.gdims):
+                self._gi[-1] = len(ws)
+                ws.append(sb.gW)
+            lg = []
+            for e, ed, cd, W in _link_groups(sb.links):
+                lg.append((e, ed, cd, len(ws)))
+                ws.append(W)
+            lgk = []
+            for e, ed, cd, W in _link_groups(getattr(sb, "links_kept", sb.links)):
+                lgk.append((e, ed, cd, len(ws)))
+                ws.append(W)
+            self.weights.append(ws)
+            self._lg.append(lg)
+            self._lgk.append(lgk)
+
+    def structure_key(self):
+        """Everything the compiled programs take from the map as structure (shapes, index sets,
+        couplings), without the numeric weights, which travel with the anchors."""
+        import hashlib
+        parts = [tuple(self.specs)]
+        for k, sb in enumerate(self.sbs):
+            parts.append((sb.n, sb.D, tuple(sb.starts), sb.bdims.tolist(), sb.bflat.tolist(), sb.bexp.tolist(),
+                          sb.gdims.tolist(), None if sb.cand is None else sb.cand.tolist(),
+                          [tuple(w.shape) for w in self.weights[k]],
+                          [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lg[k]],
+                          [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lgk[k]]))
+        return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def view(self, flags):
         """The map with the super-blocks flagged 1 treated as in `_cheap` (their candidate blocks
@@ -910,17 +941,21 @@ class TMap:
                     aux[:, self.body + sum(self.kept_sizes) + k]]
             o += a + b + c + d + e
             ok += f
+        for ws in self.weights:
+            out += [np.broadcast_to(w, (C,) + w.shape) for w in ws]
         return tuple(jnp.asarray(x) for x in out)
 
     def _unpack(self, parts, dtype):
-        out = []
+        out, w0 = [], 7 * len(self.sbs)
         for k, sb in enumerate(self.sbs):
             tiled, s_k, bref, uref = (x.astype(dtype) for x in parts[7 * k:7 * k + 4])
             perm, kept, flag = parts[7 * k + 4], parts[7 * k + 5].astype(dtype), parts[7 * k + 6]
             perm_rev = perm[::-1]
             out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1], s=s_k[::-1], s_k=s_k, bref=bref,
                             uref=uref, perm=perm, perm_rev=perm_rev, inv=jnp.argsort(perm),
-                            inv_rev=jnp.argsort(perm_rev), Lam1_t=kept, flag=flag))
+                            inv_rev=jnp.argsort(perm_rev), Lam1_t=kept, flag=flag,
+                            W=[x.astype(dtype) for x in parts[w0:w0 + len(self.weights[k])]]))
+            w0 += len(self.weights[k])
         return out
 
     @staticmethod
@@ -991,9 +1026,9 @@ class TMap:
         candidates have no anchors to shift."""
         sb = self.sbs[k]
         if kept is None:
-            index, Dout, links, order = np.arange(sb.D), sb.D, sb.links, an["perm_rev"]
+            index, Dout, groups, order = np.arange(sb.D), sb.D, self._lg[k], an["perm_rev"]
         else:
-            index, Dout, links, order = sb.kept_index, len(sb.kept_nat), sb.links_kept, kept
+            index, Dout, groups, order = sb.kept_index, len(sb.kept_nat), self._lgk[k], kept
         delta, coupled = jnp.zeros((Dout, sb.n), dtype=v.dtype), False
         if len(sb.bflat):
             vb = v[sb.bflat]
@@ -1004,10 +1039,10 @@ class TMap:
                 delta, coupled = delta.at[index[sb.bdims[sel]]].add(db[sel][:, None]), True
             gsel = np.nonzero(index[sb.gdims] >= 0)[0] if len(sb.gdims) else np.zeros(0, int)
             if gsel.size:
-                delta, coupled = delta.at[index[sb.gdims[gsel]]].add(jnp.asarray(sb.gW[gsel], dtype=v.dtype) @ db), True
+                delta, coupled = delta.at[index[sb.gdims[gsel]]].add(an["W"][self._gi[k]][gsel] @ db), True
         parts, rows = [], []
-        for e, ed, cd, W in _link_groups(links):
-            du = jnp.einsum("kmj,knj->kmn", (us[e] - ans[e]["uref"])[ed], jnp.asarray(W, dtype=v.dtype))
+        for e, ed, cd, wi in groups:
+            du = jnp.einsum("kmj,knj->kmn", (us[e] - ans[e]["uref"])[ed], an["W"][wi])
             parts.append(du.reshape(-1, sb.n))
             rows.append(index[cd.reshape(-1)])
         if parts:
@@ -1258,5 +1293,6 @@ def build(model, config, off, unflatten, split=False, links=True):
     if not links:
         for sb in sbs:
             sb.links = []
+            sb.links_kept = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
     return TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
