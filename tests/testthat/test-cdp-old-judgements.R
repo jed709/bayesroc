@@ -72,11 +72,12 @@ test_that("cdp with missing old-response judgements: JAX and batch Stan log-like
   m <- suppressMessages(broc(cdp_judged_formula(3L), data = d))
   fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
                                   iter_sampling = 5, seed = 3, progress_bar = FALSE))
-  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
+  pooled <- ifelse(m$stan_data$y %in% m$family$old_levels, 0, log(m$model_data$K - m$family$J))
+  ll_r <- sweep(.obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL), 2, pooled, "+")
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5, label = "JAX vs R log_lik")
   fs <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
                                   seed = 3, refresh = 50, show_messages = FALSE))
-  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL)
+  ll_r <- sweep(.obs_loglik_r(m, build_data_source_from_model(m), fs$draws(format = "matrix"), re_formula = NULL), 2, pooled, "+")
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fs), 1L, m$model_data$N))), 1e-5, label = "Stan vs R log_lik")
   p <- predict(fj, type = "response", ndraws = 5)
   expect_equal(as.vector(tapply(p$mean, p$trial, sum)), rep(1, nrow(d)), tolerance = 1e-6)
