@@ -41,7 +41,7 @@ constexpr const double* kRuleX[13] = {kX8, kX12, kX16, kX20, kX24, kX28, kX32, k
 constexpr const double* kRuleW[13] = {kW8, kW12, kW16, kW20, kW24, kW28, kW32, kW36, kW40, kW44, kW48, kW52, kW56};
 
 constexpr double kR = 8.5;
-constexpr double kRho = 5.0;
+constexpr double kRho = 4.0;
 constexpr double kKappa = 0.5;
 constexpr double kFloor = 1e-300;
 
@@ -63,7 +63,13 @@ struct Cell {
 inline double fexp(double x) { return bvn::vexp(splat(x))[0]; }
 inline double flog(double x) { return bvn::vlog(splat(x))[0]; }
 
-inline bvn::PhiV phi1(double x) { return bvn::vacc_phi(splat(x)); }
+inline bvn::PhiV vphi(v4d x) {
+  v4d P, dP, q;
+  bvn::vprobit_triple(bvn::vmax(bvn::vmin(x, splat(40.0)), splat(-40.0)), P, dP, q);
+  return {P, dP, q};
+}
+
+inline bvn::PhiV phi1(double x) { return vphi(splat(x)); }
 
 inline double lam(double x) {
   bvn::PhiV p = phi1(x);
@@ -80,7 +86,7 @@ inline double upper(double x) { return phi1(x).Q[0]; }
 inline void mode2(double a, double l0, double l1, double s, double* zm, double* d2) {
   const v4d va = splat(a), vs = splat(s), vl = v4d{l0, l1, l0, l1};
   v4d w = bvn::vexp(vl), x = va - w, sw = vs * w;
-  bvn::PhiV ph = bvn::vacc_phi(x);
+  bvn::PhiV ph = vphi(x);
   v4d L = ph.dP / ph.P;
   v4d zl = -L * sw, zr = splat(0.0);
   v4d h2 = splat(-1.0) - L * vs * sw - L * (x + L) * sw * sw;
@@ -89,7 +95,7 @@ inline void mode2(double a, double l0, double l1, double s, double* zm, double* 
     w = bvn::vexp(vl + vs * z);
     x = va - w;
     sw = vs * w;
-    ph = bvn::vacc_phi(x);
+    ph = vphi(x);
     L = ph.dP / ph.P;
     v4d g = -z - L * sw;
     h2 = splat(-1.0) - L * vs * sw - L * (x + L) * sw * sw;
@@ -144,7 +150,7 @@ inline void piece_z(double a, double l, double s, double lo, double hi, const Si
     v4d x, wt;
     load4(X, W, i, x, wt);
     v4d z = c0 + vh * x, w = bvn::vexp(vl + vs * z), u = va - w;
-    bvn::PhiV ph = bvn::vacc_phi(u);
+    bvn::PhiV ph = vphi(u);
     v4d pz = wt * bvn::vexp(splat(-0.5) * z * z), q = pz * ph.dP;
     P += pz * ph.P;
     KV += pz * kdiff(ph, u, sd);
@@ -167,7 +173,7 @@ inline void piece_e(double a, double l, double s, double zs, double es, double l
     v4d x, wt;
     load4(X, W, i, x, wt);
     v4d e = c0 + vh * x, ae = va + e, Z = (bvn::vlog(ae) - vl) * vis;
-    bvn::PhiV ph = bvn::vacc_phi(Z);
+    bvn::PhiV ph = vphi(Z);
     v4d pe = wt * bvn::vexp(splat(-0.5) * e * e), q = pe * ph.dP * vis;
     P += pe * (up ? vps - ph.Q : ph.P - vps);
     KV += pe * bvn::vsel(Z >= splat(0.0), ph.Q, splat(1.0) - ph.P);
@@ -190,7 +196,7 @@ inline Cum cum_at(double a, double l, double s, double zm, double d2, const Side
       v4d x, lw;
       load4(kHX, kHLW, i, x, lw);
       v4d z = vz + vsc * x, w = bvn::vexp(vl + vs * z), u = va - w;
-      bvn::PhiV ph = bvn::vacc_phi(u);
+      bvn::PhiV ph = vphi(u);
       v4d e = bvn::vexp(splat(-0.5) * z * z + lw - vh0), q = e * ph.dP;
       P += e * ph.P;
       KV += e * kdiff(ph, u, sd);
