@@ -830,7 +830,7 @@ class TMap:
     def __init__(self, sbs, post):
         self.sbs = sbs
         self.post = post
-        self.sizes = [(sb.D * sb.D * _n4(sb.n) * 4, sb.D * sb.n, len(sb.bflat), sb.D * sb.n, sb.D) for sb in sbs]
+        self.sizes = [(sb.D * sb.D * _n4(sb.n) * 4, sb.D * sb.n, len(sb.bflat), sb.D * sb.n, 2 * sb.D) for sb in sbs]
         self.body = int(sum(sum(s) for s in self.sizes))
         self.kept_dims = [0 if sb.cand is None else sb.D - int(sb.cand.sum()) for sb in sbs]
         self.kept_sizes = [d * d * _n4(sb.n) * 4 for d, sb in zip(self.kept_dims, sbs)]
@@ -839,6 +839,22 @@ class TMap:
         self.static = (0,) * len(sbs)
         self._views = {self.static: self}
         self._fwd = self._inv = self._anch = None
+        # a population coefficient shared by several blocks (crossed factors with effects on the same
+        # parameter): for block k and its coupled dimension j, the other blocks' dimensions on the
+        # same coefficient whose strengths enter block k's share of a move of that coefficient: the
+        # later blocks, and the earlier blocks whose link to this block is absent (their realised
+        # move is not handed over, so this block sees the whole move)
+        self.shared = []
+        for k, sb in enumerate(sbs):
+            lst = []
+            for j in range(len(sb.bdims)):
+                d = int(sb.bdims[j])
+                others = [(h, int(sbs[h].bdims[j2])) for h in range(len(sbs)) if h != k
+                          for j2 in range(len(sbs[h].bdims)) if sbs[h].bflat[j2] == sb.bflat[j]
+                          and (h > k or not any(e == h and d in cd for e, cd, _, _ in sb.links))]
+                if others:
+                    lst.append((j, d, others))
+            self.shared.append(lst)
         self.weights, self._gi, self._lg, self._lgk = [], [], [], []
         for sb in sbs:
             ws = []
@@ -868,7 +884,8 @@ class TMap:
                           sb.gdims.tolist(), None if sb.cand is None else sb.cand.tolist(),
                           [tuple(w.shape) for w in self.weights[k]],
                           [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lg[k]],
-                          [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lgk[k]]))
+                          [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lgk[k]],
+                          self.shared[k]))
         return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def view(self, flags):
@@ -906,7 +923,7 @@ class TMap:
         for sb, (a, b, c, d, e), D1 in zip(self.sbs, self.sizes, self.kept_dims):
             aux[:, o + a:o + a + b] = aux[:, o + a:o + a + b].reshape(C, sb.D, sb.n)[:, ::-1].reshape(C, -1)
             if D1:
-                perm = aux[0, o + a + b + c + d:o + a + b + c + d + e].astype(int)
+                perm = aux[0, o + a + b + c + d:o + a + b + c + d + sb.D].astype(int)
                 ks1 = self._kept(sb, perm)[0]
                 tiles = aux[:, o:o + a].reshape(C, _n4(sb.n), sb.D, sb.D, 4)
                 tail.append(tiles[:, :, ks1][:, :, :, ks1].reshape(C, -1))
@@ -936,7 +953,8 @@ class TMap:
                     aux[:, o + a:o + a + b].reshape(C, sb.D, sb.n),
                     aux[:, o + a + b:o + a + b + c],
                     aux[:, o + a + b + c:o + a + b + c + d].reshape(C, sb.D, sb.n),
-                    aux[:, o + a + b + c + d:o + a + b + c + d + e].astype(np.int32),
+                    aux[:, o + a + b + c + d:o + a + b + c + d + sb.D].astype(np.int32),
+                    aux[:, o + a + b + c + d + sb.D:o + a + b + c + d + e],
                     aux[:, ok:ok + f].reshape(C, _n4(sb.n), D1, D1, 4),
                     aux[:, self.body + sum(self.kept_sizes) + k]]
             o += a + b + c + d + e
@@ -946,14 +964,14 @@ class TMap:
         return tuple(jnp.asarray(x) for x in out)
 
     def _unpack(self, parts, dtype):
-        out, w0 = [], 7 * len(self.sbs)
+        out, w0 = [], 8 * len(self.sbs)
         for k, sb in enumerate(self.sbs):
-            tiled, s_k, bref, uref = (x.astype(dtype) for x in parts[7 * k:7 * k + 4])
-            perm, kept, flag = parts[7 * k + 4], parts[7 * k + 5].astype(dtype), parts[7 * k + 6]
+            tiled, s_k, bref, uref = (x.astype(dtype) for x in parts[8 * k:8 * k + 4])
+            perm, K, kept, flag = parts[8 * k + 4], parts[8 * k + 5].astype(dtype), parts[8 * k + 6].astype(dtype), parts[8 * k + 7]
             perm_rev = perm[::-1]
             out.append(dict(Lam_t=tiled, Lam=_untile(tiled, sb.n)[::-1, ::-1], s=s_k[::-1], s_k=s_k, bref=bref,
                             uref=uref, perm=perm, perm_rev=perm_rev, inv=jnp.argsort(perm),
-                            inv_rev=jnp.argsort(perm_rev), Lam1_t=kept, flag=flag,
+                            inv_rev=jnp.argsort(perm_rev), Lam1_t=kept, flag=flag, K=K,
                             W=[x.astype(dtype) for x in parts[w0:w0 + len(self.weights[k])]]))
             w0 += len(self.weights[k])
         return out
@@ -1034,6 +1052,21 @@ class TMap:
             vb = v[sb.bflat]
             db = (jnp.where(jnp.asarray(sb.bexp), jnp.exp(vb) - jnp.exp(an["bref"]), vb - an["bref"])
                   if sb.bexp.any() else vb - an["bref"])
+            if self.shared[k]:
+                # Blocks sharing a coefficient each carry a share of its move. With K the mean
+                # likelihood curvature times the prior variance of a dimension, the joint
+                # conditional mode of all blocks' effects moves block g by K_g / (1 + sum K) of
+                # the move; this block's own solve applies K_k / (1 + K_k) to its delta and the
+                # links hand the earlier blocks' realised moves to the later ones, so scaling the
+                # move by (1 + K_k) / (1 + K_k + sum over the other blocks' K_h), the sum over the
+                # later blocks and the earlier ones with no link to this block, gives every block
+                # its joint share. Without other blocks on the coefficient the scale is 1.
+                cs = jnp.ones(len(sb.bflat), dtype=v.dtype)
+                for j, d, others in self.shared[k]:
+                    num = 1.0 + an["K"][d]
+                    den = num + sum(ans[h]["K"][d2] for h, d2 in others)
+                    cs = cs.at[j].set(num / den)
+                db = db * cs
             sel = np.nonzero(index[sb.bdims] >= 0)[0]
             if sel.size:
                 delta, coupled = delta.at[index[sb.bdims[sel]]].add(db[sel][:, None]), True
@@ -1226,7 +1259,8 @@ class TMap:
             for c in range(C):
                 Lp = Lam[c][:, perm][:, :, perm][:, ::-1, ::-1]
                 packed[c] += [np.asarray(_tile(jnp.asarray(Lp))).reshape(-1), s_[c][:, perm].T[::-1].reshape(-1),
-                              ref[c, sb.bflat], r["u0"][c].reshape(-1), perm.astype(np.float64)]
+                              ref[c, sb.bflat], r["u0"][c].reshape(-1), perm.astype(np.float64),
+                              np.asarray(strength, dtype=np.float64)]
                 if ks1 is not None:
                     kept[c].append(np.asarray(_tile(jnp.asarray(Lp[:, ks1][:, :, ks1]))).reshape(-1))
         return np.stack([np.concatenate(p + q + [np.zeros(len(self.sbs))]) for p, q in zip(packed, kept)])
