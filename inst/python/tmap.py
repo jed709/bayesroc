@@ -34,6 +34,123 @@ _CAND_MIN_DIM = 10
 _MAX_LINK = 4_000_000
 
 
+def _cct():
+    from numpyro.distributions.transforms import CorrCholeskyTransform
+    return CorrCholeskyTransform()
+
+
+def _corr_logjac(y, L):
+    """log |dR/dy| of the LKJ factor's unconstrained coordinates y (L its Cholesky factor):
+    the CorrCholesky transform to L, then L -> R = L L', whose Jacobian is prod L_ii^(D-1-i)."""
+    D = L.shape[0]
+    return _cct().log_abs_det_jacobian(y, L) + jnp.sum((D - 1 - jnp.arange(D)) * jnp.log(jnp.diag(L)))
+
+
+_TRIL = {}
+
+
+def _tril(n):
+    """(D, rows, cols): the strictly lower positions of the CorrCholesky transform's vector entries
+    (numpyro's vec_to_tril_matrix(diagonal=-1) fills them row by row)."""
+    if n not in _TRIL:
+        D = int(round((1 + np.sqrt(1 + 8 * n)) / 2))
+        rows, cols = np.tril_indices(D, -1)
+        _TRIL[n] = (D, rows, cols)
+    return _TRIL[n]
+
+
+def _cc_fwd(x):
+    """CorrCholesky transform, x -> (r, s, L): partial correlations r = tanh(x) (strictly lower),
+    s_ij = prod_{k<j} sqrt(1 - r_ik^2), L_ij = r_ij s_ij below the diagonal and L_ii = s_ii."""
+    D, rows, cols = _tril(x.shape[0])
+    r = jnp.zeros((D, D), x.dtype).at[rows, cols].set(jnp.tanh(x))
+    h = 0.5 * jnp.log1p(-r * r)
+    s = jnp.exp(jnp.cumsum(h, 1) - h)
+    low = jnp.tril(jnp.ones((D, D), bool), -1)
+    return r, s, jnp.where(low, r * s, 0.0) + jnp.diag(jnp.diag(s))
+
+
+def _cc_inv(L):
+    """Inverse of _cc_fwd from L -> (x, r, s)."""
+    D = L.shape[0]
+    _, rows, cols = _tril(D * (D - 1) // 2)
+    q = L * L
+    s = jnp.sqrt(jnp.maximum(1.0 - (jnp.cumsum(q, 1) - q), 0.0))
+    low = jnp.tril(jnp.ones((D, D), bool), -1)
+    r = jnp.where(low, L / jnp.where(low, s, 1.0), 0.0)
+    return jnp.arctanh(r[rows, cols]), r, s
+
+
+def _phi_w(D, dtype):
+    """log |dR/dx| = sum_{i>k} w_k log(1 - r_ik^2), w_k = (D - k) / 2: tanh, the stick-breaking
+    (triangular, diagonal s) and L -> R (prod L_ii^(D-1-i), L_ii^2 = prod_{k<i} (1 - r_ik^2))."""
+    return jnp.where(jnp.tril(jnp.ones((D, D), bool), -1), 0.5 * (D - jnp.arange(D, dtype=dtype))[None, :], 0.0)
+
+
+def _rcum_excl(T):
+    """sum_{j > k} T_ij along each row."""
+    return jnp.flip(jnp.cumsum(jnp.flip(T, 1), 1), 1) - T
+
+
+@jax.custom_vjp
+def _corr_to_model(yp, p):
+    """A correlated crossed block's LKJ factor is sampled with its dimensions in the order p
+    (sampled dimension i is the model's dimension p[i]), the best informed first: yp are the
+    coordinates of the factor Lp of R[p][:, p]. -> (y, the coordinates of the model's factor L
+    of R, -log |dy/dyp|, Lp, L), with the adjoint in closed form."""
+    return _corr_to_model_fwd(yp, p)[0]
+
+
+def _corr_to_model_fwd(yp, p):
+    rp, sp, Lp = _cc_fwd(yp)
+    inv = jnp.argsort(p)
+    M = jnp.take(Lp, inv, axis=0)
+    L = jnp.linalg.cholesky(M @ M.T)
+    y, r, s = _cc_inv(L)
+    w = _phi_w(L.shape[0], L.dtype)
+    l = jnp.sum(w * jnp.log1p(-r * r)) - jnp.sum(w * jnp.log1p(-rp * rp))
+    return (y, l, Lp, L), (rp, sp, Lp, M, L, r, s, p, w)
+
+
+def _corr_to_model_bwd(res, cts):
+    rp, sp, Lp, M, L, r, s, p, w = res
+    yb, lb, Lpb, Lb = cts
+    D = L.shape[0]
+    _, rows, cols = _tril(D * (D - 1) // 2)
+    low = jnp.tril(jnp.ones((D, D), bool), -1)
+    om = jnp.where(low, 1.0 - r * r, 1.0)
+    # y = arctanh(r), r_ij = L_ij / s_ij, s_ij^2 = 1 - sum_{k<j} L_ik^2; and +lb * Phi(L)
+    rb = jnp.zeros((D, D), L.dtype).at[rows, cols].set(yb) / om - lb * 2.0 * w * r / om
+    rb = jnp.where(low, rb, 0.0)
+    sl = jnp.where(low, s, 1.0)
+    Lb = Lb + jnp.where(low, rb / sl, 0.0) + jnp.where(low, L * _rcum_excl(jnp.where(low, rb * r / (sl * sl), 0.0)), 0.0)
+    # L = chol(Rm): Rm_bar = L^-T Phi(L' Lb) L^-1, symmetrised
+    P = L.T @ jnp.tril(Lb)
+    P = jnp.tril(P) - 0.5 * jnp.diag(jnp.diag(P))
+    X = solve_triangular(L, solve_triangular(L, P.T, lower=True, trans=1).T, lower=True, trans=1)
+    Rb = 0.5 * (X + X.T)
+    # Rm = M M' with M = Lp[inv]: in the sampled order R = Lp Lp', Rb_sampled = Rb[p][:, p]
+    Rs = jnp.take(jnp.take(Rb, p, axis=0), p, axis=1)
+    Lpb = jnp.tril(Lpb + 2.0 * Rs @ Lp)
+    # Lp from rp by stick-breaking: d L_ij / d r_ik = -L_ij r_ik / (1 - r_ik^2) (k < j), s_ik (k = j); and -lb * Phi(Lp)
+    omp = jnp.where(low, 1.0 - rp * rp, 1.0)
+    T = jnp.where(jnp.tril(jnp.ones((D, D), bool)), Lpb * Lp, 0.0)
+    rpb = Lpb * sp - rp / omp * _rcum_excl(T) + lb * 2.0 * w * rp / omp
+    xb = (jnp.where(low, rpb, 0.0) * omp)[rows, cols]
+    return xb, np.zeros(p.shape, dtype=jax.dtypes.float0)
+
+
+_corr_to_model.defvjp(_corr_to_model_fwd, _corr_to_model_bwd)
+
+
+def _corr_to_sampled(y, p):
+    """Inverse of _corr_to_model: (yp, Lp, L)."""
+    t = _cct()
+    L = t(y)
+    Lp = jnp.linalg.cholesky((L @ L.T)[p][:, p])
+    return t.inv(Lp), Lp, L
+
+
 class _Block:
     """Coordinates and geometry of one random-effect block in the flat unconstrained vector."""
 
@@ -85,6 +202,9 @@ class _Block:
                              else [(f"sigma_{self.prefix}[{t + 1}]", None) for t in range(nt)])
             self.sd_det = None
         self.L_sites = [k for k in off if re.fullmatch(f"L_corr_{re.escape(self.prefix)}(_b\\d+)?", k)]
+        Lk = f"L_corr_{self.prefix}"
+        self.L_flat = (np.arange(off[Lk][0].start, off[Lk][0].stop)
+                       if cid is not None and batch is None and Lk in off else None)
         for s, _ in self.z_sites + self.sd_sites:
             if s not in off:
                 raise KeyError(s)
@@ -105,19 +225,46 @@ class _Block:
             return jnp.reshape(post[self.sd_sites[0][0]], (-1,))[:len(ts)]
         return jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
 
+    def order(self, post):
+        """The order the block's LKJ factor is sampled in (TMap.corr), None for the model's."""
+        return (post.get("__corr_perm") or {}).get(self.prefix)
+
     def A(self, post):
+        """The prior factor: u = A z. With a sampled order p the factor L_p is of R[p][:, p] and
+        A = diag(sd) L_p[p^-1], no longer triangular; z is then in the sampled order."""
         sd = self.sd(post)
         Lk = f"L_corr_{self.prefix}"
         L = post[Lk] if Lk in post else jnp.eye(self.dim, dtype=sd.dtype)
-        return sd[:, None] * L
+        p = self.order(post)
+        return sd[:, None] * (L if p is None else jnp.take(L, jnp.argsort(p), axis=0))
+
+    def T(self, post):
+        """A with its rows in the sampled order, diag(sd[p]) L_p: lower triangular."""
+        sd = self.sd(post)
+        Lk = f"L_corr_{self.prefix}"
+        L = post[Lk] if Lk in post else jnp.eye(self.dim, dtype=sd.dtype)
+        p = self.order(post)
+        return (sd if p is None else jnp.take(sd, p))[:, None] * L
 
     def Ainv(self, post):
-        """(sd * L)^-1 = L^-1 diag(1/sd); a diagonal when the block is uncorrelated."""
+        """(sd * L)^-1 = L^-1 diag(1/sd); a diagonal when the block is uncorrelated. With a sampled
+        order, L_p^-1 diag(1/sd)[p]."""
         sd = self.sd(post)
         Lk = f"L_corr_{self.prefix}"
         if Lk in post:
-            return solve_triangular(post[Lk], jnp.eye(self.dim, dtype=sd.dtype), lower=True) / sd[None, :]
+            p = self.order(post)
+            D = jnp.diag(1.0 / sd) if p is not None else jnp.eye(self.dim, dtype=sd.dtype)
+            if p is not None:
+                return solve_triangular(post[Lk], jnp.take(D, p, axis=0), lower=True)
+            return solve_triangular(post[Lk], D, lower=True) / sd[None, :]
         return jnp.diag(1.0 / sd)
+
+    def logdet(self, post):
+        """log |det A|."""
+        sd = self.sd(post)
+        Lk = f"L_corr_{self.prefix}"
+        ld = jnp.sum(jnp.log(sd))
+        return ld + jnp.sum(jnp.log(jnp.diag(post[Lk]))) if Lk in post else ld
 
 
 
@@ -511,6 +658,15 @@ class _Super:
     def Ainv(self, post):
         return block_diag(*[b.Ainv(post) for b in self.blocks])
 
+    def T(self, post):
+        return block_diag(*[b.T(post) for b in self.blocks])
+
+    def logdet(self, post):
+        return sum(b.logdet(post) for b in self.blocks)
+
+    def logdet1(self, post):
+        return sum(b.logdet(post) for b in self.kept_blocks)
+
     def A1(self, post):
         return block_diag(*[b.A(post) for b in self.kept_blocks])
 
@@ -834,7 +990,22 @@ class TMap:
         self.body = int(sum(sum(s) for s in self.sizes))
         self.kept_dims = [0 if sb.cand is None else sb.D - int(sb.cand.sum()) for sb in sbs]
         self.kept_sizes = [d * d * _n4(sb.n) * 4 for d, sb in zip(self.kept_dims, sbs)]
-        self.aux_size = self.body + sum(self.kept_sizes) + len(sbs)
+        # correlated crossed blocks: their LKJ factor is sampled with the dimensions in the order of
+        # the map strength K, best informed first (_corr_to_model). The order is chosen where the
+        # anchors are built and travels with them, stored as p - (0..D-1) so that zeros, and the
+        # anchors of a map that had no order, are the model's order
+        self.corr, o = [], 0
+        for k, sb in enumerate(sbs):
+            d0 = 0
+            for b in sb.blocks:
+                if b.L_flat is not None:
+                    self.corr.append(dict(k=k, d0=d0, dim=b.dim, prefix=b.prefix, sl=jnp.asarray(b.L_flat), z=b.z_idx,
+                                          cand=sb.cand is not None and b.dim > _CAND_MIN_DIM, at=o))
+                    o += b.dim
+                d0 += b.dim
+        self.corr_size = o
+        self.corr_at = self.body + sum(self.kept_sizes)
+        self.aux_size = self.body + sum(self.kept_sizes) + self.corr_size + len(sbs)
         self.specs = [f"{sb.name} ({sb.D} x {sb.n})" for sb in sbs]
         self.static = (0,) * len(sbs)
         self._views = {self.static: self}
@@ -886,6 +1057,7 @@ class TMap:
                           [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lg[k]],
                           [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lgk[k]],
                           self.shared[k]))
+        parts.append([(cb["k"], cb["d0"], cb["dim"], cb["cand"]) for cb in self.corr])
         return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def view(self, flags):
@@ -908,15 +1080,25 @@ class TMap:
     def flags(self, aux):
         """Per super-block: 1 where its candidate blocks are sampled non-centred, else 0."""
         aux = np.asarray(aux)
-        return aux[0, -len(self.sbs):].copy() if aux.shape[1] == self.aux_size else np.zeros(len(self.sbs))
+        full = aux.shape[1] in (self.aux_size, self.aux_size - self.corr_size)
+        return aux[0, -len(self.sbs):].copy() if full else np.zeros(len(self.sbs))
 
     def _complete(self, aux):
         """[chains, aux_size] from packed anchors, deriving the kept-dimension tiles and
-        flags when they are absent."""
+        flags when they are absent, and the model's order for the correlated blocks when the
+        anchors carry none."""
         aux = np.asarray(aux, dtype=np.float64)
         if aux.shape[1] == self.aux_size:
             return aux
+        if self.corr_size and aux.shape[1] == self.aux_size - self.corr_size:
+            return np.concatenate([aux[:, :self.corr_at], np.zeros((aux.shape[0], self.corr_size)),
+                                   aux[:, self.corr_at:]], 1)
         if aux.shape[1] != self.body:
+            D = sum(sb.D for sb in self.sbs)
+            old = self.body - D + sum(self.kept_sizes) + len(self.sbs)
+            if aux.shape[1] in (self.body - D, old):
+                raise ValueError("this sampler state was saved by an earlier bayesroc, whose transport map did not "
+                                 "store the strength of each effect; it cannot be resumed. Refit the model.")
             raise ValueError(f"transport-map anchors have {aux.shape[1]} values; expected {self.aux_size}")
         C, tail, o = aux.shape[0], [], 0
         aux = aux.copy()
@@ -928,7 +1110,7 @@ class TMap:
                 tiles = aux[:, o:o + a].reshape(C, _n4(sb.n), sb.D, sb.D, 4)
                 tail.append(tiles[:, :, ks1][:, :, :, ks1].reshape(C, -1))
             o += a + b + c + d + e
-        return np.concatenate([aux] + tail + [np.zeros((C, len(self.sbs)))], 1)
+        return np.concatenate([aux] + tail + [np.zeros((C, self.corr_size + len(self.sbs)))], 1)
 
     def with_flags(self, aux, flags):
         out = self._complete(aux).copy()
@@ -956,12 +1138,90 @@ class TMap:
                     aux[:, o + a + b + c + d:o + a + b + c + d + sb.D].astype(np.int32),
                     aux[:, o + a + b + c + d + sb.D:o + a + b + c + d + e],
                     aux[:, ok:ok + f].reshape(C, _n4(sb.n), D1, D1, 4),
-                    aux[:, self.body + sum(self.kept_sizes) + k]]
+                    aux[:, self.corr_at + self.corr_size + k]]
             o += a + b + c + d + e
             ok += f
         for ws in self.weights:
             out += [np.broadcast_to(w, (C,) + w.shape) for w in ws]
+        for cb in self.corr:
+            out.append((np.rint(aux[:, self.corr_at + cb["at"]:self.corr_at + cb["at"] + cb["dim"]])
+                        + np.arange(cb["dim"])).astype(np.int32))
         return tuple(jnp.asarray(x) for x in out)
+
+    def _corr_perms(self, parts):
+        """The correlated blocks' sampled orders from the anchors in parts()."""
+        return list(parts[len(parts) - len(self.corr):]) if self.corr else []
+
+    def with_order(self, data, parts, key="corr_perm"):
+        """`data` (a data bundle, or under key "_corr_perm" a config) for a model whose correlated
+        blocks' LKJ factors are sampled in the orders the anchors carry."""
+        if not self.corr:
+            return data
+        return {**data, key: {cb["prefix"]: p for cb, p in zip(self.corr, self._corr_perms(parts))}}
+
+    def _post(self, th, parts, trim):
+        """The constrained parameters at th, the model's coordinates in the sampled orders, with
+        the orders under "__corr_perm" for the blocks' prior factors."""
+        post = dict(self.post(th, self.with_order(trim, parts)))
+        if self.corr:
+            post["__corr_perm"] = {cb["prefix"]: p for cb, p in zip(self.corr, self._corr_perms(parts))}
+        return post
+
+    def _qorder(self, k, parts):
+        """Super-block k's rows in the sampled orders: (q, q^-1), q[j] the model row of row j."""
+        D = self.sbs[k].D
+        q = qi = jnp.arange(D)
+        for cb, p in zip(self.corr, self._corr_perms(parts)):
+            if cb["k"] == k:
+                d0, r = cb["d0"], jnp.arange(cb["dim"])
+                q, qi = q.at[d0 + r].set(d0 + p), qi.at[d0 + p].set(d0 + r)
+        return q, qi
+
+    def to_model(self, th, parts):
+        """Model coordinates in the sampled orders -> in the model's order (exact): the factor of
+        R and the standardised effects z = L^-1 L_p[p^-1] z_p."""
+        for cb, p in zip(self.corr, self._corr_perms(parts)):
+            yp = th[cb["sl"]]
+            _, _, Lp = _cc_fwd(yp)
+            M = jnp.take(Lp, jnp.argsort(p), axis=0)
+            L = jnp.linalg.cholesky(M @ M.T)
+            th = th.at[cb["sl"]].set(_cc_inv(L)[0]).at[cb["z"]].set(solve_triangular(L, M @ th[cb["z"]], lower=True))
+        return th
+
+    def orders(self, aux):
+        """The correlated blocks' sampled orders stored in packed anchors [chains, A]."""
+        a = self._complete(np.asarray(aux)[:1])[0]
+        return [jnp.asarray(np.rint(a[self.corr_at + cb["at"]:self.corr_at + cb["at"] + cb["dim"]]).astype(np.int32)
+                            + np.arange(cb["dim"], dtype=np.int32)) for cb in self.corr]
+
+    def with_order_of(self, data, aux, key="corr_perm"):
+        """with_order from packed anchors."""
+        if not self.corr:
+            return data
+        return {**data, key: {cb["prefix"]: p for cb, p in zip(self.corr, self.orders(aux))}}
+
+    def fix_draws(self, out, aux):
+        """Draws constrained with the sampled orders (with_order_of), {site: [..., shape]}: the
+        LKJ factors put back in the model's order (the Cholesky factors of the correlation
+        draws) and, when kept, the standardised effects z = L^-1 L_p[p^-1] z_p. In place."""
+        for cb, p in zip(self.corr, self.orders(aux)):
+            Lk, Rk, zk = (f"{s}_{cb['prefix']}" for s in ("L_corr", "corr", "z"))
+            if Lk not in out or Rk not in out:
+                continue
+            L = np.linalg.cholesky(np.asarray(out[Rk], dtype=np.float64))
+            if zk in out:
+                M = np.asarray(out[Lk], dtype=np.float64)[..., np.argsort(np.asarray(p)), :]
+                out[zk][...] = np.linalg.solve(L, M @ np.asarray(out[zk], dtype=np.float64))
+            out[Lk][...] = L
+
+    def to_order(self, th, parts):
+        """Inverse of to_model."""
+        for cb, p in zip(self.corr, self._corr_perms(parts)):
+            _, _, L = _cc_fwd(th[cb["sl"]])
+            Mp = jnp.take(L, p, axis=0)
+            Lp = jnp.linalg.cholesky(Mp @ Mp.T)
+            th = th.at[cb["sl"]].set(_cc_inv(Lp)[0]).at[cb["z"]].set(solve_triangular(Lp, jnp.take(L @ th[cb["z"]], p, axis=0), lower=True))
+        return th
 
     def _unpack(self, parts, dtype):
         out, w0 = [], 8 * len(self.sbs)
@@ -1018,7 +1278,7 @@ class TMap:
             L1, y1 = self._kept_dense(an, Q1, s1, delta)
             u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
             ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
-        return jnp.take(u_k, inv1, axis=0), jnp.sum(ld) + sb.n * jnp.sum(jnp.log(jnp.diag(A1))), A1, Ainv1
+        return jnp.take(u_k, inv1, axis=0), jnp.sum(ld) + sb.n * sb.logdet1(post), A1, Ainv1
 
     def _cheap(self, k, v, an, us, ans, post, native):
         """(th, log-determinant term, u [D, n] in natural order) for super-block k with its
@@ -1126,21 +1386,28 @@ class TMap:
     def forward(self, tht, aux, trim):
         """Sampler coordinates -> the model's unconstrained coordinates, and log|dz/dzeta|^-1.
         `aux`: one chain's anchors as parts() gives them; `trim`: the data of the trimmed config
-        the scales are constrained against (vg.trim)."""
+        the scales are constrained against (vg.trim). The coordinates are those of the model with
+        the correlated blocks in the anchors' orders (with_order); to_model puts them in the
+        model's order. inverse takes the same coordinates; forward_chains / inverse_chains work in
+        the model's order."""
         ans = self._unpack(aux, tht.dtype)
-        post = self.post(tht, trim)
-        th, ld, us = tht, 0.0, {}
+        th, ld = tht, 0.0
+        post = self._post(tht, aux, trim)
+        us = {}
         native = _native()
         for k, sb in enumerate(self.sbs):
             an = ans[k]
 
             def full(th):
                 if native and sb.D >= _TRI_MIN:
-                    A = sb.A(post).astype(th.dtype)
+                    # the kernel takes a lower-triangular factor: rows in the sampled orders (T), its
+                    # natural order that one, and the standardised rows paired with the kernel's as below
+                    T = sb.T(post).astype(th.dtype)
+                    q, qi = self._qorder(k, aux)
                     delta = self._delta(k, th, an, us, ans)
-                    thb, ldg, u = _block_map(an["Lam_t"], an["s_k"], jnp.zeros((0,), th.dtype) if delta is None else delta,
-                                             sb.get(th), A, an["perm_rev"])
-                    return sb.put(th, thb), jnp.sum(ldg) + sb.n * jnp.sum(jnp.log(jnp.diag(A))), u
+                    thb, ldg, uT = _block_map(an["Lam_t"], an["s_k"], jnp.zeros((0,), th.dtype) if delta is None else delta,
+                                              jnp.take(sb.get(th), q, axis=0), T, jnp.take(qi, an["perm_rev"]).astype(jnp.int32))
+                    return sb.put(th, thb), jnp.sum(ldg) + sb.n * sb.logdet(post), jnp.take(uT, qi, axis=0)
                 zeta = jnp.take(sb.get(th), an["perm_rev"], axis=0)
                 A, Ainv, Q = self._prior(k, th, post, an)
                 if native:
@@ -1156,7 +1423,7 @@ class TMap:
                     u_rev = solve_triangular(jnp.swapaxes(L, 1, 2), (y + zeta.T)[..., None], lower=False)[..., 0].T
                     ldg = jnp.sum(jnp.log(jnp.diagonal(L, axis1=1, axis2=2)))
                 u = jnp.take(u_rev, an["inv_rev"], axis=0)
-                return sb.put(th, Ainv @ u), ldg + sb.n * jnp.sum(jnp.log(jnp.diag(A))), u
+                return sb.put(th, Ainv @ u), ldg + sb.n * sb.logdet(post), u
 
             if sb.cand is not None and self.static[k]:
                 th, ldg, u = self._cheap(k, th, an, us, ans, post, native)
@@ -1168,7 +1435,7 @@ class TMap:
 
     def inverse(self, th, aux, trim):
         ans = self._unpack(aux, th.dtype)
-        post = self.post(th, trim)
+        post = self._post(th, aux, trim)
         tht, us = th, {}
         for k, sb in enumerate(self.sbs):
             an = ans[k]
@@ -1208,7 +1475,7 @@ class TMap:
         """pot_off(v, OFF) -> value_and_grad of the mapped potential, (v, OFF, AUX) -> (U, g)."""
         def pot(v, OFF, AUX):
             th, ld = self.forward(v, AUX, OFF["trim"])
-            return pot_off(th, OFF) + ld
+            return pot_off(th, {**OFF, "data": self.with_order(OFF["data"], AUX)}) + ld
         return jax.value_and_grad(pot)
 
     def forward_chains(self, tht, aux, trim):
@@ -1216,7 +1483,7 @@ class TMap:
         the configuration the anchors' flags name."""
         v = self.cheap_of(aux)
         if v._fwd is None:
-            v._fwd = jax.jit(lambda x, a, t: v.forward(x, a, t)[0])
+            v._fwd = jax.jit(lambda x, a, t: v.to_model(v.forward(x, a, t)[0], a))
         P = self.parts(aux)
         return np.stack([np.asarray(v._fwd(jnp.asarray(x), tuple(p[c] for p in P), trim))
                          for c, x in enumerate(np.asarray(tht))])
@@ -1224,7 +1491,7 @@ class TMap:
     def inverse_chains(self, th, aux, trim):
         v = self.cheap_of(aux)
         if v._inv is None:
-            v._inv = jax.jit(v.inverse)
+            v._inv = jax.jit(lambda x, a, t: v.inverse(v.to_order(x, a), a, t))
         P = self.parts(aux)
         return np.stack([np.asarray(v._inv(jnp.asarray(x), tuple(p[c] for p in P), trim))
                          for c, x in enumerate(np.asarray(th))])
@@ -1247,12 +1514,20 @@ class TMap:
             self._anch = self.lower_anchors(vg, C, ref.shape[1], OFF, parallel).compile()
         raw = jax.tree.map(np.asarray, self._anch(jnp.asarray(ref), OFF))
         packed, kept = [[] for _ in range(C)], [[] for _ in range(C)]
-        for sb, r in zip(self.sbs, raw):
+        corr = np.zeros(self.corr_size)
+        for k, (sb, r) in enumerate(zip(self.sbs, raw)):
             Lam = r["Lam"]
             s_ = -np.swapaxes(r["q0"], 1, 2) + np.einsum("cnab,cnb->cna", Lam, np.swapaxes(r["u"], 1, 2))
             strength = np.mean(np.einsum("cnaa->cna", Lam), axis=(0, 1)) * r["A2"].mean(0)
             weight = strength / (1.0 + strength)
-            idx = np.arange(sb.D)
+            idx = np.arange(sb.D, dtype=np.float64)
+            # a correlated block's LKJ factor in falling strength; its dims rank by that order below
+            for cb in self.corr:
+                if cb["k"] == k:
+                    d0, dim = cb["d0"], cb["dim"]
+                    p = np.argsort(-strength[d0:d0 + dim], kind="stable")
+                    corr[cb["at"]:cb["at"] + dim] = p - np.arange(dim)
+                    idx[d0 + p] = d0 + np.arange(dim)
             # informed dims first in reversed natural order, then the rest by falling weight
             perm = np.lexsort((-idx, np.where(weight >= _UNINFORMED, -idx - 1.0, -weight)))
             ks1 = None if sb.cand is None else self._kept(sb, perm)[0]
@@ -1263,7 +1538,7 @@ class TMap:
                               np.asarray(strength, dtype=np.float64)]
                 if ks1 is not None:
                     kept[c].append(np.asarray(_tile(jnp.asarray(Lp[:, ks1][:, :, ks1]))).reshape(-1))
-        return np.stack([np.concatenate(p + q + [np.zeros(len(self.sbs))]) for p, q in zip(packed, kept)])
+        return np.stack([np.concatenate(p + q + [corr, np.zeros(len(self.sbs))]) for p, q in zip(packed, kept)])
 
     def anchors(self, vg, th, OFF):
         """Raw anchors at one position th (model coordinates), one dict per super-block: each

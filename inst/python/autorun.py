@@ -179,6 +179,17 @@ class _InProcess:
     def close(self):
         pass
 
+    def ordered(self, data):
+        """`data` for constraining the kept rows: DR-G-HMC's samplers store the model's
+        coordinates with the correlated blocks in the transport map's orders (tmap.TMap.corr)."""
+        tm = getattr(self, "tm_order", None)
+        return data if tm is None else tm.with_order_of(data, self.aux)
+
+    def fix_draws(self, out):
+        tm = getattr(self, "tm_order", None)
+        if tm is not None:
+            tm.fix_draws(out, self.aux)
+
 
 class _Nuts(_InProcess):
     def __init__(self, s, model, config, a, resume):
@@ -366,6 +377,7 @@ class _Dr(_InProcess):
         else:
             self.aux = np.zeros(1)
         self.transport = tm is not None
+        self.tm_order = tm
         self.args = (ck, IMM, MSQ, jnp.asarray(ctrl["eps_c"] * eps), off0, dr.aux_in(tm, self.aux))
         self.carry0 = jax.tree.map(np.asarray, comp["setup"](jnp.asarray(th), jnp.asarray(rho), off0,
                                                              dr.aux_in(tm, self.aux)))
@@ -421,9 +433,12 @@ class _DrF32:
             raise
         self.imm, self.eps, self.aux = imm, eps, aux
         self.transport = tm is not None
+        self.tm_order = tm
         self.carry0 = dict(th=th, rho=rho, offset=off)
         self.positions = _model_positions(tm, th, aux, s.vg.trim)
         self.n = 0
+
+    ordered, fix_draws = _InProcess.ordered, _InProcess.fix_draws
 
     def run_round(self, carry, T, nblocks, b, stride, cancel, burn=0, show=False):
         n = self.n
@@ -648,7 +663,7 @@ class AutoSession:
                             atol=1e-12 if itemsize == 8 else 1e-6)
                 for k in fa if k != "log_lik" and not k.startswith(("z_", "L_corr_")))
             self.trim1 = trim1 if ok else None
-            self.mon_data = self.vg.trim if ok else self.vg.data
+            self.mon_data = self.ad.ordered(self.vg.trim if ok else self.vg.data)
             base = trim1 if ok else full1
             mk = self.mon_keys
             key = ("mon", bool(ok), tuple(mk))
@@ -861,7 +876,7 @@ class AutoSession:
         rows = self.rows[:, :self.n]
         use_trim = not save_loglik and self.trim1 is not None
         base = self.trim1 if use_trim else (lambda z, d: self.pp(self.unflatten(z), d))
-        dat = self.vg.trim if use_trim else self.vg.data
+        dat = self.ad.ordered(self.vg.trim if use_trim else self.vg.data)
         keep = lambda k: not ((k.startswith("z_") and not keep_re) or (k == "log_lik" and not save_loglik))
         one = lambda z, d: {k: v for k, v in base(z, d).items() if keep(k)}
         shapes = jax.eval_shape(one, jax.ShapeDtypeStruct(rows.shape[2:], rows.dtype), dat)
@@ -913,6 +928,7 @@ class AutoSession:
                 bar.update(1)
         if bar is not None:
             bar.close()
+        self.ad.fix_draws(out)
         if n_old and "log_lik" in out:
             for s in range(0, n_old, 256):
                 e = min(s + 256, n_old)

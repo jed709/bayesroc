@@ -186,6 +186,8 @@ def _with_data(config, data, offset=None):
     for k, X in data["extra"].items():
         c[k] = {**config[k], "X": X}
     c["_static"] = config
+    if "corr_perm" in data:
+        c["_corr_perm"] = data["corr_perm"]
     if offset is not None:
         c["_ll_offset"] = offset
     return c
@@ -1544,9 +1546,11 @@ def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
             prebuilt=(_res["setup"], _res["chunk"], _res["chunk_raw"]), off0=vg.OFF0, tm=tm)
 
     phases.mark("sampling done")
-    pp_fn, pp_data = postprocess_fn, vg.data
+    data_o, trim_o = ((vg.data, vg.trim) if tm is None else
+                      (tm.with_order_of(vg.data, state["aux"]), tm.with_order_of(vg.trim, state["aux"])))
+    pp_fn, pp_data = postprocess_fn, data_o
     if not save_loglik:
-        fast = _fast_constrain_fn(model, config, postprocess_fn, unflatten, ths, vg.data, vg.trim, store)
+        fast = _fast_constrain_fn(model, config, postprocess_fn, unflatten, ths, data_o, trim_o, store)
         if fast is not None:
             pp_fn, pp_data = fast
         phases.mark("fast constrain check done")
@@ -1560,6 +1564,8 @@ def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
                                       keep_re=keep_re,
                                       progress_bar=progress_bar, store=store,
                                       tag="full" if pp_fn is postprocess_fn else "trim")
+    if tm is not None:
+        tm.fix_draws(samples_np, state["aux"])
     phases.mark("constrain done")
     elapsed = time.time() - t0
 

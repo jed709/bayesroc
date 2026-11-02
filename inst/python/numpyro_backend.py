@@ -4836,6 +4836,12 @@ def sdt_model(config):
 
         cor_prior_str = members[0].get("prior_cor", "lkj_corr_cholesky(1)")
         L_corr = _corr_cholesky_site(f"L_corr_cross_{cor_id}_{group}", cor_prior_str, total_dim)
+        # DR-G-HMC's transport map samples the factor with the dimensions in its own order
+        # (tmap.TMap.corr): L_corr is then the factor of R[p][:, p], and its rows go back to the
+        # model's order here; z follows the sampled order
+        cperm = (config.get("_corr_perm") or {}).get(f"cross_{cor_id}_{group}")
+        if cperm is not None:
+            L_corr = jnp.take(L_corr, jnp.argsort(cperm), axis=0)
         numpyro.deterministic(f"corr_cross_{cor_id}_{group}", L_corr @ L_corr.T)
         L = jnp.diag(all_sds) @ L_corr
         numpyro.deterministic(f"sigma_cross_{cor_id}_{group}", all_sds)
@@ -5868,7 +5874,7 @@ class NutsCoords:
 
     def model_v(self, z):
         v = self.flat(z)
-        return v if self.tm is None else self.tm.forward(v, self.aux, self.vg.trim)[0]
+        return v if self.tm is None else self.tm.to_model(self.tm.forward(v, self.aux, self.vg.trim)[0], self.aux)
 
     def model_z(self, z):
         return self.unflatten(self.model_v(z))
@@ -5877,6 +5883,8 @@ class NutsCoords:
         from numpyro.infer.util import potential_energy
         v = self.flat(z)
         th, ld = (v, 0.0) if self.tm is None else self.tm.forward(v, self.aux, self.vg.trim)
+        if self.tm is not None:
+            cfg = self.tm.with_order(cfg, self.aux, "_corr_perm")
         return potential_energy(sdt_model, (cfg,), {}, self.unflatten(th)) - self.unflatten.log_jac(th) + ld
 
     def init_params(self, chains):
