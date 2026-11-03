@@ -5793,6 +5793,18 @@ class NutsCoords:
                 last, _ = jax.jit(lambda h: minimize_lbfgs(f, h, 1000, 10, 1e-8, 1e-8, 1000))(base[hid])
                 center = np.asarray(base.at[hid].set(last.params))
                 it = int(last.state.iter_num)
+                fg = jax.jit(jax.grad(f))
+                hstar, nh = last.params, int(hid.shape[0])
+                dg = np.array([float((fg(hstar.at[i].add(1e-4)) - fg(hstar.at[i].add(-1e-4)))[i]) / 2e-4
+                               for i in range(nh)])
+                info.setdefault("h", []).append(np.asarray(hstar))
+                info.setdefault("h_sd", []).append(1.0 / np.sqrt(np.maximum(dg, 1e-12)))
+                info.setdefault("f", []).append(float(last.state.value))
+                if self._progress and len(info["h"]) > 1:
+                    dz = np.abs(info["h"][-1] - info["h"][-2]) / info["h_sd"][-1]
+                    print(f"[NUTS] lapmap pass {p + 1}: hyperparameters moved max {dz.max():.3f}, median "
+                          f"{np.median(dz):.3f} Laplace SDs; objective {info['f'][-2]:.3f} -> {info['f'][-1]:.3f}",
+                          flush=True)
                 starts = np.repeat(center[None], chains, 0)
                 starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
             else:
@@ -5825,8 +5837,11 @@ class NutsCoords:
             info["iters"].append(it)
             if self._progress:
                 print(f"[NUTS] {source} pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
-        return dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
-                    diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
+        out = dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
+                   diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
+        if "h" in info:
+            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]))
+        return out
 
     def set_aux(self, aux, th):
         tm = self._tm
@@ -6002,6 +6017,11 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
             trace[f"round{i}_wall"] = time.time() - ts
         trace["t_rounds"] = time.time() - t0
 
+    only = os.environ.get("BAYESROC_ANCHORS_ONLY")
+    if only:
+        np.savez(only, t_coords=time.time() - t0, **({} if coords.pf is None else
+                 {k: np.asarray(v) for k, v in coords.pf.items()}))
+        raise RuntimeError("BAYESROC_ANCHORS_ONLY written")
     proxy_path = os.environ.get("BAYESROC_NUTS_PROXY")
     if proxy_path and coords.tm is not None:
         from anchor_proxy import proxy
