@@ -6096,7 +6096,9 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     trace = {"t_coords": time.time() - t0}
 
     imm0 = None
-    if os.environ.get("BAYESROC_NUTS_IMM") == "lap" and coords.pf is not None and "h_sd" in coords.pf:
+    if os.environ.get("BAYESROC_NUTS_IMM") == "lap":
+        if coords.pf is None or "h_sd_final" not in coords.pf:
+            raise RuntimeError("BAYESROC_NUTS_IMM=lap needs lapmap anchors")
         imm0 = np.ones(coords.D)
         imm0[coords.pf["hidx"]] = coords.pf["h_sd_final"] ** 2
         trace["imm0"] = imm0
