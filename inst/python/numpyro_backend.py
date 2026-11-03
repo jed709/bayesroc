@@ -6038,6 +6038,16 @@ def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
     return z if chains > 1 else {k: v[0] for k, v in z.items()}
 
 
+def nuts_initial_mass(coords):
+    if os.environ.get("BAYESROC_NUTS_IMM") != "lap":
+        return None
+    if coords.pf is None or "h_sd_final" not in coords.pf:
+        raise RuntimeError("BAYESROC_NUTS_IMM=lap needs lapmap anchors")
+    imm0 = np.ones(coords.D)
+    imm0[coords.pf["hidx"]] = np.minimum(coords.pf["h_sd_final"] ** 2, 1.0)
+    return imm0
+
+
 def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
               target_accept_prob=0.8, max_tree_depth=10, step_size=1.0,
               thinning=1, chain_method="parallel",
@@ -6095,12 +6105,8 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
     trace = {"t_coords": time.time() - t0}
 
-    imm0 = None
-    if os.environ.get("BAYESROC_NUTS_IMM") == "lap":
-        if coords.pf is None or "h_sd_final" not in coords.pf:
-            raise RuntimeError("BAYESROC_NUTS_IMM=lap needs lapmap anchors")
-        imm0 = np.ones(coords.D)
-        imm0[coords.pf["hidx"]] = np.minimum(coords.pf["h_sd_final"] ** 2, 1.0)
+    imm0 = nuts_initial_mass(coords)
+    if imm0 is not None:
         trace["imm0"] = imm0
     heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
 

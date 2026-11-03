@@ -205,9 +205,13 @@ class _Nuts(_InProcess):
                                              a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)),
                                              s.init_z, transport=transport, aux=aux,
                                              build=(s.vg, s.unflatten, s.keys, s.off, s.D, s.pp))
+        imm0 = nb.nuts_initial_mass(coords) if resume is None else None
         kernel = nb.FastNUTS(model, coords=coords, target_accept_prob=float(a.get("target_accept_prob", 0.8)),
                              max_tree_depth=int(a.get("max_tree_depth", 10)),
-                             step_size=float(a.get("step_size", 1.0)))
+                             step_size=float(a.get("step_size", 1.0)),
+                             **({} if imm0 is None else {"inverse_mass_matrix": jnp.asarray(imm0)}))
+        if s.progress and imm0 is not None:
+            print("[NUTS] initial hyperparameter mass from the Laplace variances", flush=True)
         self.max_steps = 2 ** int(a.get("max_tree_depth", 10))
         offset = None
         if resume is not None:
