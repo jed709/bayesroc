@@ -6100,7 +6100,7 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         if coords.pf is None or "h_sd_final" not in coords.pf:
             raise RuntimeError("BAYESROC_NUTS_IMM=lap needs lapmap anchors")
         imm0 = np.ones(coords.D)
-        imm0[coords.pf["hidx"]] = coords.pf["h_sd_final"] ** 2
+        imm0[coords.pf["hidx"]] = np.minimum(coords.pf["h_sd_final"] ** 2, 1.0)
         trace["imm0"] = imm0
     heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
 
