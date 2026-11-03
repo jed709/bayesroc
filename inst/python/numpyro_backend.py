@@ -5805,7 +5805,9 @@ class NutsCoords:
 
                 def m():
                     v = numpyro.sample("v", nd.ImproperUniform(nd.constraints.real, (), (D,)))
-                    numpyro.factor("lp", -U(v))
+                    with numpyro.handlers.block():
+                        lp = -U(v)
+                    numpyro.factor("lp", lp)
 
                 guide = AutoDiagonalNormal(m, init_loc_fn=init_to_value(values={"v": v0}), init_scale=0.1)
                 steps = int(os.environ.get("BAYESROC_ADVI_STEPS", "2000"))
