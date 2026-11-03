@@ -5713,7 +5713,9 @@ class NutsCoords:
                 self.set_aux(tm.anchors_chains(self.vg, ref, self.vg.OFF0, parallel)[:1], self.pf["draws"])
             else:
                 self.set_aux(tm.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
-                if source in ("pfmap", "lapmap", "advi"):
+                if source == "lapmap":
+                    self.pf = self._lapmap_passes(seed, chains)
+                elif source in ("pfmap", "advi"):
                     self.pf = self._mapped_passes(source, seed, chains)
             return
         if tm is not None:
@@ -5860,12 +5862,90 @@ class NutsCoords:
                        h_sd_final=info["h_sd_final"])
         return out
 
+    def _lapmap_passes(self, seed, chains):
+        import time as _t
+        from blackjax.optimizers.lbfgs import minimize_lbfgs
+        zmask = np.concatenate([np.full(int(np.prod(self.off[k][1])), k.startswith("z_")) for k in self.keys])
+        hidx, zidx = np.flatnonzero(~zmask), np.flatnonzero(zmask)
+        hid, zid = jnp.asarray(hidx), jnp.asarray(zidx)
+        passes = int(os.environ.get("BAYESROC_ANCHOR_PASSES", "2"))
+        diag_each = bool(os.environ.get("BAYESROC_ANCHOR_DIAG"))
+        vgm, OFF, trim, tmv = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.vg.trim, self.tm
+
+        @jax.custom_vjp
+        def Ua(v, a):
+            return vgm(v, OFF, a)[0]
+
+        def Ua_f(v, a):
+            u, g = vgm(v, OFF, a)
+            return u, (g, a)
+
+        def Ua_b(res, ct):
+            g, a = res
+            return ct * g, jax.tree.map(jnp.zeros_like, a)
+
+        Ua.defvjp(Ua_f, Ua_b)
+        fh = lambda h, base, a: Ua(base.at[hid].set(h), a)
+        solve = jax.jit(lambda h, base, a: minimize_lbfgs(lambda x: fh(x, base, a), h, 1000, 10, 1e-8, 1e-8, 1000)[0])
+        gradh = jax.jit(jax.grad(fh))
+        fwd_many = jax.jit(lambda V, a: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, a, trim)[0], a), V))
+
+        def curv(h, base, a):
+            e = 1e-4
+            return np.array([float((gradh(h.at[i].add(e), base, a) - gradh(h.at[i].add(-e), base, a))[i]) / (2 * e)
+                             for i in range(int(h.shape[0]))])
+
+        info = dict(walls=[], iters=[], h=[], h_sd=[], f=[])
+        rng = np.random.default_rng(int(seed))
+        for p in range(passes):
+            t0 = _t.time()
+            base = jnp.asarray(self.start[0]).at[zid].set(0.0)
+            last = solve(base[hid], base, self.aux)
+            hstar = last.params
+            center = np.asarray(base.at[hid].set(hstar))
+            it = int(last.state.iter_num)
+            info["h"].append(np.asarray(hstar))
+            info["f"].append(float(last.state.value))
+            if diag_each:
+                info["h_sd"].append(1.0 / np.sqrt(np.maximum(curv(hstar, base, self.aux), 1e-12)))
+                if self._progress and p > 0:
+                    dz = np.abs(info["h"][-1] - info["h"][-2]) / info["h_sd"][-1]
+                    print(f"[NUTS] lapmap pass {p + 1}: hyperparameters moved max {dz.max():.3f}, median "
+                          f"{np.median(dz):.3f} Laplace SDs; objective {info['f'][-2]:.3f} -> {info['f'][-1]:.3f}",
+                          flush=True)
+            starts = np.repeat(center[None], chains, 0)
+            starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
+            th_c = np.asarray(fwd_many(jnp.asarray(center[None]), self.aux))
+            th_s = np.asarray(fwd_many(jnp.asarray(starts), self.aux))
+            self.set_aux(self._tm.anchors_chains(self.vg, np.repeat(th_c, chains, 0), OFF, self._parallel)[:1], th_s)
+            info["walls"].append(_t.time() - t0)
+            info["iters"].append(it)
+            if self._progress:
+                print(f"[NUTS] lapmap pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
+        t0 = _t.time()
+        vc = jnp.asarray(self._tm.inverse_chains(th_c, self.aux_flat, trim)[0])
+        h_sd_final = 1.0 / np.sqrt(np.maximum(curv(vc[hid], vc, self.aux), 1e-12))
+        info["walls"].append(_t.time() - t0)
+        return dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])), diag=np.zeros(1),
+                    elbo=np.asarray(info["walls"]), mu=np.zeros(1), h=np.asarray(info["h"]), f=np.asarray(info["f"]),
+                    hidx=hidx, h_sd_final=h_sd_final,
+                    **({"h_sd": np.asarray(info["h_sd"])} if info["h_sd"] else {}))
+
     def _u_mapped(self):
-        cfg, keys, off = self._cfg, self.keys, self.off
+        vgm, OFF, aux = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.aux
 
+        @jax.custom_vjp
         def U(v):
-            return self.potential(cfg, {k: v[off[k][0]].reshape(off[k][1]) for k in keys})
+            return vgm(v, OFF, aux)[0]
 
+        def fwd(v):
+            u, g = vgm(v, OFF, aux)
+            return u, g
+
+        def bwd(g, ct):
+            return (ct * g,)
+
+        U.defvjp(fwd, bwd)
         return U
 
     def set_aux(self, aux, th):
