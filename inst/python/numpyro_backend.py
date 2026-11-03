@@ -5840,7 +5840,7 @@ class NutsCoords:
         out = dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
                    diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
         if "h" in info:
-            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]))
+            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]), hidx=hidx)
         return out
 
     def set_aux(self, aux, th):
@@ -5988,9 +5988,18 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
     trace = {"t_coords": time.time() - t0}
 
+    imm0 = None
+    if os.environ.get("BAYESROC_NUTS_IMM") == "lap" and coords.pf is not None and "h_sd" in coords.pf:
+        imm0 = np.ones(coords.D)
+        imm0[coords.pf["hidx"]] = coords.pf["h_sd"][-1] ** 2
+        trace["imm0"] = imm0
+    heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
+
     def _kernel():
+        kw = {} if imm0 is None else {"inverse_mass_matrix": jnp.asarray(imm0)}
         return FastNUTS(sdt_model, coords=coords, target_accept_prob=target_accept_prob,
-                        max_tree_depth=max_tree_depth, step_size=float(step_size))
+                        max_tree_depth=max_tree_depth, step_size=float(step_size),
+                        find_heuristic_step_size=heur, **kw)
 
     def _raw_warmup(kern, key, n, z0, desc):
         m = MCMC(kern, num_warmup=n, num_samples=1, num_chains=chains, chain_method=chain_method,
