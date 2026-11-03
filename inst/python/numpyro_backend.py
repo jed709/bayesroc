@@ -5690,6 +5690,7 @@ class NutsCoords:
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
         self.start = th0
         self.native, self.source, self.pf = False, "dr", None
+        self._cfg = config
         self._tm, self._chains, self._parallel, self._progress = None, chains, parallel, progress_bar
         tm = None
         if transport:
@@ -5783,6 +5784,13 @@ class NutsCoords:
             t0 = _t.time()
             tmv, aux, trim = self.tm, self.aux, self.vg.trim
             U = self._u_mapped()
+            if os.environ.get("BAYESROC_ANCHOR_CHECK"):
+                rr = np.random.default_rng(p)
+                for j in range(3):
+                    vt = jnp.asarray(self.start[0] + 0.3 * rr.standard_normal(self.D))
+                    zt = {k: vt[self.off[k][0]].reshape(self.off[k][1]) for k in self.keys}
+                    print(f"[CHECK] pass {p + 1} point {j}: U_mapped {float(U(vt)):.6f}  NUTS potential "
+                          f"{float(self.potential(self._cfg, zt)):.6f}", flush=True)
             fwd_many = jax.jit(lambda V: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, aux, trim)[0], aux), V))
             v0 = jnp.asarray(self.start[0])
             if source == "pfmap":
@@ -5853,12 +5861,10 @@ class NutsCoords:
         return out
 
     def _u_mapped(self):
-        tmv, aux, trim = self.tm, self.aux, self.vg.trim
-        Um = self._u_model(tmv.with_order(self.vg.OFF0, aux))
+        cfg, keys, off = self._cfg, self.keys, self.off
 
         def U(v):
-            th, ld = tmv.forward(v, aux, trim)
-            return Um(th) + ld
+            return self.potential(cfg, {k: v[off[k][0]].reshape(off[k][1]) for k in keys})
 
         return U
 
