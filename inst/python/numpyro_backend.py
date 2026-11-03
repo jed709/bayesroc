@@ -6002,6 +6002,20 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
             trace[f"round{i}_wall"] = time.time() - ts
         trace["t_rounds"] = time.time() - t0
 
+    proxy_path = os.environ.get("BAYESROC_NUTS_PROXY")
+    if proxy_path and coords.tm is not None:
+        from anchor_proxy import proxy
+        ref_path = os.environ["BAYESROC_PROXY_REF"]
+        if not os.path.exists(ref_path):
+            np.save(ref_path, coords.positions(coords.init_params(chains)))
+        ref = np.load(ref_path)
+        zmask = np.concatenate([np.full(int(np.prod(coords.off[k][1])), k.startswith("z_")) for k in coords.keys])
+        tp = time.time()
+        res = proxy(coords, ref, ~zmask)
+        np.savez(proxy_path, t_anchor=time.time() - t0 - (time.time() - tp), t_proxy=time.time() - tp,
+                 **{k: np.array([r[k] for r in res]) for k in res[0]})
+        raise RuntimeError("BAYESROC_NUTS_PROXY written")
+
     init_params = coords.init_params(chains)
     kernel = _kernel()
 
