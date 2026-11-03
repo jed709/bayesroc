@@ -5928,8 +5928,17 @@ class NutsCoords:
         info["walls"].append(_t.time() - t0)
         return dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])), diag=np.zeros(1),
                     elbo=np.asarray(info["walls"]), mu=np.zeros(1), h=np.asarray(info["h"]), f=np.asarray(info["f"]),
-                    hidx=hidx, h_sd_final=h_sd_final,
+                    hidx=hidx, h_sd_final=h_sd_final, center=th_c,
                     **({"h_sd": np.asarray(info["h_sd"])} if info["h_sd"] else {}))
+
+    def lap_curvature(self):
+        hidx, trim = self.pf["hidx"], self.vg.trim
+        vgm, OFF, aux = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.aux
+        g = jax.jit(lambda v: vgm(v, OFF, aux)[1])
+        vc = jnp.asarray(self._tm.inverse_chains(self.pf["center"], self.aux_flat, trim)[0])
+        e = 1e-4
+        dg = np.array([float((g(vc.at[i].add(e)) - g(vc.at[i].add(-e)))[i]) / (2 * e) for i in hidx])
+        self.pf["h_sd_final"] = 1.0 / np.sqrt(np.maximum(dg, 1e-12))
 
     def _u_mapped(self):
         vgm, OFF, aux = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.aux
@@ -6128,7 +6137,8 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     if coords.native and coords.pf is not None:
         for k in ("iters", "best", "wall", "diag", "elbo", "mu"):
             trace[f"pf_{k}"] = coords.pf[k]
-    if coords.native and coords.source == "nuts":
+    lap_rounds = coords.native and coords.source == "lapmap" and bool(os.environ.get("BAYESROC_NUTS_ROUNDS"))
+    if coords.native and (coords.source == "nuts" or lap_rounds):
         rounds = [int(w) for w in os.environ.get("BAYESROC_NUTS_ROUNDS", "150,150").split(",") if w.strip() and int(w) > 0]
         for i, w in enumerate(rounds):
             rng_key, sub = random.split(rng_key)
@@ -6137,6 +6147,11 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
             zs = m.get_samples(group_by_chain=True)
             last = st.z if chains > 1 else {k: v[None] for k, v in st.z.items()}
             coords.rebuild(zs, last)
+            if lap_rounds:
+                coords.lap_curvature()
+                imm0 = nuts_initial_mass(coords)
+                if imm0 is not None:
+                    trace["imm0"] = imm0
             trace[f"round{i}_num_steps"] = np.asarray(m.get_extra_fields(group_by_chain=True)["num_steps"])
             trace[f"round{i}_wall"] = time.time() - ts
         trace["t_rounds"] = time.time() - t0
