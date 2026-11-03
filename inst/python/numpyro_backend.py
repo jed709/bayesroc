@@ -5752,8 +5752,9 @@ class NutsCoords:
         U.defvjp(fwd, bwd)
         return pathfinder(U, x0, int(seed), int(n_draws))
 
-    def _u_model(self):
-        vg, OFF = self.vg, self.vg.OFF0
+    def _u_model(self, OFF=None):
+        vg = self.vg
+        OFF = self.vg.OFF0 if OFF is None else OFF
 
         @jax.custom_vjp
         def U(x):
@@ -5773,7 +5774,6 @@ class NutsCoords:
         import time as _t
         from pathfinder import pathfinder
         from blackjax.optimizers.lbfgs import minimize_lbfgs
-        Um = self._u_model()
         zmask = np.concatenate([np.full(int(np.prod(self.off[k][1])), k.startswith("z_")) for k in self.keys])
         hidx = np.flatnonzero(~zmask)
         passes = int(os.environ.get("BAYESROC_ANCHOR_PASSES", "2"))
@@ -5782,12 +5782,8 @@ class NutsCoords:
         for p in range(passes):
             t0 = _t.time()
             tmv, aux, trim = self.tm, self.aux, self.vg.trim
-
-            def U(v):
-                th, ld = tmv.forward(v, aux, trim)
-                return Um(th) + ld
-
-            fwd_many = jax.jit(lambda V: jax.lax.map(lambda v: tmv.forward(v, aux, trim)[0], V))
+            U = self._u_mapped()
+            fwd_many = jax.jit(lambda V: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, aux, trim)[0], aux), V))
             v0 = jnp.asarray(self.start[0])
             if source == "pfmap":
                 r = pathfinder(U, v0, int(seed) + p, chains)
@@ -5843,11 +5839,28 @@ class NutsCoords:
             info["iters"].append(it)
             if self._progress:
                 print(f"[NUTS] {source} pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
+        if source == "lapmap":
+            U = self._u_mapped()
+            fg = jax.jit(jax.grad(U))
+            vc = jnp.asarray(self._tm.inverse_chains(th_c, self.aux_flat, self.vg.trim)[0])
+            dg = np.array([float((fg(vc.at[i].add(1e-4)) - fg(vc.at[i].add(-1e-4)))[i]) / 2e-4 for i in hidx])
+            info["h_sd_final"] = 1.0 / np.sqrt(np.maximum(dg, 1e-12))
         out = dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
                    diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
         if "h" in info:
-            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]), hidx=hidx)
+            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]), hidx=hidx,
+                       h_sd_final=info["h_sd_final"])
         return out
+
+    def _u_mapped(self):
+        tmv, aux, trim = self.tm, self.aux, self.vg.trim
+        Um = self._u_model(tmv.with_order(self.vg.OFF0, aux))
+
+        def U(v):
+            th, ld = tmv.forward(v, aux, trim)
+            return Um(th) + ld
+
+        return U
 
     def set_aux(self, aux, th):
         tm = self._tm
@@ -5999,7 +6012,7 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
     imm0 = None
     if os.environ.get("BAYESROC_NUTS_IMM") == "lap" and coords.pf is not None and "h_sd" in coords.pf:
         imm0 = np.ones(coords.D)
-        imm0[coords.pf["hidx"]] = coords.pf["h_sd"][-1] ** 2
+        imm0[coords.pf["hidx"]] = coords.pf["h_sd_final"] ** 2
         trace["imm0"] = imm0
     heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
 
