@@ -5684,7 +5684,7 @@ class NutsCoords:
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
         self.start = th0
         self.native, self.source, self.pf = False, "dr", None
-        self._tm, self._chains, self._parallel = None, chains, parallel
+        self._tm, self._chains, self._parallel, self._progress = None, chains, parallel, progress_bar
         tm = None
         if transport:
             ctrl = dr._merge_control(None)
@@ -5699,6 +5699,9 @@ class NutsCoords:
             self.native, self.source, self.pf = True, source, None
             if source == "pf":
                 self.pf = self._pathfinder(th0[0], seed, chains)
+                if progress_bar:
+                    print(f"[NUTS] Pathfinder: {self.pf['iters']} L-BFGS iterations, best ELBO at {self.pf['best']}, "
+                          f"{self.pf['wall']:.1f} s", flush=True)
                 ref = np.repeat(self.pf["mu"][None], chains, 0)
                 self.set_aux(tm.anchors_chains(self.vg, ref, self.vg.OFF0, parallel)[:1], self.pf["draws"])
             else:
@@ -5818,6 +5821,8 @@ class NutsCoords:
                                                  self._parallel)[:1], th_s)
             info["walls"].append(_t.time() - t0)
             info["iters"].append(it)
+            if self._progress:
+                print(f"[NUTS] {source} pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
         return dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
                     diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
 
