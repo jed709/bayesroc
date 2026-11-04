@@ -643,14 +643,19 @@ class _Super:
         self.pos_np = np.add.outer(np.array(self.starts, int), np.arange(self.n))
         self.pos = jnp.asarray(self.pos_np)
         self.linked = False
+        self.split = False
         if self.cand is not None:
-            self.kept_nat, self.cand_nat = np.nonzero(~cand)[0], np.nonzero(cand)[0]
-            self.kept_index, self.cand_index = np.full(self.D, -1), np.full(self.D, -1)
-            self.kept_index[self.kept_nat] = np.arange(len(self.kept_nat))
-            self.cand_index[self.cand_nat] = np.arange(len(self.cand_nat))
-            self.pos1, self.pos2 = jnp.asarray(self.pos_np[self.kept_nat]), jnp.asarray(self.pos_np[self.cand_nat])
+            self._set_cand(self.cand)
             self.kept_blocks = [b for b in blocks if b.dim <= _CAND_MIN_DIM]
             self.cand_blocks = [b for b in blocks if b.dim > _CAND_MIN_DIM]
+
+    def _set_cand(self, cand):
+        self.cand = cand
+        self.kept_nat, self.cand_nat = np.nonzero(~cand)[0], np.nonzero(cand)[0]
+        self.kept_index, self.cand_index = np.full(self.D, -1), np.full(self.D, -1)
+        self.kept_index[self.kept_nat] = np.arange(len(self.kept_nat))
+        self.cand_index[self.cand_nat] = np.arange(len(self.cand_nat))
+        self.pos1, self.pos2 = jnp.asarray(self.pos_np[self.kept_nat]), jnp.asarray(self.pos_np[self.cand_nat])
 
     def A(self, post):
         return block_diag(*[b.A(post) for b in self.blocks])
@@ -1297,6 +1302,57 @@ class TMap:
             u = u.at[sb.cand_nat].set(sb.A2(post).astype(v.dtype) @ v[sb.pos2])
         return th, ld, u
 
+    def _split_prior(self, k, post, dtype, an):
+        """A split block's kept rows: A1 [D1, D1] (rows the kept dims in natural order, columns the
+        leading sampled positions), its inverse, Q1 in the kept kernel order, log|det A1|, and the
+        full A (natural rows, sampled columns)."""
+        sb = self.sbs[k]
+        b = sb.blocks[0]
+        D1 = len(sb.kept_nat)
+        T = sb.T(post).astype(dtype)
+        p = b.order(post)
+        p = jnp.arange(sb.D) if p is None else jnp.asarray(p)
+        TK = T[:D1, :D1]
+        rows = jnp.take(jnp.asarray(sb.kept_index), p[:D1])
+        A1 = jnp.zeros((D1, D1), dtype).at[rows].set(TK)
+        TKinv = solve_triangular(TK, jnp.eye(D1, dtype=dtype), lower=True)
+        Ainv1 = jnp.zeros((D1, D1), dtype).at[:, rows].set(TKinv)
+        ks1, perm1, inv1 = self._split(sb, an)
+        Q1 = Ainv1.T @ Ainv1
+        Q1 = jnp.take(jnp.take(Q1, perm1, axis=0), perm1, axis=1)
+        return A1, Ainv1, Q1, jnp.sum(jnp.log(jnp.diagonal(TK))), sb.A(post).astype(dtype), ks1, perm1, inv1
+
+    def _split_fwd(self, k, v, an, us, ans, post, native):
+        """A wide correlated block mapped on its informed dimensions only: the kept dimensions (the
+        leading rows of the lower-triangular prior factor in the sampled order) through their own
+        anchors, the rest non-centred. -> (th, log-determinant term, u [D, n] natural order)."""
+        sb = self.sbs[k]
+        A1, Ainv1, Q1, ldA1, A, ks1, perm1, inv1 = self._split_prior(k, post, v.dtype, an)
+        s1 = jnp.take(an["s_k"], ks1, axis=0)
+        delta = self._delta(k, v, an, us, ans, kept=perm1)
+        zeta = jnp.take(v[sb.pos1], perm1, axis=0)
+        if native:
+            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
+        else:
+            L1, y1 = self._kept_dense(an, Q1, s1, delta)
+            u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
+            ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
+        u1 = jnp.take(u_k, inv1, axis=0)
+        z = jnp.concatenate([Ainv1 @ u1, v[sb.pos2]], 0)
+        return sb.put(v, z), jnp.sum(ld) + sb.n * ldA1, A @ z
+
+    def _split_inv(self, k, th, tht, an, us, ans, post):
+        sb = self.sbs[k]
+        D1 = len(sb.kept_nat)
+        A1, Ainv1, Q1, ldA1, A, ks1, perm1, inv1 = self._split_prior(k, post, th.dtype, an)
+        z = sb.get(th)
+        u1 = A1 @ z[:D1]
+        L1, y1 = self._kept_dense(an, Q1, jnp.take(an["s_k"], ks1, axis=0),
+                                  self._delta(k, th, an, us, ans, kept=perm1))
+        zk = (jnp.einsum("nji,nj->ni", L1, jnp.take(u1, perm1, axis=0).T) - y1).T
+        tht = tht.at[sb.pos1].set(jnp.take(zk, inv1, axis=0)).at[sb.pos2].set(z[D1:])
+        return tht, A @ z
+
     def _delta(self, k, v, an, us, ans, kept=None):
         """The shift of each group's effects implied by the fixed effects and earlier blocks,
         [D, n] in the kernel's order, or None when nothing couples. With `kept` (the kept
@@ -1425,7 +1481,9 @@ class TMap:
                 u = jnp.take(u_rev, an["inv_rev"], axis=0)
                 return sb.put(th, Ainv @ u), ldg + sb.n * sb.logdet(post), u
 
-            if sb.cand is not None and self.static[k]:
+            if sb.cand is not None and self.static[k] and sb.split:
+                th, ldg, u = self._split_fwd(k, th, an, us, ans, post, native)
+            elif sb.cand is not None and self.static[k]:
                 th, ldg, u = self._cheap(k, th, an, us, ans, post, native)
             else:
                 th, ldg, u = full(th)
@@ -1467,7 +1525,10 @@ class TMap:
                     u = u.at[sb.kept_nat].set(u1)
                 return tht, u.at[sb.cand_nat].set(sb.A2(post).astype(th.dtype) @ th[sb.pos2])
 
-            tht, u = cheap(tht) if sb.cand is not None and self.static[k] else full(tht)
+            if sb.cand is not None and self.static[k] and sb.split:
+                tht, u = self._split_inv(k, th, tht, an, us, ans, post)
+            else:
+                tht, u = cheap(tht) if sb.cand is not None and self.static[k] else full(tht)
             us[k] = u
         return tht
 
@@ -1526,6 +1587,11 @@ class TMap:
                 if cb["k"] == k:
                     d0, dim = cb["d0"], cb["dim"]
                     p = np.argsort(-strength[d0:d0 + dim], kind="stable")
+                    if sb.split:
+                        kn = sb.kept_nat[(sb.kept_nat >= d0) & (sb.kept_nat < d0 + dim)] - d0
+                        cn = np.setdiff1d(np.arange(dim), kn)
+                        p = np.concatenate([kn[np.argsort(-strength[d0 + kn], kind="stable")],
+                                            cn[np.argsort(-strength[d0 + cn], kind="stable")]])
                     corr[cb["at"]:cb["at"] + dim] = p - np.arange(dim)
                     idx[d0 + p] = d0 + np.arange(dim)
             # informed dims first in reversed natural order, then the rest by falling weight
@@ -1605,3 +1671,30 @@ def build(model, config, off, unflatten, split=False, links=True):
             sb.links_kept = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
     return TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
+
+
+def split_supers(tm, aux, threshold=0.1):
+    """A new TMap whose wide single correlated blocks map only their informed dimensions: from
+    the packed anchors `aux` [1, A], a dimension whose strength K satisfies K / (1 + K) <
+    threshold (the map's own _UNINFORMED rule) becomes a candidate (sampled non-centred), the
+    rest stay mapped and lead the block's LKJ order. Blocks whose dimensions are all informed,
+    or none, are left as they are. Returns (TMap, flags) or (tm, None) when nothing splits."""
+    P = tm.parts(np.asarray(aux)[:1])
+    sbs, flags, changed = tm.sbs, [0.0] * len(tm.sbs), False
+    for k, sb in enumerate(sbs):
+        if sb.cand is None or len(sb.blocks) != 1 or sb.blocks[0].L_flat is None:
+            continue
+        K = np.asarray(P[8 * k + 5])[0]
+        cand = (K / (1.0 + K)) < threshold
+        if 0 < int((~cand).sum()) < sb.D:
+            sb._set_cand(cand)
+            sb.split, sb.kept_blocks, sb.cand_blocks = True, [], []
+            flags[k], changed = 1.0, True
+    if not changed:
+        return tm, None
+    for sb in sbs:
+        sb.links_kept = sb.links if sb.cand is None else [
+            (e, cd[m], ed[m], W) for e, cd, ed, W in sb.links for m in [~sb.cand[cd]] if m.any()]
+    new = TMap(sbs, tm.post)
+    new._anch = tm._anch
+    return new, flags

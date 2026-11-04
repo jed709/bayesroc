@@ -109,6 +109,21 @@ def _windows_mask(mask=None):
     return mask
 
 
+def _windows_full_speed():
+    """Opt the process out of Windows power throttling (EcoQoS), which otherwise lowers the clock
+    of a process whose window is not in the foreground. True when the setting was applied."""
+    import ctypes
+
+    class _State(ctypes.Structure):
+        _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong), ("StateMask", ctypes.c_ulong)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = ctypes.c_void_p
+    k32.SetProcessInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+    st = _State(1, 0x1, 0x0)
+    return bool(k32.SetProcessInformation(k32.GetCurrentProcess(), 4, ctypes.byref(st), ctypes.sizeof(st)))
+
+
 def current():
     """The process's logical CPUs."""
     if sys.platform == "win32":
@@ -134,6 +149,7 @@ def limit(n):
         chosen = [c for c in cpu_order() if c in allowed][:int(n)] or list(_INITIAL)
     if sys.platform == "win32":
         _windows_mask(sum(1 << c for c in chosen))
+        _windows_full_speed()
     else:
         os.sched_setaffinity(0, set(chosen))
     return sorted(chosen)
