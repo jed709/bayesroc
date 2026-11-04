@@ -21,6 +21,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import jax
 import jax.numpy as jnp
 from jax import random
+from jax.flatten_util import ravel_pytree
 from jax.scipy.special import expit as jax_expit
 
 jax.config.update("jax_enable_x64", os.environ.get("BAYESROC_ENABLE_X64", "1") != "0")
@@ -5711,21 +5712,26 @@ def _split_parts(cfg):
 class FastNUTS(NUTS):
     """NUTS whose model setup comes from one abstract trace (drghmc._model_info) instead
     of numpyro's initialize_model, which runs the model eagerly and compiles every
-    primitive separately. The potential is still
-    generated from the model arguments at each call, so a float32 offset swap works as
-    with NUTS. Starting points are always passed as init_params. With `coords` (NutsCoords)
-    it samples in those coordinates. Trees use Stan's U-turn checks across subtree boundaries
-    (nuts_turn)."""
+    primitive separately. The potential is still generated from the model arguments at each
+    call, so a float32 offset swap works as with NUTS, and the transport map's anchors travel
+    in the model arguments. Starting points are always passed as init_params. With `coords`
+    (NutsCoords) it samples in those coordinates. Trees use Stan's U-turn checks across
+    subtree boundaries (nuts_turn); `integrator` is "leapfrog" or "bcss". `cross_chain`: adapt one step
+    size for all chains on their mean acceptance (nuts_turn._cross_chain_adapter; chains on a pmap axis
+    named "chain")."""
 
-    def __init__(self, model=None, coords=None, **kwargs):
+    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, **kwargs):
         super().__init__(model, **kwargs)
         self._coords = coords
+        self._integrator = integrator
+        self._cross_chain = cross_chain
+        self._gamma = gamma
 
     def _init_state(self, rng_key, model_args, model_kwargs, init_params):
         if self._model is None:
             return super()._init_state(rng_key, model_args, model_kwargs, init_params)
         from numpyro.infer.util import potential_energy, constrain_fn
-        from nuts_turn import hmc
+        from nuts_turn import hmc_for
         model, c = self._model, self._coords
         if c is None:
             pot_gen = lambda *a, **k: (lambda z: potential_energy(model, a, k, z))
@@ -5736,8 +5742,8 @@ class FastNUTS(NUTS):
                                                                c.model_z(z, _split_parts(a[0])[1]),
                                                                return_deterministic=True))
         if self._init_fn is None:
-            self._init_fn, self._sample_fn = hmc(potential_fn_gen=pot_gen, kinetic_fn=self._kinetic_fn,
-                                                 algo=self._algo)
+            self._init_fn, self._sample_fn = hmc_for(self._integrator, self._cross_chain, self._gamma)(
+                potential_fn_gen=pot_gen, kinetic_fn=self._kinetic_fn, algo=self._algo)
         self._potential_fn_gen = pot_gen
         self._postprocess_fn = post_gen
         if init_params is None:
@@ -5746,17 +5752,27 @@ class FastNUTS(NUTS):
 
 
 class FastHMC(HMC):
-    """Static-trajectory HMC with FastNUTS's model setup and coordinates; the trajectory length of each
-    transition is set in the state (jittered by the caller)."""
+    """Static-trajectory HMC with FastNUTS's model setup and coordinates. The trajectory length of
+    each transition is the one in its state, which the caller draws afresh every transition."""
 
-    def __init__(self, model=None, coords=None, **kwargs):
+    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, **kwargs):
         super().__init__(model, **kwargs)
         self._coords = coords
+        self._integrator = integrator
+        self._cross_chain = cross_chain
+        self._gamma = gamma
 
     _init_state = FastNUTS._init_state
 
 
 _MAP_WARMUP = 1000
+_LAPLACE_PASSES = 2
+_CURV_LOOP_MAX = 256
+_CURV_PROBES = 32
+_SPLIT_MAP = False
+_HMC_TMAX = float(np.pi)
+_HMC_GAMMA = 0.1
+_BLOCK = 50
 
 
 class NutsCoords:
@@ -5769,7 +5785,8 @@ class NutsCoords:
     being resumed; `build`: drghmc._build's result when already at hand."""
 
     def __init__(self, config, chains, seed, parallel, progress_bar, init_strategy, init_radius,
-                 init_z=None, transport=True, aux=None, build=None, announce=True, on_anchors=None):
+                 init_z=None, transport=True, aux=None, build=None, announce=True, on_anchors=None,
+                 anchors="laplace", label="NUTS"):
         import drghmc as dr
         _t0 = time.time()
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = build or dr._build(sdt_model, config)
@@ -5778,7 +5795,7 @@ class NutsCoords:
         th0 = dr._initial_positions(sdt_model, config, self.keys, self.off, self.D, chains, seed,
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
         self.start = th0
-        self.native, self.source, self.pf = False, "dr", None
+        self.source, self.pf, self._split_flags, self.label = None, None, None, label
         self._cfg = config
         self._tm, self._chains, self._parallel, self._progress = None, chains, parallel, progress_bar
         tm = None
@@ -5786,184 +5803,54 @@ class NutsCoords:
             ctrl = dr._merge_control(None)
             tm = dr._transport(sdt_model, config, ctrl, self.off, self.unflatten)
         self._tm = tm
-        self.tsub["init_transport"] = time.time() - _t0 - self.tsub["build"]
-        source = os.environ.get("BAYESROC_NUTS_ANCHORS", "dr")
-        if tm is not None and aux is None and source != "dr":
-            if not jax.config.jax_enable_x64:
-                raise NotImplementedError("BAYESROC_NUTS_ANCHORS != 'dr' needs float64")
-            if progress_bar and announce:
-                print(f"[NUTS] group transport map on {', '.join(tm.specs)}; anchors from NUTS ({source})", flush=True)
-            self.native, self.source, self.pf = True, source, None
-            if source == "pf":
-                self.pf = self._pathfinder(th0[0], seed, chains)
-                if progress_bar:
-                    print(f"[NUTS] Pathfinder: {self.pf['iters']} L-BFGS iterations, best ELBO at {self.pf['best']}, "
-                          f"{self.pf['wall']:.1f} s", flush=True)
-                ref = np.repeat(self.pf["mu"][None], chains, 0)
-                self.set_aux(tm.anchors_chains(self.vg, ref, self.vg.OFF0, parallel)[:1], self.pf["draws"])
-            else:
-                _t1 = time.time()
-                self.set_aux(tm.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
-                if os.environ.get("BAYESROC_SPLIT_MAP") == "1":
-                    import tmap as _tmap
-                    tm2, fl = _tmap.split_supers(self._tm, self.aux_flat)
-                    if fl is not None:
-                        self._tm, self._split_flags = tm2, fl
-                        if progress_bar:
-                            print("[NUTS] map: " + "; ".join(f"{sb.name} {len(sb.kept_nat)} of {sb.D} dimensions mapped, "
-                                                           f"the rest non-centred" for sb in tm2.sbs if sb.split), flush=True)
-                        self.set_aux(tm2.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
-                self.tsub["anchors0"] = time.time() - _t1
-                if on_anchors is not None:
-                    on_anchors(self)
-                if source == "lapmap":
-                    self.pf = self._lapmap_passes(seed, chains)
-                elif source in ("pfmap", "advi"):
-                    self.pf = self._mapped_passes(source, seed, chains)
+        if tm is None:
             return
-        if tm is not None:
+        if aux is not None:
+            self.source = "given"
             if progress_bar and announce:
-                print(f"[NUTS] group transport map on {', '.join(tm.specs)}"
-                      f"{'' if aux is not None else '; anchors from a DR-G-HMC warmup'}", flush=True)
-            if aux is None and not jax.config.jax_enable_x64:
-                aux, self.start = _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy,
-                                               init_radius, init_z)
-            elif aux is None:
-                vg_s = dr._sampler_vg(self.vg, tm)
-                _, _, tht, aux_c, _ = dr._adapt(sdt_model, config, self.keys, self.off, self.vg, vg_s, tm,
-                                                self.D, chains, _MAP_WARMUP, seed, ctrl, parallel, progress_bar,
-                                                th0, user_init=init_z is not None, title="Transport map warmup")
-                aux = np.asarray(aux_c)[:1]
-                self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c, self.vg.trim), np.repeat(aux, chains, 0),
-                                               self.vg.trim)
+                print(f"[{label}] group transport map on {', '.join(tm.specs)}", flush=True)
             self.aux_flat = np.asarray(aux)[:1]
             self.tm = tm.cheap_of(self.aux_flat)
             self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
-
-    def _pathfinder(self, x0, seed, n_draws):
-        from pathfinder import pathfinder
-        vg, OFF = self.vg, self.vg.OFF0
-
-        @jax.custom_vjp
-        def U(x):
-            return vg(x, OFF)[0]
-
-        def fwd(x):
-            u, g = vg(x, OFF)
-            return u, g
-
-        def bwd(g, ct):
-            return (ct * g,)
-
-        U.defvjp(fwd, bwd)
-        return pathfinder(U, x0, int(seed), int(n_draws))
-
-    def _u_model(self, OFF=None):
-        vg = self.vg
-        OFF = self.vg.OFF0 if OFF is None else OFF
-
-        @jax.custom_vjp
-        def U(x):
-            return vg(x, OFF)[0]
-
-        def fwd(x):
-            u, g = vg(x, OFF)
-            return u, g
-
-        def bwd(g, ct):
-            return (ct * g,)
-
-        U.defvjp(fwd, bwd)
-        return U
-
-    def _mapped_passes(self, source, seed, chains):
-        import time as _t
-        from pathfinder import pathfinder
-        from blackjax.optimizers.lbfgs import minimize_lbfgs
-        zmask = np.concatenate([np.full(int(np.prod(self.off[k][1])), k.startswith("z_")) for k in self.keys])
-        hidx = np.flatnonzero(~zmask)
-        passes = int(os.environ.get("BAYESROC_ANCHOR_PASSES", "2"))
-        info = dict(walls=[], iters=[])
-        rng = np.random.default_rng(int(seed))
-        for p in range(passes):
-            t0 = _t.time()
-            tmv, aux, trim = self.tm, self.aux, self.vg.trim
-            U = self._u_mapped()
-            if os.environ.get("BAYESROC_ANCHOR_CHECK"):
-                rr = np.random.default_rng(p)
-                for j in range(3):
-                    vt = jnp.asarray(self.start[0] + 0.3 * rr.standard_normal(self.D))
-                    zt = {k: vt[self.off[k][0]].reshape(self.off[k][1]) for k in self.keys}
-                    print(f"[CHECK] pass {p + 1} point {j}: U_mapped {float(U(vt)):.6f}  NUTS potential "
-                          f"{float(self.potential(self._cfg, zt)):.6f}", flush=True)
-            fwd_many = jax.jit(lambda V: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, aux, trim)[0], aux), V))
-            v0 = jnp.asarray(self.start[0])
-            if source == "pfmap":
-                r = pathfinder(U, v0, int(seed) + p, chains)
-                center, starts, it = r["mu"], r["draws"], r["iters"]
-            elif source == "lapmap":
-                base = v0.at[jnp.asarray(np.flatnonzero(zmask))].set(0.0)
-                hid = jnp.asarray(hidx)
-                f = lambda h: U(base.at[hid].set(h))
-                last, _ = jax.jit(lambda h: minimize_lbfgs(f, h, 1000, 10, 1e-8, 1e-8, 1000))(base[hid])
-                center = np.asarray(base.at[hid].set(last.params))
-                it = int(last.state.iter_num)
-                fg = jax.jit(jax.grad(f))
-                hstar, nh = last.params, int(hid.shape[0])
-                dg = np.array([float((fg(hstar.at[i].add(1e-4)) - fg(hstar.at[i].add(-1e-4)))[i]) / 2e-4
-                               for i in range(nh)])
-                info.setdefault("h", []).append(np.asarray(hstar))
-                info.setdefault("h_sd", []).append(1.0 / np.sqrt(np.maximum(dg, 1e-12)))
-                info.setdefault("f", []).append(float(last.state.value))
-                if self._progress and len(info["h"]) > 1:
-                    dz = np.abs(info["h"][-1] - info["h"][-2]) / info["h_sd"][-1]
-                    print(f"[NUTS] lapmap pass {p + 1}: hyperparameters moved max {dz.max():.3f}, median "
-                          f"{np.median(dz):.3f} Laplace SDs; objective {info['f'][-2]:.3f} -> {info['f'][-1]:.3f}",
-                          flush=True)
-                starts = np.repeat(center[None], chains, 0)
-                starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
-            else:
-                import numpyro.distributions as nd
-                from numpyro.infer import SVI, Trace_ELBO
-                from numpyro.infer.autoguide import AutoDiagonalNormal
-                from numpyro.infer.initialization import init_to_value
-                from numpyro import optim
-                D = int(v0.shape[0])
-
-                def m():
-                    v = numpyro.sample("v", nd.ImproperUniform(nd.constraints.real, (), (D,)))
-                    with numpyro.handlers.block():
-                        lp = -U(v)
-                    numpyro.factor("lp", lp)
-
-                guide = AutoDiagonalNormal(m, init_loc_fn=init_to_value(values={"v": v0}), init_scale=0.1)
-                steps = int(os.environ.get("BAYESROC_ADVI_STEPS", "2000"))
-                res = SVI(m, guide, optim.Adam(0.02), Trace_ELBO()).run(random.PRNGKey(int(seed) + p), steps,
-                                                                         progress_bar=False)
-                center = np.asarray(guide.median(res.params)["v"])
-                starts = np.asarray(guide.sample_posterior(random.PRNGKey(int(seed) + 100 + p), res.params,
-                                                           sample_shape=(chains,))["v"])
-                it = steps
-            th_c = np.asarray(fwd_many(jnp.asarray(np.asarray(center)[None])))
-            th_s = np.asarray(fwd_many(jnp.asarray(starts)))
-            self.set_aux(self._tm.anchors_chains(self.vg, np.repeat(th_c, chains, 0), self.vg.OFF0,
-                                                 self._parallel)[:1], th_s)
-            info["walls"].append(_t.time() - t0)
-            info["iters"].append(it)
-            if self._progress:
-                print(f"[NUTS] {source} pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
-        if source == "lapmap":
-            U = self._u_mapped()
-            fg = jax.jit(jax.grad(U))
-            vc = jnp.asarray(self._tm.inverse_chains(th_c, self.aux_flat, self.vg.trim)[0])
-            dg = np.array([float((fg(vc.at[i].add(1e-4)) - fg(vc.at[i].add(-1e-4)))[i]) / 2e-4 for i in hidx])
-            info["h_sd_final"] = 1.0 / np.sqrt(np.maximum(dg, 1e-12))
-        out = dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])),
-                   diag=np.zeros(1), elbo=np.asarray(info["walls"]), mu=np.zeros(1))
-        if "h" in info:
-            out.update(h=np.asarray(info["h"]), h_sd=np.asarray(info["h_sd"]), f=np.asarray(info["f"]), hidx=hidx,
-                       h_sd_final=info["h_sd_final"])
-        return out
+            return
+        if anchors == "laplace" and jax.config.jax_enable_x64:
+            self.source = "laplace"
+            if progress_bar and announce:
+                print(f"[{label}] group transport map on {', '.join(tm.specs)}; anchors from the Laplace-marginal mode",
+                      flush=True)
+            _t1 = time.time()
+            self.set_aux(tm.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
+            if _SPLIT_MAP:
+                import tmap as _tmap
+                tm2, fl = _tmap.split_supers(self._tm, self.aux_flat)
+                if fl is not None:
+                    self._tm, self._split_flags = tm2, fl
+                    if progress_bar:
+                        print(f"[{label}] map: " + "; ".join(f"{sb.name} {len(sb.kept_nat)} of {sb.D} dimensions mapped, "
+                                                          f"the rest non-centred" for sb in tm2.sbs if sb.split), flush=True)
+                    self.set_aux(tm2.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
+            self.tsub["anchors0"] = time.time() - _t1
+            if on_anchors is not None:
+                on_anchors(self)
+            self.pf = self._lapmap_passes(seed, chains)
+            return
+        self.source = "dr"
+        if progress_bar and announce:
+            print(f"[{label}] group transport map on {', '.join(tm.specs)}; anchors from a DR-G-HMC warmup", flush=True)
+        if not jax.config.jax_enable_x64:
+            aux, self.start = _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy,
+                                           init_radius, init_z)
+        else:
+            vg_s = dr._sampler_vg(self.vg, tm)
+            _, _, tht, aux_c, _ = dr._adapt(sdt_model, config, self.keys, self.off, self.vg, vg_s, tm,
+                                            self.D, chains, _MAP_WARMUP, seed, ctrl, parallel, progress_bar,
+                                            th0, user_init=init_z is not None, title="Transport map warmup")
+            aux = np.asarray(aux_c)[:1]
+            self.start = tm.inverse_chains(tm.forward_chains(tht, aux_c, self.vg.trim), np.repeat(aux, chains, 0),
+                                           self.vg.trim)
+        self.aux_flat = np.asarray(aux)[:1]
+        self.tm = tm.cheap_of(self.aux_flat)
+        self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
 
     def _lapmap_passes(self, seed, chains):
         import time as _t
@@ -5971,8 +5858,7 @@ class NutsCoords:
         zmask = np.concatenate([np.full(int(np.prod(self.off[k][1])), k.startswith("z_")) for k in self.keys])
         hidx, zidx = np.flatnonzero(~zmask), np.flatnonzero(zmask)
         hid, zid = jnp.asarray(hidx), jnp.asarray(zidx)
-        passes = int(os.environ.get("BAYESROC_ANCHOR_PASSES", "2"))
-        diag_each = bool(os.environ.get("BAYESROC_ANCHOR_DIAG"))
+        passes = _LAPLACE_PASSES
         vgm, OFF, trim, tmv = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.vg.trim, self.tm
 
         @jax.custom_vjp
@@ -5989,17 +5875,10 @@ class NutsCoords:
 
         Ua.defvjp(Ua_f, Ua_b)
         fh = lambda h, base, a: Ua(base.at[hid].set(h), a)
-        tol, mit = float(os.environ.get("BAYESROC_LAP_TOL", "1e-8")), int(os.environ.get("BAYESROC_LAP_MAXITER", "1000"))
-        solve = jax.jit(lambda h, base, a: minimize_lbfgs(lambda x: fh(x, base, a), h, mit, 10, tol, tol, 1000)[0])
-        gradh = jax.jit(jax.grad(fh))
+        solve = jax.jit(lambda h, base, a: minimize_lbfgs(lambda x: fh(x, base, a), h, 1000, 10, 1e-8, 1e-8, 1000)[0])
         fwd_many = jax.jit(lambda V, a: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, a, trim)[0], a), V))
 
-        def curv(h, base, a):
-            e = 1e-4
-            return np.array([float((gradh(h.at[i].add(e), base, a) - gradh(h.at[i].add(-e), base, a))[i]) / (2 * e)
-                             for i in range(int(h.shape[0]))])
-
-        info = dict(walls=[], iters=[], h=[], h_sd=[], f=[])
+        info = dict(walls=[], iters=[], h=[], f=[])
         rng = np.random.default_rng(int(seed))
         for p in range(passes):
             t0 = _t.time()
@@ -6010,13 +5889,6 @@ class NutsCoords:
             it = int(last.state.iter_num)
             info["h"].append(np.asarray(hstar))
             info["f"].append(float(last.state.value))
-            if diag_each:
-                info["h_sd"].append(1.0 / np.sqrt(np.maximum(curv(hstar, base, self.aux), 1e-12)))
-                if self._progress and p > 0:
-                    dz = np.abs(info["h"][-1] - info["h"][-2]) / info["h_sd"][-1]
-                    print(f"[NUTS] lapmap pass {p + 1}: hyperparameters moved max {dz.max():.3f}, median "
-                          f"{np.median(dz):.3f} Laplace SDs; objective {info['f'][-2]:.3f} -> {info['f'][-1]:.3f}",
-                          flush=True)
             starts = np.repeat(center[None], chains, 0)
             starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
             th_c = np.asarray(fwd_many(jnp.asarray(center[None]), self.aux))
@@ -6025,19 +5897,17 @@ class NutsCoords:
             info["walls"].append(_t.time() - t0)
             info["iters"].append(it)
             if self._progress:
-                print(f"[NUTS] lapmap pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
+                print(f"[{self.label}] Laplace pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
         t0 = _t.time()
         vc = jnp.asarray(self._tm.inverse_chains(th_c, self.aux_flat, trim)[0])
         h_sd_final = 1.0 / np.sqrt(np.maximum(self._fd_hdiag(vc, hidx), 1e-12))
         info["walls"].append(_t.time() - t0)
-        return dict(iters=np.asarray(info["iters"]), best=-1, wall=float(np.sum(info["walls"])), diag=np.zeros(1),
-                    elbo=np.asarray(info["walls"]), mu=np.zeros(1), h=np.asarray(info["h"]), f=np.asarray(info["f"]),
-                    hidx=hidx, h_sd_final=h_sd_final, center=th_c,
-                    **({"h_sd": np.asarray(info["h_sd"])} if info["h_sd"] else {}))
+        return dict(iters=np.asarray(info["iters"]), wall=float(np.sum(info["walls"])), walls=np.asarray(info["walls"]),
+                    h=np.asarray(info["h"]), f=np.asarray(info["f"]), hidx=hidx, h_sd_final=h_sd_final, center=th_c)
 
     def _fd_hdiag(self, vc, idx):
         idx = np.asarray(idx)
-        if len(idx) <= int(os.environ.get("BAYESROC_FD_LOOP_MAX", "256")):
+        if len(idx) <= _CURV_LOOP_MAX:
             if getattr(self, "_fdg", None) is None:
                 vgm, OFF = self.tm.wrap(self.vg.pot), self.vg.OFF0
                 self._fdg = jax.jit(lambda v, a: vgm(v, OFF, a)[1])
@@ -6045,9 +5915,8 @@ class NutsCoords:
             return np.array([float((self._fdg(vj.at[i].add(e), self.aux) - self._fdg(vj.at[i].add(-e), self.aux))[i]) / (2 * e)
                              for i in idx])
         nd = jax.local_device_count()
-        if os.environ.get("BAYESROC_CURV", "hutch") == "hutch":
-            K = int(os.environ.get("BAYESROC_CURV_PROBES", "32"))
-            per = -(-K // nd)
+        if True:
+            per = -(-_CURV_PROBES // nd)
             rng = np.random.default_rng(int(len(idx)))
             Z = np.zeros((nd * per, self.D))
             Z[:, idx] = rng.choice([-1.0, 1.0], size=(nd * per, len(idx)))
@@ -6076,53 +5945,21 @@ class NutsCoords:
         vc = self._tm.inverse_chains(self.pf["center"], self.aux_flat, self.vg.trim)[0]
         self.pf["h_sd_final"] = 1.0 / np.sqrt(np.maximum(self._fd_hdiag(vc, self.pf["hidx"]), 1e-12))
 
-    def rebuild_th(self, th):
-        th = np.asarray(th)
+    def rebuild_from(self, last, mean):
+        """New anchors at the chains' positions (model coordinates [chains, D]): scale coordinates at
+        `last`, effects at `mean`."""
         mask = self._tm.scale_mask(self.D)
-        ref = np.where(mask, th[:, -1], th[:, th.shape[1] // 2:].mean(1))
-        self.set_aux(self._tm.anchors_chains(self.vg, ref, self.vg.OFF0, self._parallel)[:1], th[:, -1])
-
-    def _u_mapped(self):
-        vgm, OFF, aux = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.aux
-
-        @jax.custom_vjp
-        def U(v):
-            return vgm(v, OFF, aux)[0]
-
-        def fwd(v):
-            u, g = vgm(v, OFF, aux)
-            return u, g
-
-        def bwd(g, ct):
-            return (ct * g,)
-
-        U.defvjp(fwd, bwd)
-        return U
+        ref = np.where(mask, np.asarray(last), np.asarray(mean))
+        self.set_aux(self._tm.anchors_chains(self.vg, ref, self.vg.OFF0, self._parallel)[:1], np.asarray(last))
 
     def set_aux(self, aux, th):
         tm = self._tm
-        wf = os.environ.get("BAYESROC_WIDE_FLAGS")
-        if wf:
-            aux = tm.with_flags(np.asarray(aux)[:1], [float(x) for x in wf.split(",")])
-        if getattr(self, "_split_flags", None) is not None:
+        if self._split_flags is not None:
             aux = tm.with_flags(np.asarray(aux)[:1], self._split_flags)
         self.aux_flat = np.asarray(aux)[:1]
         self.tm = tm.cheap_of(self.aux_flat)
         self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
         self.start = tm.inverse_chains(np.asarray(th), np.repeat(self.aux_flat, self._chains, 0), self.vg.trim)
-
-    def rebuild(self, zs, last):
-        """New anchors from NUTS warmup draws `zs` (sampler sites, [chains, W, ...]) and the last
-        state `last`: scale coordinates at the last draw, effects averaged over the second half."""
-        f = jax.jit(lambda zz: jax.lax.map(self.model_v, zz))
-        C = int(np.shape(last[self.keys[0]])[0])
-        W = int(np.shape(zs[self.keys[0]])[1])
-        th_last = self.positions(last)
-        th_mean = np.stack([np.asarray(f({k: jnp.asarray(zs[k][c, W // 2:]) for k in self.keys})).mean(0)
-                            for c in range(C)])
-        mask = self._tm.scale_mask(self.D)
-        ref = np.where(mask, th_last, th_mean)
-        self.set_aux(self._tm.anchors_chains(self.vg, ref, self.vg.OFF0, self._parallel)[:1], th_last)
 
     def flat(self, z):
         return jnp.concatenate([jnp.reshape(z[k], (-1,)) for k in self.keys])
@@ -6138,15 +5975,7 @@ class NutsCoords:
     def potential(self, cfg, z):
         from numpyro.infer.util import potential_energy
         cfg, parts = _split_parts(cfg)
-        if parts is not None and os.environ.get("BAYESROC_POT_JIT", "0") == "1" and len(cfg) == len(self._cfg)                 and all(self._cfg.get(k) is v for k, v in cfg.items()):
-            if getattr(self, "_pjit", None) is None:
-                base = self._cfg
-                self._pjit = jax.jit(lambda v, pa: self._potential_core(base, self.unflatten_v(v), pa))
-            return self._pjit(self.flat(z), parts)
         return self._potential_core(cfg, z, parts)
-
-    def unflatten_v(self, v):
-        return {k: v[self.off[k][0]].reshape(self.off[k][1]) for k in self.keys}
 
     def _potential_core(self, cfg, z, parts):
         from numpyro.infer.util import potential_energy
@@ -6210,127 +6039,192 @@ def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
 
 
 def nuts_initial_mass(coords):
-    if os.environ.get("BAYESROC_NUTS_IMM") != "lap":
-        return None
+    """Initial inverse mass from the Laplace stage: the Laplace variances of the hyperparameters in map
+    coordinates, capped at NUTS's unit default, and 1 for the effects. None without Laplace anchors."""
     if coords.pf is None or "h_sd_final" not in coords.pf:
-        raise RuntimeError("BAYESROC_NUTS_IMM=lap needs lapmap anchors")
+        return None
     imm0 = np.ones(coords.D)
     imm0[coords.pf["hidx"]] = np.minimum(coords.pf["h_sd_final"] ** 2, 1.0)
     return imm0
 
 
-def _fold_build(kernel, coords, config, chains, warmup, rng_key):
-    B = int(os.environ.get("BAYESROC_NUTS_BLOCK", "50"))
-    cfgp = lambda parts: {**config, "_nuts_parts": parts}
-    keys = random.split(rng_key, chains)
-    initf = jax.pmap(lambda key, z, parts: kernel.init(key, warmup, z, (cfgp(parts),), {}),
-                     in_axes=(0, 0, None), axis_name="chain")
-
-    jh = os.environ.get("BAYESROC_NUTS_JHMC")
-    fused = bool(jh) and os.environ.get("BAYESROC_JHMC_FUSED") == "1"
-    fullj = os.environ.get("BAYESROC_FULL_JHMC") == "1"
-    tmax = float(os.environ.get("BAYESROC_JHMC_T", str(np.pi)))
-    lam = float(os.environ.get("BAYESROC_BCSS_LAM", "0.21132486540518713"))
-    zof = lambda v: {k: v[coords.off[k][0]].reshape(coords.off[k][1]) for k in coords.keys}
-
-    def run(st, parts, samp, jm, lmax):
-        args = (cfgp(parts),)
-        post = kernel.postprocess_fn(args, {})
-        shp = jax.eval_shape(post, st.z)
-        vg = jax.value_and_grad(lambda v: coords.potential(args[0], zof(v)))
-
-        def jstep(s):
-            im = s.adapt_state.inverse_mass_matrix
-            m = list(im.values())[0] if isinstance(im, dict) else im
-            eps = s.adapt_state.step_size
-            key, k1, k2, k3 = random.split(s.rng_key, 4)
-            z, g, u = coords.flat(s.z), coords.flat(s.z_grad), s.potential_energy
-
-            def lf(_, c):
-                z, p, g, u = c
-                p = p - 0.5 * eps * g
-                z = z + eps * m * p
-                u, g = vg(z)
-                return z, p - 0.5 * eps * g, g, u
-
-            def bc(_, c):
-                z, p, g, u = c
-                p = p - lam * eps * g
-                z = z + 0.5 * eps * m * p
-                u, g = vg(z)
-                p = p - (1.0 - 2.0 * lam) * eps * g
-                z = z + 0.5 * eps * m * p
-                u, g = vg(z)
-                return z, p - lam * eps * g, g, u
-
-            n = random.randint(k1, (), 1, lmax + 1)
-            p = random.normal(k2, z.shape) / jnp.sqrt(m)
-            h0 = u + 0.5 * jnp.sum(m * p * p)
-            z1, p1, g1, u1 = jax.lax.fori_loop(0, n, bc if jh == "bcss2" else lf, (z, p, g, u))
-            h1 = u1 + 0.5 * jnp.sum(m * p1 * p1)
-            dh = jnp.where(jnp.isfinite(h1), h1 - h0, jnp.inf)
-            acc = jnp.minimum(1.0, jnp.exp(-dh))
-            take = random.uniform(k3) < acc
-            z, g, u = jax.tree.map(lambda a, b: jnp.where(take, a, b), (z1, g1, u1), (z, g, u))
-            grads = n * (2 if jh == "bcss2" else 1)
-            return s._replace(i=s.i + 1, z=zof(z), z_grad=zof(g), potential_energy=jnp.asarray(u, s.potential_energy.dtype),
-                              energy=jnp.asarray(h0, s.energy.dtype), num_steps=jnp.asarray(grads, s.num_steps.dtype),
-                              accept_prob=jnp.asarray(acc, s.accept_prob.dtype), diverging=dh > 1000.0, rng_key=key)
-
-        def body(s, _):
-            if fullj:
-                u = 1.0 - random.uniform(random.fold_in(s.rng_key, 7))
-                s = s._replace(trajectory_length=jnp.asarray(tmax * u, s.trajectory_length.dtype))
-            s = jax.lax.cond(jm, jstep, lambda q: kernel.sample(q, args, {}), s) if fused else kernel.sample(s, args, {})
-            out = jax.lax.cond(samp, post, lambda zz: jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shp), s.z)
-            fz = jax.lax.cond(samp, lambda a: jnp.zeros((2, coords.D)),
-                              lambda a: jnp.stack([coords.flat(a[0]), coords.flat(a[1])]), (s.z, s.z_grad))
-            return s, (coords.model_v(s.z, parts), out, s.num_steps, s.energy, s.accept_prob, s.diverging, fz)
-
-        return jax.lax.scan(body, st, None, length=B)
-
-    prog = jax.pmap(run, in_axes=(0, None, None, None, None), axis_name="chain")
-    nojh = (jnp.asarray(False), jnp.asarray(1, jnp.int32))
-    shard = jax.pmap(lambda x: x, axis_name="chain")
-    return dict(cfgp=cfgp, keys=keys, initf=initf, prog=prog, shard=shard, nojh=nojh, jh=jh, fused=fused, zof=zof,
-                jprog=None, imm_fix=False)
+def _divisor(n, cap=_BLOCK):
+    return max(d for d in range(1, min(n, cap) + 1) if n % d == 0)
 
 
-class _FoldPrep:
-    def __init__(self, config, chains, warmup, rng_key, make_kernel):
-        self.config, self.chains, self.warmup, self.rng_key, self.make_kernel = config, chains, warmup, rng_key, make_kernel
-        self.thread, self.err, self.pre, self.kernel, self.t = None, None, None, None, {}
+def _rebuild_point(warmup):
+    """The end of the first mass-adaptation window: where the anchors are rebuilt at the chains' positions,
+    so every later window adapts in the rebuilt map. None when the schedule has no full window."""
+    from numpyro.infer.hmc_util import build_adaptation_schedule
+    sched = build_adaptation_schedule(warmup)
+    if len(sched) < 3:
+        return None
+    t = sched[1].end + 1
+    return t if t < warmup else None
+
+
+class _FoldPrograms:
+    """One program for warmup and sampling, running a block of transitions for every chain (pmap), with the
+    map's anchors and the phase as runtime arguments; lowered and compiled in a background thread while the
+    Laplace stage runs. `tmax`: draw each transition's trajectory length uniformly on (0, tmax]
+    (static-trajectory HMC); None for NUTS. Without `parallel` the program loops over the chains."""
+
+    def __init__(self, config, chains, warmup, thinning, rng_key, make_kernel, tmax, sampling=True, parallel=True,
+                 traj=None):
+        import math
+        self.parallel, self.traj = parallel, traj
+        self.cap, self.lens = tmax, None
+        self.nlens = max(1, chains * warmup)
+        self.config, self.C, self.warmup, self.thin = config, chains, warmup, int(thinning)
+        self.rng_key, self.make_kernel, self.tmax, self.sampling = rng_key, make_kernel, tmax, sampling
+        self.rebuild = _rebuild_point(warmup)
+        self.Bw = _divisor(math.gcd(warmup, self.rebuild) if self.rebuild else warmup) if warmup > 0 else _BLOCK
+        self.Bs = self.Bw
+        self.thread, self.err, self.t = None, None, {}
 
     def start(self, coords):
         import threading
         _thread_local_handlers()
         t0 = time.time()
-        C = self.chains
-        self.kernel = self.make_kernel(coords)
-        pre = _fold_build(self.kernel, coords, self.config, C, self.warmup, self.rng_key)
-        pre["imm_fix"] = os.environ.get("BAYESROC_NUTS_IMM") == "lap"
-        self.pre = pre
+        C, warmup, thin, tmax, B = self.C, self.warmup, self.thin, self.tmax, self.Bw
+        kernel = self.kernel = self.make_kernel(coords)
+        config, D, sampling = self.config, coords.D, self.sampling
+        cfgp = self.cfgp = lambda parts: {**config, "_nuts_parts": parts}
+        self.keys = random.split(self.rng_key, C)
+        jitter = self.jitter = _jitter(tmax)
+
+        def init(key, z, parts):
+            return kernel.init(key, warmup, z, (cfgp(parts),), {})
+
+        def run(st, parts, samp, acc, cap, lens, nlen):
+            args = (cfgp(parts),)
+            post = kernel.postprocess_fn(args, {})
+            shp = jax.eval_shape(post, st.z) if sampling else None
+            n = jnp.where(samp, thin, 1)
+
+            def body(c, _):
+                s, tot = c
+
+                def step(_, q):
+                    s, dv = q
+                    s = kernel.sample(jitter(s, cap, lens, nlen), args, {})
+                    return s, dv | s.diverging
+
+                s, dv = jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
+                tot = jax.lax.cond(acc, lambda t: t + coords.model_v(s.z, parts), lambda t: t, tot)
+                out = (jax.lax.cond(samp, post, lambda zz: jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shp), s.z)
+                       if sampling else None)
+                return (s, tot), (out, s.num_steps, s.energy, s.accept_prob, dv, s.adapt_state.step_size)
+
+            (s, tot), ex = jax.lax.scan(body, (st, jnp.zeros(D, jnp.result_type(float))), None, length=B)
+            return s, tot, coords.model_v(s.z, parts), ex
+
+        deferred = getattr(kernel, "_cross_chain", None)
+
+        def run_shared(sts, parts, samp, acc, cap, lens, nlen):
+            args = (cfgp(parts),)
+            post = kernel.postprocess_fn(args, {})
+            shp = jax.eval_shape(post, jax.tree.map(lambda a: a[0], sts.z)) if sampling else None
+            n = jnp.where(samp, thin, 1)
+            from numpyro.infer.hmc_util import IntegratorState
+
+            def one(s):
+                def step(_, q):
+                    s, dv = q
+                    s = kernel.sample(jitter(s, cap, lens, nlen), args, {})
+                    return s, dv | s.diverging
+
+                return jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
+
+            def adapt(s, a):
+                t = s.i - 1
+                zi = IntegratorState(s.z, s.z, s.potential_energy, s.z_grad)
+                new = jax.lax.cond(t < warmup, lambda q: deferred.update(t, a, zi, q), lambda q: q, s.adapt_state)
+                return s._replace(adapt_state=new)
+
+            def body(c, _):
+                ss, tot = c
+                ss, dv = jax.lax.map(one, ss)
+                a = jnp.mean(ss.accept_prob)
+                ss = jax.lax.map(lambda q: adapt(q, a), ss)
+                v = jax.lax.map(lambda z: coords.model_v(z, parts), ss.z)
+                tot = jax.lax.cond(acc, lambda t: t + v, lambda t: t, tot)
+                out = (jax.lax.cond(samp, lambda zz: jax.lax.map(post, zz),
+                                    lambda zz: jax.tree.map(lambda x: jnp.zeros((C,) + x.shape, x.dtype), shp), ss.z)
+                       if sampling else None)
+                return (ss, tot), (out, ss.num_steps, ss.energy, ss.accept_prob, dv, ss.adapt_state.step_size)
+
+            (ss, tot), ex = jax.lax.scan(body, (sts, jnp.zeros((C, D), jnp.result_type(float))), None, length=B)
+            ex = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), ex)
+            return ss, tot, jax.lax.map(lambda z: coords.model_v(z, parts), ss.z), ex
+
+        traj = self.traj
+
+        def run_traj(st, parts, acc, ta, stacked):
+            import trajadapt
+            from numpyro.infer.hmc_util import IntegratorState
+            args = (cfgp(parts),)
+            pot = lambda z: coords.potential(args[0], z)
+            cm = (lambda x: jnp.broadcast_to(jnp.mean(x, 0), x.shape)) if stacked else (lambda x: jax.lax.pmean(x, "chain"))
+            each = (lambda f, *xs: jax.lax.map(lambda q: f(*q), xs)) if stacked else (lambda f, *xs: f(*xs))
+
+            def adapt(s, a, i):
+                zi = IntegratorState(s.z, s.z, s.potential_energy, s.z_grad)
+                new = jax.lax.cond(i < warmup, lambda q: deferred.update(i, a, zi, q), lambda q: q, s.adapt_state)
+                return s._replace(adapt_state=new)
+
+            def body(c, _):
+                s, tot, ta = c
+                i = s.i
+                T = jnp.exp(ta["logT"])
+                s, info = each(lambda q, tt: trajadapt.transition(traj, q, tt, pot), s, T)
+                s = each(adapt, s, cm(info["a"]), i)
+                znew = each(lambda z: ravel_pytree(z)[0], s.z)
+                ta = trajadapt.update(traj, ta, i, info, znew, cm)
+                v = each(lambda z: coords.model_v(z, parts), s.z)
+                tot = jax.lax.cond(acc, lambda q: q + v, lambda q: q, tot)
+                return (s, tot, ta), (s.num_steps, s.accept_prob, s.adapt_state.step_size, T, info["tstar"])
+
+            tot0 = jnp.zeros(((C, D) if stacked else (D,)), jnp.result_type(float))
+            (s, tot, ta), ex = jax.lax.scan(body, (st, tot0, ta), None, length=B)
+            if stacked:
+                ex = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), ex)
+            return s, tot, each(lambda z: coords.model_v(z, parts), s.z), ta, ex
+
+        if self.parallel:
+            self.initf = jax.pmap(init, in_axes=(0, 0, None), axis_name="chain")
+            self.prog = jax.pmap(run, in_axes=(0, None, None, None, None, None, None), axis_name="chain")
+            self.shard = jax.pmap(lambda x: x)
+            if traj:
+                self.taprog = jax.pmap(lambda st, p, a, ta: run_traj(st, p, a, ta, False), in_axes=(0, None, None, 0),
+                                       axis_name="chain")
+        else:
+            loop = lambda f, n: jax.jit(lambda *a: jax.lax.map(lambda x: f(*x, *a[n:]), tuple(a[:n])))
+            self.initf = loop(init, 2)
+            self.prog = jax.jit(run_shared) if hasattr(deferred, "update") and not traj else loop(run, 1)
+            self.shard = jnp.asarray
+            if traj:
+                self.taprog = jax.jit(lambda st, p, a, ta: run_traj(st, p, a, ta, True))
         parts0, z0 = coords.aux, coords.init_params(C, batched=True)
 
         def work():
             try:
-                bat = lambda t: jax.tree.map(lambda a: jax.ShapeDtypeStruct((C,) + tuple(a.shape), a.dtype), t)
                 one = jax.tree.map(lambda a: a[0], z0)
-                st1 = jax.eval_shape(lambda k, z: self.kernel.init(k, self.warmup, z, (pre["cfgp"](parts0),), {}),
-                                     pre["keys"][0], one)
-                sts = bat(st1)
-                low = {"initf": pre["initf"].lower(pre["keys"], z0, parts0),
-                       "prog": pre["prog"].lower(sts, parts0, jnp.asarray(False), *pre["nojh"])}
-                if pre["jh"] and not pre["fused"]:
-                    jp = _jhmc_prog(self.kernel, coords, pre["cfgp"])
-                    im = sts.adapt_state.inverse_mass_matrix
-                    m0 = list(im.values())[0] if isinstance(im, dict) else im
-                    xs = jax.ShapeDtypeStruct((C, coords.D), m0.dtype)
-                    low["jprog"] = jp.lower(xs, pre["keys"], sts.adapt_state.step_size, m0, parts0,
-                                            jnp.asarray(1, jnp.int32))
+                st1 = jax.eval_shape(lambda k, z: kernel.init(k, warmup, z, (cfgp(parts0),), {}), self.keys[0], one)
+                sts = jax.tree.map(lambda a: jax.ShapeDtypeStruct((C,) + tuple(a.shape), a.dtype), st1)
+                f = jnp.asarray(False)
+                c0 = jnp.asarray(_HMC_TMAX, jnp.result_type(float))
+                l0, n0 = jnp.zeros(self.nlens, jnp.result_type(float)), jnp.asarray(0, jnp.int32)
+                low = {"initf": self.initf.lower(self.keys, z0, parts0),
+                       "prog": self.prog.lower(sts, parts0, f, f, c0, l0, n0)}
+                if traj:
+                    import trajadapt
+                    ta0 = jax.tree.map(lambda x: jax.ShapeDtypeStruct((C,) + tuple(jnp.shape(x)), jnp.result_type(x)),
+                                       trajadapt.init(traj, D, 1.0, jnp.result_type(float)))
+                    low["taprog"] = self.taprog.lower(sts, parts0, f, ta0)
                 self.t["lower"] = time.time() - t0
                 for k, l in low.items():
-                    pre[k] = l.compile()
+                    setattr(self, k, l.compile())
                     self.t[k] = time.time() - t0
             except Exception as e:
                 self.err = e
@@ -6338,415 +6232,262 @@ class _FoldPrep:
         self.thread = threading.Thread(target=work, daemon=True)
         self.thread.start()
 
+    def _cap(self):
+        return jnp.asarray(_HMC_TMAX if self.cap is None else self.cap, jnp.result_type(float))
+
+    def _lens(self):
+        L = np.zeros(self.nlens)
+        n = 0 if self.lens is None else min(len(self.lens), self.nlens)
+        if n:
+            L[:n] = np.asarray(self.lens)[:n]
+        return jnp.asarray(L, jnp.result_type(float)), jnp.asarray(n, jnp.int32)
+
+    def warmf(self, st, parts, acc):
+        return self.prog(st, parts, jnp.asarray(False), jnp.asarray(acc), self._cap(), *self._lens())
+
+    def sampf(self, st, parts):
+        s, _, _, ex = self.prog(st, parts, jnp.asarray(True), jnp.asarray(False), self._cap(), *self._lens())
+        return s, ex
+
     def wait(self):
         t0 = time.time()
         self.thread.join()
         self.t["waited"] = time.time() - t0
         if self.err is not None:
             raise self.err
-        return self.pre
 
 
-def _fold_run(kernel, coords, config, chains, warmup, samples, t_r, rng_key, trace, progress_bar, pre=None):
-    B = int(os.environ.get("BAYESROC_NUTS_BLOCK", "50"))
-    if t_r % B or warmup % B or samples % B or not 0 < t_r < warmup:
-        raise ValueError(f"BAYESROC_NUTS_FOLD: rebuild {t_r}, warmup {warmup}, samples {samples} need multiples of {B}")
-    pool = os.environ.get("BAYESROC_NUTS_POOL") == "1"
-    snap = os.environ.get("BAYESROC_NUTS_SNAP") == "1"
-    fisher = os.environ.get("BAYESROC_NUTS_FISHER") == "1"
-    from numpyro.infer.hmc_util import build_adaptation_schedule
-    sched = build_adaptation_schedule(warmup)
-    wins = [(w.start, w.end + 1) for w in sched[1:-1] if w.end + 1 > t_r] if fisher else []
-    if any(a % B or b % B for a, b in wins):
-        raise ValueError(f"BAYESROC_NUTS_FISHER: mass windows {wins} need multiples of {B}")
-    pre = pre or _fold_build(kernel, coords, config, chains, warmup, rng_key)
-    cfgp, keys, initf, prog, shard, nojh, jh, fused, zof = (pre[k] for k in ("cfgp", "keys", "initf", "prog", "shard",
-                                                                            "nojh", "jh", "fused", "zof"))
-    fullj = os.environ.get("BAYESROC_FULL_JHMC") == "1"
+def _with_mass(st, imm, pg, D):
+    am = st.adapt_state
+    im = am.inverse_mass_matrix
+    if isinstance(im, dict) and len(im) != 1:
+        raise RuntimeError("bayesroc: the initial mass needs one diagonal mass block")
+    v = np.broadcast_to(np.asarray(imm, dtype=float), (pg.C, D))
+    wrap = (lambda x: {k: x for k in im}) if isinstance(im, dict) else (lambda x: x)
+    return st._replace(adapt_state=am._replace(inverse_mass_matrix=wrap(pg.shard(jnp.asarray(v))),
+                                               mass_matrix_sqrt=wrap(pg.shard(jnp.asarray(1.0 / np.sqrt(v)))),
+                                               mass_matrix_sqrt_inv=wrap(pg.shard(jnp.asarray(np.sqrt(v))))))
+
+
+def _jitter(tmax):
+    """The state with its trajectory length drawn uniformly on (0, cap] from the state's own key, cap
+    `tmax` unless given; the identity for NUTS (tmax None)."""
+    if tmax is None:
+        return lambda s, cap=None, lens=None, nlen=None: s
+
+    def f(s, cap=None, lens=None, nlen=None):
+        k = random.fold_in(s.rng_key, 7)
+        c = tmax if cap is None else cap
+        t = c * (1.0 - random.uniform(k))
+        if lens is not None:
+            emp = lens[random.randint(k, (), 0, jnp.maximum(nlen, 1))]
+            t = jnp.where(nlen > 0, emp, t)
+        return s._replace(trajectory_length=jnp.asarray(t, s.trajectory_length.dtype))
+
+    return f
+
+
+def _chain_adapt(parallel, chains, gamma=_HMC_GAMMA):
+    from nuts_turn import _Deferred
+    return False if chains < 2 else True if parallel else _Deferred(gamma)
+
+
+def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_tree_depth, step_size, progress_bar,
+               init_strategy, init_radius, init_z, transport, sampler, sampling=True, build=None, parallel=True,
+               gamma=_HMC_GAMMA, trajectory="fixed"):
+    """The coordinates (Laplace anchors) and the background-compiled programs of a fold fit. `gamma`: the
+    HMC step size's dual averaging gain (Stan's `adapt gamma`)."""
+    hmc = sampler == "hmc"
+    label = "HMC" if hmc else "NUTS"
+    traj = trajectory if hmc and trajectory != "fixed" and warmup > 0 else None
+
+    def make_kernel(c):
+        kw = {"inverse_mass_matrix": jnp.ones(c.D)} if c.source == "laplace" else {}
+        if hmc:
+            from nuts_turn import _Deferred
+            cc = _Deferred(gamma) if traj else _chain_adapt(parallel, chains, gamma)
+            return FastHMC(sdt_model, coords=c, integrator="bcss", cross_chain=cc, gamma=gamma,
+                           target_accept_prob=target_accept_prob, step_size=float(step_size),
+                           trajectory_length=_HMC_TMAX, **kw)
+        return FastNUTS(sdt_model, coords=c, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth,
+                        step_size=float(step_size), **kw)
+
+    pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
+                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1, traj)
+    coords = NutsCoords(config, chains, seed, parallel and chains > 1, progress_bar, init_strategy, init_radius, init_z,
+                        transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build)
+    if pg.thread is None:
+        pg.start(coords)
+    pg.wait()
+    return coords, pg, label
+
+
+def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
+    """Warmup with the programs of `pg`. At the end of the first mass window the anchors are rebuilt at
+    the chains' positions (scale coordinates at the last draw, effects averaged over the window's second
+    half), the chains moved into the rebuilt map and the initial mass recomputed there; every later
+    window adapts in that map. Returns the warmed-up state (chain axis first)."""
+    C, D = pg.C, coords.D
+    cat = lambda xs: np.concatenate([np.asarray(x) for x in xs], 1)
     t_w = time.time()
     parts = coords.aux
-    st = initf(keys, coords.init_params(chains, batched=True), parts)
-    if pre["imm_fix"]:
-        imm0 = nuts_initial_mass(coords)
-        if imm0 is not None:
-            imm = shard(jnp.asarray(np.broadcast_to(imm0, (chains, coords.D))))
-            am = st.adapt_state
-            wrap = (lambda v: {k: v for k in am.inverse_mass_matrix}) if isinstance(am.inverse_mass_matrix, dict)                 else (lambda v: v)
-            st = st._replace(adapt_state=am._replace(inverse_mass_matrix=wrap(imm), mass_matrix_sqrt=wrap(1.0 / jnp.sqrt(imm)),
-                                                     mass_matrix_sqrt_inv=wrap(jnp.sqrt(imm))))
-    jax.block_until_ready(st.z_grad)
-    trace["fold_t_init0"] = time.time() - t_w
-    cat = lambda xs: np.concatenate([np.asarray(x) for x in xs], 1)
-    zbuf, wsteps, fbuf = [], [], []
-    bar = progress.bar(warmup, "HMC warmup (jittered)" if fullj else "NUTS warmup") if progress_bar else None
+    st = pg.initf(pg.keys, coords.init_params(C, batched=True), parts)
+    imm = nuts_initial_mass(coords)
+    if imm is not None:
+        st = _with_mass(st, imm, pg, D)
+    rb = pg.rebuild if coords.source == "laplace" else None
+    tot, n_acc, steps, w_acc, w_eps, w_T, w_ts = np.zeros((C, D)), 0, [], [], [], [], []
+    bar = progress.bar(warmup, f"{label} warmup") if progress_bar else None
+    ta = None
+    if pg.traj:
+        import trajadapt
+        ta = jax.tree.map(lambda x: pg.shard(jnp.broadcast_to(x, (C,) + jnp.shape(x))),
+                          trajadapt.init(pg.traj, D, float(np.ravel(np.asarray(st.adapt_state.step_size))[0]),
+                                         jnp.result_type(float)))
     i = 0
     while i < warmup:
-        st, (zs, _, ns, _, _, _, fz) = prog(st, parts, jnp.asarray(False), *nojh)
-        i += B
-        fbuf.append(np.asarray(fz))
-        if i == B:
-            jax.block_until_ready(st.z)
-            trace["fold_t_first_block"] = time.time() - t_w - trace["fold_t_init0"]
-        wsteps.append(ns)
-        if i <= t_r:
-            zbuf.append(zs)
-        if i == t_r and os.environ.get("BAYESROC_FOLD_REBUILD", "1") == "1":
-            tr0 = time.time()
-            coords.rebuild_th(cat(zbuf))
-            trace["fold_t_rebuild"] = time.time() - tr0
-            coords.lap_curvature()
-            trace["fold_t_curv"] = time.time() - tr0 - trace["fold_t_rebuild"]
-            imm = shard(jnp.asarray(np.broadcast_to(nuts_initial_mass(coords), (chains, coords.D))))
+        acc = rb is not None and rb // 2 <= i < rb
+        if ta is None:
+            st, t_blk, last, (_, ns, _, ap, _, ss) = pg.warmf(st, parts, acc)
+        else:
+            st, t_blk, last, ta, (ns, ap, ss, Tb, tsb) = pg.taprog(st, parts, jnp.asarray(acc), ta)
+            w_T.append(Tb)
+            if i >= warmup // 2:
+                w_ts.append(np.asarray(tsb))
+        i += pg.Bw
+        steps.append(ns)
+        w_acc.append(ap)
+        w_eps.append(ss)
+        if acc:
+            tot, n_acc = tot + np.asarray(t_blk), n_acc + pg.Bw
+        if rb is not None and i == rb:
+            coords.rebuild_from(np.asarray(last), tot / max(n_acc, 1))
+            if coords.pf is not None:
+                coords.lap_curvature()
             parts = coords.aux
-            fresh = initf(keys, coords.init_params(chains, batched=True), parts)
-            jax.block_until_ready(fresh.z_grad)
-            trace["fold_t_init"] = time.time() - tr0 - trace["fold_t_rebuild"] - trace["fold_t_curv"]
-            am = st.adapt_state
-            wrap = (lambda v: {k: v for k in am.inverse_mass_matrix}) if isinstance(am.inverse_mass_matrix, dict) \
-                else (lambda v: v)
-            if isinstance(am.inverse_mass_matrix, dict) and len(am.inverse_mass_matrix) != 1:
-                raise RuntimeError("BAYESROC_NUTS_FOLD needs one diagonal mass block")
-            am = am._replace(inverse_mass_matrix=wrap(imm), mass_matrix_sqrt=wrap(1.0 / jnp.sqrt(imm)),
-                             mass_matrix_sqrt_inv=wrap(jnp.sqrt(imm)))
-            st = st._replace(z=fresh.z, z_grad=fresh.z_grad, potential_energy=fresh.potential_energy, adapt_state=am)
-            trace["imm0"] = np.asarray(imm[0])
-            trace["fold_rebuild_wall"] = time.time() - tr0
-            zbuf = []
-        for a, b in wins:
-            if i == b and b > t_r:
-                w = np.concatenate(fbuf[a // B:b // B], 1)
-                imm = shard(jnp.asarray(np.clip(np.sqrt(w[:, :, 0].var(1) / np.maximum(w[:, :, 1].var(1), 1e-300)),
-                                                1e-8, 1e8)))
-                am = st.adapt_state
-                wrap = (lambda v: {k: v for k in am.inverse_mass_matrix}) if isinstance(am.inverse_mass_matrix, dict)                     else (lambda v: v)
-                st = st._replace(adapt_state=am._replace(inverse_mass_matrix=wrap(imm), mass_matrix_sqrt=wrap(1.0 / jnp.sqrt(imm)),
-                                                         mass_matrix_sqrt_inv=wrap(jnp.sqrt(imm))))
-                trace[f"fisher_{b}_ratio_med"] = float(np.median(np.asarray(imm) / w[:, :, 0].var(1)))
+            fresh = pg.initf(pg.keys, coords.init_params(C, batched=True), parts)
+            st = st._replace(z=fresh.z, z_grad=fresh.z_grad, potential_energy=fresh.potential_energy)
+            imm = nuts_initial_mass(coords)
+            if imm is not None:
+                st = _with_mass(st, imm, pg, D)
+            if ta is not None and pg.traj == "snaper":
+                ta = {**ta, "n": jnp.zeros_like(ta["n"])}
         if bar is not None:
             jax.block_until_ready(st.z)
-            bar.update(B)
+            bar.update(pg.Bw)
     if bar is not None:
         bar.close()
     jax.block_until_ready(st.z)
-    trace["warmup_wall"] = time.time() - t_w
-    trace["warmup_num_steps"] = cat(wsteps)
-    trace["step_size_chains"] = np.asarray(st.adapt_state.step_size)
-    if pool or snap:
-        eps = float(np.exp(np.mean(np.log(np.asarray(st.adapt_state.step_size)))))
-        f = 1.0
-        if snap:
-            for k in range(1, 11):
-                edge = np.pi / (2 ** k - 1)
-                if edge / 1.1 <= eps < edge:
-                    f = 1.01 * edge / eps
-                    break
-        trace["snap_factor"] = f
-        pooled = jax.pmap(lambda e, f: jnp.exp(jax.lax.pmean(jnp.log(e), "chain")) * f, in_axes=(0, None),
-                          axis_name="chain")
-        st = st._replace(adapt_state=st.adapt_state._replace(step_size=pooled(st.adapt_state.step_size, f)))
-    trace["step_size"] = np.asarray(st.adapt_state.step_size)
-    im = st.adapt_state.inverse_mass_matrix
-    im = list(im.values()) if isinstance(im, dict) else [im]
-    trace["inverse_mass"] = np.concatenate([np.reshape(np.asarray(v), (chains, -1)) for v in im], 1)
-    if os.environ.get("BAYESROC_NUTS_MAMS") == "1":
-        return _mams_sample(kernel, coords, cfgp, st, parts, chains, samples, rng_key, trace, cat, progress_bar=progress_bar)
-    jsamp = nojh
-    if jh:
-        lm = os.environ.get("BAYESROC_JHMC_LMAX", "auto")
-        lmax = int(lm) if lm != "auto" else max(1, int(round(float(np.median(trace["warmup_num_steps"][:, -50:])))))
-        trace["jhmc_lmax"] = lmax
-        jsamp = (jnp.asarray(True), jnp.asarray(lmax, jnp.int32))
-        if not fused:
-            os.environ["BAYESROC_JHMC_LMAX"] = str(lmax)
-            return _jhmc_sample(kernel, coords, cfgp, st, parts, chains, samples, rng_key, trace, cat, pre["jprog"],
-                                progress_bar=progress_bar)
+    if ta is not None:
+        import trajadapt
+        pg.cap = float(np.ravel(np.asarray(trajadapt.cap(pg.traj, ta)))[0])
+        if pg.traj == "ehmc" and w_ts:
+            ts = np.concatenate([x.reshape(-1) for x in w_ts])
+            pg.lens = ts[np.isfinite(ts) & (ts > 0)]
+        if progress_bar:
+            extra = (f"; {len(pg.lens)} U-turn times, median {np.median(pg.lens):.3f}" if pg.lens is not None
+                     and len(pg.lens) else "")
+            print(f"[{label}] {pg.traj} trajectory cap {pg.cap:.3f}{extra}", flush=True)
+    if trace is not None:
+        trace["warmup_wall"] = time.time() - t_w
+        trace["trajectory_cap"] = np.asarray(pg.cap if pg.cap is not None else np.nan)
+        if w_T:
+            trace["warmup_T"] = cat(w_T)
+        if steps:
+            trace["warmup_num_steps"] = cat(steps)
+            trace["warmup_accept"] = cat(w_acc)
+            trace["warmup_step_size"] = cat(w_eps)
+        trace["step_size"] = np.asarray(st.adapt_state.step_size)
+        im = st.adapt_state.inverse_mass_matrix
+        im = list(im.values()) if isinstance(im, dict) else [im]
+        trace["inverse_mass"] = np.concatenate([np.reshape(np.asarray(v), (C, -1)) for v in im], 1)
+    return st
+
+
+def _fold_run(pg, coords, warmup, samples, trace, progress_bar, label):
+    """fold_warmup, then `samples` draws. Returns (samples by chain, extra fields, last state)."""
+    cat = lambda xs: np.concatenate([np.asarray(x) for x in xs], 1)
+    st = fold_warmup(pg, coords, warmup, trace, progress_bar, label)
+    parts = coords.aux
     t_s = time.time()
     outs, ex = [], []
-    bar = progress.bar(samples, "HMC sampling (jittered)" if fullj else "NUTS sampling") if progress_bar else None
-    for _ in range(samples // B):
-        st, (_, out, ns, en, ap, dv, _) = prog(st, parts, jnp.asarray(True), *jsamp)
+    bar = progress.bar(samples, f"{label} sampling") if progress_bar else None
+    done = 0
+    while done < samples:
+        st, (out, ns, en, ap, dv, _) = pg.sampf(st, parts)
         outs.append(out)
         ex.append((ns, en, ap, dv))
+        k = min(pg.Bs, samples - done)
+        done += pg.Bs
         if bar is not None:
             jax.block_until_ready(st.z)
-            bar.update(B)
+            bar.update(k)
     if bar is not None:
         bar.close()
     jax.block_until_ready(st.z)
-    trace["sampling_wall"] = time.time() - t_s
-    samples_dict = {k: cat([o[k] for o in outs]) for k in outs[0]}
-    extra = {f: cat([e[j] for e in ex]) for j, f in enumerate(("num_steps", "energy", "accept_prob", "diverging"))}
-    trace["sampling_num_steps"] = extra["num_steps"]
-    trace["sampling_accept"] = extra["accept_prob"].mean(1)
-    trace["sampling_divergent"] = extra["diverging"].sum(1)
+    samples_dict = {k: cat([o[k] for o in outs])[:, :samples] for k in outs[0]}
+    extra = {f: cat([e[j] for e in ex])[:, :samples] for j, f in enumerate(("num_steps", "energy", "accept_prob", "diverging"))}
+    if trace is not None:
+        trace["sampling_wall"] = time.time() - t_s
+        trace["sampling_num_steps"] = extra["num_steps"]
+        trace["sampling_accept"] = extra["accept_prob"]
+        trace["sampling_divergent"] = extra["diverging"]
     return samples_dict, extra, st
 
 
-def _jhmc_prog(kernel, coords, cfgp):
-    integ = os.environ.get("BAYESROC_NUTS_JHMC")
-    late = os.environ.get("BAYESROC_POST_AFTER") == "1"
-    lam, B = float(os.environ.get("BAYESROC_BCSS_LAM", "0.21132486540518713")), int(os.environ.get("BAYESROC_NUTS_BLOCK", "50"))
-    zof = lambda v: {k: v[coords.off[k][0]].reshape(coords.off[k][1]) for k in coords.keys}
-
-    def run(x, key, eps, m, parts, lmax):
-        vg = jax.value_and_grad(lambda v: coords.potential(cfgp(parts), zof(v)))
-        post = kernel.postprocess_fn((cfgp(parts),), {})
-
-        def flow(z, p, g, n):
-            def lf(_, c):
-                z, p, g, u = c
-                p = p - 0.5 * eps * g
-                z = z + eps * m * p
-                u, g = vg(z)
-                return z, p - 0.5 * eps * g, g, u
-
-            def bc(_, c):
-                z, p, g, u = c
-                p = p - lam * eps * g
-                z = z + 0.5 * eps * m * p
-                u, g = vg(z)
-                p = p - (1.0 - 2.0 * lam) * eps * g
-                z = z + 0.5 * eps * m * p
-                u, g = vg(z)
-                return z, p - lam * eps * g, g, u
-
-            u0 = jnp.zeros(())
-            return jax.lax.fori_loop(0, n, bc if integ == "bcss2" else lf, (z, p, g, u0))
-
-        def body(c, k):
-            z, u, g = c
-            k1, k2, k3 = random.split(k, 3)
-            n = random.randint(k1, (), 1, lmax + 1)
-            p = random.normal(k2, z.shape) / jnp.sqrt(m)
-            h0 = u + 0.5 * jnp.sum(m * p * p)
-            z1, p1, g1, u1 = flow(z, p, g, n)
-            h1 = u1 + 0.5 * jnp.sum(m * p1 * p1)
-            dh = jnp.where(jnp.isfinite(h1), h1 - h0, jnp.inf)
-            acc = jnp.minimum(1.0, jnp.exp(-dh))
-            take = random.uniform(k3) < acc
-            z, u, g = jax.tree.map(lambda a, b: jnp.where(take, a, b), (z1, u1, g1), (z, u, g))
-            grads = n * (2 if integ == "bcss2" else 1)
-            return (z, u, g), (z if late else post(zof(z)), grads, h0, acc, dh > 1000.0)
-
-        u0, g0 = vg(x)
-        return jax.lax.scan(body, (x, u0, g0), random.split(key, B))
-
-    return jax.pmap(run, in_axes=(0, 0, 0, 0, None, None), axis_name="chain")
-
-
-def _jhmc_sample(kernel, coords, cfgp, st, parts, chains, samples, rng_key, trace, cat, jprog=None, progress_bar=True):
-    integ = os.environ.get("BAYESROC_NUTS_JHMC")
-    late = os.environ.get("BAYESROC_POST_AFTER") == "1"
-    lmax = int(os.environ.get("BAYESROC_JHMC_LMAX", "16"))
-    lam, B = float(os.environ.get("BAYESROC_BCSS_LAM", "0.21132486540518713")), int(os.environ.get("BAYESROC_NUTS_BLOCK", "50"))
-    zof = lambda v: {k: v[coords.off[k][0]].reshape(coords.off[k][1]) for k in coords.keys}
-    im = st.adapt_state.inverse_mass_matrix
-    imm = list(im.values())[0] if isinstance(im, dict) else im
-    x0 = jax.pmap(lambda z: coords.flat(z), axis_name="chain")(st.z)
-    keys = random.split(random.fold_in(rng_key, 11), chains)
-    eps = st.adapt_state.step_size
-
-    prog = jprog or _jhmc_prog(kernel, coords, cfgp)
-    t_s = time.time()
-    outs, ex = [], []
-    x = x0
-    bar = progress.bar(samples, f"HMC sampling (two-stage, L <= {lmax})") if progress_bar else None
-    for j in range(samples // B):
-        bk = jnp.stack([random.fold_in(k, 1000 + j) for k in keys])
-        (x, _, _), (out, ns, en, ap, dv) = prog(x, bk, eps, imm, parts, jnp.asarray(lmax, jnp.int32))
-        outs.append(out)
-        ex.append((ns, en, ap, dv))
-        jax.block_until_ready(x)
-        if j == 0:
-            t_first = time.time() - t_s
-        if bar is not None:
-            bar.update(B)
-    if bar is not None:
-        bar.close()
-    trace["sampling_wall"] = time.time() - t_s
-    trace["samp_compile"] = max(0.0, t_first - (trace["sampling_wall"] - t_first) / max(1, samples // B - 1))
-    trace["jhmc_lmax"] = lmax
-    if late:
-        tp = time.time()
-        postm = jax.pmap(lambda Z, parts: jax.lax.map(lambda v: kernel.postprocess_fn((cfgp(parts),), {})(zof(v)), Z),
-                         in_axes=(0, None), axis_name="chain")
-        Z = jnp.asarray(cat(outs))
-        outs = [jax.tree.map(np.asarray, postm(Z, parts))]
-        trace["post_wall"] = time.time() - tp
-    samples_dict = {k: cat([o[k] for o in outs]) for k in outs[0]}
-    extra = {f: cat([e[j] for e in ex]) for j, f in enumerate(("num_steps", "energy", "accept_prob", "diverging"))}
-    trace["sampling_num_steps"] = extra["num_steps"]
-    trace["sampling_accept"] = extra["accept_prob"].mean(1)
-    trace["sampling_divergent"] = extra["diverging"].sum(1)
-    return samples_dict, extra, st
-
-
-def _mams_sample(kernel, coords, cfgp, st, parts, chains, samples, rng_key, trace, cat, progress_bar=True):
-    import blackjax
-    from blackjax.adaptation.mclmc_adaptation import MCLMCAdaptationState
-    dyn = blackjax.mcmc.adjusted_mclmc_dynamic
-    zof = lambda v: {k: v[coords.off[k][0]].reshape(coords.off[k][1]) for k in coords.keys}
-    im = st.adapt_state.inverse_mass_matrix
-    imm = list(im.values())[0] if isinstance(im, dict) else im
-    x0 = jax.pmap(lambda z: coords.flat(z), axis_name="chain")(st.z)
-    keys = random.split(random.fold_in(rng_key, 7), chains)
-    B = int(os.environ.get("BAYESROC_NUTS_BLOCK", "50"))
-    D = coords.D
-
-    def logd_of(parts):
-        return lambda v: -coords.potential(cfgp(parts), zof(v))
-
-    n_fn = lambda k, avg: jnp.maximum(1, jnp.ceil(random.uniform(k) * 2.0 * avg)).astype(jnp.int32)
-    kern = dyn.build_kernel(integration_steps_fn=n_fn)
-
-    def tune(key, x, m, parts):
-        logd = logd_of(parts)
-        k1, k2 = random.split(key)
-        s0 = dyn.init(x, logd, k1)
-        p0 = MCLMCAdaptationState(jnp.sqrt(jnp.sum(m)), 0.2 * jnp.sqrt(jnp.sum(m)), m)
-        k_steps = float(os.environ.get("BAYESROC_MAMS_K", "2"))
-        f3 = float(os.environ.get("BAYESROC_MAMS_F3", "0.1"))
-        s1, p1, n = blackjax.adjusted_mclmc_find_L_and_step_size(kern, logd, samples, s0, k2, 0.9,
-                                                                 frac_tune1=0.1, frac_tune2=0.1, frac_tune3=f3,
-                                                                 diagonal_preconditioning=False, params=p0,
-                                                                 target_num_integration_steps=k_steps)
-        return s1, p1.L, p1.step_size, p1.inverse_mass_matrix
-
+def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size, thinning,
+              progress_bar, init_strategy, init_radius, init_z, control, save_loglik, keep_re, save_state, sampler,
+              parallel=True):
+    """sampler "hmc": static-trajectory HMC with the trajectory length drawn uniformly on (0, pi] each
+    transition and the two-stage BCSS integrator; "nuts": NUTS (leapfrog). Both in transport-map
+    coordinates with Laplace anchors, the Laplace initial mass and the rebuild at the end of the first
+    mass window, NumPyro's (Stan's) windowed adaptation, chains in parallel."""
     t0 = time.time()
-    print("[MAMS] tuning step size and trajectory length" if os.environ.get("BAYESROC_MAMS_NOTUNE") != "1"
-          else "[MAMS] step size and trajectory length from the NUTS warmup", flush=True)
-    if os.environ.get("BAYESROC_MAMS_NOTUNE") == "1":
-        K = float(os.environ.get("BAYESROC_MAMS_K", "8"))
-        eps = float(os.environ.get("BAYESROC_MAMS_EPSF", "1.5")) * np.sqrt(D) * np.asarray(st.adapt_state.step_size)
-        L, m = jnp.asarray(K * eps), imm
-        eps = jnp.asarray(eps)
-        s1 = jax.pmap(lambda k, x, parts: dyn.init(x, logd_of(parts), k), in_axes=(0, 0, None),
-                      axis_name="chain")(keys, x0, parts)
-    else:
-        s1, L, eps, m = jax.pmap(tune, in_axes=(0, 0, 0, None), axis_name="chain")(keys, x0, imm, parts)
-    jax.block_until_ready(s1.position)
-    trace["mams_tune_wall"] = time.time() - t0
-    trace["mams_L"] = np.asarray(L)
-    trace["mams_step_size"] = np.asarray(eps)
-
-    def run(state, key, L, eps, m, parts):
-        logd = logd_of(parts)
-        post = kernel.postprocess_fn((cfgp(parts),), {})
-
-        def body(c, k):
-            c, info = kern(rng_key=k, state=c, logdensity_fn=logd, step_size=eps, inverse_mass_matrix=m,
-                           integration_steps_params=(L / eps,))
-            return c, (post(zof(c.position)), info.num_integration_steps, info.energy, info.acceptance_rate,
-                       info.is_divergent)
-
-        return jax.lax.scan(body, state, random.split(key, B))
-
-    prog = jax.pmap(run, in_axes=(0, 0, 0, 0, 0, None), axis_name="chain")
-    t_s = time.time()
-    outs, ex = [], []
-    state = s1
-    bar = progress.bar(samples, "MAMS sampling") if progress_bar else None
-    for j in range(samples // B):
-        bk = jnp.stack([random.fold_in(k, 1000 + j) for k in keys])
-        state, (out, ns, en, ap, dv) = prog(state, bk, L, eps, m, parts)
-        outs.append(out)
-        ex.append((ns, en, ap, dv))
-        jax.block_until_ready(state.position)
-        if j == 0:
-            t_first = time.time() - t_s
-        if bar is not None:
-            bar.update(B)
-    if bar is not None:
-        bar.close()
-    jax.block_until_ready(state.position)
-    trace["sampling_wall"] = time.time() - t_s
-    trace["samp_compile"] = max(0.0, t_first - (trace["sampling_wall"] - t_first) / max(1, samples // B - 1))
-    samples_dict = {k: cat([o[k] for o in outs]) for k in outs[0]}
-    extra = {f: cat([e[j] for e in ex]) for j, f in enumerate(("num_steps", "energy", "accept_prob", "diverging"))}
-    extra["num_steps"] = 2 * extra["num_steps"]
-    trace["sampling_num_steps"] = extra["num_steps"]
-    trace["sampling_accept"] = extra["accept_prob"].mean(1)
-    trace["sampling_divergent"] = extra["diverging"].sum(1)
-    return samples_dict, extra, st
-
-
-def _proc_chains(kw, chains, init_values):
-    import pickle, subprocess, tempfile, shutil
-    import cpus
-    here = os.path.dirname(os.path.abspath(__file__))
-    have = cpus.current() or list(range(os.cpu_count() or chains))
-    per = max(1, len(have) // chains)
-    tmp = tempfile.mkdtemp(prefix="bayesroc_chains_")
+    coords, pg, label = fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_tree_depth,
+                                   step_size, progress_bar, init_strategy, init_radius, init_z,
+                                   bool((control or {}).get("transport", True)), sampler, parallel=parallel,
+                                   gamma=float((control or {}).get("adapt_gamma", _HMC_GAMMA)),
+                                   trajectory=str((control or {}).get("trajectory", "fixed")))
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
-    t0 = time.time()
-    try:
-        procs, outs = [], []
-        for c in range(chains):
-            a = dict(kw, chains=1, seed=int(kw["seed"]) + 7919 * c, progress_bar=bool(kw["progress_bar"]) and c == 0,
-                     init_values=None if init_values is None else [init_values[c]])
-            argf, outf = os.path.join(tmp, f"args{c}.pkl"), os.path.join(tmp, f"out{c}.pkl")
-            with open(argf, "wb") as fh:
-                pickle.dump(a, fh)
-            env = dict(os.environ)
-            env["BAYESROC_PROC_CHAINS"] = "0"
-            env["XLA_FLAGS"] = " ".join([f for f in env.get("XLA_FLAGS", "").split()
-                                         if not f.startswith("--xla_force_host_platform_device_count")]
-                                        + ["--xla_force_host_platform_device_count=1"])
-            if trace_path:
-                env["BAYESROC_NUTS_TRACE"] = trace_path.replace(".npz", f"_c{c}.npz")
-            cl = ",".join(str(x) for x in have[c * per:(c + 1) * per] or have)
-            procs.append(subprocess.Popen([sys.executable, os.path.join(here, "chain_proc.py"), argf, outf, cl], env=env))
-            outs.append(outf)
-        codes = [p.wait() for p in procs]
-        if any(codes):
-            raise RuntimeError(f"bayesroc: chain processes failed (exit codes {codes})")
-        res = []
-        for f in outs:
-            with open(f, "rb") as fh:
-                res.append(pickle.load(fh))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    cat = lambda xs: np.concatenate([np.asarray(x) for x in xs], 0)
-    out = {"samples": {k: cat([r["samples"][k] for r in res]) for k in res[0]["samples"]},
-           "extra_fields": {k: cat([r["extra_fields"][k] for r in res]) for k in res[0]["extra_fields"]},
-           "elapsed": float(time.time() - t0)}
-    if kw.get("save_state"):
-        out["state"] = [r.get("state") for r in res]
-    if trace_path:
-        tr = [dict(np.load(trace_path.replace(".npz", f"_c{c}.npz"), allow_pickle=True)) for c in range(chains)]
-        comb = {}
-        for k in tr[0]:
-            v = [np.asarray(t[k]) for t in tr if k in t]
-            if v[0].ndim == 0 and v[0].dtype.kind == "f":
-                comb[k] = np.max(v)
-            elif v[0].ndim >= 1 and all(x.shape == v[0].shape for x in v) and v[0].shape[0] == 1:
-                comb[k] = np.concatenate(v, 0)
-            else:
-                comb[k] = v[0]
-        comb["elapsed"] = out["elapsed"]
-        np.savez(trace_path, **comb)
+    trace = {"t_coords": time.time() - t0, **{f"prep_{k}": v for k, v in pg.t.items()}} if trace_path else None
+    samples_dict, extra, st = _fold_run(pg, coords, warmup, -(-int(samples) // int(thinning)), trace, progress_bar, label)
+    elapsed = time.time() - t0
+    if trace is not None:
+        trace["elapsed"] = elapsed
+        np.savez(trace_path, **{k: np.asarray(v) for k, v in trace.items()})
+    samples_np = {}
+    for k, v in samples_dict.items():
+        if k.startswith("z_") and not keep_re:
+            continue
+        if k == "log_lik" and not save_loglik:
+            continue
+        samples_np[k] = np.array(v)
+    _restore_centred(samples_np)
+    out = {"samples": samples_np, "extra_fields": {k: np.array(v) for k, v in extra.items()}, "elapsed": float(elapsed)}
+    if save_state:
+        out["state"] = {"hmc": st, "offset": None, "aux": coords.aux_flat, "tcap": pg.cap, "tlens": pg.lens}
     return out
 
 
-def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
+def fit_model(config, chains=4, warmup=500, samples=1000, seed=0,
               target_accept_prob=0.8, max_tree_depth=10, step_size=1.0,
               thinning=1, chain_method="parallel",
               progress_bar=True,
               init_strategy="numeric", init_radius=0.0,
-              sampler="nuts", control=None, save_loglik=True,
+              sampler="hmc", control=None, save_loglik=True,
               keep_re=False, save_state=False, init_values=None):
-    """Fit an SDT model using NumPyro NUTS or the DR-G-HMC sampler.
+    """Fit an SDT model on the JAX backend.
 
     Args:
         config: dict from R's build_numpyro_config()
         chains: number of MCMC chains
-        warmup: warmup iterations (NUTS) / adaptation iterations (drghmc)
-        samples: post-warmup samples per chain
+        warmup: warmup iterations
+        samples: post-warmup iterations per chain; ceil(samples / thinning) draws are kept
         seed: random seed
         target_accept_prob: target acceptance probability (Stan's adapt_delta)
         max_tree_depth: maximum tree depth for NUTS (default 10)
-        step_size: initial NUTS step size (default 1.0)
-        progress_bar: whether to show NumPyro's tqdm progress bar (default True)
+        step_size: initial step size (default 1.0)
+        progress_bar: whether to show progress bars
         init_strategy: "prior" (NumPyro init_to_sample), "random" or "numeric"
             (init_to_uniform with `init_radius`). Default "numeric" with radius 0,
             i.e. every parameter starts at 0 on the unconstrained scale, as in R.
@@ -6754,8 +6495,9 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
         init_values: optional per-chain list of {Stan name: value} dicts; used
             instead of init_strategy (see init_values_to_z).
         save_state: also return the end-of-run sampler state (fit_broc's `resume`).
-        sampler: "nuts" (default) or "drghmc".
-        control: dict of drghmc tuning knobs (ignored for nuts).
+        sampler: "hmc" (default; static-trajectory HMC with jittered length), "nuts" or
+            "drghmc" (experimental).
+        control: dict of sampler settings (drghmc's tuning; transport for all).
 
     Returns:
         dict with samples (by chain), extra_fields, elapsed
@@ -6775,181 +6517,46 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
                           save_loglik=save_loglik, keep_re=keep_re,
                           save_state=save_state, init_z=init_z)
 
-    if os.environ.get("BAYESROC_PROC_CHAINS") == "1" and chains > 1 and chain_method == "parallel":
-        return _proc_chains(dict(config=config, warmup=warmup, samples=samples, seed=seed,
-                                 target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth, step_size=step_size,
-                                 thinning=thinning, chain_method="parallel", progress_bar=progress_bar,
-                                 init_strategy=init_strategy, init_radius=init_radius, sampler=sampler, control=control,
-                                 save_loglik=save_loglik, keep_re=keep_re, save_state=save_state), chains, init_values)
-
     numpyro.set_host_device_count(chains if chain_method == "parallel" else 1)
+    kw = dict(warmup=warmup, samples=samples, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth,
+              step_size=step_size, thinning=thinning, progress_bar=progress_bar, init_strategy=init_strategy,
+              init_radius=init_radius, control=control, save_loglik=save_loglik, keep_re=keep_re,
+              save_state=save_state, sampler=sampler)
+    if sampler == "hmc" or jax.config.jax_enable_x64:
+        return _fit_fold(config, chains, seed=seed, init_z=init_z, parallel=chain_method == "parallel", **kw)
+    return _fit_nuts_f32(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size,
+                         thinning, chain_method, progress_bar, init_strategy, init_radius, init_z, control,
+                         save_loglik, keep_re, save_state)
+
+
+def _fit_nuts_f32(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size, thinning,
+                  chain_method, progress_bar, init_strategy, init_radius, init_z, control, save_loglik, keep_re,
+                  save_state):
+    """NUTS in a float32 process: the map's anchors from a DR-G-HMC warmup in a float64 child, the
+    log-likelihood recentred on the warmed-up chains so that float32 keeps its digits."""
     rng_key = random.PRNGKey(seed)
-
     t0 = time.time()
-    heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
-    prep = None
-    if (os.environ.get("BAYESROC_NUTS_FOLD") and os.environ.get("BAYESROC_NUTS_ANCHORS", "dr") in ("lapmap", "dr")
-            and jax.config.jax_enable_x64 and chain_method == "parallel" and int(thinning) == 1
-            and os.environ.get("BAYESROC_FOLD_PREP", "1") == "1"):
-        kw_imm = lambda c: {"inverse_mass_matrix": jnp.ones(c.D)} if os.environ.get("BAYESROC_NUTS_IMM") == "lap" else {}
-        if os.environ.get("BAYESROC_FULL_JHMC") == "1":
-            mk = lambda c: FastHMC(sdt_model, coords=c, target_accept_prob=target_accept_prob, step_size=float(step_size),
-                                   trajectory_length=float(os.environ.get("BAYESROC_JHMC_T", str(np.pi))),
-                                   find_heuristic_step_size=heur, **kw_imm(c))
-        else:
-            mk = lambda c: FastNUTS(sdt_model, coords=c, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth,
-                                    step_size=float(step_size), find_heuristic_step_size=heur, **kw_imm(c))
-        prep = _FoldPrep(config, chains, warmup, rng_key, mk)
-    coords = NutsCoords(config, chains, seed, chain_method == "parallel" and chains > 1, progress_bar,
-                        init_strategy, init_radius, init_z, transport=bool((control or {}).get("transport", True)),
-                        on_anchors=None if prep is None else prep.start)
-    if prep is not None and prep.thread is None:
-        if coords.tm is None:
-            prep = None
-        else:
-            prep.start(coords)
     par = chain_method == "parallel" and chains > 1
-    trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
-    trace = {"t_coords": time.time() - t0, **{f"tsub_{k}": v for k, v in getattr(coords, "tsub", {}).items()}}
-
-    imm0 = nuts_initial_mass(coords)
-    if imm0 is not None:
-        trace["imm0"] = imm0
-    heur = os.environ.get("BAYESROC_NUTS_HEUR") == "1"
-
-    def _kernel():
-        kw = {} if imm0 is None else {"inverse_mass_matrix": jnp.asarray(imm0)}
-        return FastNUTS(sdt_model, coords=coords, target_accept_prob=target_accept_prob,
-                        max_tree_depth=max_tree_depth, step_size=float(step_size),
-                        find_heuristic_step_size=heur, **kw)
-
-    def _raw_warmup(kern, key, n, z0, desc):
-        m = MCMC(kern, num_warmup=n, num_samples=1, num_chains=chains, chain_method=chain_method,
-                 progress_bar=bool(progress_bar), postprocess_fn=lambda zz: zz)
-        with progress.nuts(chains, par, desc=desc):
-            m.warmup(key, config, init_params=z0, collect_warmup=True, extra_fields=("num_steps",))
-        st = m.post_warmup_state
-        jax.block_until_ready(st.z)
-        return m, st
-
-    if coords.native and coords.pf is not None:
-        for k in ("iters", "best", "wall", "diag", "elbo", "mu"):
-            trace[f"pf_{k}"] = coords.pf[k]
-    lap_rounds = coords.native and coords.source == "lapmap" and bool(os.environ.get("BAYESROC_NUTS_ROUNDS"))
-    if coords.native and (coords.source == "nuts" or lap_rounds):
-        rounds = [int(w) for w in os.environ.get("BAYESROC_NUTS_ROUNDS", "150,150").split(",") if w.strip() and int(w) > 0]
-        for i, w in enumerate(rounds):
-            rng_key, sub = random.split(rng_key)
-            ts = time.time()
-            m, st = _raw_warmup(_kernel(), sub, w, coords.init_params(chains), f"NUTS map round {i + 1}")
-            trace[f"round{i}_mcmc"] = time.time() - ts
-            zs = m.get_samples(group_by_chain=True)
-            last = st.z if chains > 1 else {k: v[None] for k, v in st.z.items()}
-            coords.rebuild(zs, last)
-            trace[f"round{i}_rebuild"] = time.time() - ts - trace[f"round{i}_mcmc"]
-            if lap_rounds:
-                coords.lap_curvature()
-                imm0 = nuts_initial_mass(coords)
-                if imm0 is not None:
-                    trace["imm0"] = imm0
-            trace[f"round{i}_num_steps"] = np.asarray(m.get_extra_fields(group_by_chain=True)["num_steps"])
-            trace[f"round{i}_wall"] = time.time() - ts
-        trace["t_rounds"] = time.time() - t0
-
-    only = os.environ.get("BAYESROC_ANCHORS_ONLY")
-    if only:
-        np.savez(only, t_coords=time.time() - t0, **({} if coords.pf is None else
-                 {k: np.asarray(v) for k, v in coords.pf.items()}))
-        raise RuntimeError("BAYESROC_ANCHORS_ONLY written")
-    proxy_path = os.environ.get("BAYESROC_NUTS_PROXY")
-    if proxy_path and coords.tm is not None:
-        from anchor_proxy import proxy
-        ref_path = os.environ["BAYESROC_PROXY_REF"]
-        if not os.path.exists(ref_path):
-            np.save(ref_path, coords.positions(coords.init_params(chains)))
-        ref = np.load(ref_path)
-        zmask = np.concatenate([np.full(int(np.prod(coords.off[k][1])), k.startswith("z_")) for k in coords.keys])
-        tp = time.time()
-        res = proxy(coords, ref, ~zmask)
-        np.savez(proxy_path, t_anchor=time.time() - t0 - (time.time() - tp), t_proxy=time.time() - tp,
-                 **{k: np.array([r[k] for r in res]) for k in res[0]})
-        raise RuntimeError("BAYESROC_NUTS_PROXY written")
-
-    fold = os.environ.get("BAYESROC_NUTS_FOLD")
-    if (fold and coords.tm is not None and coords.source in ("lapmap", "dr") and jax.config.jax_enable_x64
-            and chain_method == "parallel" and int(thinning) == 1):
-        pre = None if prep is None else prep.wait()
-        if prep is not None:
-            trace.update({f"prep_{k}": v for k, v in prep.t.items()})
-        samples_dict, extra, last_state = _fold_run(_kernel() if prep is None else prep.kernel, coords, config, chains,
-                                                    warmup, samples, int(fold), rng_key, trace, progress_bar, pre=pre)
-        elapsed = time.time() - t0
-        offset = None
-        if trace_path:
-            trace["elapsed"] = elapsed
-            trace["anchors"] = np.asarray("lapmap-fold")
-            np.savez(trace_path, **{k: np.asarray(v) for k, v in trace.items()})
-    else:
-        init_params = coords.init_params(chains)
-        kernel = _kernel()
-
-        mcmc = MCMC(
-            kernel,
-            num_warmup=warmup,
-            num_samples=samples,
-            num_chains=chains,
-            thinning=int(thinning),
-            chain_method=chain_method,
-            progress_bar=bool(progress_bar),
-        )
-
-        f32 = not jax.config.jax_enable_x64
-        offset = None
-        t_w = time.time()
-        if trace_path:
-            rng_key, sub = random.split(rng_key)
-            mw, st = _raw_warmup(kernel, sub, warmup, init_params, "NUTS warmup")
-            trace["warmup_num_steps"] = np.asarray(mw.get_extra_fields(group_by_chain=True)["num_steps"])
-            trace["step_size"] = np.asarray(st.adapt_state.step_size)
-            im = st.adapt_state.inverse_mass_matrix
-            im = list(im.values()) if isinstance(im, dict) else [im]
-            trace["inverse_mass"] = np.concatenate([np.reshape(np.asarray(v), (chains, -1)) for v in im], 1)
-            mcmc.post_warmup_state = st
-            rng_key = st.rng_key
-            trace["warmup_wall"] = time.time() - t_w
-        elif f32:
-            with progress.nuts(chains, par, desc="NUTS warmup"):
-                mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
-            rng_key = mcmc.post_warmup_state.rng_key
-        if f32:
-            offset = _nuts_ll_offset(config, mcmc.post_warmup_state, coords)
-            config = {**config, "_ll_offset": jnp.asarray(offset)}
-            mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state, coords)
-
-        split_done = f32 or bool(trace_path)
-        t_s = time.time()
-        with progress.nuts(chains, par, desc="NUTS sampling" if split_done else None,
-                           split=None if split_done else int(warmup)):
-            mcmc.run(rng_key, config, init_params=None if split_done else init_params,
-                     extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
-        jax.block_until_ready(mcmc.last_state.z)
-        elapsed = time.time() - t0
-        if trace_path:
-            trace["sampling_wall"] = time.time() - t_s
-            trace["elapsed"] = elapsed
-            trace["sampling_num_steps"] = np.asarray(mcmc.get_extra_fields(group_by_chain=True)["num_steps"])
-            trace["anchors"] = np.asarray(os.environ.get("BAYESROC_NUTS_ANCHORS", "dr"))
-            np.savez(trace_path, **{k: np.asarray(v) for k, v in trace.items()})
-
-        samples_dict = mcmc.get_samples(group_by_chain=True)
-
-        extra = mcmc.get_extra_fields(group_by_chain=True)
-        last_state = mcmc.last_state
-    extra_fields = {}
-    for field in ("num_steps", "energy", "accept_prob", "diverging"):
-        if field in extra:
-            extra_fields[field] = np.array(extra[field])
-
+    coords = NutsCoords(config, chains, seed, par, progress_bar, init_strategy, init_radius, init_z,
+                        transport=bool((control or {}).get("transport", True)), anchors="dr")
+    kernel = FastNUTS(sdt_model, coords=coords, target_accept_prob=target_accept_prob,
+                      max_tree_depth=max_tree_depth, step_size=float(step_size))
+    mcmc = MCMC(kernel, num_warmup=warmup, num_samples=samples, num_chains=chains, thinning=int(thinning),
+                chain_method=chain_method, progress_bar=bool(progress_bar))
+    init_params = coords.init_params(chains)
+    with progress.nuts(chains, par, desc="NUTS warmup"):
+        mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
+    rng_key = mcmc.post_warmup_state.rng_key
+    offset = _nuts_ll_offset(config, mcmc.post_warmup_state, coords)
+    config = {**config, "_ll_offset": jnp.asarray(offset)}
+    mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state, coords)
+    with progress.nuts(chains, par, desc="NUTS sampling"):
+        mcmc.run(rng_key, config, init_params=None, extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
+    jax.block_until_ready(mcmc.last_state.z)
+    elapsed = time.time() - t0
+    samples_dict = mcmc.get_samples(group_by_chain=True)
+    extra = mcmc.get_extra_fields(group_by_chain=True)
+    extra_fields = {f: np.array(extra[f]) for f in ("num_steps", "energy", "accept_prob", "diverging") if f in extra}
     samples_np = {}
     for k, v in samples_dict.items():
         if k.startswith("z_") and not keep_re:
@@ -6958,15 +6565,9 @@ def fit_model(config, chains=4, warmup=1000, samples=1000, seed=0,
             continue
         samples_np[k] = np.array(v)
     _restore_centred(samples_np)
-
-    out = {
-        "samples": samples_np,
-        "extra_fields": extra_fields,
-        "elapsed": float(elapsed),
-    }
+    out = {"samples": samples_np, "extra_fields": extra_fields, "elapsed": float(elapsed)}
     if save_state:
-        out["state"] = {"hmc": last_state, "offset": None if offset is None else np.asarray(offset),
-                        "aux": coords.aux_flat}
+        out["state"] = {"hmc": mcmc.last_state, "offset": np.asarray(offset), "aux": coords.aux_flat}
     return out
 
 

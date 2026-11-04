@@ -142,7 +142,7 @@ class _Totals:
                                       rej=float(self.stage[:, 3].sum() / n)))
         ebfmi = np.where(self.e_m2 > 0, self.e_de2 / np.maximum(self.e_m2, 1e-300), np.nan)
         return dict(num_divergent=self.div.astype(int).tolist(),
-                    num_max_treedepth=self.depth.astype(int).tolist(),
+                    num_max_treedepth=self.depth.astype(int).tolist() if sampler != "hmc" else None,
                     ebfmi=ebfmi.tolist())
 
 
@@ -253,6 +253,76 @@ class _Nuts(_InProcess):
         return {"hmc": jax.tree.map(np.asarray, carry),
                 "offset": None if self.offset is None else np.asarray(self.offset),
                 "aux": self.coords.aux_flat}
+
+
+class _Fold(_InProcess):
+    """sampler "hmc", and "nuts" in float64: fold_setup's coordinates and warmup, then blocks of the same
+    transitions (HMC's trajectory length jittered each one). A resumed fit keeps its anchors and its
+    adapted state."""
+
+    def __init__(self, s, model, config, a, resume):
+        import numpyro_backend as nb
+        C = s.chains
+        hmc = s.sampler == "hmc"
+        self.tlens = None
+        tad, mtd, ss = float(a.get("target_accept_prob", 0.8)), int(a.get("max_tree_depth", 10)), float(a.get("step_size", 1.0))
+        build = (s.vg, s.unflatten, s.keys, s.off, s.D, s.pp)
+        if resume is not None:
+            aux = resume.get("aux")
+            coords = nb.NutsCoords(config, C, int(a["seed"]), s.parallel, s.progress,
+                                   a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)), None,
+                                   transport=aux is not None, aux=aux, build=build, label="HMC" if hmc else "NUTS")
+            kernel = (nb.FastHMC(model, coords=coords, integrator="bcss", cross_chain=nb._chain_adapt(s.parallel, C),
+                                 gamma=nb._HMC_GAMMA, target_accept_prob=tad,
+                                 step_size=ss, trajectory_length=nb._HMC_TMAX) if hmc else
+                      nb.FastNUTS(model, coords=coords, target_accept_prob=tad, max_tree_depth=mtd, step_size=ss))
+            state = _batched(resume["hmc"], C)
+            kernel.init(jax.random.PRNGKey(0), 0, jax.tree.map(lambda x: x[0], state.z),
+                        ({**config, "_nuts_parts": coords.aux},), {})
+        else:
+            coords, pg, label = nb.fold_setup(config, C, int(a["warmup"]), 1, int(a["seed"]), tad, mtd, ss, s.progress,
+                                              a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)),
+                                              s.init_z, bool((a.get("control") or {}).get("transport", True)),
+                                              s.sampler, sampling=False, build=build, parallel=s.parallel,
+                                              gamma=float((a.get("control") or {}).get("adapt_gamma", nb._HMC_GAMMA)),
+                                              trajectory=str((a.get("control") or {}).get("trajectory", "fixed")))
+            kernel = pg.kernel
+            state = nb.fold_warmup(pg, coords, int(a["warmup"]), None, s.progress, label)
+            self.tcap, self.tlens = pg.cap, pg.lens
+        self.coords = coords
+        self.max_steps = np.inf if hmc else 2 ** mtd
+        self.offset = None
+        if resume is not None:
+            self.tcap = resume.get("tcap") if isinstance(resume, dict) else None
+            self.tlens = resume.get("tlens") if isinstance(resume, dict) else None
+        if not hmc or self.tcap is None:
+            self.tcap = nb._HMC_TMAX if hmc else None
+        jit0 = nb._jitter(self.tcap)
+        if self.tlens is not None and len(self.tlens):
+            L, nL = jnp.asarray(np.asarray(self.tlens, dtype=float)), jnp.asarray(len(self.tlens), jnp.int32)
+            jit = lambda st: jit0(st, None, L, nL)
+        else:
+            jit = jit0
+        parts = coords.aux
+        args = ({**config, "_nuts_parts": parts},)
+
+        def body(st, _):
+            st = kernel.sample(jit(st), args, {})
+            return st, (coords.model_v(st.z, parts), st.num_steps, st.energy, st.accept_prob, st.diverging)
+
+        run = lambda st: jax.lax.scan(body, st, None, length=s.b)
+        self.fn = jax.pmap(run, axis_name="chain") if s.parallel else jax.jit(lambda st: jax.lax.map(run, st))
+        state = jax.tree.map(np.asarray, state)
+        self.carry0 = state
+        self.positions = coords.positions(state.z)
+
+    def block(self, carry, t, keep=None):
+        carry, (z, ns, en, ap, dv) = self.fn(carry)
+        return carry, z, dict(num_steps=ns, energy=en, accept_prob=ap, diverging=dv)
+
+    def state(self, carry, T):
+        return {"hmc": jax.tree.map(np.asarray, carry), "offset": None, "aux": self.coords.aux_flat, "tcap": self.tcap,
+                "tlens": self.tlens}
 
 
 def _dr_store(s, model, config, a, ctrl, seed, tm=None):
@@ -599,7 +669,7 @@ class AutoSession:
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = dr._build(model, config)
         itemsize = 8 if jax.config.jax_enable_x64 else 4
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
-                                           25 if self.sampler == "nuts" else 100)
+                                           25 if self.sampler in ("nuts", "hmc") else 100)
         self.round_len = self.b * self.nblocks
         self.init_z = None
         resume = None
@@ -614,7 +684,8 @@ class AutoSession:
                                               float(a.get("init_radius", 2.0)))
         f32_dr = (self.sampler == "drghmc"
                   and dr._merge_control(a.get("control"))["precision"] == "f32")
-        cls = _Nuts if self.sampler == "nuts" else (_DrF32 if f32_dr else _Dr)
+        fold = self.sampler == "hmc" or (self.sampler == "nuts" and jax.config.jax_enable_x64)
+        cls = _Fold if fold else _Nuts if self.sampler == "nuts" else (_DrF32 if f32_dr else _Dr)
         self.ad = cls(self, model, config, a, resume)
         self.max_steps = getattr(self.ad, "max_steps", 0)
         self.carry = self.ad.carry0
@@ -637,7 +708,7 @@ class AutoSession:
         self.pending = None
         self.last_dg = None
         self.skip_checks = 0
-        if self.sampler == "nuts":
+        if self.sampler in ("nuts", "hmc"):
             self._verify(model, config, full1, itemsize)
             self._launch()
         else:
@@ -941,7 +1012,7 @@ class AutoSession:
             v.flush()
         del out
         extras = {}
-        names = (("num_steps", "energy", "accept_prob", "diverging") if self.sampler == "nuts"
+        names = (("num_steps", "energy", "accept_prob", "diverging") if self.sampler in ("nuts", "hmc")
                  else ("energy", "dr_stage"))
         for name in names:
             if name in self.extra:

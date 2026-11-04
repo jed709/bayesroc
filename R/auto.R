@@ -147,7 +147,8 @@
   list(fit = resume, kept = kept, stride = stride,
        T = as.integer(attr(resume, "draws_per_chain") %||% (kept * stride)),
        totals = attr(resume, "sampler_totals") %||%
-         .totals_from_extra(resume$.backend_fit$extra_fields, chains, resume$.max_treedepth %||% 10L))
+         .totals_from_extra(resume$.backend_fit$extra_fields, chains,
+                            if (identical(resume$.sampler, "hmc")) Inf else resume$.max_treedepth %||% 10L))
 }
 
 .totals_from_extra <- function(ef, chains, max_treedepth) {
@@ -282,7 +283,7 @@
   on.exit(if (worker$proc$is_alive()) try(suppressMessages(request("auto_close", list())), silent = TRUE),
           add = TRUE, after = FALSE)
 
-  label <- if (sampler == "drghmc") "DR-G-HMC" else "NumPyro NUTS"
+  label <- switch(sampler, drghmc = "DR-G-HMC", hmc = "jittered-trajectory HMC", "NumPyro NUTS")
   if (!is.null(fixed_draws)) {
     message("Continuing ", label, " via JAX for ", fixed_draws, " more draws per chain (", chains, " chains)...")
   } else {

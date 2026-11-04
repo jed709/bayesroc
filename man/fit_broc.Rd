@@ -11,7 +11,7 @@ fit_broc(
   iter_warmup = NULL,
   iter_sampling = NULL,
   thin = 1,
-  sampler = c("drghmc", "nuts"),
+  sampler = c("hmc", "nuts", "drghmc"),
   control = list(),
   init = 0,
   refresh = 100,
@@ -45,10 +45,10 @@ devices when \code{parallel_chains >= chains}, and sequentially on one device
 when \code{parallel_chains < chains}.}
 
 \item{iter_warmup}{Number of warmup/adaptation iterations per chain. Default
-2000 for \code{sampler = "nuts"}, 1000 for \code{"drghmc"}.}
+500 for \code{sampler = "hmc"}, 2000 for \code{"nuts"}, 1000 for \code{"drghmc"}.}
 
-\item{iter_sampling}{Number of post-warmup draws per chain (default 2000 for
-\code{sampler = "nuts"}, 10000 for \code{"drghmc"}), or \code{"auto"} to sample until every
+\item{iter_sampling}{Number of post-warmup draws per chain (default 1000 for
+\code{sampler = "hmc"}, 2000 for \code{"nuts"}, 10000 for \code{"drghmc"}), or \code{"auto"} to sample until every
 monitored parameter reaches the ESS and R-hat targets in \code{control} (JAX backend;
 see \emph{Adaptive-length sampling} below).}
 
@@ -56,18 +56,31 @@ see \emph{Adaptive-length sampling} below).}
 \code{k}-th post-warmup draw. With \code{iter_sampling = "auto"} the draws are thinned
 as they are sampled and \code{control$max_kept} is ignored.}
 
-\item{sampler}{Sampling algorithm: \code{"drghmc"} (the default on the JAX backend), a
-delayed-rejection generalized HMC sampler (JAX backend only), or \code{"nuts"} (the
-default on the Stan backend).}
+\item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
+static-trajectory HMC whose trajectory length is drawn uniformly up to pi at
+every transition, with Stan's windowed step-size and diagonal mass adaptation
+(JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
+an experimental delayed-rejection generalized HMC sampler (JAX backend only).
+On the JAX backend \code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
+marginal of the hyperparameters, which also anchors the transport map.}
 
 \item{control}{Named list of sampler tuning parameters (defaults in
 parentheses; an unknown key is an error):
 \itemize{
+\item \code{"hmc"}: \code{adapt_delta} (0.9), \code{adapt_gamma} (0.1; the gain of the step size's
+dual averaging, Stan's \verb{adapt gamma}: larger values move the step size less per
+warmup iteration), \code{step_size} (1.0), \code{transport} (\code{TRUE}; see \emph{Group transport
+map}), \code{trajectory} ("fixed": the trajectory length is drawn uniformly up to pi;
+experimental alternatives learned during warmup: "chees" (Hoffman, Radul and Sountsov
+2021), "snaper" (Sountsov and Hoffman 2022), "esjd" (the ChEES scheme on the expected
+squared jump distance), "rule45" (cap 4.5 times the largest posterior scale) and "ehmc"
+(trajectory times drawn from the empirical U-turn times, Wu, Stoehr and Robert 2018)).
 \item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
 \code{precision} ("f64" or "f32"; JAX backend only), \code{transport} (\code{TRUE}; JAX backend
 only; see \emph{Group transport map}).
-\item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.32), \code{integrator}
-("bcss3" or "bcss2"), \code{dr_k} (2), \code{dr_r} (4), \code{adapt_windows} (10),
+\item \code{"drghmc"}: \code{acc_target} (0.92), \code{gamma} (0.32), \code{integrator} ("bcss3" or
+"bcss2", the three- and two-stage integrators of Blanes et al., 2014), \code{dr_k} (2),
+\code{dr_r} (4), \code{adapt_windows} (10),
 \code{eps_c} (1.0), \code{mass_burn_frac} (0.4), \code{mass_end_frac} (0.7), \code{precision}
 ("f64" or "f32"), \code{transport} (\code{TRUE}: random effects are sampled through a
 per-group transport map; see \emph{Group transport map}), \code{transport_wide} (\code{TRUE}:
@@ -75,9 +88,9 @@ every random-effect block is mapped; \code{FALSE} leaves a block of more than te
 effects per group non-centred).
 \item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
 named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
-\code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for NUTS, 500000 for
+\code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for HMC and NUTS, 500000 for
 DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check_every}
-(draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
+(draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
 \code{max_kept} (draws per chain kept in the fit; default \code{max_draws}, i.e. no
 thinning).
 }}

@@ -1,3 +1,5 @@
+.drghmc_warned <- new.env(parent = emptyenv())
+
 #' SDT Model Specification and Fitting
 #'
 #' Main interface for specifying and fitting SDT models.
@@ -2406,24 +2408,37 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   devices when `parallel_chains >= chains`, and sequentially on one device
 #'   when `parallel_chains < chains`.
 #' @param iter_warmup Number of warmup/adaptation iterations per chain. Default
-#'   2000 for `sampler = "nuts"`, 1000 for `"drghmc"`.
-#' @param iter_sampling Number of post-warmup draws per chain (default 2000 for
-#'   `sampler = "nuts"`, 10000 for `"drghmc"`), or `"auto"` to sample until every
+#'   500 for `sampler = "hmc"`, 2000 for `"nuts"`, 1000 for `"drghmc"`.
+#' @param iter_sampling Number of post-warmup draws per chain (default 1000 for
+#'   `sampler = "hmc"`, 2000 for `"nuts"`, 10000 for `"drghmc"`), or `"auto"` to sample until every
 #'   monitored parameter reaches the ESS and R-hat targets in `control` (JAX backend;
 #'   see *Adaptive-length sampling* below).
 #' @param thin Period for saving samples (default 1). `thin = k` keeps every
 #'   `k`-th post-warmup draw. With `iter_sampling = "auto"` the draws are thinned
 #'   as they are sampled and `control$max_kept` is ignored.
-#' @param sampler Sampling algorithm: `"drghmc"` (the default on the JAX backend), a
-#'   delayed-rejection generalized HMC sampler (JAX backend only), or `"nuts"` (the
-#'   default on the Stan backend).
+#' @param sampler Sampling algorithm: `"hmc"` (the default on the JAX backend),
+#'   static-trajectory HMC whose trajectory length is drawn uniformly up to pi at
+#'   every transition, with Stan's windowed step-size and diagonal mass adaptation
+#'   (JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
+#'   an experimental delayed-rejection generalized HMC sampler (JAX backend only).
+#'   On the JAX backend `"hmc"` and `"nuts"` start from the mode of the Laplace
+#'   marginal of the hyperparameters, which also anchors the transport map.
 #' @param control Named list of sampler tuning parameters (defaults in
 #'   parentheses; an unknown key is an error):
+#'   * `"hmc"`: `adapt_delta` (0.9), `adapt_gamma` (0.1; the gain of the step size's
+#'     dual averaging, Stan's `adapt gamma`: larger values move the step size less per
+#'     warmup iteration), `step_size` (1.0), `transport` (`TRUE`; see *Group transport
+#'     map*), `trajectory` ("fixed": the trajectory length is drawn uniformly up to pi;
+#'     experimental alternatives learned during warmup: "chees" (Hoffman, Radul and Sountsov
+#'     2021), "snaper" (Sountsov and Hoffman 2022), "esjd" (the ChEES scheme on the expected
+#'     squared jump distance), "rule45" (cap 4.5 times the largest posterior scale) and "ehmc"
+#'     (trajectory times drawn from the empirical U-turn times, Wu, Stoehr and Robert 2018)).
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
 #'     `precision` ("f64" or "f32"; JAX backend only), `transport` (`TRUE`; JAX backend
 #'     only; see *Group transport map*).
-#'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.32), `integrator`
-#'     ("bcss3" or "bcss2"), `dr_k` (2), `dr_r` (4), `adapt_windows` (10),
+#'   * `"drghmc"`: `acc_target` (0.92), `gamma` (0.32), `integrator` ("bcss3" or
+#'     "bcss2", the three- and two-stage integrators of Blanes et al., 2014), `dr_k` (2),
+#'     `dr_r` (4), `adapt_windows` (10),
 #'     `eps_c` (1.0), `mass_burn_frac` (0.4), `mass_end_frac` (0.7), `precision`
 #'     ("f64" or "f32"), `transport` (`TRUE`: random effects are sampled through a
 #'     per-group transport map; see *Group transport map*), `transport_wide` (`TRUE`:
@@ -2431,9 +2446,9 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     effects per group non-centred).
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
-#'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for NUTS, 500000 for
+#'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for HMC and NUTS, 500000 for
 #'     DR-G-HMC), `max_time` (seconds of sampling after warmup; none), `check_every`
-#'     (draws per chain between checks; 100 for NUTS, 1000 for DR-G-HMC) and
+#'     (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
 #'     `max_kept` (draws per chain kept in the fit; default `max_draws`, i.e. no
 #'     thinning).
 #' @param init Initial-value strategy. Default `0`: all parameters start at 0 on
@@ -2585,7 +2600,7 @@ fit_broc <- function(model,
                     iter_warmup = NULL,
                     iter_sampling = NULL,
                     thin = 1,
-                    sampler = c("drghmc", "nuts"),
+                    sampler = c("hmc", "nuts", "drghmc"),
                     control = list(),
                     init = 0,
                     refresh = 100,
@@ -2633,16 +2648,17 @@ fit_broc <- function(model,
     if (!is.null(prev)) {
       control <- c(control, prev$control[setdiff(names(prev$control), names(control))])
       for (k in c("adapt_delta", "max_treedepth", "step_size")) {
-        if (is.null(control[[k]]) && !is.null(prev[[k]]) && sampler == "nuts") control[[k]] <- prev[[k]]
+        if (is.null(control[[k]]) && !is.null(prev[[k]]) && sampler %in% c("nuts", "hmc") &&
+            (k != "max_treedepth" || sampler == "nuts")) control[[k]] <- prev[[k]]
       }
     }
   }
   if (backend_missing && is.null(resume)) {
-    jax_only <- (!sampler_missing && identical(sampler, "drghmc")) || identical(iter_sampling, "auto")
+    jax_only <- (!sampler_missing && sampler[1] %in% c("drghmc", "hmc")) || identical(iter_sampling, "auto")
     backend <- if (jax_only || .jax_ready(python)) "jax" else .stan_fallback()
   }
   backend <- match.arg(backend)
-  if (sampler_missing && is.null(resume)) sampler <- if (backend == "jax") "drghmc" else "nuts"
+  if (sampler_missing && is.null(resume)) sampler <- if (backend == "jax") "hmc" else "nuts"
   sampler <- match.arg(sampler)
   auto <- identical(iter_sampling, "auto")
   if (!auto && !is.null(iter_sampling) &&
@@ -2656,8 +2672,14 @@ fit_broc <- function(model,
          " needs backend = \"jax\": continuing chains exactly needs sampler state that ",
          "cmdstanr cannot return.", call. = FALSE)
   }
-  if (sampler == "drghmc" && backend != "jax") {
-    stop("sampler = 'drghmc' requires backend = 'jax'.", call. = FALSE)
+  if (sampler %in% c("drghmc", "hmc") && backend != "jax") {
+    stop("sampler = '", sampler, "' requires backend = 'jax'.", call. = FALSE)
+  }
+  if (sampler == "drghmc" && is.null(resume) && !isTRUE(.drghmc_warned$done)) {
+    .drghmc_warned$done <- TRUE
+    warning("sampler = 'drghmc' is experimental: its convergence diagnostics have not been ",
+            "validated as NUTS's and HMC's have. Use sampler = 'hmc' (the default) for results. ",
+            "This warning is shown once per session.", call. = FALSE)
   }
   if (!is.logical(file_refit) || length(file_refit) != 1L || is.na(file_refit)) {
     stop("`file_refit` must be TRUE or FALSE.", call. = FALSE)
@@ -2681,8 +2703,8 @@ fit_broc <- function(model,
   }
 
 
-  if (is.null(iter_warmup))   iter_warmup   <- if (sampler == "drghmc") 1000L else 2000L
-  if (is.null(iter_sampling)) iter_sampling <- if (sampler == "drghmc") 10000L else 2000L
+  if (is.null(iter_warmup))   iter_warmup   <- switch(sampler, hmc = 500L, drghmc = 1000L, 2000L)
+  if (is.null(iter_sampling)) iter_sampling <- switch(sampler, hmc = 1000L, drghmc = 10000L, 2000L)
 
   .ctrl <- if (is.list(control)) control else list()
   .auto_given <- intersect(names(.ctrl), .auto_keys)
@@ -2693,6 +2715,7 @@ fit_broc <- function(model,
   .auto <- if (auto) .auto_settings(.ctrl, sampler, chains, as.integer(thin)) else NULL
   .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision", "transport")
+  .hmc_keys <- c("adapt_delta", "adapt_gamma", "step_size", "transport", "trajectory")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
                     "precision", "transport", "transport_links", "transport_wide")
@@ -2700,11 +2723,20 @@ fit_broc <- function(model,
                                           !is.na(.ctrl[["transport"]]))) {
     stop("`control$transport` must be TRUE or FALSE.", call. = FALSE)
   }
+  if (!is.null(.ctrl$adapt_gamma) && !(is.numeric(.ctrl$adapt_gamma) && length(.ctrl$adapt_gamma) == 1L &&
+                                       is.finite(.ctrl$adapt_gamma) && .ctrl$adapt_gamma > 0)) {
+    stop("`control$adapt_gamma` must be a positive number.", call. = FALSE)
+  }
+  if (!is.null(.ctrl$trajectory) && !(is.character(.ctrl$trajectory) && length(.ctrl$trajectory) == 1L &&
+                                      .ctrl$trajectory %in% c("fixed", "chees", "snaper", "esjd", "rule45", "ehmc"))) {
+    stop("`control$trajectory` must be one of \"fixed\", \"chees\", \"snaper\", \"esjd\", \"rule45\", \"ehmc\".",
+         call. = FALSE)
+  }
   if (!is.null(.ctrl$transport_wide) && !(is.logical(.ctrl$transport_wide) && length(.ctrl$transport_wide) == 1L &&
                                           !is.na(.ctrl$transport_wide))) {
     stop("`control$transport_wide` must be TRUE or FALSE.", call. = FALSE)
   }
-  .valid <- if (sampler == "drghmc") .drghmc_keys else .nuts_keys
+  .valid <- switch(sampler, drghmc = .drghmc_keys, hmc = .hmc_keys, .nuts_keys)
   .unknown <- setdiff(names(.ctrl), .valid)
   if (length(.unknown)) {
     stop("Unknown control key(s) for sampler '", sampler, "': ",
@@ -2726,7 +2758,7 @@ fit_broc <- function(model,
     warning("control$transport is JAX-only; ignored for the Stan backend.",
             call. = FALSE)
   }
-  adapt_delta   <- .ctrl$adapt_delta   %||% 0.8
+  adapt_delta   <- .ctrl$adapt_delta   %||% if (sampler == "hmc") 0.9 else 0.8
   max_treedepth <- .ctrl$max_treedepth %||% 10
   step_size     <- .ctrl$step_size
 

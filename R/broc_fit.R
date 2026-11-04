@@ -183,7 +183,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
             sum(de^2) / sum((e - mean(e))^2)
           }, numeric(1))
         } else rep(NA_real_, nc),
-        num_max_treedepth = if (!is.null(ef$num_steps)) {
+        num_max_treedepth = if (identical(self$.sampler, "hmc")) NULL else if (!is.null(ef$num_steps)) {
           max_steps <- 2^(if (!is.null(self$.max_treedepth)) self$.max_treedepth else 10L)
           vapply(seq_len(nc), function(ch) sum(as.integer(ef$num_steps[ch, ] >= max_steps)), integer(1))
         } else rep(0L, nc)

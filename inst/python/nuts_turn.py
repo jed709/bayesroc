@@ -6,7 +6,6 @@ steps, the summed momentum over a whole period is near zero, those ends never re
 and trajectories run to the maximum depth. Every merge of two subtrees A (built first) and B is
 here also tested on A plus B's first leaf and on A's last leaf plus B, as Stan does. The checks
 are symmetric functions of the merged subtree, so the transition stays reversible."""
-import os
 import types
 
 import jax
@@ -99,10 +98,12 @@ def _with_globals(fn, **over):
     return f
 
 
-_LAM = float(os.environ.get("BAYESROC_BCSS_LAM", "0.21132486540518713"))
+_BCSS = (3.0 - 3.0 ** 0.5) / 6.0
 
 
-def _bcss2(potential_fn, kinetic_fn, forward_mode_differentiation=False):
+def _bcss(potential_fn, kinetic_fn, forward_mode_differentiation=False):
+    """The two-stage splitting integrator of Blanes, Casas and Sanz-Serna (2014), b = (3 - sqrt 3) / 6: kick
+    b h, drift h / 2, kick (1 - 2b) h, drift h / 2, kick b h. Symmetric and symplectic, two gradients a step."""
     init_fn, _ = _hu.velocity_verlet(potential_fn, kinetic_fn, forward_mode_differentiation)
 
     def update_fn(step_size, inverse_mass_matrix, state):
@@ -115,42 +116,71 @@ def _bcss2(potential_fn, kinetic_fn, forward_mode_differentiation=False):
             return jax.tree.map(lambda a, b: a + c * step_size * b, z,
                                 _hu._kinetic_grad(kinetic_fn, inverse_mass_matrix, r))
 
-        r = kick(r, g, _LAM)
+        r = kick(r, g, _BCSS)
         z = drift(z, r, 0.5)
         pe, g = _hu._value_and_grad(potential_fn, z, forward_mode_differentiation)
-        r = kick(r, g, 1.0 - 2.0 * _LAM)
+        r = kick(r, g, 1.0 - 2.0 * _BCSS)
         z = drift(z, r, 0.5)
         pe, g = _hu._value_and_grad(potential_fn, z, forward_mode_differentiation)
-        r = kick(r, g, _LAM)
+        r = kick(r, g, _BCSS)
         return _hu.IntegratorState(z, r, pe, g)
 
     return init_fn, update_fn
 
 
-def _split(potential_fn, kinetic_fn, forward_mode_differentiation=False):
-    init_fn, _ = _hu.velocity_verlet(potential_fn, kinetic_fn, forward_mode_differentiation)
-
-    def update_fn(step_size, inverse_mass_matrix, state):
-        z, r, _, g = state
-        zf, unravel = ravel_pytree(z)
-        rf, _ = ravel_pytree(r)
-        gf, _ = ravel_pytree(g)
-        m = list(inverse_mass_matrix.values())[0] if isinstance(inverse_mass_matrix, dict) else inverse_mass_matrix
-        mask = jnp.concatenate([jnp.full(int(jnp.size(z[k])), k.startswith("z_")) for k in sorted(z)])
-        cs, sn = jnp.cos(step_size), jnp.sin(step_size)
-        p = rf - 0.5 * step_size * (gf - jnp.where(mask, zf / m, 0.0))
-        z2f = jnp.where(mask, zf * cs + m * p * sn, zf + step_size * m * p)
-        p = jnp.where(mask, p * cs - zf / m * sn, p)
-        z2 = unravel(z2f)
-        pe, g2 = _hu._value_and_grad(potential_fn, z2, forward_mode_differentiation)
-        g2f, _ = ravel_pytree(g2)
-        p = p - 0.5 * step_size * (g2f - jnp.where(mask, z2f / m, 0.0))
-        return _hu.IntegratorState(z2, unravel(p), pe, g2)
-
-    return init_fn, update_fn
-
-
 build_tree = _with_globals(_hu.build_tree, _double_tree=_double_tree)
-_integ = os.environ.get("BAYESROC_NUTS_INTEGRATOR")
-_over = {"velocity_verlet": _bcss2} if _integ == "bcss2" else {"velocity_verlet": _split} if _integ == "split" else {}
-hmc = _with_globals(_hmc_mod.hmc, build_tree=build_tree, **_over)
+hmc = _with_globals(_hmc_mod.hmc, build_tree=build_tree)
+def _adapter(gamma):
+    """numpyro's (Stan's) windowed adaptation with dual averaging at gain `gamma` (Stan's `adapt gamma`;
+    None keeps the default 0.05)."""
+    if gamma is None:
+        return _hu.warmup_adapter
+    from functools import partial
+    return _with_globals(_hu.warmup_adapter, dual_averaging=partial(_hu.dual_averaging, gamma=gamma))
+
+
+def _cross_chain_adapter(gamma):
+    """The step size adapted on the acceptance averaged across chains (TFP's DualAveragingStepSizeAdaptation
+    reduction; Hoffman, Radul and Sountsov 2021): every chain sees the same statistic, so all chains share
+    one step size. Mass adaptation stays per chain. Needs the chains on a pmap axis named "chain"."""
+    base = _adapter(gamma)
+
+    def adapter(*args, **kwargs):
+        init_fn, update_fn = base(*args, **kwargs)
+
+        def update(t, accept_prob, z_info, state):
+            return update_fn(t, jax.lax.pmean(accept_prob, "chain"), z_info, state)
+
+        return init_fn, update
+
+    return adapter
+
+
+class _Deferred:
+    """numpyro's windowed adaptation with its per-transition update taken out of the transition: the
+    kernel's own update is a no-op and `update` (numpyro's update function) is applied by the caller, so
+    chains run one at a time can share the acceptance statistic."""
+
+    def __init__(self, gamma=None):
+        self.update, self.gamma = None, gamma
+
+    def adapter(self, *args, **kwargs):
+        init_fn, update_fn = _adapter(self.gamma)(*args, **kwargs)
+        self.update = update_fn
+        return init_fn, lambda t, accept_prob, z_info, state: state
+
+
+_INTEG = {"leapfrog": {}, "bcss": {"velocity_verlet": _bcss}}
+_HMC = {}
+
+
+def hmc_for(integrator, cross_chain=False, gamma=None):
+    """`cross_chain`: False (each chain adapts alone), True (chain-mean acceptance over the pmap axis
+    "chain") or a _Deferred, whose update the caller applies. `gamma`: the dual averaging gain."""
+    if isinstance(cross_chain, _Deferred):
+        return _with_globals(_hmc_mod.hmc, build_tree=build_tree, **_INTEG[integrator], warmup_adapter=cross_chain.adapter)
+    key = (integrator, bool(cross_chain), gamma)
+    if key not in _HMC:
+        wa = _cross_chain_adapter(gamma) if cross_chain else _adapter(gamma)
+        _HMC[key] = _with_globals(_hmc_mod.hmc, build_tree=build_tree, **_INTEG[integrator], warmup_adapter=wa)
+    return _HMC[key]

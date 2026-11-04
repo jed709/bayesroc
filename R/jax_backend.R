@@ -638,6 +638,9 @@ fit_jax <- function(model, chains = 4L, warmup = 2000L, samples = 2000L,
   if (identical(sampler, "drghmc")) {
     message("Fitting with DR-G-HMC via JAX (", chains, " chains", chain_note, ", ",
             warmup, " adapt, ", samples, " samples)...")
+  } else if (identical(sampler, "hmc")) {
+    message("Fitting with jittered-trajectory HMC via JAX (", chains, " chains", chain_note, ", ",
+            warmup, " warmup, ", samples, " samples)...")
   } else {
     message("Fitting with NumPyro NUTS via JAX (", chains, " chains", chain_note, ", ",
             warmup, " warmup, ", samples, " samples)...")

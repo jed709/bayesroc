@@ -326,7 +326,11 @@ print.broc_summary <- function(x, ...) {
   } else {
     ndiv <- if (!is.null(d$num_divergent)) sum(d$num_divergent) else 0L
     ntd <- if (!is.null(d$num_max_treedepth)) sum(d$num_max_treedepth) else 0L
-    cat(sprintf("Sampler: %d divergent | %d max-treedepth | min E-BFMI %s\n", as.integer(ndiv), as.integer(ntd), ebfmi_s))
+    if (identical(smp, "hmc")) {
+      cat(sprintf("Sampler (hmc): %d divergent | min E-BFMI %s\n", as.integer(ndiv), ebfmi_s))
+    } else {
+      cat(sprintf("Sampler: %d divergent | %d max-treedepth | min E-BFMI %s\n", as.integer(ndiv), as.integer(ntd), ebfmi_s))
+    }
     if (ndiv > 0) {
       cat("  ** WARNING: divergent transitions -- treat inference as unreliable.\n")
     } else if (is.finite(ebfmi) && ebfmi < 0.3) {

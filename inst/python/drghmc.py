@@ -14,7 +14,7 @@ import phases
 from numpyro.infer.util import initialize_model
 from numpyro.infer import init_to_uniform
 
-_LAM = 0.19318332750378357
+_LAM = (3.0 - 3.0 ** 0.5) / 6.0
 _B1, _A1 = 0.11888010966548, 0.29619504261126
 _B2, _A2 = 0.5 - _B1, 1.0 - 2.0 * _A1
 _DR_EPS = (0, 1, 0, 2, 0, 1, 0)
