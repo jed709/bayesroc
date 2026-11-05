@@ -59,9 +59,10 @@ as they are sampled and \code{control$max_kept} is ignored.}
 \item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
 static-trajectory HMC whose number of steps at every transition is drawn so the
 trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-diagonal mass adaptation and one step size shared by the chains, adapted by dual
-averaging on the mean of their acceptance (TFP's cross-chain reduction, as in
-ChEES-HMC, Hoffman, Radul and Sountsov 2021; JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
+diagonal mass adaptation on all chains' draws together and one step size shared by
+the chains, adapted by dual averaging on the mean of their acceptance and not restarted
+at the last mass update (TFP's cross-chain adaptation, as in ChEES-HMC, Hoffman, Radul
+and Sountsov 2021; JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
 an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 On the JAX backend \code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
 marginal of the hyperparameters, which also anchors the transport map.}

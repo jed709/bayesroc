@@ -2419,9 +2419,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param sampler Sampling algorithm: `"hmc"` (the default on the JAX backend),
 #'   static-trajectory HMC whose number of steps at every transition is drawn so the
 #'   trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-#'   diagonal mass adaptation and one step size shared by the chains, adapted by dual
-#'   averaging on the mean of their acceptance (TFP's cross-chain reduction, as in
-#'   ChEES-HMC, Hoffman, Radul and Sountsov 2021; JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
+#'   diagonal mass adaptation on all chains' draws together and one step size shared by
+#'   the chains, adapted by dual averaging on the mean of their acceptance and not restarted
+#'   at the last mass update (TFP's cross-chain adaptation, as in ChEES-HMC, Hoffman, Radul
+#'   and Sountsov 2021; JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
 #'   an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 #'   On the JAX backend `"hmc"` and `"nuts"` start from the mode of the Laplace
 #'   marginal of the hyperparameters, which also anchors the transport map.
