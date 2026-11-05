@@ -644,6 +644,7 @@ class _Super:
         self.pos = jnp.asarray(self.pos_np)
         self.linked = False
         self.split = False
+        self.cand_map = "nc"
         if self.cand is not None:
             self._set_cand(self.cand)
             self.kept_blocks = [b for b in blocks if b.dim <= _CAND_MIN_DIM]
@@ -669,19 +670,28 @@ class _Super:
     def logdet(self, post):
         return sum(b.logdet(post) for b in self.blocks)
 
+    def _not_split(self, what):
+        if self.split:
+            raise RuntimeError(f"bayesroc: {what} is block-diagonal and not valid for the split block {self.name}")
+
     def logdet1(self, post):
+        self._not_split("logdet1")
         return sum(b.logdet(post) for b in self.kept_blocks)
 
     def A1(self, post):
+        self._not_split("A1")
         return block_diag(*[b.A(post) for b in self.kept_blocks])
 
     def Ainv1(self, post):
+        self._not_split("Ainv1")
         return block_diag(*[b.Ainv(post) for b in self.kept_blocks])
 
     def A2(self, post):
+        self._not_split("A2")
         return block_diag(*[b.A(post) for b in self.cand_blocks])
 
     def Ainv2(self, post):
+        self._not_split("Ainv2")
         return block_diag(*[b.Ainv(post) for b in self.cand_blocks])
 
     def get(self, v):
@@ -1057,7 +1067,7 @@ class TMap:
         parts = [tuple(self.specs)]
         for k, sb in enumerate(self.sbs):
             parts.append((sb.n, sb.D, tuple(sb.starts), sb.bdims.tolist(), sb.bflat.tolist(), sb.bexp.tolist(),
-                          sb.gdims.tolist(), None if sb.cand is None else sb.cand.tolist(),
+                          sb.gdims.tolist(), None if sb.cand is None else sb.cand.tolist(), bool(sb.split), sb.cand_map,
                           [tuple(w.shape) for w in self.weights[k]],
                           [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lg[k]],
                           [(e, ed.tolist(), cd.tolist(), wi) for e, ed, cd, wi in self._lgk[k]],
@@ -1338,7 +1348,13 @@ class TMap:
             u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
             ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
         u1 = jnp.take(u_k, inv1, axis=0)
-        z = jnp.concatenate([Ainv1 @ u1, v[sb.pos2]], 0)
+        z1 = Ainv1 @ u1
+        if sb.cand_map == "diag":
+            T21, T22inv, mu, P, m, ldT22 = self._cand_diag(k, post, v.dtype, an, z1)
+            z2 = T22inv @ (m + v[sb.pos2] / jnp.sqrt(P) - mu)
+            z = jnp.concatenate([z1, z2], 0)
+            return sb.put(v, z), jnp.sum(ld) + sb.n * ldA1 + 0.5 * jnp.sum(jnp.log(P)) + sb.n * ldT22, A @ z
+        z = jnp.concatenate([z1, v[sb.pos2]], 0)
         return sb.put(v, z), jnp.sum(ld) + sb.n * ldA1, A @ z
 
     def _split_inv(self, k, th, tht, an, us, ans, post):
@@ -1350,8 +1366,43 @@ class TMap:
         L1, y1 = self._kept_dense(an, Q1, jnp.take(an["s_k"], ks1, axis=0),
                                   self._delta(k, th, an, us, ans, kept=perm1))
         zk = (jnp.einsum("nji,nj->ni", L1, jnp.take(u1, perm1, axis=0).T) - y1).T
-        tht = tht.at[sb.pos1].set(jnp.take(zk, inv1, axis=0)).at[sb.pos2].set(z[D1:])
+        c = z[D1:]
+        if sb.cand_map == "diag":
+            T21, T22inv, mu, P, m, _ = self._cand_diag(k, post, th.dtype, an, z[:D1])
+            T22 = self._T22(k, post, th.dtype)
+            c = jnp.sqrt(P) * (T22 @ z[D1:] + mu - m)
+        tht = tht.at[sb.pos1].set(jnp.take(zk, inv1, axis=0)).at[sb.pos2].set(c)
         return tht, A @ z
+
+    def _T22(self, k, post, dtype):
+        sb = self.sbs[k]
+        D1 = len(sb.kept_nat)
+        return sb.T(post).astype(dtype)[D1:, D1:]
+
+    def _cand_diag(self, k, post, dtype, an, z1):
+        """A split block's candidates mapped one dimension at a time, conditional on the kept dims: in the
+        sampled order the prior factor is T = [[T11, 0], [T21, T22]], so given z1 the candidates' effects
+        u2 have prior mean mu = T21 z1 and conditional precision with diagonal Qd = diag((T22 T22')^-1);
+        each group's candidate d gets P = Lam_gdd + Qd_d (Lam_gdd the anchors' diagonal), centre
+        m = (s_gd + Qd_d mu_gd) / P and u2 = m + zeta / sqrt(P), and z2 = T22^-1 (u2 - mu).
+        -> (T21, T22^-1, mu [D2, n], P [D2, n], m [D2, n], log|det T22|)."""
+        sb = self.sbs[k]
+        b = sb.blocks[0]
+        D1 = len(sb.kept_nat)
+        Tm = sb.T(post).astype(dtype)
+        T21, T22 = Tm[D1:, :D1], Tm[D1:, D1:]
+        T22inv = solve_triangular(T22, jnp.eye(T22.shape[0], dtype=dtype), lower=True)
+        Qd = jnp.sum(T22inv ** 2, axis=0)
+        p = b.order(post)
+        p = jnp.arange(sb.D) if p is None else jnp.asarray(p)
+        rk = jnp.take(an["inv_rev"], p[D1:])
+        diag = jnp.transpose(jnp.diagonal(an["Lam_t"], axis1=1, axis2=2), (2, 0, 1)).reshape(sb.D, -1)[:, :sb.n]
+        Ld = jnp.take(diag, rk, axis=0).astype(dtype)
+        sc = jnp.take(an["s_k"], rk, axis=0).astype(dtype)
+        mu = T21 @ z1
+        P = Ld + Qd[:, None]
+        m = (sc + Qd[:, None] * mu) / P
+        return T21, T22inv, mu, P, m, jnp.sum(jnp.log(jnp.diagonal(T22)))
 
     def _delta(self, k, v, an, us, ans, kept=None):
         """The shift of each group's effects implied by the fixed effects and earlier blocks,
@@ -1592,6 +1643,8 @@ class TMap:
                         cn = np.setdiff1d(np.arange(dim), kn)
                         p = np.concatenate([kn[np.argsort(-strength[d0 + kn], kind="stable")],
                                             cn[np.argsort(-strength[d0 + cn], kind="stable")]])
+                        if np.any(sb.kept_index[d0 + p[:len(kn)]] < 0):
+                            raise RuntimeError(f"bayesroc: the kept dimensions of {sb.name} do not lead its LKJ order")
                     corr[cb["at"]:cb["at"] + dim] = p - np.arange(dim)
                     idx[d0 + p] = d0 + np.arange(dim)
             # informed dims first in reversed natural order, then the rest by falling weight
@@ -1673,22 +1726,30 @@ def build(model, config, off, unflatten, split=False, links=True):
     return TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
 
 
-def split_supers(tm, aux, threshold=0.1):
+def split_supers(tm, aux, threshold=0.1, masks=None, cand_map="nc"):
     """A new TMap whose wide single correlated blocks map only their informed dimensions: from
     the packed anchors `aux` [1, A], a dimension whose strength K satisfies K / (1 + K) <
     threshold (the map's own _UNINFORMED rule) becomes a candidate (sampled non-centred), the
-    rest stay mapped and lead the block's LKJ order. Blocks whose dimensions are all informed,
-    or none, are left as they are. Returns (TMap, flags) or (tm, None) when nothing splits."""
-    P = tm.parts(np.asarray(aux)[:1])
-    sbs, flags, changed = tm.sbs, [0.0] * len(tm.sbs), False
+    rest stay mapped and lead the block's LKJ order. `masks`: the candidate masks of an earlier
+    split (per super-block, natural order, None for a block left whole), used instead of the rule.
+    Blocks whose dimensions are all informed, or none, are left as they are. Works on copies of
+    the super-blocks, so `tm` is unchanged. Returns (TMap, flags) or (tm, None) when nothing splits."""
+    import copy
+    P = None if masks is not None else tm.parts(np.asarray(aux)[:1])
+    sbs, flags, changed = copy.deepcopy(tm.sbs), [0.0] * len(tm.sbs), False
     for k, sb in enumerate(sbs):
         if sb.cand is None or len(sb.blocks) != 1 or sb.blocks[0].L_flat is None:
             continue
-        K = np.asarray(P[8 * k + 5])[0]
-        cand = (K / (1.0 + K)) < threshold
+        if masks is not None:
+            if masks[k] is None:
+                continue
+            cand = np.asarray(masks[k], bool)
+        else:
+            K = np.asarray(P[8 * k + 5])[0]
+            cand = (K / (1.0 + K)) < threshold
         if 0 < int((~cand).sum()) < sb.D:
             sb._set_cand(cand)
-            sb.split, sb.kept_blocks, sb.cand_blocks = True, [], []
+            sb.split, sb.kept_blocks, sb.cand_blocks, sb.cand_map = True, [], [], cand_map
             flags[k], changed = 1.0, True
     if not changed:
         return tm, None

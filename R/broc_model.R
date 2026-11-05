@@ -2417,22 +2417,20 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   `k`-th post-warmup draw. With `iter_sampling = "auto"` the draws are thinned
 #'   as they are sampled and `control$max_kept` is ignored.
 #' @param sampler Sampling algorithm: `"hmc"` (the default on the JAX backend),
-#'   static-trajectory HMC whose trajectory length is drawn uniformly up to pi at
-#'   every transition, with Stan's windowed step-size and diagonal mass adaptation
-#'   (JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
+#'   static-trajectory HMC whose number of steps at every transition is drawn so the
+#'   trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
+#'   diagonal mass adaptation and one step size shared by the chains, adapted by dual
+#'   averaging on the mean of their acceptance (TFP's cross-chain reduction, as in
+#'   ChEES-HMC, Hoffman, Radul and Sountsov 2021; JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
 #'   an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 #'   On the JAX backend `"hmc"` and `"nuts"` start from the mode of the Laplace
 #'   marginal of the hyperparameters, which also anchors the transport map.
 #' @param control Named list of sampler tuning parameters (defaults in
 #'   parentheses; an unknown key is an error):
-#'   * `"hmc"`: `adapt_delta` (0.9), `adapt_gamma` (0.1; the gain of the step size's
+#'   * `"hmc"`: `adapt_delta` (0.8), `adapt_gamma` (0.05; the gain of the step size's
 #'     dual averaging, Stan's `adapt gamma`: larger values move the step size less per
 #'     warmup iteration), `step_size` (1.0), `transport` (`TRUE`; see *Group transport
-#'     map*), `trajectory` ("fixed": the trajectory length is drawn uniformly up to pi;
-#'     experimental alternatives learned during warmup: "chees" (Hoffman, Radul and Sountsov
-#'     2021), "snaper" (Sountsov and Hoffman 2022), "esjd" (the ChEES scheme on the expected
-#'     squared jump distance), "rule45" (cap 4.5 times the largest posterior scale) and "ehmc"
-#'     (trajectory times drawn from the empirical U-turn times, Wu, Stoehr and Robert 2018)).
+#'     map*).
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
 #'     `precision` ("f64" or "f32"; JAX backend only), `transport` (`TRUE`; JAX backend
 #'     only; see *Group transport map*).
@@ -2715,7 +2713,7 @@ fit_broc <- function(model,
   .auto <- if (auto) .auto_settings(.ctrl, sampler, chains, as.integer(thin)) else NULL
   .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision", "transport")
-  .hmc_keys <- c("adapt_delta", "adapt_gamma", "step_size", "transport", "trajectory")
+  .hmc_keys <- c("adapt_delta", "adapt_gamma", "step_size", "transport")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
                     "precision", "transport", "transport_links", "transport_wide")
@@ -2726,11 +2724,6 @@ fit_broc <- function(model,
   if (!is.null(.ctrl$adapt_gamma) && !(is.numeric(.ctrl$adapt_gamma) && length(.ctrl$adapt_gamma) == 1L &&
                                        is.finite(.ctrl$adapt_gamma) && .ctrl$adapt_gamma > 0)) {
     stop("`control$adapt_gamma` must be a positive number.", call. = FALSE)
-  }
-  if (!is.null(.ctrl$trajectory) && !(is.character(.ctrl$trajectory) && length(.ctrl$trajectory) == 1L &&
-                                      .ctrl$trajectory %in% c("fixed", "chees", "snaper", "esjd", "rule45", "ehmc"))) {
-    stop("`control$trajectory` must be one of \"fixed\", \"chees\", \"snaper\", \"esjd\", \"rule45\", \"ehmc\".",
-         call. = FALSE)
   }
   if (!is.null(.ctrl$transport_wide) && !(is.logical(.ctrl$transport_wide) && length(.ctrl$transport_wide) == 1L &&
                                           !is.na(.ctrl$transport_wide))) {
@@ -2758,7 +2751,7 @@ fit_broc <- function(model,
     warning("control$transport is JAX-only; ignored for the Stan backend.",
             call. = FALSE)
   }
-  adapt_delta   <- .ctrl$adapt_delta   %||% if (sampler == "hmc") 0.9 else 0.8
+  adapt_delta   <- .ctrl$adapt_delta   %||% 0.8
   max_treedepth <- .ctrl$max_treedepth %||% 10
   step_size     <- .ctrl$step_size
 

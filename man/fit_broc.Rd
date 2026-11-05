@@ -57,9 +57,11 @@ see \emph{Adaptive-length sampling} below).}
 as they are sampled and \code{control$max_kept} is ignored.}
 
 \item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
-static-trajectory HMC whose trajectory length is drawn uniformly up to pi at
-every transition, with Stan's windowed step-size and diagonal mass adaptation
-(JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
+static-trajectory HMC whose number of steps at every transition is drawn so the
+trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
+diagonal mass adaptation and one step size shared by the chains, adapted by dual
+averaging on the mean of their acceptance (TFP's cross-chain reduction, as in
+ChEES-HMC, Hoffman, Radul and Sountsov 2021; JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
 an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 On the JAX backend \code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
 marginal of the hyperparameters, which also anchors the transport map.}
@@ -67,14 +69,10 @@ marginal of the hyperparameters, which also anchors the transport map.}
 \item{control}{Named list of sampler tuning parameters (defaults in
 parentheses; an unknown key is an error):
 \itemize{
-\item \code{"hmc"}: \code{adapt_delta} (0.9), \code{adapt_gamma} (0.1; the gain of the step size's
+\item \code{"hmc"}: \code{adapt_delta} (0.8), \code{adapt_gamma} (0.05; the gain of the step size's
 dual averaging, Stan's \verb{adapt gamma}: larger values move the step size less per
 warmup iteration), \code{step_size} (1.0), \code{transport} (\code{TRUE}; see \emph{Group transport
-map}), \code{trajectory} ("fixed": the trajectory length is drawn uniformly up to pi;
-experimental alternatives learned during warmup: "chees" (Hoffman, Radul and Sountsov
-2021), "snaper" (Sountsov and Hoffman 2022), "esjd" (the ChEES scheme on the expected
-squared jump distance), "rule45" (cap 4.5 times the largest posterior scale) and "ehmc"
-(trajectory times drawn from the empirical U-turn times, Wu, Stoehr and Robert 2018)).
+map}).
 \item \code{"nuts"}: \code{adapt_delta} (0.8), \code{max_treedepth} (10), \code{step_size} (1.0),
 \code{precision} ("f64" or "f32"; JAX backend only), \code{transport} (\code{TRUE}; JAX backend
 only; see \emph{Group transport map}).

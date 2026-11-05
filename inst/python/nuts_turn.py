@@ -139,7 +139,19 @@ def _adapter(gamma):
     return _with_globals(_hu.warmup_adapter, dual_averaging=partial(_hu.dual_averaging, gamma=gamma))
 
 
-def _cross_chain_adapter(gamma):
+def _chain_mean(a, reduce):
+    if reduce == "harmonic":
+        return 1.0 / jax.lax.pmean(jnp.where(a > 0, 1.0 / a, jnp.inf), "chain")
+    return jax.lax.pmean(a, "chain")
+
+
+def _stack_mean(a, reduce):
+    if reduce == "harmonic":
+        return 1.0 / jnp.mean(jnp.where(a > 0, 1.0 / a, jnp.inf))
+    return jnp.mean(a)
+
+
+def _cross_chain_adapter(gamma, reduce="mean"):
     """The step size adapted on the acceptance averaged across chains (TFP's DualAveragingStepSizeAdaptation
     reduction; Hoffman, Radul and Sountsov 2021): every chain sees the same statistic, so all chains share
     one step size. Mass adaptation stays per chain. Needs the chains on a pmap axis named "chain"."""
@@ -149,7 +161,7 @@ def _cross_chain_adapter(gamma):
         init_fn, update_fn = base(*args, **kwargs)
 
         def update(t, accept_prob, z_info, state):
-            return update_fn(t, jax.lax.pmean(accept_prob, "chain"), z_info, state)
+            return update_fn(t, _chain_mean(accept_prob, reduce), z_info, state)
 
         return init_fn, update
 
@@ -161,8 +173,8 @@ class _Deferred:
     kernel's own update is a no-op and `update` (numpyro's update function) is applied by the caller, so
     chains run one at a time can share the acceptance statistic."""
 
-    def __init__(self, gamma=None):
-        self.update, self.gamma = None, gamma
+    def __init__(self, gamma=None, reduce="mean"):
+        self.update, self.gamma, self.reduce = None, gamma, reduce
 
     def adapter(self, *args, **kwargs):
         init_fn, update_fn = _adapter(self.gamma)(*args, **kwargs)
@@ -170,17 +182,53 @@ class _Deferred:
         return init_fn, lambda t, accept_prob, z_info, state: state
 
 
-_INTEG = {"leapfrog": {}, "bcss": {"velocity_verlet": _bcss}}
+_BCSS3 = (0.11888010966548, 0.29619504261126)
+
+
+def _bcss3(potential_fn, kinetic_fn, forward_mode_differentiation=False):
+    """The three-stage splitting integrator of Blanes, Casas and Sanz-Serna (2014), the coefficients of
+    drghmc's "bcss3": kick b1 h, drift a1 h, kick b2 h, drift a2 h, kick b2 h, drift a1 h, kick b1 h, with
+    b2 = 1/2 - b1 and a2 = 1 - 2 a1. Symmetric and symplectic, three gradients a step."""
+    b1, a1 = _BCSS3
+    b2, a2 = 0.5 - b1, 1.0 - 2.0 * a1
+    init_fn, _ = _hu.velocity_verlet(potential_fn, kinetic_fn, forward_mode_differentiation)
+
+    def update_fn(step_size, inverse_mass_matrix, state):
+        z, r, _, g = state
+
+        def kick(r, g, c):
+            return jax.tree.map(lambda a, b: a - c * step_size * b, r, g)
+
+        def drift(z, r, c):
+            return jax.tree.map(lambda a, b: a + c * step_size * b, z,
+                                _hu._kinetic_grad(kinetic_fn, inverse_mass_matrix, r))
+
+        r = kick(r, g, b1)
+        z = drift(z, r, a1)
+        pe, g = _hu._value_and_grad(potential_fn, z, forward_mode_differentiation)
+        r = kick(r, g, b2)
+        z = drift(z, r, a2)
+        pe, g = _hu._value_and_grad(potential_fn, z, forward_mode_differentiation)
+        r = kick(r, g, b2)
+        z = drift(z, r, a1)
+        pe, g = _hu._value_and_grad(potential_fn, z, forward_mode_differentiation)
+        r = kick(r, g, b1)
+        return _hu.IntegratorState(z, r, pe, g)
+
+    return init_fn, update_fn
+
+
+_INTEG = {"leapfrog": {}, "bcss": {"velocity_verlet": _bcss}, "bcss3": {"velocity_verlet": _bcss3}}
 _HMC = {}
 
 
-def hmc_for(integrator, cross_chain=False, gamma=None):
+def hmc_for(integrator, cross_chain=False, gamma=None, reduce="mean"):
     """`cross_chain`: False (each chain adapts alone), True (chain-mean acceptance over the pmap axis
     "chain") or a _Deferred, whose update the caller applies. `gamma`: the dual averaging gain."""
     if isinstance(cross_chain, _Deferred):
         return _with_globals(_hmc_mod.hmc, build_tree=build_tree, **_INTEG[integrator], warmup_adapter=cross_chain.adapter)
-    key = (integrator, bool(cross_chain), gamma)
+    key = (integrator, bool(cross_chain), gamma, reduce)
     if key not in _HMC:
-        wa = _cross_chain_adapter(gamma) if cross_chain else _adapter(gamma)
+        wa = _cross_chain_adapter(gamma, reduce) if cross_chain else _adapter(gamma)
         _HMC[key] = _with_globals(_hmc_mod.hmc, build_tree=build_tree, **_INTEG[integrator], warmup_adapter=wa)
     return _HMC[key]

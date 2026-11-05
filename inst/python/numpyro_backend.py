@@ -21,7 +21,6 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax.flatten_util import ravel_pytree
 from jax.scipy.special import expit as jax_expit
 
 jax.config.update("jax_enable_x64", os.environ.get("BAYESROC_ENABLE_X64", "1") != "0")
@@ -5720,12 +5719,14 @@ class FastNUTS(NUTS):
     size for all chains on their mean acceptance (nuts_turn._cross_chain_adapter; chains on a pmap axis
     named "chain")."""
 
-    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, **kwargs):
+    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, reduce="mean",
+                 **kwargs):
         super().__init__(model, **kwargs)
         self._coords = coords
         self._integrator = integrator
         self._cross_chain = cross_chain
         self._gamma = gamma
+        self._reduce = reduce
 
     def _init_state(self, rng_key, model_args, model_kwargs, init_params):
         if self._model is None:
@@ -5742,7 +5743,7 @@ class FastNUTS(NUTS):
                                                                c.model_z(z, _split_parts(a[0])[1]),
                                                                return_deterministic=True))
         if self._init_fn is None:
-            self._init_fn, self._sample_fn = hmc_for(self._integrator, self._cross_chain, self._gamma)(
+            self._init_fn, self._sample_fn = hmc_for(self._integrator, self._cross_chain, self._gamma, self._reduce)(
                 potential_fn_gen=pot_gen, kinetic_fn=self._kinetic_fn, algo=self._algo)
         self._potential_fn_gen = pot_gen
         self._postprocess_fn = post_gen
@@ -5755,12 +5756,14 @@ class FastHMC(HMC):
     """Static-trajectory HMC with FastNUTS's model setup and coordinates. The trajectory length of
     each transition is the one in its state, which the caller draws afresh every transition."""
 
-    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, **kwargs):
+    def __init__(self, model=None, coords=None, integrator="leapfrog", cross_chain=False, gamma=None, reduce="mean",
+                 **kwargs):
         super().__init__(model, **kwargs)
         self._coords = coords
         self._integrator = integrator
         self._cross_chain = cross_chain
         self._gamma = gamma
+        self._reduce = reduce
 
     _init_state = FastNUTS._init_state
 
@@ -5769,9 +5772,9 @@ _MAP_WARMUP = 1000
 _LAPLACE_PASSES = 2
 _CURV_LOOP_MAX = 256
 _CURV_PROBES = 32
-_SPLIT_MAP = False
 _HMC_TMAX = float(np.pi)
-_HMC_GAMMA = 0.1
+_HMC_GAMMA = 0.05
+_HMC_REDUCE = "mean"
 _BLOCK = 50
 
 
@@ -5786,7 +5789,7 @@ class NutsCoords:
 
     def __init__(self, config, chains, seed, parallel, progress_bar, init_strategy, init_radius,
                  init_z=None, transport=True, aux=None, build=None, announce=True, on_anchors=None,
-                 anchors="laplace", label="NUTS"):
+                 anchors="laplace", label="NUTS", split=None, split_masks=None, split_at="lap", split_cand="nc"):
         import drghmc as dr
         _t0 = time.time()
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = build or dr._build(sdt_model, config)
@@ -5796,6 +5799,8 @@ class NutsCoords:
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
         self.start = th0
         self.source, self.pf, self._split_flags, self.label = None, None, None, label
+        self.klog, self.wlog = {}, {}
+        self.split_thr, self.split_at, self.split_cand = (float(split) if split else None), split_at, split_cand
         self._cfg = config
         self._tm, self._chains, self._parallel, self._progress = None, chains, parallel, progress_bar
         tm = None
@@ -5809,6 +5814,10 @@ class NutsCoords:
             self.source = "given"
             if progress_bar and announce:
                 print(f"[{label}] group transport map on {', '.join(tm.specs)}", flush=True)
+            if split_masks is not None:
+                import tmap as _tmap
+                tm, self._split_flags = _tmap.split_supers(tm, None, masks=split_masks, cand_map=split_cand)
+                self._tm = tm
             self.aux_flat = np.asarray(aux)[:1]
             self.tm = tm.cheap_of(self.aux_flat)
             self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
@@ -5820,19 +5829,17 @@ class NutsCoords:
                       flush=True)
             _t1 = time.time()
             self.set_aux(tm.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
-            if _SPLIT_MAP:
-                import tmap as _tmap
-                tm2, fl = _tmap.split_supers(self._tm, self.aux_flat)
-                if fl is not None:
-                    self._tm, self._split_flags = tm2, fl
-                    if progress_bar:
-                        print(f"[{label}] map: " + "; ".join(f"{sb.name} {len(sb.kept_nat)} of {sb.D} dimensions mapped, "
-                                                          f"the rest non-centred" for sb in tm2.sbs if sb.split), flush=True)
-                    self.set_aux(tm2.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
+            self._klog("init")
             self.tsub["anchors0"] = time.time() - _t1
-            if on_anchors is not None:
+            if on_anchors is not None and not split:
                 on_anchors(self)
             self.pf = self._lapmap_passes(seed, chains)
+            self._klog("lap")
+            self.wlog["lap"] = self._wbar_lap()
+            if split and split_at == "lap":
+                self._apply_split(self.wlog["lap"], self.pf["center"], self._th_s)
+            if on_anchors is not None and split:
+                on_anchors(self)
             return
         self.source = "dr"
         if progress_bar and announce:
@@ -5852,30 +5859,33 @@ class NutsCoords:
         self.tm = tm.cheap_of(self.aux_flat)
         self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
 
+    def _vgc(self):
+        if getattr(self, "_vg1", None) is None:
+            vgm, OFF = self.tm.wrap(self.vg.pot), self.vg.OFF0
+            self._vg1 = jax.jit(lambda v, a: vgm(v, OFF, a))
+        return self._vg1
+
     def _lapmap_passes(self, seed, chains):
         import time as _t
-        from blackjax.optimizers.lbfgs import minimize_lbfgs
+        from scipy.optimize import minimize
         zmask = np.concatenate([np.full(int(np.prod(self.off[k][1])), k.startswith("z_")) for k in self.keys])
         hidx, zidx = np.flatnonzero(~zmask), np.flatnonzero(zmask)
         hid, zid = jnp.asarray(hidx), jnp.asarray(zidx)
         passes = _LAPLACE_PASSES
-        vgm, OFF, trim, tmv = self.tm.wrap(self.vg.pot), self.vg.OFF0, self.vg.trim, self.tm
+        OFF, trim, tmv, vg1 = self.vg.OFF0, self.vg.trim, self.tm, self._vgc()
 
-        @jax.custom_vjp
-        def Ua(v, a):
-            return vgm(v, OFF, a)[0]
+        def solve(base):
+            b = np.array(base)
 
-        def Ua_f(v, a):
-            u, g = vgm(v, OFF, a)
-            return u, (g, a)
+            def fg(h):
+                b[hidx] = h
+                u, g = vg1(jnp.asarray(b), self.aux)
+                return float(u), np.asarray(g)[hidx]
 
-        def Ua_b(res, ct):
-            g, a = res
-            return ct * g, jax.tree.map(jnp.zeros_like, a)
+            r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B",
+                         options=dict(maxiter=1000, maxcor=10, gtol=1e-8, ftol=1e-8, maxls=1000))
+            return r.x, int(r.nit), float(r.fun)
 
-        Ua.defvjp(Ua_f, Ua_b)
-        fh = lambda h, base, a: Ua(base.at[hid].set(h), a)
-        solve = jax.jit(lambda h, base, a: minimize_lbfgs(lambda x: fh(x, base, a), h, 1000, 10, 1e-8, 1e-8, 1000)[0])
         fwd_many = jax.jit(lambda V, a: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, a, trim)[0], a), V))
 
         info = dict(walls=[], iters=[], h=[], f=[])
@@ -5883,17 +5893,16 @@ class NutsCoords:
         for p in range(passes):
             t0 = _t.time()
             base = jnp.asarray(self.start[0]).at[zid].set(0.0)
-            last = solve(base[hid], base, self.aux)
-            hstar = last.params
+            hstar, it, fval = solve(base)
             center = np.asarray(base.at[hid].set(hstar))
-            it = int(last.state.iter_num)
             info["h"].append(np.asarray(hstar))
-            info["f"].append(float(last.state.value))
+            info["f"].append(fval)
             starts = np.repeat(center[None], chains, 0)
             starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
             th_c = np.asarray(fwd_many(jnp.asarray(center[None]), self.aux))
             th_s = np.asarray(fwd_many(jnp.asarray(starts), self.aux))
             self.set_aux(self._tm.anchors_chains(self.vg, np.repeat(th_c, chains, 0), OFF, self._parallel)[:1], th_s)
+            self._th_s = th_s
             info["walls"].append(_t.time() - t0)
             info["iters"].append(it)
             if self._progress:
@@ -5908,12 +5917,14 @@ class NutsCoords:
     def _fd_hdiag(self, vc, idx):
         idx = np.asarray(idx)
         if len(idx) <= _CURV_LOOP_MAX:
-            if getattr(self, "_fdg", None) is None:
-                vgm, OFF = self.tm.wrap(self.vg.pot), self.vg.OFF0
-                self._fdg = jax.jit(lambda v, a: vgm(v, OFF, a)[1])
-            vj, e = jnp.asarray(vc), 1e-4
-            return np.array([float((self._fdg(vj.at[i].add(e), self.aux) - self._fdg(vj.at[i].add(-e), self.aux))[i]) / (2 * e)
-                             for i in idx])
+            vg1, v0, e = self._vgc(), np.array(vc), 1e-4
+
+            def gi(i, d):
+                v = v0.copy()
+                v[i] += d
+                return float(np.asarray(vg1(jnp.asarray(v), self.aux)[1])[i])
+
+            return np.array([(gi(i, e) - gi(i, -e)) / (2 * e) for i in idx])
         nd = jax.local_device_count()
         if True:
             per = -(-_CURV_PROBES // nd)
@@ -5945,12 +5956,85 @@ class NutsCoords:
         vc = self._tm.inverse_chains(self.pf["center"], self.aux_flat, self.vg.trim)[0]
         self.pf["h_sd_final"] = 1.0 / np.sqrt(np.maximum(self._fd_hdiag(vc, self.pf["hidx"]), 1e-12))
 
+    def _sd_pos(self, sb):
+        return None if len(sb.blocks) != 1 or sb.blocks[0].L_flat is None else np.asarray(sb.blocks[0].sd_idx)
+
+    def _wbar_lap(self):
+        """Each single correlated block's per-dimension map weight w = K / (1 + K) averaged over the Laplace
+        approximation of its standard deviation: K = Lam sigma^2 with Lam from the Laplace anchors and sigma =
+        scale q(t), t the prior-quantile coordinate, integrated over t ~ N(t_hat, h^-1) by three-point
+        Gauss-Hermite. None for a block without one correlated block."""
+        from drghmc import _sd_logq
+        nodes, wts = np.array([0.0, 3.0 ** 0.5, -(3.0 ** 0.5)]), np.array([2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0])
+        hpos = {int(h): i for i, h in enumerate(np.asarray(self.pf["hidx"]))}
+        center = np.asarray(self.pf["center"])[0]
+        out = []
+        for k, sb in enumerate(self._tm.sbs):
+            pos = self._sd_pos(sb)
+            if pos is None:
+                out.append(None)
+                continue
+            K = np.asarray(self.klog["lap"][k])
+            t = center[pos]
+            sd = np.array([float(self.pf["h_sd_final"][hpos[int(p)]]) for p in pos])
+            lq0 = np.asarray(_sd_logq(jnp.asarray(t)))
+            w = np.zeros_like(K)
+            for x, a in zip(nodes, wts):
+                r2 = np.exp(2.0 * (np.asarray(_sd_logq(jnp.asarray(t + x * sd))) - lq0))
+                w = w + a * K * r2 / (1.0 + K * r2)
+            out.append(w)
+        return out
+
+    def wbar_reb(self, sd2_ratio):
+        """The rebuild's per-dimension map weight with sigma^2 averaged over the rebuild window's draws:
+        `sd2_ratio` per block is mean(sigma^2 over the window) / sigma^2 at the last draw (the anchors' reference)."""
+        out = []
+        for k, sb in enumerate(self._tm.sbs):
+            if sd2_ratio[k] is None:
+                out.append(None)
+                continue
+            K = np.asarray(self.klog["reb"][k]) * np.asarray(sd2_ratio[k])
+            out.append(K / (1.0 + K))
+        return out
+
+    def _apply_split(self, wbar, th_ref, th_start):
+        """Split the single correlated blocks whose dimensions straddle the threshold on the averaged weights
+        `wbar`, and rebuild the anchors in the split map at `th_ref` [1, D] with the chains at `th_start`."""
+        import tmap as _tmap
+        masks = [None if w is None else (np.asarray(w) < self.split_thr) for w in wbar]
+        masks = [None if m is None or not (0 < int((~m).sum()) < len(m)) else m for m in masks]
+        if all(m is None for m in masks):
+            return False
+        tm2, fl = _tmap.split_supers(self._tm, None, masks=masks, cand_map=self.split_cand)
+        if fl is None:
+            return False
+        self._tm, self._split_flags = tm2, fl
+        if self._progress:
+            print(f"[{self.label}] map: " + "; ".join(f"{sb.name} {len(sb.kept_nat)} of {sb.D} dimensions mapped, "
+                                                     f"the rest non-centred" for sb in tm2.sbs if sb.split), flush=True)
+        self.set_aux(tm2.anchors_chains(self.vg, np.repeat(np.asarray(th_ref)[:1], self._chains, 0), self.vg.OFF0,
+                                        self._parallel)[:1], th_start)
+        return True
+
+    def _klog(self, tag):
+        """Each super-block's per-dimension map strength K (natural order) at the current anchors."""
+        P = self._tm.parts(self.aux_flat)
+        self.klog[tag] = [np.asarray(P[8 * k + 5])[0].copy() for k in range(len(self._tm.sbs))]
+
+    @property
+    def split_masks(self):
+        """The candidate masks of a split map (per super-block, natural order), None without a split."""
+        if self._split_flags is None:
+            return None
+        return [np.asarray(sb.cand).copy() if sb.split else None for sb in self._tm.sbs]
+
     def rebuild_from(self, last, mean):
-        """New anchors at the chains' positions (model coordinates [chains, D]): scale coordinates at
-        `last`, effects at `mean`."""
-        mask = self._tm.scale_mask(self.D)
-        ref = np.where(mask, np.asarray(last), np.asarray(mean))
+        """New anchors at the window mean pooled over the chains (model coordinates [chains, D]); the chains
+        restart from `last`."""
+        mean = np.asarray(mean)
+        ref = np.repeat(mean.mean(0, keepdims=True), mean.shape[0], 0)
         self.set_aux(self._tm.anchors_chains(self.vg, ref, self.vg.OFF0, self._parallel)[:1], np.asarray(last))
+        self._klog("reb")
 
     def set_aux(self, aux, th):
         tm = self._tm
@@ -6069,12 +6153,9 @@ class _FoldPrograms:
     Laplace stage runs. `tmax`: draw each transition's trajectory length uniformly on (0, tmax]
     (static-trajectory HMC); None for NUTS. Without `parallel` the program loops over the chains."""
 
-    def __init__(self, config, chains, warmup, thinning, rng_key, make_kernel, tmax, sampling=True, parallel=True,
-                 traj=None):
+    def __init__(self, config, chains, warmup, thinning, rng_key, make_kernel, tmax, sampling=True, parallel=True):
         import math
-        self.parallel, self.traj = parallel, traj
-        self.cap, self.lens = tmax, None
-        self.nlens = max(1, chains * warmup)
+        self.parallel = parallel
         self.config, self.C, self.warmup, self.thin = config, chains, warmup, int(thinning)
         self.rng_key, self.make_kernel, self.tmax, self.sampling = rng_key, make_kernel, tmax, sampling
         self.rebuild = _rebuild_point(warmup)
@@ -6092,11 +6173,15 @@ class _FoldPrograms:
         cfgp = self.cfgp = lambda parts: {**config, "_nuts_parts": parts}
         self.keys = random.split(self.rng_key, C)
         jitter = self.jitter = _jitter(tmax)
+        from drghmc import _sd_logq
+        sdp_np = self.sdp_np = np.concatenate([np.zeros(0, int)] + [p for p in (coords._sd_pos(sb) for sb in coords._tm.sbs)
+                                                                    if p is not None]) if coords._tm is not None else np.zeros(0, int)
+        sdp = jnp.asarray(sdp_np)
 
         def init(key, z, parts):
             return kernel.init(key, warmup, z, (cfgp(parts),), {})
 
-        def run(st, parts, samp, acc, cap, lens, nlen):
+        def run(st, parts, samp, acc):
             args = (cfgp(parts),)
             post = kernel.postprocess_fn(args, {})
             shp = jax.eval_shape(post, st.z) if sampling else None
@@ -6107,21 +6192,22 @@ class _FoldPrograms:
 
                 def step(_, q):
                     s, dv = q
-                    s = kernel.sample(jitter(s, cap, lens, nlen), args, {})
+                    s = kernel.sample(jitter(s), args, {})
                     return s, dv | s.diverging
 
                 s, dv = jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
-                tot = jax.lax.cond(acc, lambda t: t + coords.model_v(s.z, parts), lambda t: t, tot)
+                mv = coords.model_v(s.z, parts)
+                tot = jax.lax.cond(acc, lambda t: t + jnp.concatenate([mv, jnp.exp(2.0 * _sd_logq(mv[sdp]))]), lambda t: t, tot)
                 out = (jax.lax.cond(samp, post, lambda zz: jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shp), s.z)
                        if sampling else None)
                 return (s, tot), (out, s.num_steps, s.energy, s.accept_prob, dv, s.adapt_state.step_size)
 
-            (s, tot), ex = jax.lax.scan(body, (st, jnp.zeros(D, jnp.result_type(float))), None, length=B)
+            (s, tot), ex = jax.lax.scan(body, (st, jnp.zeros(D + len(sdp_np), jnp.result_type(float))), None, length=B)
             return s, tot, coords.model_v(s.z, parts), ex
 
         deferred = getattr(kernel, "_cross_chain", None)
 
-        def run_shared(sts, parts, samp, acc, cap, lens, nlen):
+        def run_shared(sts, parts, samp, acc):
             args = (cfgp(parts),)
             post = kernel.postprocess_fn(args, {})
             shp = jax.eval_shape(post, jax.tree.map(lambda a: a[0], sts.z)) if sampling else None
@@ -6131,7 +6217,7 @@ class _FoldPrograms:
             def one(s):
                 def step(_, q):
                     s, dv = q
-                    s = kernel.sample(jitter(s, cap, lens, nlen), args, {})
+                    s = kernel.sample(jitter(s), args, {})
                     return s, dv | s.diverging
 
                 return jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
@@ -6145,66 +6231,30 @@ class _FoldPrograms:
             def body(c, _):
                 ss, tot = c
                 ss, dv = jax.lax.map(one, ss)
-                a = jnp.mean(ss.accept_prob)
+                from nuts_turn import _stack_mean
+                a = _stack_mean(ss.accept_prob, deferred.reduce)
                 ss = jax.lax.map(lambda q: adapt(q, a), ss)
                 v = jax.lax.map(lambda z: coords.model_v(z, parts), ss.z)
+                v = jnp.concatenate([v, jnp.exp(2.0 * _sd_logq(v[:, sdp]))], axis=1)
                 tot = jax.lax.cond(acc, lambda t: t + v, lambda t: t, tot)
                 out = (jax.lax.cond(samp, lambda zz: jax.lax.map(post, zz),
                                     lambda zz: jax.tree.map(lambda x: jnp.zeros((C,) + x.shape, x.dtype), shp), ss.z)
                        if sampling else None)
                 return (ss, tot), (out, ss.num_steps, ss.energy, ss.accept_prob, dv, ss.adapt_state.step_size)
 
-            (ss, tot), ex = jax.lax.scan(body, (sts, jnp.zeros((C, D), jnp.result_type(float))), None, length=B)
+            (ss, tot), ex = jax.lax.scan(body, (sts, jnp.zeros((C, D + len(sdp_np)), jnp.result_type(float))), None, length=B)
             ex = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), ex)
             return ss, tot, jax.lax.map(lambda z: coords.model_v(z, parts), ss.z), ex
 
-        traj = self.traj
-
-        def run_traj(st, parts, acc, ta, stacked):
-            import trajadapt
-            from numpyro.infer.hmc_util import IntegratorState
-            args = (cfgp(parts),)
-            pot = lambda z: coords.potential(args[0], z)
-            cm = (lambda x: jnp.broadcast_to(jnp.mean(x, 0), x.shape)) if stacked else (lambda x: jax.lax.pmean(x, "chain"))
-            each = (lambda f, *xs: jax.lax.map(lambda q: f(*q), xs)) if stacked else (lambda f, *xs: f(*xs))
-
-            def adapt(s, a, i):
-                zi = IntegratorState(s.z, s.z, s.potential_energy, s.z_grad)
-                new = jax.lax.cond(i < warmup, lambda q: deferred.update(i, a, zi, q), lambda q: q, s.adapt_state)
-                return s._replace(adapt_state=new)
-
-            def body(c, _):
-                s, tot, ta = c
-                i = s.i
-                T = jnp.exp(ta["logT"])
-                s, info = each(lambda q, tt: trajadapt.transition(traj, q, tt, pot), s, T)
-                s = each(adapt, s, cm(info["a"]), i)
-                znew = each(lambda z: ravel_pytree(z)[0], s.z)
-                ta = trajadapt.update(traj, ta, i, info, znew, cm)
-                v = each(lambda z: coords.model_v(z, parts), s.z)
-                tot = jax.lax.cond(acc, lambda q: q + v, lambda q: q, tot)
-                return (s, tot, ta), (s.num_steps, s.accept_prob, s.adapt_state.step_size, T, info["tstar"])
-
-            tot0 = jnp.zeros(((C, D) if stacked else (D,)), jnp.result_type(float))
-            (s, tot, ta), ex = jax.lax.scan(body, (st, tot0, ta), None, length=B)
-            if stacked:
-                ex = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), ex)
-            return s, tot, each(lambda z: coords.model_v(z, parts), s.z), ta, ex
-
         if self.parallel:
             self.initf = jax.pmap(init, in_axes=(0, 0, None), axis_name="chain")
-            self.prog = jax.pmap(run, in_axes=(0, None, None, None, None, None, None), axis_name="chain")
+            self.prog = jax.pmap(run, in_axes=(0, None, None, None), axis_name="chain")
             self.shard = jax.pmap(lambda x: x)
-            if traj:
-                self.taprog = jax.pmap(lambda st, p, a, ta: run_traj(st, p, a, ta, False), in_axes=(0, None, None, 0),
-                                       axis_name="chain")
         else:
             loop = lambda f, n: jax.jit(lambda *a: jax.lax.map(lambda x: f(*x, *a[n:]), tuple(a[:n])))
             self.initf = loop(init, 2)
-            self.prog = jax.jit(run_shared) if hasattr(deferred, "update") and not traj else loop(run, 1)
+            self.prog = jax.jit(run_shared) if hasattr(deferred, "update") else loop(run, 1)
             self.shard = jnp.asarray
-            if traj:
-                self.taprog = jax.jit(lambda st, p, a, ta: run_traj(st, p, a, ta, True))
         parts0, z0 = coords.aux, coords.init_params(C, batched=True)
 
         def work():
@@ -6213,15 +6263,7 @@ class _FoldPrograms:
                 st1 = jax.eval_shape(lambda k, z: kernel.init(k, warmup, z, (cfgp(parts0),), {}), self.keys[0], one)
                 sts = jax.tree.map(lambda a: jax.ShapeDtypeStruct((C,) + tuple(a.shape), a.dtype), st1)
                 f = jnp.asarray(False)
-                c0 = jnp.asarray(_HMC_TMAX, jnp.result_type(float))
-                l0, n0 = jnp.zeros(self.nlens, jnp.result_type(float)), jnp.asarray(0, jnp.int32)
-                low = {"initf": self.initf.lower(self.keys, z0, parts0),
-                       "prog": self.prog.lower(sts, parts0, f, f, c0, l0, n0)}
-                if traj:
-                    import trajadapt
-                    ta0 = jax.tree.map(lambda x: jax.ShapeDtypeStruct((C,) + tuple(jnp.shape(x)), jnp.result_type(x)),
-                                       trajadapt.init(traj, D, 1.0, jnp.result_type(float)))
-                    low["taprog"] = self.taprog.lower(sts, parts0, f, ta0)
+                low = {"initf": self.initf.lower(self.keys, z0, parts0), "prog": self.prog.lower(sts, parts0, f, f)}
                 self.t["lower"] = time.time() - t0
                 for k, l in low.items():
                     setattr(self, k, l.compile())
@@ -6232,21 +6274,11 @@ class _FoldPrograms:
         self.thread = threading.Thread(target=work, daemon=True)
         self.thread.start()
 
-    def _cap(self):
-        return jnp.asarray(_HMC_TMAX if self.cap is None else self.cap, jnp.result_type(float))
-
-    def _lens(self):
-        L = np.zeros(self.nlens)
-        n = 0 if self.lens is None else min(len(self.lens), self.nlens)
-        if n:
-            L[:n] = np.asarray(self.lens)[:n]
-        return jnp.asarray(L, jnp.result_type(float)), jnp.asarray(n, jnp.int32)
-
     def warmf(self, st, parts, acc):
-        return self.prog(st, parts, jnp.asarray(False), jnp.asarray(acc), self._cap(), *self._lens())
+        return self.prog(st, parts, jnp.asarray(False), jnp.asarray(acc))
 
     def sampf(self, st, parts):
-        s, _, _, ex = self.prog(st, parts, jnp.asarray(True), jnp.asarray(False), self._cap(), *self._lens())
+        s, _, _, ex = self.prog(st, parts, jnp.asarray(True), jnp.asarray(False))
         return s, ex
 
     def wait(self):
@@ -6270,52 +6302,50 @@ def _with_mass(st, imm, pg, D):
 
 
 def _jitter(tmax):
-    """The state with its trajectory length drawn uniformly on (0, cap] from the state's own key, cap
-    `tmax` unless given; the identity for NUTS (tmax None)."""
+    """The state with its number of steps drawn as max(1, ceil(tmax u / eps)), u uniform on (0, 1] from the
+    state's own key, at the nominal step size eps (Stan, TFP's ChEES and Neal 2011 keep the step and round
+    the step count; numpyro's exact-length rescaling to T / ceil(T / eps) hides an oversized step from the
+    adaptation); the identity for NUTS (tmax None)."""
     if tmax is None:
-        return lambda s, cap=None, lens=None, nlen=None: s
+        return lambda s: s
 
-    def f(s, cap=None, lens=None, nlen=None):
-        k = random.fold_in(s.rng_key, 7)
-        c = tmax if cap is None else cap
-        t = c * (1.0 - random.uniform(k))
-        if lens is not None:
-            emp = lens[random.randint(k, (), 0, jnp.maximum(nlen, 1))]
-            t = jnp.where(nlen > 0, emp, t)
-        return s._replace(trajectory_length=jnp.asarray(t, s.trajectory_length.dtype))
+    def f(s):
+        u = 1.0 - random.uniform(random.fold_in(s.rng_key, 7))
+        eps = s.adapt_state.step_size
+        n = jnp.maximum(1.0, jnp.ceil(tmax * u / eps))
+        return s._replace(trajectory_length=jnp.asarray((n - 1e-6) * eps, s.trajectory_length.dtype))
 
     return f
 
 
-def _chain_adapt(parallel, chains, gamma=_HMC_GAMMA):
+def _chain_adapt(parallel, chains, gamma=_HMC_GAMMA, reduce=_HMC_REDUCE):
     from nuts_turn import _Deferred
-    return False if chains < 2 else True if parallel else _Deferred(gamma)
+    return False if chains < 2 else True if parallel else _Deferred(gamma, reduce)
 
 
 def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_tree_depth, step_size, progress_bar,
                init_strategy, init_radius, init_z, transport, sampler, sampling=True, build=None, parallel=True,
-               gamma=_HMC_GAMMA, trajectory="fixed"):
+               gamma=_HMC_GAMMA, integrator="bcss", reduce=_HMC_REDUCE, split=None, split_at="lap", split_cand="nc"):
     """The coordinates (Laplace anchors) and the background-compiled programs of a fold fit. `gamma`: the
     HMC step size's dual averaging gain (Stan's `adapt gamma`)."""
     hmc = sampler == "hmc"
     label = "HMC" if hmc else "NUTS"
-    traj = trajectory if hmc and trajectory != "fixed" and warmup > 0 else None
 
     def make_kernel(c):
         kw = {"inverse_mass_matrix": jnp.ones(c.D)} if c.source == "laplace" else {}
         if hmc:
-            from nuts_turn import _Deferred
-            cc = _Deferred(gamma) if traj else _chain_adapt(parallel, chains, gamma)
-            return FastHMC(sdt_model, coords=c, integrator="bcss", cross_chain=cc, gamma=gamma,
+            return FastHMC(sdt_model, coords=c, integrator=integrator, cross_chain=_chain_adapt(parallel, chains, gamma, reduce),
+                           gamma=gamma, reduce=reduce,
                            target_accept_prob=target_accept_prob, step_size=float(step_size),
                            trajectory_length=_HMC_TMAX, **kw)
         return FastNUTS(sdt_model, coords=c, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth,
                         step_size=float(step_size), **kw)
 
     pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
-                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1, traj)
+                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1)
     coords = NutsCoords(config, chains, seed, parallel and chains > 1, progress_bar, init_strategy, init_radius, init_z,
-                        transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build)
+                        transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build,
+                        split=split, split_at=split_at, split_cand=split_cand)
     if pg.thread is None:
         pg.start(coords)
     pg.wait()
@@ -6336,24 +6366,12 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
     if imm is not None:
         st = _with_mass(st, imm, pg, D)
     rb = pg.rebuild if coords.source == "laplace" else None
-    tot, n_acc, steps, w_acc, w_eps, w_T, w_ts = np.zeros((C, D)), 0, [], [], [], [], []
+    tot, n_acc, steps, w_acc, w_eps = np.zeros((C, D + len(pg.sdp_np))), 0, [], [], []
     bar = progress.bar(warmup, f"{label} warmup") if progress_bar else None
-    ta = None
-    if pg.traj:
-        import trajadapt
-        ta = jax.tree.map(lambda x: pg.shard(jnp.broadcast_to(x, (C,) + jnp.shape(x))),
-                          trajadapt.init(pg.traj, D, float(np.ravel(np.asarray(st.adapt_state.step_size))[0]),
-                                         jnp.result_type(float)))
     i = 0
     while i < warmup:
         acc = rb is not None and rb // 2 <= i < rb
-        if ta is None:
-            st, t_blk, last, (_, ns, _, ap, _, ss) = pg.warmf(st, parts, acc)
-        else:
-            st, t_blk, last, ta, (ns, ap, ss, Tb, tsb) = pg.taprog(st, parts, jnp.asarray(acc), ta)
-            w_T.append(Tb)
-            if i >= warmup // 2:
-                w_ts.append(np.asarray(tsb))
+        st, t_blk, last, (_, ns, _, ap, _, ss) = pg.warmf(st, parts, acc)
         i += pg.Bw
         steps.append(ns)
         w_acc.append(ap)
@@ -6361,7 +6379,23 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
         if acc:
             tot, n_acc = tot + np.asarray(t_blk), n_acc + pg.Bw
         if rb is not None and i == rb:
-            coords.rebuild_from(np.asarray(last), tot / max(n_acc, 1))
+            mean = tot / max(n_acc, 1)
+            coords.rebuild_from(np.asarray(last), mean[:, :D])
+            if pg.sdp_np.size:
+                from drghmc import _sd_logq
+                lastq2 = np.exp(2.0 * np.asarray(_sd_logq(jnp.asarray(np.asarray(last)[:, pg.sdp_np]))))
+                ratio = mean[:, D:].mean(0) / lastq2.mean(0)
+                per, o = [], 0
+                for sb in coords._tm.sbs:
+                    p = coords._sd_pos(sb)
+                    per.append(None if p is None else ratio[o:o + len(p)])
+                    o += 0 if p is None else len(p)
+                coords.wlog["reb"] = coords.wbar_reb(per)
+                if coords.split_thr is not None and coords.split_at == "reb" and coords._split_flags is None:
+                    ref = np.where(coords._tm.scale_mask(D), np.asarray(last), mean[:, :D])
+                    if coords._apply_split(coords.wlog["reb"], ref[:1], np.asarray(last)):
+                        pg.start(coords)
+                        pg.wait()
             if coords.pf is not None:
                 coords.lap_curvature()
             parts = coords.aux
@@ -6370,29 +6404,14 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
             imm = nuts_initial_mass(coords)
             if imm is not None:
                 st = _with_mass(st, imm, pg, D)
-            if ta is not None and pg.traj == "snaper":
-                ta = {**ta, "n": jnp.zeros_like(ta["n"])}
         if bar is not None:
             jax.block_until_ready(st.z)
             bar.update(pg.Bw)
     if bar is not None:
         bar.close()
     jax.block_until_ready(st.z)
-    if ta is not None:
-        import trajadapt
-        pg.cap = float(np.ravel(np.asarray(trajadapt.cap(pg.traj, ta)))[0])
-        if pg.traj == "ehmc" and w_ts:
-            ts = np.concatenate([x.reshape(-1) for x in w_ts])
-            pg.lens = ts[np.isfinite(ts) & (ts > 0)]
-        if progress_bar:
-            extra = (f"; {len(pg.lens)} U-turn times, median {np.median(pg.lens):.3f}" if pg.lens is not None
-                     and len(pg.lens) else "")
-            print(f"[{label}] {pg.traj} trajectory cap {pg.cap:.3f}{extra}", flush=True)
     if trace is not None:
         trace["warmup_wall"] = time.time() - t_w
-        trace["trajectory_cap"] = np.asarray(pg.cap if pg.cap is not None else np.nan)
-        if w_T:
-            trace["warmup_T"] = cat(w_T)
         if steps:
             trace["warmup_num_steps"] = cat(steps)
             trace["warmup_accept"] = cat(w_acc)
@@ -6447,10 +6466,25 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
                                    step_size, progress_bar, init_strategy, init_radius, init_z,
                                    bool((control or {}).get("transport", True)), sampler, parallel=parallel,
                                    gamma=float((control or {}).get("adapt_gamma", _HMC_GAMMA)),
-                                   trajectory=str((control or {}).get("trajectory", "fixed")))
+                                   integrator=str((control or {}).get("integrator", "bcss")),
+                                   split=_split_threshold(control),
+                                   split_at=str((control or {}).get("transport_split_at", "lap")),
+                                   split_cand=str((control or {}).get("transport_split_cand", "nc")))
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
     trace = {"t_coords": time.time() - t0, **{f"prep_{k}": v for k, v in pg.t.items()}} if trace_path else None
     samples_dict, extra, st = _fold_run(pg, coords, warmup, -(-int(samples) // int(thinning)), trace, progress_bar, label)
+    if trace is not None and coords._tm is not None:
+        trace["K_blocks"] = np.asarray([sb.name for sb in coords._tm.sbs])
+        for k, m in enumerate(coords.split_masks or []):
+            if m is not None:
+                trace[f"split_cand_{k}"] = np.asarray(m, bool)
+        for tag, Ks in coords.klog.items():
+            for k, K in enumerate(Ks):
+                trace[f"K_{tag}_{k}"] = K
+        for tag, ws in coords.wlog.items():
+            for k, w in enumerate(ws):
+                if w is not None:
+                    trace[f"wbar_{tag}_{k}"] = w
     elapsed = time.time() - t0
     if trace is not None:
         trace["elapsed"] = elapsed
@@ -6465,8 +6499,16 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
     _restore_centred(samples_np)
     out = {"samples": samples_np, "extra_fields": {k: np.array(v) for k, v in extra.items()}, "elapsed": float(elapsed)}
     if save_state:
-        out["state"] = {"hmc": st, "offset": None, "aux": coords.aux_flat, "tcap": pg.cap, "tlens": pg.lens}
+        out["state"] = {"hmc": st, "offset": None, "aux": coords.aux_flat, "split": coords.split_masks,
+                        "split_cand": coords.split_cand}
     return out
+
+
+def _split_threshold(control):
+    v = (control or {}).get("transport_split", False)
+    if v is True:
+        return 0.1
+    return float(v) if v else None
 
 
 def fit_model(config, chains=4, warmup=500, samples=1000, seed=0,
