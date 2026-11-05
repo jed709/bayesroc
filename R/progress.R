@@ -69,6 +69,10 @@
     head <- cli::ansi_strtrim(paste0(b$desc, "  "), max(1L, width - nchar(done) - 2L), ellipsis = "")
     return(paste0(st$ok(st$tick), " ", head, done))
   }
+  if (b$total <= 0) {
+    info <- paste0(format(b$n - b$start, big.mark = ","), if (nzchar(b$unit %||% "")) paste0(" ", b$unit), "  ", took)
+    return(cli::ansi_strtrim(paste0(b$desc, "  ", info), width, ellipsis = ""))
+  }
   left <- if (!is.na(b$tn) && b$n > b$nn && b$n < b$total) {
     paste0(", ~", .prog_time((now - b$tn) / (b$n - b$nn) * (b$total - b$n)), " left")
   } else ""

@@ -5835,7 +5835,8 @@ class NutsCoords:
                 on_anchors(self)
             self.pf = self._lapmap_passes(seed, chains)
             self._klog("lap")
-            self.wlog["lap"] = self._wbar_lap()
+            if split:
+                self.wlog["lap"] = self._wbar_lap()
             if split and split_at == "lap":
                 self._apply_split(self.wlog["lap"], self.pf["center"], self._th_s)
             if on_anchors is not None and split:
@@ -5874,16 +5875,20 @@ class NutsCoords:
         passes = _LAPLACE_PASSES
         OFF, trim, tmv, vg1 = self.vg.OFF0, self.vg.trim, self.tm, self._vgc()
 
-        def solve(base):
+        def solve(base, p):
             b = np.array(base)
+            bar = progress.bar(None, f"[{self.label}] Laplace pass {p + 1} of {passes}", unit="L-BFGS iterations",
+                               leave=False) if self._progress else None
 
             def fg(h):
                 b[hidx] = h
                 u, g = vg1(jnp.asarray(b), self.aux)
                 return float(u), np.asarray(g)[hidx]
 
-            r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B",
+            r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B", callback=(lambda *_: bar.update()) if bar else None,
                          options=dict(maxiter=1000, maxcor=10, gtol=1e-8, ftol=1e-8, maxls=1000))
+            if bar is not None:
+                bar.close(drop=True)
             return r.x, int(r.nit), float(r.fun)
 
         fwd_many = jax.jit(lambda V, a: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, a, trim)[0], a), V))
@@ -5893,7 +5898,7 @@ class NutsCoords:
         for p in range(passes):
             t0 = _t.time()
             base = jnp.asarray(self.start[0]).at[zid].set(0.0)
-            hstar, it, fval = solve(base)
+            hstar, it, fval = solve(base, p)
             center = np.asarray(base.at[hid].set(hstar))
             info["h"].append(np.asarray(hstar))
             info["f"].append(fval)
@@ -6381,7 +6386,7 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
         if rb is not None and i == rb:
             mean = tot / max(n_acc, 1)
             coords.rebuild_from(np.asarray(last), mean[:, :D])
-            if pg.sdp_np.size:
+            if pg.sdp_np.size and coords.split_thr is not None:
                 from drghmc import _sd_logq
                 lastq2 = np.exp(2.0 * np.asarray(_sd_logq(jnp.asarray(np.asarray(last)[:, pg.sdp_np]))))
                 ratio = mean[:, D:].mean(0) / lastq2.mean(0)

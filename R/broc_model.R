@@ -2472,10 +2472,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   (see [install_jax_backend()]). When `backend` is not given and no Python with
 #'   JAX and NumPyro is found, the fit falls back to Stan with NUTS and says so once
 #'   per session; it does not fall back when `sampler = "drghmc"` or
-#'   `iter_sampling = "auto"` is requested. It caches compiled XLA programs under
-#'   `tools::R_user_dir("bayesroc", "cache")`; set
-#'   `options(bayesroc.xla_cache = FALSE)` to disable the cache or to a path to
-#'   move it.
+#'   `iter_sampling = "auto"` is requested. Compiled XLA programs are not kept between
+#'   fits unless `options(bayesroc.xla_cache = TRUE)` (a cache under
+#'   `tools::R_user_dir("bayesroc", "cache")`) or a path is set; see
+#'   [bayesroc_clear_cache()].
 #' @param python Optional path to the Python executable for the JAX backend.
 #'   `NULL` (default) uses the managed environment (see [install_jax_backend()]).
 #' @param progress_bar If `TRUE` (default), show the sampler's progress. On the JAX backend

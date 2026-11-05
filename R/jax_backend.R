@@ -773,11 +773,43 @@ read_npy <- function(path) {
 # Helper
 # =============================================================================
 
-.xla_cache_dir <- function() {
-  opt <- getOption("bayesroc.xla_cache", TRUE)
-  if (isFALSE(opt)) return("0")
-  if (is.character(opt) && nzchar(opt)) return(normalizePath(opt, winslash = "/", mustWork = FALSE))
+.xla_cache_default <- function() {
   normalizePath(file.path(tools::R_user_dir("bayesroc", "cache"), "xla"), winslash = "/", mustWork = FALSE)
+}
+
+.xla_cache_dir <- function() {
+  opt <- getOption("bayesroc.xla_cache", FALSE)
+  if (is.character(opt) && nzchar(opt)) return(normalizePath(opt, winslash = "/", mustWork = FALSE))
+  if (isTRUE(opt)) return(.xla_cache_default())
+  "0"
+}
+
+#' Clear the compiled-program cache
+#'
+#' Deletes the JAX backend's cache of compiled XLA programs. The cache is off unless
+#' `options(bayesroc.xla_cache = TRUE)` (the default location,
+#' `file.path(tools::R_user_dir("bayesroc", "cache"), "xla")`) or a path is set; with it
+#' on, a later fit of a model with the same structure skips most of its compilation.
+#' The cache grows with every new model structure and has no size limit.
+#'
+#' @param path The cache directory. Defaults to the directory the current
+#'   `bayesroc.xla_cache` option points to, or the default location when the option is
+#'   unset or `FALSE`.
+#' @return The number of bytes freed, invisibly.
+#' @export
+bayesroc_clear_cache <- function(path = NULL) {
+  opt <- getOption("bayesroc.xla_cache", FALSE)
+  path <- path %||% (if (is.character(opt) && nzchar(opt)) opt else .xla_cache_default())
+  path <- normalizePath(path, winslash = "/", mustWork = FALSE)
+  if (!dir.exists(path)) {
+    message("No cache at ", path, ".")
+    return(invisible(0))
+  }
+  files <- list.files(path, recursive = TRUE, full.names = TRUE, all.files = TRUE, no.. = TRUE)
+  bytes <- sum(file.size(files), na.rm = TRUE)
+  unlink(path, recursive = TRUE)
+  message(sprintf("Removed %s (%.1f MB).", path, bytes / 2^20))
+  invisible(bytes)
 }
 
 .jax_init_values <- function(init, chains) {

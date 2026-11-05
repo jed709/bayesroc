@@ -24,11 +24,13 @@ def _emit(ev):
 
 
 class Bar:
-    """n of total `unit`s done, counted from `start`; `leave` keeps the finished line."""
+    """n of total `unit`s done, counted from `start`; `leave` keeps the finished line; total None counts
+    with no end."""
 
     def __init__(self, total, desc, start=0, unit="iterations", leave=True):
         self.id = f"{os.getpid()}-{next(_ids)}"
-        self.total, self.desc, self.start, self.n = int(total), desc, int(start), int(start)
+        self.open = total is None
+        self.total, self.desc, self.start, self.n = 0 if self.open else int(total), desc, int(start), int(start)
         self.unit, self.leave = unit, bool(leave)
         self.t, self.closed = 0.0, False
         self._send(True)
@@ -45,9 +47,9 @@ class Bar:
         if self.closed:
             return
         self.n += int(k)
-        if self.n > self.total:
+        if not self.open and self.n > self.total:
             self.total = self.n
-        self._send(self.n >= self.total)
+        self._send(not self.open and self.n >= self.total)
 
     def close(self, drop=False):
         if not self.closed:
@@ -80,7 +82,7 @@ def bar(total, desc, start=0, unit="iterations", leave=True, stage=None):
         return Bar(total, desc if stage is None else f"{desc} ({stage})", start, unit, leave)
     try:
         from tqdm.auto import tqdm
-        return tqdm(total=int(total) - int(start), desc=desc, unit=unit[:-1] if unit.endswith("s") else unit,
+        return tqdm(total=None if total is None else int(total) - int(start), desc=desc, unit=unit[:-1] if unit.endswith("s") else unit,
                     leave=leave)
     except Exception:
         return None

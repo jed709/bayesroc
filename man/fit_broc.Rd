@@ -120,10 +120,10 @@ fit uses every CPU, with a warning.}
 (see \code{\link[=install_jax_backend]{install_jax_backend()}}). When \code{backend} is not given and no Python with
 JAX and NumPyro is found, the fit falls back to Stan with NUTS and says so once
 per session; it does not fall back when \code{sampler = "drghmc"} or
-\code{iter_sampling = "auto"} is requested. It caches compiled XLA programs under
-\code{tools::R_user_dir("bayesroc", "cache")}; set
-\code{options(bayesroc.xla_cache = FALSE)} to disable the cache or to a path to
-move it.}
+\code{iter_sampling = "auto"} is requested. Compiled XLA programs are not kept between
+fits unless \code{options(bayesroc.xla_cache = TRUE)} (a cache under
+\code{tools::R_user_dir("bayesroc", "cache")}) or a path is set; see
+\code{\link[=bayesroc_clear_cache]{bayesroc_clear_cache()}}.}
 
 \item{python}{Optional path to the Python executable for the JAX backend.
 \code{NULL} (default) uses the managed environment (see \code{\link[=install_jax_backend]{install_jax_backend()}}).}
