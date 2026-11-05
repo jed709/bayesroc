@@ -82,7 +82,15 @@ def bar(total, desc, start=0, unit="iterations", leave=True, stage=None):
         return Bar(total, desc if stage is None else f"{desc} ({stage})", start, unit, leave)
     try:
         from tqdm.auto import tqdm
-        return tqdm(total=None if total is None else int(total) - int(start), desc=desc, unit=unit[:-1] if unit.endswith("s") else unit,
+
+        class _Tqdm(tqdm):
+            def __bool__(self):
+                return True
+
+            def close(self, drop=False):
+                super().close()
+
+        return _Tqdm(total=None if total is None else int(total) - int(start), desc=desc, unit=unit[:-1] if unit.endswith("s") else unit,
                     leave=leave)
     except Exception:
         return None
