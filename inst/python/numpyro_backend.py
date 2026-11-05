@@ -5885,7 +5885,7 @@ class NutsCoords:
                 u, g = vg1(jnp.asarray(b), self.aux)
                 return float(u), np.asarray(g)[hidx]
 
-            r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B", callback=(lambda *_: bar.update()) if bar else None,
+            r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B", callback=(lambda *_: bar.update()) if bar is not None else None,
                          options=dict(maxiter=1000, maxcor=10, gtol=1e-8, ftol=1e-8, maxls=1000))
             if bar is not None:
                 bar.close(drop=True)
