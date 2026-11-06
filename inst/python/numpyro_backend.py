@@ -4958,8 +4958,6 @@ def sdt_model(config):
         log_lik = fused_loglik_mafc(y - 1, jnp.array(config["target_pos"], dtype=jnp.int32) - 1,
                                     jnp.array(config["m_alt"], dtype=jnp.int32), trial_params.get("dprime", jnp.zeros(N)),
                                     trial_params.get("sigma", jnp.ones(N)), bias_full)
-        if counts is not None:
-            log_lik = log_lik * counts
     else:
         # ---- Build thresholds ----
         P_crit = config.get("P_crit", 1)
@@ -5180,7 +5178,7 @@ def sdt_model(config):
                     y=y, rk=rk, is_old=is_old, thresh=thresh,
                     mu_R=mu_R, sigma_R=sigma_R, mu_F=mu_F, sigma_F=sigma_F,
                     c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
-                    n_rkg=n_rkg, counts=counts,
+                    n_rkg=n_rkg,
                     thresh_mid=thresh_mid_vec, log_gaps=log_gaps_obs,
                     gap_link=gap_link, rk_static=np.asarray(config.get("_static", config)["rk"]),
                     part=(config["cdp_u"], config["cdp_j"]) if config.get("cdp_u") is not None else None,
@@ -5195,8 +5193,6 @@ def sdt_model(config):
                                          is_old, thresh_mid_vec, log_gaps_obs, gap_link,
                                          q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")),
                                          link_name=link_name)
-            if counts is not None:
-                log_lik = log_lik * counts
 
         elif is_bivariate:
             y2 = jnp.array(config["y2"], dtype=jnp.int32)
@@ -5466,7 +5462,6 @@ def sdt_model(config):
                 lambda2=trial_params.get("lambda2"),
                 lambda_B=trial_params.get("lambda_B"),
                 lambda2_B=trial_params.get("lambda2_B"),
-                counts=counts,
                 dprime2=trial_params.get("dprime2"),
                 bounded=config.get("bounded", False),
                 thresh1_mid=thresh_mid_vec,
@@ -5494,7 +5489,6 @@ def sdt_model(config):
                 dprime_L=trial_params.get("dprime_L"),
                 sigma_L=trial_params.get("sigma_L"),
                 lambda_L=trial_params.get("lambda_L"),
-                counts=counts,
                 source=source,
                 thresh_mid=thresh_mid_vec,
                 log_gaps=log_gaps_obs,
@@ -5505,11 +5499,9 @@ def sdt_model(config):
                 meta_noise=config.get("meta_noise"),
             )
 
+    numpyro.deterministic("log_lik", log_lik)
     if counts is not None:
-        log_lik_unweighted = log_lik / counts
-    else:
-        log_lik_unweighted = log_lik
-    numpyro.deterministic("log_lik", log_lik_unweighted)
+        log_lik = log_lik * counts
 
     if config.get("prior_only"):
         return

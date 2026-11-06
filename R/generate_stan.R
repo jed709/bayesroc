@@ -120,7 +120,7 @@ generate_data_block_v2 <- function(model_data, family, batch_info = NULL) {
   }
   
   if (isTRUE(model_data$has_counts)) {
-    lines <- c(lines, "  array[N] int<lower=1> counts;  // Aggregation counts")
+    lines <- c(lines, "  array[N] int<lower=0> counts;  // Aggregation counts")
   }
   
   has_dprime_fixed <- isTRUE(model_data$has_dprime_fixed) || is.null(model_data$has_dprime_fixed)
