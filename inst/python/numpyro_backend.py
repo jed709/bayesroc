@@ -5828,11 +5828,15 @@ class NutsCoords:
                 print(f"[{label}] group transport map on {', '.join(tm.specs)}; anchors from the Laplace-marginal mode",
                       flush=True)
             _t1 = time.time()
+            early = on_anchors is not None and not split
+            if early:
+                self.aux_flat = np.zeros((1, tm.aux_size))
+                self.tm = tm.cheap_of(self.aux_flat)
+                self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
+                on_anchors(self)
             self.set_aux(tm.anchors_chains(self.vg, th0, self.vg.OFF0, parallel)[:1], th0)
             self._klog("init")
             self.tsub["anchors0"] = time.time() - _t1
-            if on_anchors is not None and not split:
-                on_anchors(self)
             self.pf = self._lapmap_passes(seed, chains)
             self._klog("lap")
             if split:
@@ -5904,8 +5908,8 @@ class NutsCoords:
             info["f"].append(fval)
             starts = np.repeat(center[None], chains, 0)
             starts[:, zmask] = rng.standard_normal((chains, int(zmask.sum())))
-            th_c = np.asarray(fwd_many(jnp.asarray(center[None]), self.aux))
-            th_s = np.asarray(fwd_many(jnp.asarray(starts), self.aux))
+            th_all = np.asarray(fwd_many(jnp.asarray(np.concatenate([center[None], starts])), self.aux))
+            th_c, th_s = th_all[:1], th_all[1:]
             self.set_aux(self._tm.anchors_chains(self.vg, np.repeat(th_c, chains, 0), OFF, self._parallel)[:1], th_s)
             self._th_s = th_s
             info["walls"].append(_t.time() - t0)
@@ -5944,15 +5948,9 @@ class NutsCoords:
         rng = np.random.default_rng(int(len(idx)))
         Z = np.zeros((nd * per, self.D))
         Z[:, idx] = rng.choice([-1.0, 1.0], size=(nd * per, len(idx)))
-        if getattr(self, "_hvp", None) is None:
-            vgm, OFF, e = self.tm.wrap(self.vg.pot), self.vg.OFF0, 1e-4
-
-            def probe(v, a, z):
-                return z * (vgm(v + e * z, OFF, a)[1] - vgm(v - e * z, OFF, a)[1]) / (2 * e)
-
-            self._hvp = jax.pmap(lambda Zc, v, a: jax.lax.map(lambda z: probe(v, a, z), Zc).sum(0),
-                                 in_axes=(0, None, None))
-        tot = np.asarray(self._hvp(jnp.asarray(Z.reshape(nd, per, self.D)), jnp.asarray(vc), self.aux)).sum(0)
+        vg1, v0, e = self._vgc(), np.asarray(vc), 1e-4
+        g = lambda v: np.asarray(vg1(jnp.asarray(v), self.aux)[1])
+        tot = sum(z * (g(v0 + e * z) - g(v0 - e * z)) / (2 * e) for z in Z)
         return tot[idx] / (nd * per)
 
     def lap_curvature(self):
@@ -6199,13 +6197,19 @@ class _FoldPrograms:
                     return s, dv | s.diverging
 
                 s, dv = jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
-                mv = coords.model_v(s.z, parts)
-                tot = jax.lax.cond(acc, lambda t: t + jnp.concatenate([mv, jnp.exp(2.0 * _sd_logq(mv[sdp]))]), lambda t: t, tot)
-                out = (jax.lax.cond(samp, post, lambda zz: jax.tree.map(lambda x: jnp.zeros(x.shape, x.dtype), shp), s.z)
-                       if sampling else None)
-                return (s, tot), (out, s.num_steps, s.energy, s.accept_prob, dv, s.adapt_state.step_size)
+
+                def add(t):
+                    mv = coords.model_v(s.z, parts)
+                    return t + jnp.concatenate([mv, jnp.exp(2.0 * _sd_logq(mv[sdp]))])
+
+                tot = jax.lax.cond(acc, add, lambda t: t, tot)
+                return (s, tot), (s.z if sampling else None, s.num_steps, s.energy, s.accept_prob, dv, s.adapt_state.step_size)
 
             (s, tot), ex = jax.lax.scan(body, (st, jnp.zeros(D + len(sdp_np), jnp.result_type(float))), None, length=B)
+            if sampling:
+                out = jax.lax.cond(samp, lambda zz: jax.lax.map(post, zz),
+                                   lambda zz: jax.tree.map(lambda x: jnp.zeros((B,) + x.shape, x.dtype), shp), ex[0])
+                ex = (out,) + ex[1:]
             return s, tot, coords.model_v(s.z, parts), ex
 
         deferred = getattr(kernel, "_cross_chain", None)
@@ -6241,15 +6245,19 @@ class _FoldPrograms:
                 ss = jax.lax.cond(jnp.any(t0 == ends),
                                   lambda q: jax.vmap(lambda r: adapt(r, a, deferred.update_pooled), axis_name="chain")(q),
                                   lambda q: jax.lax.map(lambda r: adapt(r, a, deferred.update), q), ss)
-                v = jax.lax.map(lambda z: coords.model_v(z, parts), ss.z)
-                v = jnp.concatenate([v, jnp.exp(2.0 * _sd_logq(v[:, sdp]))], axis=1)
-                tot = jax.lax.cond(acc, lambda t: t + v, lambda t: t, tot)
-                out = (jax.lax.cond(samp, lambda zz: jax.lax.map(post, zz),
-                                    lambda zz: jax.tree.map(lambda x: jnp.zeros((C,) + x.shape, x.dtype), shp), ss.z)
-                       if sampling else None)
-                return (ss, tot), (out, ss.num_steps, ss.energy, ss.accept_prob, dv, ss.adapt_state.step_size)
+
+                def add(t):
+                    v = jax.lax.map(lambda z: coords.model_v(z, parts), ss.z)
+                    return t + jnp.concatenate([v, jnp.exp(2.0 * _sd_logq(v[:, sdp]))], axis=1)
+
+                tot = jax.lax.cond(acc, add, lambda t: t, tot)
+                return (ss, tot), (ss.z if sampling else None, ss.num_steps, ss.energy, ss.accept_prob, dv, ss.adapt_state.step_size)
 
             (ss, tot), ex = jax.lax.scan(body, (sts, jnp.zeros((C, D + len(sdp_np)), jnp.result_type(float))), None, length=B)
+            if sampling:
+                out = jax.lax.cond(samp, lambda zz: jax.lax.map(lambda zc: jax.lax.map(post, zc), zz),
+                                   lambda zz: jax.tree.map(lambda x: jnp.zeros((B, C) + x.shape, x.dtype), shp), ex[0])
+                ex = (out,) + ex[1:]
             ex = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), ex)
             return ss, tot, jax.lax.map(lambda z: coords.model_v(z, parts), ss.z), ex
 
@@ -6272,9 +6280,23 @@ class _FoldPrograms:
                 f = jnp.asarray(False)
                 low = {"initf": self.initf.lower(self.keys, z0, parts0), "prog": self.prog.lower(sts, parts0, f, f)}
                 self.t["lower"] = time.time() - t0
-                for k, l in low.items():
-                    setattr(self, k, l.compile())
+                done = {}
+
+                def comp(k):
+                    try:
+                        done[k] = low[k].compile()
+                    except Exception as e:
+                        done[k] = e
                     self.t[k] = time.time() - t0
+
+                side = threading.Thread(target=comp, args=("initf",), daemon=True)
+                side.start()
+                comp("prog")
+                side.join()
+                for k in low:
+                    if isinstance(done[k], Exception):
+                        raise done[k]
+                    setattr(self, k, done[k])
             except Exception as e:
                 self.err = e
 
