@@ -151,50 +151,17 @@ def _stack_mean(a, reduce):
     return jnp.mean(a)
 
 
-def _pooled_welford(diagonal=True):
-    """numpyro's Welford estimator with its final step taken over every chain's window draws: the chains'
-    states are combined into the pooled mean and sum of squares before the (co)variance is formed."""
-    init_fn, update_fn, final_fn = _hu.welford_covariance(diagonal=diagonal)
-
-    def pool(state):
-        mean, m2, n = state
-        gm = jax.lax.pmean(mean, "chain")
-        d = mean - gm
-        dd = d * d if jnp.ndim(m2) == 1 else jnp.outer(d, d)
-        return gm, jax.lax.psum(m2 + n * dd, "chain"), n * jax.lax.psum(1, "chain")
-
-    def final(state, regularize=False):
-        if isinstance(state, dict):
-            return final_fn({k: pool(v) for k, v in state.items()}, regularize=regularize)
-        return final_fn(pool(state), regularize=regularize)
-
-    return init_fn, update_fn, final
-
-
 def _cross_chain_adapter(gamma, reduce="mean"):
     """The step size adapted on the acceptance averaged across chains (TFP's DualAveragingStepSizeAdaptation
-    reduction; Hoffman, Radul and Sountsov 2021) and one diagonal mass from every chain's window draws (the
-    cross-chain preconditioner of ChEES and MEADS, Hoffman and Sountsov 2022): all chains share one step size
-    and one mass. The dual averaging is not restarted when the last mass window's estimate is installed, so
-    the final step size averages over the last two windows (TFP's DualAveragingStepSizeAdaptation runs one
-    dual averaging under a changing preconditioner). Needs the chains on a pmap axis named "chain"."""
-    base = _with_globals(_adapter(gamma), welford_covariance=_pooled_welford)
+    reduction; Hoffman, Radul and Sountsov 2021): every chain sees the same statistic, so all chains share
+    one step size. Mass adaptation stays per chain. Needs the chains on a pmap axis named "chain"."""
+    base = _adapter(gamma)
 
     def adapter(*args, **kwargs):
         init_fn, update_fn = base(*args, **kwargs)
-        n_adapt = kwargs.get("num_adapt_steps", args[0] if args else None)
-        sched = _hu.build_adaptation_schedule(n_adapt)
-        t_keep = int(sched[-2][1]) if len(sched) >= 3 else -1
-        ss_update = _hu.dual_averaging(**({} if gamma is None else {"gamma": gamma}))[1]
-        target = kwargs.get("target_accept_prob", 0.8)
 
         def update(t, accept_prob, z_info, state):
-            a = _chain_mean(accept_prob, reduce)
-            new = update_fn(t, a, z_info, state)
-            ss = ss_update(target - a, state.ss_state)
-            keep = t == t_keep
-            return new._replace(ss_state=jax.tree.map(lambda x, y: jnp.where(keep, x, y), ss, new.ss_state),
-                                step_size=jnp.where(keep, jnp.exp(ss[0]), new.step_size))
+            return update_fn(t, _chain_mean(accept_prob, reduce), z_info, state)
 
         return init_fn, update
 

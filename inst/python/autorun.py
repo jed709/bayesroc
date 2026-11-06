@@ -776,7 +776,7 @@ class AutoSession:
         if self.mon_n < 4:
             return dict(ess_pop=0.0, ess_sd=0.0, ess_cor=0.0, rhat=None, worst=None, worst_rhat=None)
         x = np.transpose(self.mon[:, :self.mon_n], (1, 0, 2))
-        bulk, tail, rhat = ess_rhat(x)
+        bulk, tail, rhat = ess_rhat(x, sampler=self.sampler)
         ess = np.minimum(bulk, tail)
         self.last_ess, self.last_rhat = ess, rhat
         out = {}

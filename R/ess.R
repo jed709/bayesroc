@@ -1,5 +1,6 @@
 # =============================================================================
-# Effective sample size by batch means
+# Effective sample size: posterior's (Geyer) for the reversible samplers, batch
+# means for DR-G-HMC
 # =============================================================================
 
 .ess_batch <- function(N) {
@@ -27,27 +28,33 @@
   matrix(stats::qnorm((r - 0.375) / (length(r) + 0.25)), nrow(x))
 }
 
-.ess_bulk <- function(x) {
+.ess_bulk <- function(x, sampler = "hmc") {
+  if (!identical(sampler, "drghmc")) return(posterior::ess_bulk(x))
   x <- as.matrix(x)
   if (!all(is.finite(x))) return(NA_real_)
   .ess_bm(.ess_z(x))
 }
 
-.ess_tail <- function(x) {
+.ess_tail <- function(x, sampler = "hmc") {
+  if (!identical(sampler, "drghmc")) return(posterior::ess_tail(x))
   x <- as.matrix(x)
   if (!all(is.finite(x))) return(NA_real_)
   q <- stats::quantile(x, c(0.05, 0.95), names = FALSE)
   min(.ess_bm((x <= q[1]) + 0), .ess_bm((x <= q[2]) + 0))
 }
 
-.summary_measures <- function(...) {
+.summary_measures <- function(..., .sampler = "hmc") {
   m <- list(...)
+  if (!identical(.sampler, "drghmc")) {
+    if (!length(m)) m <- as.list(c(posterior::default_summary_measures(), posterior::default_convergence_measures()))
+    return(m)
+  }
   if (!length(m)) m <- as.list(c(posterior::default_summary_measures(), posterior::default_convergence_measures()))
   nm <- names(m) %||% rep("", length(m))
   for (k in c("ess_bulk", "ess_tail")) {
     i <- which(!nzchar(nm) & vapply(m, function(v) identical(v, k), TRUE))
     for (j in i) {
-      m[[j]] <- if (k == "ess_bulk") .ess_bulk else .ess_tail
+      m[[j]] <- if (k == "ess_bulk") function(x) .ess_bulk(x, "drghmc") else function(x) .ess_tail(x, "drghmc")
       nm[j] <- k
     }
   }

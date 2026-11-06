@@ -13,7 +13,7 @@ fit_broc(
   thin = 1,
   sampler = c("hmc", "nuts", "drghmc"),
   control = list(),
-  init = 0,
+  init = NULL,
   refresh = 100,
   threads_per_chain = NULL,
   total_cores = NULL,
@@ -59,10 +59,10 @@ as they are sampled and \code{control$max_kept} is ignored.}
 \item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
 static-trajectory HMC whose number of steps at every transition is drawn so the
 trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-diagonal mass adaptation on all chains' draws together and one step size shared by
-the chains, adapted by dual averaging on the mean of their acceptance and not restarted
-at the last mass update (TFP's cross-chain adaptation, as in ChEES-HMC, Hoffman, Radul
-and Sountsov 2021; JAX backend only); \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
+diagonal mass adaptation for each chain and one step size shared by the chains,
+adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
+reduction, as in ChEES-HMC, Hoffman, Radul and Sountsov 2021); two-stage BCSS
+integrator (Blanes, Casas and Sanz-Serna 2014); JAX backend only; \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
 an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 On the JAX backend \code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
 marginal of the hyperparameters, which also anchors the transport map.}
@@ -94,11 +94,17 @@ DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check
 thinning).
 }}
 
-\item{init}{Initial-value strategy. Default \code{0}: all parameters start at 0 on
-the unconstrained scale. Other options: \code{"prior"} samples each parameter
-from its prior; \code{"random"} uses Stan's U(-2, 2) on the unconstrained scale
-(can be unstable for log-linked parameters); a single number \code{x} sets a
-U(-x, x) initialization radius; or a function or list of per-chain init lists.}
+\item{init}{Initial values. Default \code{NULL}: with \code{sampler = "hmc"} or \code{"nuts"} on the
+JAX backend each chain's population parameters, SDs and correlations are drawn from
+the normal approximation at the Laplace-marginal mode (its curvature as the spread,
+capped at 1 on the sampler's scale) and the random effects from their transport-map
+standard normal, so the chains start dispersed; elsewhere \code{NULL} means \code{0}. Given
+explicitly, the values are every chain's starting point (the Laplace stage still
+builds the transport map and initial mass): \code{0} starts all parameters at 0 on the
+unconstrained scale; \code{"prior"} samples each parameter from its prior; \code{"random"}
+uses Stan's U(-2, 2) on the unconstrained scale (can be unstable for log-linked
+parameters); a single number \code{x} sets a U(-x, x) initialization radius; or a
+function or list of per-chain init lists.}
 
 \item{refresh}{How often the Stan backend prints progress, in iterations
 (default 100). Stan only; the JAX progress bar has no refresh-rate control.}

@@ -149,7 +149,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
         }
         da <- posterior::subset_draws(da, variable = matched)
       }
-      do.call(posterior::summarise_draws, c(list(da), .summary_measures(...)))
+      do.call(posterior::summarise_draws, c(list(da), .summary_measures(..., .sampler = self$.sampler)))
     }
   }
 

@@ -133,7 +133,8 @@ test_that("the stopping rule's ESS and R-hat equal what summaries report on the 
     f <- .fit_auto_capped(m, if (smp == "nuts") 100 else 300, seed = 12, sampler = smp,
                           max_kept = 30, check_every = if (smp == "nuts") 25 else 100)$value
     da <- posterior::subset_draws(f$.draws_array, variable = .monitored(posterior::variables(f$.draws_array)))
-    sm <- posterior::summarise_draws(da, ess_bulk = .ess_bulk, ess_tail = .ess_tail, rhat = posterior::rhat)
+    sm <- posterior::summarise_draws(da, ess_bulk = function(x) .ess_bulk(x, smp), ess_tail = function(x) .ess_tail(x, smp),
+                                     rhat = posterior::rhat)
     ess <- pmin(sm$ess_bulk, sm$ess_tail)
     cls <- .ess_class(sm$variable)
     last <- utils::tail(attr(f, "ess_trace"), 1)

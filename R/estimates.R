@@ -58,7 +58,7 @@ estimates <- function(fit, pars = NULL, by = NULL, re_formula = NA, summary = TR
     out$value <- as.vector(ed$draws)
     rownames(out) <- NULL
   } else {
-    out <- cbind(ed$info, .draw_summary(ed$draws, ed$chain, prob))
+    out <- cbind(ed$info, .draw_summary(ed$draws, ed$chain, prob, fit$.sampler %||% "nuts"))
   }
   if (length(ed$slope_sd)) attr(out, "predictor_sd") <- ed$slope_sd
   out
@@ -126,7 +126,7 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
   cbind(meta, s[c("estimate", "sd", "lower", "upper")], p_positive = colMeans(d > 0))
 }
 
-.draw_summary <- function(mat, chain, prob) {
+.draw_summary <- function(mat, chain, prob, sampler = "nuts") {
   lo <- (1 - prob) / 2
   out <- data.frame(estimate = colMeans(mat), sd = apply(mat, 2, stats::sd),
                     lower = apply(mat, 2, stats::quantile, lo, names = FALSE),
@@ -144,8 +144,8 @@ compare_estimates <- function(fit, pars = NULL, by = NULL, ref = NULL, re_formul
       xm <- posterior::extract_variable_matrix(arr, "x")
       withCallingHandlers({
         out$rhat[j] <- posterior::rhat(xm)
-        out$ess_bulk[j] <- .ess_bulk(xm)
-        out$ess_tail[j] <- .ess_tail(xm)
+        out$ess_bulk[j] <- .ess_bulk(xm, sampler)
+        out$ess_tail[j] <- .ess_tail(xm, sampler)
       }, warning = function(w) if (grepl("ESS has been capped", conditionMessage(w))) invokeRestart("muffleWarning"))
     }
   }

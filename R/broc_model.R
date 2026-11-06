@@ -2419,10 +2419,10 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param sampler Sampling algorithm: `"hmc"` (the default on the JAX backend),
 #'   static-trajectory HMC whose number of steps at every transition is drawn so the
 #'   trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-#'   diagonal mass adaptation on all chains' draws together and one step size shared by
-#'   the chains, adapted by dual averaging on the mean of their acceptance and not restarted
-#'   at the last mass update (TFP's cross-chain adaptation, as in ChEES-HMC, Hoffman, Radul
-#'   and Sountsov 2021; JAX backend only); `"nuts"` (the default on the Stan backend); or `"drghmc"`,
+#'   diagonal mass adaptation for each chain and one step size shared by the chains,
+#'   adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
+#'   reduction, as in ChEES-HMC, Hoffman, Radul and Sountsov 2021); two-stage BCSS
+#'   integrator (Blanes, Casas and Sanz-Serna 2014); JAX backend only; `"nuts"` (the default on the Stan backend); or `"drghmc"`,
 #'   an experimental delayed-rejection generalized HMC sampler (JAX backend only).
 #'   On the JAX backend `"hmc"` and `"nuts"` start from the mode of the Laplace
 #'   marginal of the hyperparameters, which also anchors the transport map.
@@ -2450,11 +2450,17 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
 #'     `max_kept` (draws per chain kept in the fit; default `max_draws`, i.e. no
 #'     thinning).
-#' @param init Initial-value strategy. Default `0`: all parameters start at 0 on
-#'   the unconstrained scale. Other options: `"prior"` samples each parameter
-#'   from its prior; `"random"` uses Stan's U(-2, 2) on the unconstrained scale
-#'   (can be unstable for log-linked parameters); a single number `x` sets a
-#'   U(-x, x) initialization radius; or a function or list of per-chain init lists.
+#' @param init Initial values. Default `NULL`: with `sampler = "hmc"` or `"nuts"` on the
+#'   JAX backend each chain's population parameters, SDs and correlations are drawn from
+#'   the normal approximation at the Laplace-marginal mode (its curvature as the spread,
+#'   capped at 1 on the sampler's scale) and the random effects from their transport-map
+#'   standard normal, so the chains start dispersed; elsewhere `NULL` means `0`. Given
+#'   explicitly, the values are every chain's starting point (the Laplace stage still
+#'   builds the transport map and initial mass): `0` starts all parameters at 0 on the
+#'   unconstrained scale; `"prior"` samples each parameter from its prior; `"random"`
+#'   uses Stan's U(-2, 2) on the unconstrained scale (can be unstable for log-linked
+#'   parameters); a single number `x` sets a U(-x, x) initialization radius; or a
+#'   function or list of per-chain init lists.
 #' @param refresh How often the Stan backend prints progress, in iterations
 #'   (default 100). Stan only; the JAX progress bar has no refresh-rate control.
 #' @param threads_per_chain Number of threads per chain for within-chain parallelism
@@ -2601,7 +2607,7 @@ fit_broc <- function(model,
                     thin = 1,
                     sampler = c("hmc", "nuts", "drghmc"),
                     control = list(),
-                    init = 0,
+                    init = NULL,
                     refresh = 100,
                     threads_per_chain = NULL,
                     total_cores = NULL,
@@ -2758,7 +2764,10 @@ fit_broc <- function(model,
 
   # --- Init strategy normalization ---
   init_strategy_jax <- NULL
-  if (inherits(model, "broc_model")) {
+  if (is.null(init)) {
+    if (backend == "jax" && sampler %in% c("hmc", "nuts")) init_strategy_jax <- "laplace"
+    init <- 0
+  } else if (inherits(model, "broc_model")) {
     if (is.character(init) && length(init) == 1) {
       if (init == "prior") {
         if (backend == "stan") {

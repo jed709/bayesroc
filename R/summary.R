@@ -35,7 +35,8 @@ summary.broc_fit <- function(object, prob = 0.95, digits = 3, by = NULL, thresho
     s <- withCallingHandlers(
       posterior::summarise_draws(fit$draws(variables = v), "mean", "sd",
                                  ~ stats::quantile(.x, probs = c(lo, 1 - lo), names = FALSE),
-                                 "rhat", ess_bulk = .ess_bulk, ess_tail = .ess_tail),
+                                 "rhat", ess_bulk = function(x) .ess_bulk(x, fit$.sampler %||% "nuts"),
+                                 ess_tail = function(x) .ess_tail(x, fit$.sampler %||% "nuts")),
       warning = function(w) if (grepl("ESS has been capped", conditionMessage(w))) invokeRestart("muffleWarning"))
     s <- as.data.frame(s)
     data.frame(variable = s$variable, estimate = s$mean, sd = s$sd, lower = s[[4]], upper = s[[5]],

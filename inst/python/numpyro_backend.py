@@ -5797,7 +5797,7 @@ class NutsCoords:
         self.tm, self.aux, self.aux_flat = None, None, None
         th0 = dr._initial_positions(sdt_model, config, self.keys, self.off, self.D, chains, seed,
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
-        self.start = th0
+        self.start, self._th0, self._init_strategy = th0, th0, init_strategy
         self.source, self.pf, self._split_flags, self.label = None, None, None, label
         self.klog, self.wlog = {}, {}
         self.split_thr, self.split_at, self.split_cand = (float(split) if split else None), split_at, split_cand
@@ -5844,7 +5844,9 @@ class NutsCoords:
             return
         self.source = "dr"
         if progress_bar and announce:
-            print(f"[{label}] group transport map on {', '.join(tm.specs)}; anchors from a DR-G-HMC warmup", flush=True)
+            how = ("anchors from the Laplace-marginal mode (float64 process)" if not jax.config.jax_enable_x64
+                   else "anchors from a DR-G-HMC warmup")
+            print(f"[{label}] group transport map on {', '.join(tm.specs)}; {how}", flush=True)
         if not jax.config.jax_enable_x64:
             aux, self.start = _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy,
                                            init_radius, init_z)
@@ -5915,6 +5917,13 @@ class NutsCoords:
         t0 = _t.time()
         vc = jnp.asarray(self._tm.inverse_chains(th_c, self.aux_flat, trim)[0])
         h_sd_final = 1.0 / np.sqrt(np.maximum(self._fd_hdiag(vc, hidx), 1e-12))
+        if self._init_strategy == "laplace":
+            v = np.repeat(np.asarray(vc)[None], chains, 0)
+            v[:, hidx] += np.minimum(h_sd_final, 1.0) * rng.standard_normal((chains, len(hidx)))
+            v[:, zidx] = rng.standard_normal((chains, len(zidx)))
+            self.start = v
+        else:
+            self.start = self._tm.inverse_chains(np.asarray(self._th0), np.repeat(self.aux_flat, chains, 0), trim)
         info["walls"].append(_t.time() - t0)
         return dict(iters=np.asarray(info["iters"]), wall=float(np.sum(info["walls"])), walls=np.asarray(info["walls"]),
                     h=np.asarray(info["h"]), f=np.asarray(info["f"]), hidx=hidx, h_sd_final=h_sd_final, center=th_c)
@@ -5931,31 +5940,20 @@ class NutsCoords:
 
             return np.array([(gi(i, e) - gi(i, -e)) / (2 * e) for i in idx])
         nd = jax.local_device_count()
-        if True:
-            per = -(-_CURV_PROBES // nd)
-            rng = np.random.default_rng(int(len(idx)))
-            Z = np.zeros((nd * per, self.D))
-            Z[:, idx] = rng.choice([-1.0, 1.0], size=(nd * per, len(idx)))
-            if getattr(self, "_hvp", None) is None:
-                vgm, OFF, e = self.tm.wrap(self.vg.pot), self.vg.OFF0, 1e-4
-
-                def probe(v, a, z):
-                    return z * (vgm(v + e * z, OFF, a)[1] - vgm(v - e * z, OFF, a)[1]) / (2 * e)
-
-                self._hvp = jax.pmap(lambda Zc, v, a: jax.lax.map(lambda z: probe(v, a, z), Zc).sum(0),
-                                     in_axes=(0, None, None))
-            tot = np.asarray(self._hvp(jnp.asarray(Z.reshape(nd, per, self.D)), jnp.asarray(vc), self.aux)).sum(0)
-            return tot[idx] / (nd * per)
-        m = -(-len(idx) // nd)
-        I = jnp.asarray(np.concatenate([idx, np.full(nd * m - len(idx), idx[0])]).reshape(nd, m))
-        if getattr(self, "_fdp", None) is None:
+        per = -(-_CURV_PROBES // nd)
+        rng = np.random.default_rng(int(len(idx)))
+        Z = np.zeros((nd * per, self.D))
+        Z[:, idx] = rng.choice([-1.0, 1.0], size=(nd * per, len(idx)))
+        if getattr(self, "_hvp", None) is None:
             vgm, OFF, e = self.tm.wrap(self.vg.pot), self.vg.OFF0, 1e-4
 
-            def col(v, a, i):
-                return (vgm(v.at[i].add(e), OFF, a)[1][i] - vgm(v.at[i].add(-e), OFF, a)[1][i]) / (2 * e)
+            def probe(v, a, z):
+                return z * (vgm(v + e * z, OFF, a)[1] - vgm(v - e * z, OFF, a)[1]) / (2 * e)
 
-            self._fdp = jax.pmap(lambda Ic, v, a: jax.lax.map(lambda i: col(v, a, i), Ic), in_axes=(0, None, None))
-        return np.asarray(self._fdp(I, jnp.asarray(vc), self.aux)).reshape(-1)[:len(idx)]
+            self._hvp = jax.pmap(lambda Zc, v, a: jax.lax.map(lambda z: probe(v, a, z), Zc).sum(0),
+                                 in_axes=(0, None, None))
+        tot = np.asarray(self._hvp(jnp.asarray(Z.reshape(nd, per, self.D)), jnp.asarray(vc), self.aux)).sum(0)
+        return tot[idx] / (nd * per)
 
     def lap_curvature(self):
         vc = self._tm.inverse_chains(self.pf["center"], self.aux_flat, self.vg.trim)[0]
@@ -6359,9 +6357,9 @@ def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_t
 
 def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
     """Warmup with the programs of `pg`. At the end of the first mass window the anchors are rebuilt at
-    the chains' positions (scale coordinates at the last draw, effects averaged over the window's second
-    half), the chains moved into the rebuilt map and the initial mass recomputed there; every later
-    window adapts in that map. Returns the warmed-up state (chain axis first)."""
+    the chains' window mean (the window's second half, pooled over the chains), the chains moved into the
+    rebuilt map and the initial mass recomputed there; every later window adapts in that map. Returns the
+    warmed-up state (chain axis first)."""
     C, D = pg.C, coords.D
     cat = lambda xs: np.concatenate([np.asarray(x) for x in xs], 1)
     t_w = time.time()
@@ -6579,7 +6577,7 @@ def fit_model(config, chains=4, warmup=500, samples=1000, seed=0,
 def _fit_nuts_f32(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size, thinning,
                   chain_method, progress_bar, init_strategy, init_radius, init_z, control, save_loglik, keep_re,
                   save_state):
-    """NUTS in a float32 process: the map's anchors from a DR-G-HMC warmup in a float64 child, the
+    """NUTS in a float32 process: the map's anchors from the Laplace-marginal mode in a float64 child, the
     log-likelihood recentred on the warmed-up chains so that float32 keeps its digits."""
     rng_key = random.PRNGKey(seed)
     t0 = time.time()
