@@ -177,6 +177,13 @@ test_that("auto sampling stops once the targets are met and on the time cap", {
                 control = list(ess_target = FALSE, rhat_target = 10, min_draws = 60, check_every = 25))
   expect_identical(attr(g, "stop_reason"), "targets")
   expect_equal(g$.iter_sampling, 75L)
+  h <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+                iter_sampling = "auto", seed = 3, progress_bar = FALSE,
+                control = list(ess_target = FALSE, rhat_target = 10, min_draws = 60, check_every = 50))
+  expect_equal(attr(h, "ess_trace")$draws[1], 75)
+  expect_equal(h$.iter_sampling, 75L)
+  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", iter_sampling = "auto",
+                        control = list(min_draws = 500, max_draws = 100)), "cannot exceed")
 })
 
 test_that("resume continues auto and fixed fits exactly and merges the log-likelihood", {

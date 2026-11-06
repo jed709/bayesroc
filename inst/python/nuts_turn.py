@@ -151,11 +151,32 @@ def _stack_mean(a, reduce):
     return jnp.mean(a)
 
 
+def _pooled_welford(diagonal=True):
+    """numpyro's Welford estimator with its final step taken over every chain's window draws: the chains'
+    states are combined into the pooled mean and sum of squares before the (co)variance is formed."""
+    init_fn, update_fn, final_fn = _hu.welford_covariance(diagonal=diagonal)
+
+    def pool(state):
+        mean, m2, n = state
+        gm = jax.lax.pmean(mean, "chain")
+        d = mean - gm
+        dd = d * d if jnp.ndim(m2) == 1 else jnp.outer(d, d)
+        return gm, jax.lax.psum(m2 + n * dd, "chain"), n * jax.lax.psum(1, "chain")
+
+    def final(state, regularize=False):
+        if isinstance(state, dict):
+            return final_fn({k: pool(v) for k, v in state.items()}, regularize=regularize)
+        return final_fn(pool(state), regularize=regularize)
+
+    return init_fn, update_fn, final
+
+
 def _cross_chain_adapter(gamma, reduce="mean"):
     """The step size adapted on the acceptance averaged across chains (TFP's DualAveragingStepSizeAdaptation
-    reduction; Hoffman, Radul and Sountsov 2021): every chain sees the same statistic, so all chains share
-    one step size. Mass adaptation stays per chain. Needs the chains on a pmap axis named "chain"."""
-    base = _adapter(gamma)
+    reduction; Hoffman, Radul and Sountsov 2021) and one diagonal mass from every chain's window draws (the
+    cross-chain preconditioner of MEADS, Hoffman and Sountsov 2022, and of BlackJAX's ChEES adaptation): all
+    chains share one step size and one mass. Needs the chains on a pmap axis named "chain"."""
+    base = _with_globals(_adapter(gamma), welford_covariance=_pooled_welford)
 
     def adapter(*args, **kwargs):
         init_fn, update_fn = base(*args, **kwargs)
@@ -171,14 +192,19 @@ def _cross_chain_adapter(gamma, reduce="mean"):
 class _Deferred:
     """numpyro's windowed adaptation with its per-transition update taken out of the transition: the
     kernel's own update is a no-op and `update` (numpyro's update function) is applied by the caller, so
-    chains run one at a time can share the acceptance statistic."""
+    chains run one at a time can share the acceptance statistic. `update_pooled` is the same update with
+    the mass from every chain's window draws (`_pooled_welford`); the caller applies it across the chains
+    on a vmap axis named "chain" at the iterations in `pool_at` (the ends of the mass windows)."""
 
     def __init__(self, gamma=None, reduce="mean"):
-        self.update, self.gamma, self.reduce = None, gamma, reduce
+        self.update, self.update_pooled, self.pool_at, self.gamma, self.reduce = None, None, None, gamma, reduce
 
     def adapter(self, *args, **kwargs):
         init_fn, update_fn = _adapter(self.gamma)(*args, **kwargs)
         self.update = update_fn
+        self.update_pooled = _with_globals(_adapter(self.gamma), welford_covariance=_pooled_welford)(*args, **kwargs)[1]
+        sched = _hu.build_adaptation_schedule(kwargs.get("num_adapt_steps", args[0] if args else None))
+        self.pool_at = [int(w[1]) for w in sched[1:-1]]
         return init_fn, lambda t, accept_prob, z_info, state: state
 
 

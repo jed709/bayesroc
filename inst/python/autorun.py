@@ -662,6 +662,7 @@ class AutoSession:
         self.b, self.nblocks = _block_plan(int(a["check_every"]), C, self.D, itemsize,
                                            25 if self.sampler in ("nuts", "hmc") else 100)
         self.round_len = self.b * self.nblocks
+        self.min_draws = int(a.get("min_draws") or 0)
         self.init_z = None
         resume = None
         if a.get("resume_state"):
@@ -801,9 +802,10 @@ class AutoSession:
 
     def _round(self, carry, T, stride):
         t0 = time.time()
-        T_end = T + self.round_len
+        nb = -(-(self.min_draws - T) // self.b) if T < self.min_draws else self.nblocks
+        T_end = T + nb * self.b
         k = _grow_stride(stride, max(T_end - self.burn, 0), self.max_kept)
-        r = self.ad.run_round(carry, T, self.nblocks, self.b, k, self.cancel, self.burn, self.progress)
+        r = self.ad.run_round(carry, T, nb, self.b, k, self.cancel, self.burn, self.progress)
         if r is None:
             return None
         carry_end, z, tk, stats = r

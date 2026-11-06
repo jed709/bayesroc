@@ -5889,9 +5889,7 @@ class NutsCoords:
 
             r = minimize(fg, b[hidx], jac=True, method="L-BFGS-B", callback=(lambda *_: bar.update()) if bar is not None else None,
                          options=dict(maxiter=1000, maxcor=10, gtol=1e-8, ftol=1e-8, maxls=1000))
-            if bar is not None:
-                bar.close(drop=True)
-            return r.x, int(r.nit), float(r.fun)
+            return r.x, int(r.nit), float(r.fun), bar
 
         fwd_many = jax.jit(lambda V, a: jax.lax.map(lambda v: tmv.to_model(tmv.forward(v, a, trim)[0], a), V))
 
@@ -5900,7 +5898,7 @@ class NutsCoords:
         for p in range(passes):
             t0 = _t.time()
             base = jnp.asarray(self.start[0]).at[zid].set(0.0)
-            hstar, it, fval = solve(base, p)
+            hstar, it, fval, bar = solve(base, p)
             center = np.asarray(base.at[hid].set(hstar))
             info["h"].append(np.asarray(hstar))
             info["f"].append(fval)
@@ -5912,6 +5910,8 @@ class NutsCoords:
             self._th_s = th_s
             info["walls"].append(_t.time() - t0)
             info["iters"].append(it)
+            if bar is not None:
+                bar.close(drop=True)
             if self._progress:
                 print(f"[{self.label}] Laplace pass {p + 1}: {it} iterations, {info['walls'][-1]:.1f} s", flush=True)
         t0 = _t.time()
@@ -6225,10 +6225,10 @@ class _FoldPrograms:
 
                 return jax.lax.fori_loop(0, n, step, (s, jnp.zeros((), bool)))
 
-            def adapt(s, a):
+            def adapt(s, a, upd):
                 t = s.i - 1
                 zi = IntegratorState(s.z, s.z, s.potential_energy, s.z_grad)
-                new = jax.lax.cond(t < warmup, lambda q: deferred.update(t, a, zi, q), lambda q: q, s.adapt_state)
+                new = jax.lax.cond(t < warmup, lambda q: upd(t, a, zi, q), lambda q: q, s.adapt_state)
                 return s._replace(adapt_state=new)
 
             def body(c, _):
@@ -6236,7 +6236,11 @@ class _FoldPrograms:
                 ss, dv = jax.lax.map(one, ss)
                 from nuts_turn import _stack_mean
                 a = _stack_mean(ss.accept_prob, deferred.reduce)
-                ss = jax.lax.map(lambda q: adapt(q, a), ss)
+                t0 = ss.i[0] - 1
+                ends = jnp.asarray(deferred.pool_at or [-1])
+                ss = jax.lax.cond(jnp.any(t0 == ends),
+                                  lambda q: jax.vmap(lambda r: adapt(r, a, deferred.update_pooled), axis_name="chain")(q),
+                                  lambda q: jax.lax.map(lambda r: adapt(r, a, deferred.update), q), ss)
                 v = jax.lax.map(lambda z: coords.model_v(z, parts), ss.z)
                 v = jnp.concatenate([v, jnp.exp(2.0 * _sd_logq(v[:, sdp]))], axis=1)
                 tot = jax.lax.cond(acc, lambda t: t + v, lambda t: t, tot)

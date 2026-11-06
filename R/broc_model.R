@@ -2419,8 +2419,9 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' @param sampler Sampling algorithm: `"hmc"` (the default on the JAX backend),
 #'   static-trajectory HMC whose number of steps at every transition is drawn so the
 #'   trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-#'   diagonal mass adaptation for each chain and one step size shared by the chains,
-#'   adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
+#'   diagonal mass adaptation on all chains' draws together (the cross-chain
+#'   preconditioner of MEADS, Hoffman and Sountsov 2022) and one step size shared by the
+#'   chains, adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
 #'   reduction, as in ChEES-HMC, Hoffman, Radul and Sountsov 2021); two-stage BCSS
 #'   integrator (Blanes, Casas and Sanz-Serna 2014); JAX backend only; `"nuts"` (the default on the Stan backend); or `"drghmc"`,
 #'   an experimental delayed-rejection generalized HMC sampler (JAX backend only).
@@ -2447,7 +2448,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`; `FALSE`
 #'     drops the ESS condition), `rhat_target` (1.01; `FALSE` drops the R-hat condition;
 #'     at least one of the two must remain), `min_draws` (draws per chain before the first
-#'     check; default the largest ESS target, or `check_every` without one),
+#'     check; default the largest ESS target, or `check_every` without one, capped at
+#'     `max_draws`),
 #'     `max_draws` (draws per chain; 50000 for HMC and NUTS, 500000 for
 #'     DR-G-HMC), `max_time` (seconds of sampling after warmup; none), `check_every`
 #'     (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and

@@ -60,7 +60,11 @@
   max_draws <- if (is.null(ctrl$max_draws)) if (sampler == "drghmc") 500000 else 50000 else ctrl$max_draws
   max_draws <- whole(max_draws, "max_draws")
   check_every <- whole(ctrl$check_every %||% if (sampler == "drghmc") 1000L else 100L, "check_every")
-  min_draws <- whole(ctrl$min_draws %||% if (length(targets)) ceiling(max(targets)) else check_every, "min_draws")
+  min_draws <- if (is.null(ctrl$min_draws)) min(if (length(targets)) ceiling(max(targets)) else check_every, max_draws)
+               else whole(ctrl$min_draws, "min_draws")
+  if (min_draws > max_draws) {
+    stop("`control$min_draws` (", min_draws, ") cannot exceed `control$max_draws` (", max_draws, ").", call. = FALSE)
+  }
   list(targets = targets, rhat = rhat, max_time = max_time, max_draws = max_draws, min_draws = min_draws,
        check_every = check_every,
        max_kept = if (thin > 1L) as.integer(ceiling(max_draws / thin))
@@ -308,6 +312,7 @@
     sampler = sampler, chains = as.integer(chains), warmup = as.integer(iter_warmup),
     seed = as.integer(seed), chain_method = chain_method, progress_bar = isTRUE(progress_bar),
     max_kept = auto$max_kept, check_every = auto$check_every,
+    min_draws = if (is.null(fixed_draws)) auto$min_draws else 0L,
     control = if (length(sampler_ctrl)) sampler_ctrl else NULL,
     target_accept_prob = as.numeric(adapt_delta), max_tree_depth = as.integer(max_treedepth),
     step_size = if (is.null(step_size)) 1.0 else as.numeric(step_size),
@@ -346,7 +351,8 @@
   T_prev <- T0
   mem_next <- 4e9
   repeat {
-    force <- !is.null(fixed_draws) || T_prev + auto$check_every >= auto$max_draws ||
+    next_len <- if (is.null(fixed_draws) && T_prev < auto$min_draws) auto$min_draws - T_prev else auto$check_every
+    force <- !is.null(fixed_draws) || T_prev + next_len >= auto$max_draws ||
       (!is.null(auto$max_time) && proc.time()[["elapsed"]] - t_start >= auto$max_time)
     sd_out <- request("auto_step", list(force = force, targets = as.list(auto$targets),
                                         rhat = if (is.finite(auto$rhat)) auto$rhat else NULL,

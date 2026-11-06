@@ -59,8 +59,9 @@ as they are sampled and \code{control$max_kept} is ignored.}
 \item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
 static-trajectory HMC whose number of steps at every transition is drawn so the
 trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
-diagonal mass adaptation for each chain and one step size shared by the chains,
-adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
+diagonal mass adaptation on all chains' draws together (the cross-chain
+preconditioner of MEADS, Hoffman and Sountsov 2022) and one step size shared by the
+chains, adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
 reduction, as in ChEES-HMC, Hoffman, Radul and Sountsov 2021); two-stage BCSS
 integrator (Blanes, Casas and Sanz-Serna 2014); JAX backend only; \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
 an experimental delayed-rejection generalized HMC sampler (JAX backend only).
@@ -89,7 +90,8 @@ effects per group non-centred).
 named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}; \code{FALSE}
 drops the ESS condition), \code{rhat_target} (1.01; \code{FALSE} drops the R-hat condition;
 at least one of the two must remain), \code{min_draws} (draws per chain before the first
-check; default the largest ESS target, or \code{check_every} without one),
+check; default the largest ESS target, or \code{check_every} without one, capped at
+\code{max_draws}),
 \code{max_draws} (draws per chain; 50000 for HMC and NUTS, 500000 for
 DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check_every}
 (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
