@@ -86,8 +86,11 @@ per-group transport map; see \emph{Group transport map}), \code{transport_wide} 
 every random-effect block is mapped; \code{FALSE} leaves a block of more than ten
 effects per group non-centred).
 \item \code{iter_sampling = "auto"} (either sampler): \code{ess_target} (400; one number, or
-named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}),
-\code{rhat_target} (1.01), \code{max_draws} (draws per chain; 50000 for HMC and NUTS, 500000 for
+named values for \code{pop}, \code{sd} and \code{cor}, e.g. \code{c(pop = 1000, sd = 400)}; \code{FALSE}
+drops the ESS condition), \code{rhat_target} (1.01; \code{FALSE} drops the R-hat condition;
+at least one of the two must remain), \code{min_draws} (draws per chain before the first
+check; default the largest ESS target, or \code{check_every} without one),
+\code{max_draws} (draws per chain; 50000 for HMC and NUTS, 500000 for
 DR-G-HMC), \code{max_time} (seconds of sampling after warmup; none), \code{check_every}
 (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
 \code{max_kept} (draws per chain kept in the fit; default \code{max_draws}, i.e. no
@@ -217,10 +220,14 @@ rank-normalised bulk and tail ESS and R-hat (Vehtari et al., 2021, the estimator
 \code{\link[cmdstanr:fit-method-summary]{cmdstanr::summary()}} reports) are computed for every monitored parameter: population-level
 (\code{pop}: fixed effects, thresholds and other family parameters), random-effect and
 smooth SDs (\code{sd}) and random-effect correlations (\code{cor}). Sampling stops once
-every class meets its ESS target and every R-hat is at most \code{rhat_target}, or at
-\code{max_draws} or \code{max_time}. One line per round reports progress and what is still
-unmet. The next round samples while the check runs; when a check takes longer
-than a round, checks are spaced out so sampling does not wait for them.
+every class meets its ESS target and every R-hat is at most \code{rhat_target} (either
+condition can be dropped), or at \code{max_draws} or \code{max_time}. No check is made before
+\code{min_draws} draws per chain, by default the largest ESS target, so an ESS of 400 is
+never claimed from fewer than 400 draws in each chain. Every round after that is
+checked, so a given seed always stops at the same draw. One line per round reports
+progress and what is still unmet; the next round samples while the check runs. This
+is a convenience: the run stops the first time the targets are met, and stopping on
+a diagnostic carries no coverage guarantee.
 
 By default every draw is kept. \code{thin = k} keeps every \code{k}-th draw as it is
 sampled. Alternatively \code{max_kept} caps the draws kept per chain: once a run would

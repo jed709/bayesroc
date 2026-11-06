@@ -2,7 +2,9 @@
 # Stopping Rule
 # =============================================================================
 
-.auto_keys <- c("ess_target", "rhat_target", "max_draws", "max_time", "check_every", "max_kept")
+.auto_keys <- c("ess_target", "rhat_target", "min_draws", "max_draws", "max_time", "check_every", "max_kept")
+
+.auto_off <- function(x) isFALSE(x) || (length(x) == 1L && is.na(x))
 
 .ess_class <- function(v) {
   ifelse(grepl("^sd_|^sds_|^sigma_", v), "sd",
@@ -42,9 +44,12 @@
     }
     as.integer(x)
   }
-  targets <- .ess_targets(ctrl$ess_target %||% 400)
-  rhat <- ctrl$rhat_target %||% 1.01
-  if (length(rhat) != 1L || !is.numeric(rhat) || !is.finite(rhat) || rhat < 1) {
+  targets <- if (.auto_off(ctrl$ess_target)) numeric(0) else .ess_targets(ctrl$ess_target %||% 400)
+  rhat <- if (.auto_off(ctrl$rhat_target)) Inf else ctrl$rhat_target %||% 1.01
+  if (!length(targets) && !is.finite(rhat)) {
+    stop("`control$ess_target` and `control$rhat_target` cannot both be switched off.", call. = FALSE)
+  }
+  if (length(rhat) != 1L || !is.numeric(rhat) || is.na(rhat) || rhat < 1 || (rhat == Inf && !.auto_off(ctrl$rhat_target))) {
     stop("`control$rhat_target` must be a number of at least 1.", call. = FALSE)
   }
   max_time <- ctrl$max_time
@@ -54,8 +59,10 @@
   }
   max_draws <- if (is.null(ctrl$max_draws)) if (sampler == "drghmc") 500000 else 50000 else ctrl$max_draws
   max_draws <- whole(max_draws, "max_draws")
-  list(targets = targets, rhat = rhat, max_time = max_time, max_draws = max_draws,
-       check_every = whole(ctrl$check_every %||% if (sampler == "drghmc") 1000L else 100L, "check_every"),
+  check_every <- whole(ctrl$check_every %||% if (sampler == "drghmc") 1000L else 100L, "check_every")
+  min_draws <- whole(ctrl$min_draws %||% if (length(targets)) ceiling(max(targets)) else check_every, "min_draws")
+  list(targets = targets, rhat = rhat, max_time = max_time, max_draws = max_draws, min_draws = min_draws,
+       check_every = check_every,
        max_kept = if (thin > 1L) as.integer(ceiling(max_draws / thin))
                   else whole(ctrl$max_kept %||% max_draws, "max_kept"))
 }
@@ -171,7 +178,8 @@
 }
 
 .auto_status <- function(T, kept, stride, dg, st, sampler, need_txt, round_s, elapsed, targets, rhat) {
-  fmt <- function(k) if (is.finite(dg$ess[[k]])) sprintf("%.0f/%g", dg$ess[[k]], targets[[k]]) else "-"
+  fmt <- function(k) if (!is.finite(dg$ess[[k]])) "-" else if (k %in% names(targets))
+    sprintf("%.0f/%g", dg$ess[[k]], targets[[k]]) else sprintf("%.0f", dg$ess[[k]])
   sm <- if (identical(sampler, "drghmc")) sprintf("rej %.1f%%", 100 * st$rejected)
         else sprintf("div %d", as.integer(st$divergent))
   keep <- if (stride > 1L) sprintf(" (kept %d, every %s)", kept, .ordinal(stride)) else ""
@@ -287,11 +295,13 @@
   if (!is.null(fixed_draws)) {
     message("Continuing ", label, " via JAX for ", fixed_draws, " more draws per chain (", chains, " chains)...")
   } else {
-    message(sprintf("%s %s via JAX until every ESS >= %s and R-hat <= %g (%d chains%s; checks every %d draws)...",
-                    if (is.null(rs)) "Sampling with" else "Continuing", label,
-                    paste(sprintf("%s %g", names(auto$targets), auto$targets), collapse = ", "),
-                    auto$rhat, chains, if (is.null(rs)) paste0(", ", iter_warmup, " warmup") else "",
-                    auto$check_every))
+    goal <- c(if (length(auto$targets)) paste("every ESS >=", paste(sprintf("%s %g", names(auto$targets), auto$targets),
+                                                                       collapse = ", ")),
+              if (is.finite(auto$rhat)) sprintf("R-hat <= %g", auto$rhat))
+    message(sprintf("%s %s via JAX until %s (%d chains%s; checks every %d draws from %d per chain)...",
+                    if (is.null(rs)) "Sampling with" else "Continuing", label, paste(goal, collapse = " and "),
+                    chains, if (is.null(rs)) paste0(", ", iter_warmup, " warmup") else "",
+                    auto$check_every, auto$min_draws))
   }
   cfg <- build_numpyro_config(model)
   kwargs <- list(
@@ -338,7 +348,9 @@
   repeat {
     force <- !is.null(fixed_draws) || T_prev + auto$check_every >= auto$max_draws ||
       (!is.null(auto$max_time) && proc.time()[["elapsed"]] - t_start >= auto$max_time)
-    sd_out <- request("auto_step", list(force = force, targets = as.list(auto$targets), rhat = auto$rhat,
+    sd_out <- request("auto_step", list(force = force, targets = as.list(auto$targets),
+                                        rhat = if (is.finite(auto$rhat)) auto$rhat else NULL,
+                                        min_draws = if (is.null(fixed_draws)) auto$min_draws else 0L,
                                         fixed = !is.null(fixed_draws)))
     st <- jsonlite::read_json(file.path(sd_out, "step.json"))
     unlink(sd_out, recursive = TRUE)
@@ -354,9 +366,9 @@
     dg <- list(ess = c(pop = st$ess_pop %||% Inf, sd = st$ess_sd %||% Inf, cor = st$ess_cor %||% Inf),
                rhat = st$rhat %||% Inf, worst = st$worst %||% NA_character_)
     elapsed <- proc.time()[["elapsed"]] - t_start
-    ess_ok <- dg$ess >= auto$targets
+    ess_ok <- dg$ess[names(auto$targets)] >= auto$targets
     met <- is.null(fixed_draws) && all(ess_ok) && dg$rhat <= auto$rhat
-    need <- max(T * max(auto$targets / pmax(dg$ess, 1)), T)
+    need <- if (length(auto$targets)) max(T * max(auto$targets / pmax(dg$ess[names(auto$targets)], 1)), T) else T
     trace[[length(trace) + 1L]] <- data.frame(
       draws = T, kept = kept, divergences = as.integer(st$divergent), rejected = st$rejected,
       min_pop_ess = dg$ess[["pop"]], min_sd_ess = dg$ess[["sd"]], min_cor_ess = dg$ess[["cor"]],
@@ -368,7 +380,7 @@
         else paste0("waiting on ", paste(c(if (any(!ess_ok)) paste("ESS", paste(names(ess_ok)[!ess_ok], collapse = "/")),
                                             if (dg$rhat > auto$rhat) "R-hat"), collapse = " + "),
                     if (!is.null(st$blocker)) sprintf(" (%s)", .lab_of(mon_lab, st$blocker)) else "",
-                    if (any(!ess_ok)) sprintf(" (~%d more draws)", as.integer(ceiling(need - T))) else "")
+                    if (any(!ess_ok)) sprintf(" (~%d more draws)", as.integer(ceiling(max(need, auto$min_draws) - T))) else "")
       .prog_message(.auto_status(T, kept, stride, dg, st, sampler, need_txt, st$seconds, elapsed,
                                  auto$targets, auto$rhat))
     }
@@ -426,13 +438,15 @@
   fit$.thin <- stride
 
   if (is.null(fixed_draws) && !identical(stop_reason, "targets")) {
-    warning(sprintf(paste0("Sampling stopped at %s before the targets were met: min ESS pop %.0f/%g, ",
-                           "sd %.0f/%g, cor %.0f/%g, max R-hat %.3f/%g (slowest: %s). ",
+    got <- c(if (length(auto$targets)) paste("min ESS", paste(sprintf("%s %.0f/%g", names(auto$targets),
+                                                                      dg$ess[names(auto$targets)], auto$targets),
+                                                              collapse = ", ")),
+             if (is.finite(auto$rhat)) sprintf("max R-hat %.3f/%g", dg$rhat, auto$rhat))
+    warning(sprintf(paste0("Sampling stopped at %s before the targets were met: %s (slowest: %s). ",
                            "Continue with fit_broc(model, iter_sampling = \"auto\", resume = fit)."),
                     if (stop_reason == "max_draws") paste(auto$max_draws, "draws per chain") else
                       paste(auto$max_time, "seconds"),
-                    dg$ess[["pop"]], auto$targets[["pop"]], dg$ess[["sd"]], auto$targets[["sd"]],
-                    dg$ess[["cor"]], auto$targets[["cor"]], dg$rhat, auto$rhat, dg$worst),
+                    paste(got, collapse = ", "), dg$worst),
             call. = FALSE)
   }
   ndiv <- sum(diag$num_divergent %||% 0)

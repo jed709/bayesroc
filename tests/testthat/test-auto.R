@@ -30,7 +30,7 @@
 }
 
 .fit_auto_capped <- function(m, max_draws, seed, sampler = "nuts", warmup = .auto_warmup(sampler), ...) {
-  ctrl <- utils::modifyList(list(ess_target = 1e9, max_draws = max_draws, check_every = 25), list(...))
+  ctrl <- utils::modifyList(list(ess_target = 1e9, min_draws = 25, max_draws = max_draws, check_every = 25), list(...))
   .warnings_of(fit_broc(m, backend = "jax", sampler = sampler, chains = 2, parallel_chains = 2,
                         iter_warmup = warmup, iter_sampling = "auto", seed = seed,
                         control = ctrl, progress_bar = FALSE))
@@ -51,6 +51,8 @@ test_that("auto settings are validated and only accepted with iter_sampling = 'a
   expect_error(bad(rhat_target = 0.9), "at least 1")
   expect_error(bad(ess_target = c(pop = 100, slope = 50)), "names must be pop")
   expect_error(bad(ess_target = c(100, 200)), "single number")
+  expect_error(bad(ess_target = FALSE, rhat_target = FALSE), "cannot both be switched off")
+  expect_error(bad(min_draws = 0), "positive whole number")
   expect_error(fit_broc(m, backend = "jax", sampler = "nuts", control = list(ess_target = 100)),
                "only applies with iter_sampling")
   expect_error(fit_broc(m, backend = "jax", sampler = "nuts", iter_sampling = "lots"), "positive whole number")
@@ -65,6 +67,17 @@ test_that("auto defaults keep every draw, and thin overrides max_kept", {
   expect_equal(c(d$check_every, d$max_draws, d$max_kept), c(1000, 500000, 500000))
   k <- .auto_settings(list(max_kept = 100), "drghmc", 4, thin = 4L)
   expect_equal(k$max_kept, 125000L)
+})
+
+test_that("the first check waits for min_draws, and either target can be dropped", {
+  expect_equal(.auto_settings(list(), "nuts", 4)$min_draws, 400)
+  expect_equal(.auto_settings(list(ess_target = c(pop = 1000, sd = 300)), "nuts", 4)$min_draws, 1000)
+  e <- .auto_settings(list(ess_target = FALSE), "nuts", 4)
+  expect_length(e$targets, 0)
+  expect_equal(c(e$min_draws, e$rhat), c(100, 1.01))
+  r <- .auto_settings(list(rhat_target = NA, min_draws = 50), "nuts", 4)
+  expect_equal(c(r$min_draws, r$rhat), c(50, Inf))
+  expect_equal(r$targets, c(pop = 400, sd = 400, cor = 400))
 })
 
 test_that("per-class ESS targets fill unnamed classes with 400", {
@@ -159,6 +172,11 @@ test_that("auto sampling stops once the targets are met and on the time cap", {
   expect_identical(attr(run$value, "stop_reason"), "max_time")
   expect_equal(run$value$.iter_sampling, 25L)
   expect_true(any(grepl("stopped at 1e-06 seconds", run$warnings)))
+  g <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+                iter_sampling = "auto", seed = 3, progress_bar = FALSE,
+                control = list(ess_target = FALSE, rhat_target = 10, min_draws = 60, check_every = 25))
+  expect_identical(attr(g, "stop_reason"), "targets")
+  expect_equal(g$.iter_sampling, 75L)
 })
 
 test_that("resume continues auto and fixed fits exactly and merges the log-likelihood", {
@@ -166,7 +184,7 @@ test_that("resume continues auto and fixed fits exactly and merges the log-likel
   m <- .auto_model()
   f1 <- .fit_auto_capped(m, 50, seed = 6)$value
   f2 <- .warnings_of(fit_broc(m, iter_sampling = "auto", resume = f1, progress_bar = FALSE,
-                              control = list(ess_target = 1e9, max_draws = 100, check_every = 25)))$value
+                              control = list(ess_target = 1e9, min_draws = 25, max_draws = 100, check_every = 25)))$value
   expect_equal(f2$.iter_sampling, 100L)
   expect_equal(attr(f2, "ess_trace")$draws, c(25, 50, 75, 100))
   f3 <- fit_broc(m, iter_sampling = 25, resume = f2, progress_bar = FALSE)

@@ -2444,8 +2444,11 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'     every random-effect block is mapped; `FALSE` leaves a block of more than ten
 #'     effects per group non-centred).
 #'   * `iter_sampling = "auto"` (either sampler): `ess_target` (400; one number, or
-#'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`),
-#'     `rhat_target` (1.01), `max_draws` (draws per chain; 50000 for HMC and NUTS, 500000 for
+#'     named values for `pop`, `sd` and `cor`, e.g. `c(pop = 1000, sd = 400)`; `FALSE`
+#'     drops the ESS condition), `rhat_target` (1.01; `FALSE` drops the R-hat condition;
+#'     at least one of the two must remain), `min_draws` (draws per chain before the first
+#'     check; default the largest ESS target, or `check_every` without one),
+#'     `max_draws` (draws per chain; 50000 for HMC and NUTS, 500000 for
 #'     DR-G-HMC), `max_time` (seconds of sampling after warmup; none), `check_every`
 #'     (draws per chain between checks; 100 for HMC and NUTS, 1000 for DR-G-HMC) and
 #'     `max_kept` (draws per chain kept in the fit; default `max_draws`, i.e. no
@@ -2557,10 +2560,14 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' [summary()] reports) are computed for every monitored parameter: population-level
 #' (`pop`: fixed effects, thresholds and other family parameters), random-effect and
 #' smooth SDs (`sd`) and random-effect correlations (`cor`). Sampling stops once
-#' every class meets its ESS target and every R-hat is at most `rhat_target`, or at
-#' `max_draws` or `max_time`. One line per round reports progress and what is still
-#' unmet. The next round samples while the check runs; when a check takes longer
-#' than a round, checks are spaced out so sampling does not wait for them.
+#' every class meets its ESS target and every R-hat is at most `rhat_target` (either
+#' condition can be dropped), or at `max_draws` or `max_time`. No check is made before
+#' `min_draws` draws per chain, by default the largest ESS target, so an ESS of 400 is
+#' never claimed from fewer than 400 draws in each chain. Every round after that is
+#' checked, so a given seed always stops at the same draw. One line per round reports
+#' progress and what is still unmet; the next round samples while the check runs. This
+#' is a convenience: the run stops the first time the targets are met, and stopping on
+#' a diagnostic carries no coverage guarantee.
 #'
 #' By default every draw is kept. `thin = k` keeps every `k`-th draw as it is
 #' sampled. Alternatively `max_kept` caps the draws kept per chain: once a run would

@@ -698,7 +698,6 @@ class AutoSession:
         self.mon_ready = threading.Event()
         self.pending = None
         self.last_dg = None
-        self.skip_checks = 0
         if self.sampler in ("nuts", "hmc"):
             self._verify(model, config, full1, itemsize)
             self._launch()
@@ -899,24 +898,21 @@ class AutoSession:
             self._launch(after=r)
         self._commit(r)
         os.makedirs(out_dir, exist_ok=True)
-        checked = self.skip_checks == 0 or self.last_dg is None or bool(a.get("force"))
+        checked = self.T >= int(a.get("min_draws") or 0) or bool(a.get("force"))
         t0 = time.time()
+        rhat_t = float(a["rhat"]) if a.get("rhat") is not None else np.inf
+        check_s = 0.0
         if checked:
             self.last_dg = self._diagnose()
             check_s = time.time() - t0
-            self.skip_checks = max(0, int(np.ceil(check_s / max(float(r["wall"]), 1e-9))) - 1)
-        else:
-            self.skip_checks -= 1
-            check_s = 0.0
-        if checked:
             self.blocker = (None if getattr(self, "last_ess", None) is None else
                             _blocker(self.last_ess, self.last_rhat, self.mon_class, self.mon_names,
-                                     a.get("targets") or {}, float(a.get("rhat", np.inf))))
-        dg = dict(self.last_dg, blocker=getattr(self, "blocker", None))
+                                     a.get("targets") or {}, rhat_t))
+        dg = dict(self.last_dg or {}, blocker=getattr(self, "blocker", None))
         met = checked and not a.get("fixed") and all(
             dg.get("ess_" + c) is None or dg["ess_" + c] >= float(t)
             for c, t in (a.get("targets") or {}).items()) and (
-            dg.get("rhat") is None or dg["rhat"] <= float(a.get("rhat", np.inf)))
+            dg.get("rhat") is None or dg["rhat"] <= rhat_t)
         if met:
             self._stop_pending()
         n_all = max(float(self.tot.n.sum()), 1.0)
