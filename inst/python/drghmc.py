@@ -112,7 +112,7 @@ def _trim_rows(config, n_keep):
     if _rkg_structural(config):
         y = np.asarray(config["y"]); rk = np.asarray(config["rk"])
         olm = np.asarray(config["old_level_map"])
-        live = np.ones(y.shape[0], bool) if config.get("counts") is None else np.asarray(config["counts"]) > 0
+        live = np.ones(y.shape[0], bool) if config.get("counts") is None or config.get("rows_live") else np.asarray(config["counts"]) > 0
         g = np.where(np.isin(y, olm) & (rk == 3) & live)[0]
         if g.size and int(g[0]) not in rows:
             rows.append(int(g[0]))

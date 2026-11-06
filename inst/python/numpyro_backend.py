@@ -4411,7 +4411,7 @@ def _rkg_knob(config):
     band = np.full(y.shape[0], -1)
     for j, lev in enumerate(olm):
         band[y == lev] = j
-    live = np.ones(y.shape[0], bool) if config.get("counts") is None else np.asarray(config["counts"]) > 0
+    live = np.ones(y.shape[0], bool) if config.get("counts") is None or config.get("rows_live") else np.asarray(config["counts"]) > 0
     G = np.where((band >= 0) & (rk == 3) & live)[0]
     if G.size == 0:
         return None

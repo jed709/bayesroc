@@ -6,6 +6,7 @@
 \alias{pp_check}
 \alias{loo}
 \alias{loo_compare}
+\alias{kfold}
 \alias{posterior_epred}
 \alias{posterior_linpred}
 \title{Objects exported from other packages}
@@ -17,7 +18,7 @@ below to see their documentation.
 \describe{
   \item{bayesplot}{\code{\link[bayesplot]{pp_check}}}
 
-  \item{loo}{\code{\link[loo]{loo}}, \code{\link[loo]{loo_compare}}}
+  \item{loo}{\code{\link[loo:kfold-generic]{kfold}}, \code{\link[loo]{loo}}, \code{\link[loo]{loo_compare}}}
 
   \item{rstantools}{\code{\link[rstantools]{posterior_epred}}, \code{\link[rstantools]{posterior_linpred}}}
 }}

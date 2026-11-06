@@ -250,6 +250,7 @@ build_numpyro_config <- function(model) {
 
   if (!is.null(md$stan_data$counts)) {
     config$counts <- as.numeric(md$stan_data$counts)
+    if (isTRUE(md$rows_live)) config$rows_live <- TRUE
   }
 
   # ---- Fixed effects for each parameter ----

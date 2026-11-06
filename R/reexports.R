@@ -11,6 +11,10 @@ loo::loo
 #' @export
 loo::loo_compare
 
+#' @importFrom loo kfold
+#' @export
+loo::kfold
+
 #' @importFrom rstantools posterior_epred
 #' @export
 rstantools::posterior_epred
