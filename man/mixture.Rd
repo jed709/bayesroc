@@ -32,7 +32,9 @@ standard EVSD.
 If a lure mixture is specified (both \code{dprime_L} and \code{lambda_L}), new
 items get their own mixture:
 \deqn{P(Y \le k \mid \mathrm{old} = 0) = (1 - \lambda_L)\,\Phi(c_k)
-      + \lambda_L\,\Phi\!\Big(\tfrac{c_k - d'_L}{\sigma_L}\Big)}
+      + \lambda_L\,\Phi\!\Big(\tfrac{c_k + d'_L}{\sigma_L}\Big)}
+The lure component is centred at \eqn{-d'_L}, so a positive \code{dprime_L}
+places it below the new-item baseline.
 
 When both \code{dprime} and \code{dprime2} are free, an ordered constraint
 (\code{dprime > dprime2}) is imposed for identifiability.
