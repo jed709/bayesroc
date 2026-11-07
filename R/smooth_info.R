@@ -62,7 +62,10 @@
   out <- matrix(0, S, N)
   if (bivariate) {
     y2 <- md$stan_data$y2
-    for (n in seq_len(N)) out[, n] <- pr[, n, y[n], y2[n]]
+    obs <- md$stan_data$src_obs %||% rep(1L, N)
+    for (n in seq_len(N)) {
+      out[, n] <- if (obs[n] == 1L) pr[, n, y[n], y2[n]] else rowSums(pr[, n, y[n], , drop = FALSE], dims = 1L)
+    }
   } else if (fam$family == "cdp") {
     pR <- attr(pr, "p_remember"); pK <- attr(pr, "p_know")
     rk <- md$stan_data$rk

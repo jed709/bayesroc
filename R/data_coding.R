@@ -41,7 +41,7 @@
   })), encoding_vars, counts))
   exempt <- character(0)
   rv <- .resp_vars(brf_obj)
-  if (length(rv) == 2L && family$family %in% c("cdp", "bivariate_sdt", "bivariate_dp", "vrdp2d")) exempt <- rv[2]
+  if (length(rv) == 2L && family$family %in% c("cdp", "bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")) exempt <- rv[2]
   vars <- setdiff(intersect(vars, names(data)), exempt)
   if (!length(vars)) return(list(data = data, dropped = integer(0)))
   ok <- stats::complete.cases(data[vars])

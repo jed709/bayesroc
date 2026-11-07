@@ -49,9 +49,10 @@
 
 # ---- source ROC within detection bands -------------------------------------------------------------
 
-.roc_conditional <- function(model, setup, cells, cf, w, by, scale, prob, observed) {
+.roc_conditional <- function(model, setup, cells, cf, w, by, scale, prob, observed, bands = NULL, w_obs = w) {
   md <- model$model_data
   K1 <- md$K; K2 <- md$K2
+  bands <- bands %||% as.list(seq_len(K1))
   if (K2 < 3) stop("A source ROC needs at least three source categories; this model has ", K2, ".", call. = FALSE)
   y1 <- model$stan_data$y; y2 <- model$stan_data$y2
   it_all <- setup$data_src$item_type
@@ -78,19 +79,23 @@
       surv[, , , m] <- tot
       tot <- tot + p[, , , m]
     }
-    for (j in seq_len(K1)) {
-      hr <- .wmean_rows(surv[, , j, , drop = FALSE][, , 1, ], jr$w, which(jr$it == 3L))
-      fa <- .wmean_rows(surv[, , j, , drop = FALSE][, , 1, ], jr$w, which(jr$it == 2L))
-      band_B <- .wmean_rows(array(tot[, , j], c(S, n, 1)), jr$w, which(jr$it == 3L))[, 1]
-      band_A <- .wmean_rows(array(tot[, , j], c(S, n, 1)), jr$w, which(jr$it == 2L))[, 1]
+    for (b in seq_along(bands)) {
+      j <- bands[[b]]
+      sv <- array(apply(surv[, , j, , drop = FALSE], c(1, 2, 4), sum), c(S, n, U))
+      tb <- array(apply(tot[, , j, drop = FALSE], c(1, 2), sum), c(S, n, 1))
+      hr <- .wmean_rows(sv, jr$w, which(jr$it == 3L))
+      fa <- .wmean_rows(sv, jr$w, which(jr$it == 2L))
+      band_B <- .wmean_rows(tb, jr$w, which(jr$it == 3L))[, 1]
+      band_A <- .wmean_rows(tb, jr$w, which(jr$it == 2L))[, 1]
       hr <- hr / band_B; fa <- fa / band_A
       cv <- .roc_band(fa, hr, scale, prob)
-      curves[[length(curves) + 1L]] <- cbind(cv, .cell = lev, .band = j)
+      curves[[length(curves) + 1L]] <- cbind(cv, .cell = lev, .band = b)
       if (observed) {
-        sig <- which(cells == lev & it_all == 3L & y1 == j); noi <- which(cells == lev & it_all == 2L & y1 == j)
+        sig <- which(cells == lev & it_all == 3L & y1 %in% j & w_obs > 0)
+        noi <- which(cells == lev & it_all == 2L & y1 %in% j & w_obs > 0)
         if (length(sig) && length(noi)) {
-          ob <- .roc_observed(y2, w, sig, noi, K2, scale)
-          pts[[length(pts) + 1L]] <- cbind(ob, .cell = lev, .band = j, .n = sum(w[c(sig, noi)]))
+          ob <- .roc_observed(y2, w_obs, sig, noi, K2, scale)
+          pts[[length(pts) + 1L]] <- cbind(ob, .cell = lev, .band = b, .n = sum(w_obs[c(sig, noi)]))
         }
       }
     }
@@ -99,8 +104,8 @@
   curves <- merge(do.call(rbind, curves), cf, by = ".cell", sort = FALSE)
   pts <- if (length(pts)) merge(do.call(rbind, pts), cf, by = ".cell", sort = FALSE)
   n_by_band <- if (!is.null(pts)) tapply(pts$.n, pts$.band, function(v) v[1]) else NULL
-  lab <- vapply(seq_len(K1), function(j) paste0("Detection ", j,
-    if (!is.null(n_by_band) && !is.na(n_by_band[as.character(j)])) paste0("  (n = ", round(n_by_band[as.character(j)]), ")") else ""),
+  lab <- vapply(seq_along(bands), function(b) paste0("Detection ", paste(bands[[b]], collapse = ", "),
+    if (!is.null(n_by_band) && !is.na(n_by_band[as.character(b)])) paste0("  (n = ", round(n_by_band[as.character(b)]), ")") else ""),
     character(1))
   for (nm in c("curves", "pts")) {
     x <- get(nm)

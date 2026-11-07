@@ -283,6 +283,7 @@ collect_batch_params <- function(model_data, family_name) {
 
   params[[".family"]]      <- family_name
   params[[".has_counts"]]  <- isTRUE(model_data$has_counts)
+  params[[".has_src_obs"]] <- !is.null(model_data$stan_data$src_obs)
   params[[".has_sigma"]]   <- isTRUE(model_data$has_sigma) && family_name %in% c("uvsdt", "dpsdt", "mixture", "vrdp2d", "bivariate_sdt", "bivariate_dp", "cdp", "mafc")
   params[[".is_mafc"]]     <- family_name == "mafc"
   params[[".has_bias"]]    <- family_name == "mafc" && isTRUE(model_data$has_bias)
@@ -443,6 +444,9 @@ build_batch_signature <- function(model_data, family_name, params) {
 
   if (params[[".has_counts"]]) {
     add_data("const std::vector<int>&", "array[] int", "counts_d")
+  }
+  if (isTRUE(params[[".has_src_obs"]])) {
+    add_data("const std::vector<int>&", "array[] int", "src_obs")
   }
 
   # ---- dprime fixed ----
@@ -3819,7 +3823,8 @@ emit_likelihood_vrdp2d <- function(L, params) {
   L$add("    double R_val = lambda_val;")
   L$add("")
 
-  L$add("    auto vr = batch_sdt::vrdp2d_cell(")
+  L$add(if (isTRUE(params[[".has_src_obs"]])) "    auto vr = src_obs[n] == 0 ? batch_sdt::vrdp2d_item_marginal(yn, item_type_n, K1, dprime_n, dprime2_n, R_val, sigma_item_val, thresh1_n.data(), n_thresh1) : batch_sdt::vrdp2d_cell("
+        else "    auto vr = batch_sdt::vrdp2d_cell(")
   L$add("        yn, yn2, item_type_n, K1, K2,")
   L$add("        dprime_n, dprime2_n, source_d,")
   L$add("        R_val, sigma_item_val, sigma_S_val,")
@@ -5920,21 +5925,25 @@ emit_likelihood_bivariate <- function(L, params) {
   L$add("    }")
   L$add("")
 
+  src <- isTRUE(params[[".has_src_obs"]])
   if (is_dp) {
-    L$add("    auto bv = batch_sdt::bounded_bivariate_dp_cell(")
+    L$add(if (src) "    auto bv = src_obs[n] == 0 ? batch_sdt::bivariate_dp_item_marginal(yn, item_type_n, K1, mu1, s1, R_I_val, R_I_B_val, thresh1_n.data(), n_thresh1) : batch_sdt::bounded_bivariate_dp_cell("
+          else "    auto bv = batch_sdt::bounded_bivariate_dp_cell(")
     L$add("        yn, yn2, item_type_n, K1, K2,")
     L$add("        mu1, mu2, s1, s2, rho_eff,")
     L$add("        R_I_val, R_S_val, R_I_B_val, R_S_B_val,")
     L$add("        thresh1_n.data(), n_thresh1,")
     L$add("        thresh2_n.data(), n_thresh2);")
   } else if (bounded) {
-    L$add("    auto bv = batch_sdt::bounded_bivariate_sdt_cell(")
+    L$add(if (src) "    auto bv = src_obs[n] == 0 ? batch_sdt::bivariate_item_marginal(yn, K1, mu1, s1, thresh1_n.data(), n_thresh1) : batch_sdt::bounded_bivariate_sdt_cell("
+          else "    auto bv = batch_sdt::bounded_bivariate_sdt_cell(")
     L$add("        yn, yn2, K1, K2,")
     L$add("        mu1, mu2, s1, s2, rho_eff,")
     L$add("        thresh1_n.data(), n_thresh1,")
     L$add("        thresh2_n.data(), n_thresh2);")
   } else {
-    L$add("    auto bv = batch_sdt::bivariate_sdt_cell(")
+    L$add(if (src) "    auto bv = src_obs[n] == 0 ? batch_sdt::bivariate_item_marginal(yn, K1, mu1, s1, thresh1_n.data(), n_thresh1) : batch_sdt::bivariate_sdt_cell("
+          else "    auto bv = batch_sdt::bivariate_sdt_cell(")
     L$add("        yn, yn2, K1, K2,")
     L$add("        mu1, mu2, s1, s2, rho_eff,")
     L$add("        thresh1_n.data(), n_thresh1,")

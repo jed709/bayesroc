@@ -4043,14 +4043,18 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
                      counts=None,
                      thresh1_mid=None, log_gaps1=None,
                      thresh2_mid=None, log_gaps2=None,
-                     gap_link="log",
+                     gap_link="log", src_obs=None,
                      **kwargs):
     """Compute log-likelihood for bivariate SDT families via the fused kernels;
-    requires thresh1_mid/log_gaps1/thresh2_mid/log_gaps2."""
+    requires thresh1_mid/log_gaps1/thresh2_mid/log_gaps2. `src_obs` [N] (1 = the source
+    rating was given): a row without one is scored on its detection response alone."""
 
     N = y1.shape[0]
     K1 = thresh1.shape[1] + 1
     K2 = thresh2.shape[1] + 1
+
+    def _with_marginal(joint, marginal):
+        return joint if src_obs is None else jnp.where(src_obs == 1, joint, marginal())
 
     if family_name == "bivariate_cumulative":
         _has_fused = (thresh1_mid is not None and log_gaps1 is not None and
@@ -4059,12 +4063,13 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
             mu1_c = dprime if dprime is not None else jnp.zeros(N)
             mu2_c = discrim if discrim is not None else jnp.zeros(N)
             rho_c = rho if rho is not None else jnp.zeros(N)
-            log_lik = fused_loglik_bivariate_sdt(
+            log_lik = _with_marginal(fused_loglik_bivariate_sdt(
                 y1, y2, item_type, K1, K2,
                 mu1=mu1_c, mu2=mu2_c,
                 sigma1=jnp.ones(N), sigma2=jnp.ones(N), rho_val=rho_c,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
-                thresh2_mid=thresh2_mid, gaps2=log_gaps2, gap_link=gap_link)
+                thresh2_mid=thresh2_mid, gaps2=log_gaps2, gap_link=gap_link),
+                lambda: fused_loglik_simple(y1, K1, mu1_c, jnp.ones(N), thresh1_mid, log_gaps1, gap_link))
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik
@@ -4127,35 +4132,39 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
             dprime_masked = jnp.where(is_new, 0.0, dprime)
             dprime2_masked = jnp.where(is_new, 0.0, dprime2)
             R_masked = jnp.where(is_new, 0.0, R)
-            log_lik = fused_loglik_vrdp2d(
+            log_lik = _with_marginal(fused_loglik_vrdp2d(
                 y1, y2, item_type, K1, K2,
                 dprime_F=dprime_masked, dprime_R=dprime2_masked, source_d=mu2,
                 lambda_val=R_masked, sigma_item=sd1, sigma_S=sd2,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,
-                gap_link=gap_link)
+                gap_link=gap_link),
+                lambda: fused_loglik_mixture(y1, K1, dprime_masked + dprime2_masked, sd1, dprime_masked, sd1,
+                                             R_masked, thresh1_mid, log_gaps1, gap_link))
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik
 
         elif family_name == "bivariate_sdt" and not bounded:
-            log_lik = fused_loglik_bivariate_sdt(
+            log_lik = _with_marginal(fused_loglik_bivariate_sdt(
                 y1, y2, item_type, K1, K2,
                 mu1=mu1, mu2=mu2, sigma1=sd1, sigma2=sd2, rho_val=rho_n,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,
-                gap_link=gap_link)
+                gap_link=gap_link),
+                lambda: fused_loglik_simple(y1, K1, mu1, sd1, thresh1_mid, log_gaps1, gap_link))
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik
 
         elif bounded and family_name == "bivariate_sdt":
-            log_lik = fused_loglik_bounded_bivariate_sdt(
+            log_lik = _with_marginal(fused_loglik_bounded_bivariate_sdt(
                 y1, y2, item_type, K1, K2,
                 mu1=mu1, mu2=mu2, sigma1=sd1, sigma2=sd2, rho_val=rho_n,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,
-                gap_link=gap_link)
+                gap_link=gap_link),
+                lambda: fused_loglik_simple(y1, K1, mu1, sd1, thresh1_mid, log_gaps1, gap_link))
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik
@@ -4169,14 +4178,16 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
             R_S = jnp.where(is_new, 0.0, R_S)
             R_I_B = jnp.where(is_new, 0.0, R_I_B)
             R_S_B = jnp.where(is_new, 0.0, R_S_B)
-            log_lik = fused_loglik_bounded_bivariate_dp(
+            log_lik = _with_marginal(fused_loglik_bounded_bivariate_dp(
                 y1, y2, item_type, K1, K2,
                 mu1=mu1, mu2=mu2, sigma1=sd1, sigma2=sd2,
                 rho_val=rho_n, rho_N_val=rho_N,
                 R_I=R_I, R_S=R_S, R_I_B=R_I_B, R_S_B=R_S_B,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,
-                gap_link=gap_link)
+                gap_link=gap_link),
+                lambda: fused_loglik_dpsdt(y1, K1, mu1, sd1, jnp.where(is_A, R_I, R_I_B), thresh1_mid, log_gaps1,
+                                           gap_link))
             if counts is not None:
                 log_lik = log_lik * counts
             return log_lik
@@ -5480,6 +5491,7 @@ def sdt_model(config):
 
             log_lik = bivariate_loglik(
                 y, y2,
+                src_obs=jnp.asarray(config["src_obs"], dtype=jnp.int32) if config.get("src_obs") is not None else None,
                 dprime=trial_params.get("dprime", jnp.zeros(N)),
                 dprime_B=trial_params.get("dprime_B"),
                 thresh1=thresh, thresh2=thresh2,

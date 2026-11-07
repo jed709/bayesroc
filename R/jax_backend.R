@@ -219,6 +219,7 @@ build_numpyro_config <- function(model) {
   if (!is.null(md$K2)) config$K2 <- md$K2
   if (!is.null(md$stan_data$item_type)) config$item_type <- as.integer(md$stan_data$item_type)
   if (!is.null(md$stan_data$y2)) config$y2 <- as.integer(md$stan_data$y2)
+  if (!is.null(md$stan_data$src_obs)) config$src_obs <- as.integer(md$stan_data$src_obs)
   if (!is.null(md$stan_data$rk)) config$rk <- as.integer(md$stan_data$rk)
   if (!is.null(md$stan_data$J)) config$J <- md$stan_data$J
   if (!is.null(md$stan_data$n_rkg)) config$n_rkg <- md$stan_data$n_rkg

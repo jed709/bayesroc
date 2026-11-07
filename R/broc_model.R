@@ -180,8 +180,11 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
 #'     dropped.}
 #'   \item{Missing values}{Rows with a missing value in any variable the model
 #'     uses are dropped with a message; their row numbers are stored in
-#'     `model$dropped_rows`. Missing source ratings in bivariate models are an
-#'     error.}
+#'     `model$dropped_rows`. In the bivariate families a missing source rating
+#'     is allowed (e.g. a source judgement asked only after an "old" response):
+#'     the row is scored on its detection response alone, and with
+#'     `source_criteria = "varying"` sets of source criteria are built only for
+#'     the detection responses that carry source ratings.}
 #' }
 #'
 #' @return A `broc_model` object, ready to pass to [fit_broc()].
@@ -725,6 +728,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
   
   model_data <- build_model_data(parsed, data, family, counts = counts,
                                  encoding_vars = encoding_vars)
+  if (!is.null(model_data$source_levels)) family$source_levels <- model_data$source_levels
   model_data$gap_link <- gap_link
   model_data$cdp_rho_shared <- cdp_rho_shared
   model_data$metad_mratio_shared <- metad_mratio_shared
@@ -1042,15 +1046,11 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       stan_data$item_type <- as.integer(item_type_vals)
     }
     y2_raw <- as.integer(data[[parsed$response2]])
-    if (any(is.na(y2_raw))) {
-      n_na <- sum(is.na(y2_raw))
-      stop(sprintf(
-        "Found %d row(s) with NA in the source response (`%s`). The ",
-        n_na, parsed$response2),
-        "source-conditional-on-old paradigm (where source is only rated when ",
-        "a trial is judged old) is not supported. Either ",
-        "(a) drop rows with missing source ratings, or (b) impute them.",
-        call. = FALSE)
+    src <- .source_observed(y2_raw, stan_data$y, K, parsed$response2)
+    if (!is.null(src)) {
+      y2_raw[src$obs == 0L] <- 1L
+      stan_data$src_obs <- as.array(src$obs)
+      family$source_levels <- src$levels
     }
     stan_data$y2 <- y2_raw
     stan_data$K2 <- K2
@@ -1067,6 +1067,15 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     }
     if (isTRUE(family$varying_source_criteria)) {
       vb <- .varying_bins(family, K)
+      if (!is.null(src) && identical(family$source_criteria, "varying_shared_new")) {
+        empty <- setdiff(seq_len(vb$n), unique(vb$of[src$levels]))
+        if (length(empty)) {
+          stop("source_criteria = \"varying_shared_new\" has a set of source criteria for detection response(s) ",
+               paste(vapply(empty, function(b) paste(which(vb$of == b), collapse = ", "), ""), collapse = "; "),
+               ", which never carry a source rating. Use source_criteria = \"varying\", which builds sets only for ",
+               "the responses that carry source ratings, or \"common\".", call. = FALSE)
+        }
+      }
       stan_data$n_vbin <- vb$n
       stan_data$vbin <- as.array(vb$of)
     }
@@ -1869,6 +1878,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     N = N,
     K = K,
     K2 = K2,
+    source_levels = family$source_levels,
     response_labels = response_labels,
     response2_labels = response2_labels,
     family = family$family,
@@ -3348,6 +3358,7 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints, cutpoints2, rho,
 
 
   model_data <- build_model_data(parsed, data, family, counts = counts)
+  if (!is.null(model_data$source_levels)) family$source_levels <- model_data$source_levels
   model_data$gap_link <- gap_link
   prior_lookup <- .finish_prior_lookup(prior_lookup, model_data)
   model_data$prior_lookup <- prior_lookup
@@ -3586,12 +3597,30 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
 # per response. "varying_shared_new": the "new" responses all read set 1 and each "old"
 # response its own set after it. Every set carries the same structure (coefficients, smooths
 # and random effects).
+.source_observed <- function(y2, y1, K1, name) {
+  obs <- !is.na(y2)
+  if (all(obs)) return(NULL)
+  if (!any(obs)) stop("No row has a source rating (`", name, "`).", call. = FALSE)
+  lv <- sort(unique(as.integer(y1[obs])))
+  none <- setdiff(seq_len(K1), lv)
+  message("Source rating missing on ", sum(!obs), " of ", length(obs), " rows",
+          if (length(none)) paste0("; detection response", if (length(none) > 1L) "s", " ",
+                                   paste(none, collapse = ", "), if (length(none) > 1L) " never carry one" else " never carries one"),
+          ". Those rows are scored on the detection response alone.")
+  list(obs = as.integer(obs), levels = lv)
+}
+
 .varying_bins <- function(family, K) {
   if (identical(family$source_criteria, "varying_shared_new")) {
     lv <- sort(unique(as.integer(family$old_levels)))
     of <- rep(1L, K)
     of[lv] <- 1L + seq_along(lv)
     labels <- c("new", as.character(lv))
+  } else if (!is.null(family$source_levels)) {
+    lv <- family$source_levels
+    of <- rep(1L, K)
+    of[lv] <- seq_along(lv)
+    labels <- as.character(lv)
   } else {
     of <- seq_len(K)
     labels <- as.character(of)

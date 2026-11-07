@@ -78,8 +78,11 @@ confidence rating alone).}
 dropped.}
 \item{Missing values}{Rows with a missing value in any variable the model
 uses are dropped with a message; their row numbers are stored in
-\code{model$dropped_rows}. Missing source ratings in bivariate models are an
-error.}
+\code{model$dropped_rows}. In the bivariate families a missing source rating
+is allowed (e.g. a source judgement asked only after an "old" response):
+the row is scored on its detection response alone, and with
+\code{source_criteria = "varying"} sets of source criteria are built only for
+the detection responses that carry source ratings.}
 }
 }
 

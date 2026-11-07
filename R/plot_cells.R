@@ -57,6 +57,24 @@
   list(rows = which(!duplicated(grp)), unit = grp)
 }
 
+.source_design <- function(model, say = FALSE) {
+  obs <- model$stan_data$src_obs
+  if (is.null(obs)) return(NULL)
+  L <- model$family$source_levels
+  rule <- identical(as.integer(model$stan_data$y %in% L), as.integer(obs))
+  if (say && !rule) {
+    message("The source rating is missing on some rows whose detection response elsewhere carries one, so each ",
+            "row's own pattern is used: replicated and model source ratings exist only for the rows that have one.")
+  }
+  list(obs = as.integer(obs), levels = L, rule = rule)
+}
+
+.source_asked <- function(sd, N, K1) {
+  if (is.null(sd)) return(matrix(1, N, K1))
+  if (sd$rule) matrix(as.numeric(seq_len(K1) %in% sd$levels), N, K1, byrow = TRUE)
+  else matrix(as.numeric(sd$obs), N, K1)
+}
+
 .row_weights <- function(model) {
   cnt <- model$stan_data$counts
   if (is.null(cnt)) rep(1, model$model_data$N %||% length(model$stan_data$y)) else as.numeric(cnt)

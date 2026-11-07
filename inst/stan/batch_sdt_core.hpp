@@ -644,6 +644,43 @@ inline Vrdp2dResult vrdp2d_cell(
   return res;
 }
 
+template <typename Res>
+inline void item_axis_indices(Res& res, int y1, int K1, int n_thresh1) {
+  res.k1_lo = -1; res.k1_hi = -1;
+  res.k2_lo = -1; res.k2_hi = -1;
+  if (y1 == 1) { res.k1_hi = 0; }
+  else if (y1 == K1) { res.k1_lo = n_thresh1 - 1; }
+  else { res.k1_lo = y1 - 2; res.k1_hi = y1 - 1; }
+}
+
+inline Vrdp2dResult vrdp2d_item_marginal(
+    int y1, int item_type, int K1,
+    double dprime_F, double dprime_R, double R, double sigma_item,
+    const double* thresh1, int n_thresh1) {
+  Vrdp2dResult res = {};
+  item_axis_indices(res, y1, K1, n_thresh1);
+  if (item_type == 1) {
+    auto c = uni_cell(y1, K1, 0.0, 1.0, thresh1, n_thresh1);
+    res.lp = std::log(c.p);
+    res.d_thresh1_lo = c.d_thresh_lo / c.p;
+    res.d_thresh1_hi = c.d_thresh_hi / c.p;
+    return res;
+  }
+  auto f = uni_cell(y1, K1, dprime_F, sigma_item, thresh1, n_thresh1);
+  auto r = uni_cell(y1, K1, dprime_F + dprime_R, sigma_item, thresh1, n_thresh1);
+  double P = (1.0 - R) * f.p + R * r.p;
+  if (P < kPFloor) P = kPFloor;
+  double inv_P = 1.0 / P;
+  res.lp = std::log(P);
+  res.d_lambda = (r.p - f.p) * inv_P;
+  res.d_dprime_F = ((1.0 - R) * f.d_mu + R * r.d_mu) * inv_P;
+  res.d_dprime_R = R * r.d_mu * inv_P;
+  res.d_sigma_item = ((1.0 - R) * f.d_sigma + R * r.d_sigma) * inv_P;
+  res.d_thresh1_lo = ((1.0 - R) * f.d_thresh_lo + R * r.d_thresh_lo) * inv_P;
+  res.d_thresh1_hi = ((1.0 - R) * f.d_thresh_hi + R * r.d_thresh_hi) * inv_P;
+  return res;
+}
+
 // ============================================================
 // Bivariate normal CDF and gradients
 // ============================================================
@@ -826,6 +863,42 @@ struct BivariateDpResult {
   int k2_lo, k2_hi;
   double d_thresh2_lo, d_thresh2_hi;
 };
+
+inline BivariateResult bivariate_item_marginal(int y1, int K1, double mu1, double sigma1,
+                                               const double* thresh1, int n_thresh1) {
+  BivariateResult res = {};
+  item_axis_indices(res, y1, K1, n_thresh1);
+  auto c = uni_cell(y1, K1, mu1, sigma1, thresh1, n_thresh1);
+  double inv_p = 1.0 / c.p;
+  res.lp = std::log(c.p);
+  res.d_dprime = c.d_mu * inv_p;
+  res.d_sigma1 = c.d_sigma * inv_p;
+  res.d_thresh1_lo = c.d_thresh_lo * inv_p;
+  res.d_thresh1_hi = c.d_thresh_hi * inv_p;
+  return res;
+}
+
+inline BivariateDpResult bivariate_dp_item_marginal(int y1, int item_type, int K1, double mu1, double sigma1,
+                                                    double R_I, double R_I_B,
+                                                    const double* thresh1, int n_thresh1) {
+  BivariateDpResult res = {};
+  item_axis_indices(res, y1, K1, n_thresh1);
+  double R = item_type == 2 ? R_I : (item_type == 3 ? R_I_B : 0.0);
+  auto c = uni_cell(y1, K1, mu1, sigma1, thresh1, n_thresh1);
+  double top = (y1 == K1) ? 1.0 : 0.0;
+  double P = (1.0 - R) * c.p + R * top;
+  if (P < kPFloor) P = kPFloor;
+  double inv_P = 1.0 / P;
+  res.lp = std::log(P);
+  res.d_dprime = (1.0 - R) * c.d_mu * inv_P;
+  res.d_sigma1 = (1.0 - R) * c.d_sigma * inv_P;
+  res.d_thresh1_lo = (1.0 - R) * c.d_thresh_lo * inv_P;
+  res.d_thresh1_hi = (1.0 - R) * c.d_thresh_hi * inv_P;
+  double dR = (top - c.p) * inv_P;
+  if (item_type == 2) res.d_lambda = dR;
+  else if (item_type == 3) res.d_lambda_B = dR;
+  return res;
+}
 
 // ============================================================
 // CDP (Continuous Dual-Process) helpers

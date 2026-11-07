@@ -308,6 +308,11 @@ kfold_predict <- function(x, response = NULL, ...) {
     rows <- trial_row[tr]
     yrep <- predict(fit_k, newdata = x$data[rows, , drop = FALSE], type = "prediction", summary = FALSE,
                     response = response, ...)
+    sdz <- .source_design(attr(fit_k, "broc_model"))
+    if (!is.null(sdz) && is.list(yrep) && !is.null(yrep$y2)) {
+      yrep$y2[if (sdz$rule) !(yrep$y1 %in% sdz$levels) else matrix(sdz$obs[rows][col(yrep$y2)] == 0L, nrow(yrep$y2))] <-
+        NA_integer_
+    }
     list(trials = tr, y = .kfold_observed(attr(fit_k, "broc_model"), rows, yrep, response), yrep = yrep)
   })
   o <- order(unlist(lapply(parts, `[[`, "trials")))
@@ -331,12 +336,14 @@ kfold_predict <- function(x, response = NULL, ...) {
     v[v <= 0L] <- NA_integer_
     v
   }
-  src <- list(y = sd$y, y1 = sd$y, y2 = sd$y2, rk = rk)
+  y2 <- sd$y2
+  if (!is.null(sd$src_obs)) y2[sd$src_obs == 0L] <- NA_integer_
+  src <- list(y = sd$y, y1 = sd$y, y2 = y2, rk = rk)
   if (is.list(yrep)) {
     return(stats::setNames(lapply(names(yrep), function(k) as.integer(src[[k]][rows])), names(yrep)))
   }
   second <- identical(as.integer(response), 2L)
-  v <- if (!second) sd$y else if (identical(model$family$family, "cdp")) rk else sd$y2
+  v <- if (!second) sd$y else if (identical(model$family$family, "cdp")) rk else y2
   as.integer(v[rows])
 }
 

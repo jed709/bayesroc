@@ -1734,6 +1734,7 @@ generate_likelihood_code <- function(model_data, family_name) {
 #' Generate likelihood code for bivariate cumulative ordinal model
 #' @noRd
 generate_bivariate_cumulative_likelihood_code <- function(model_data) {
+  if (!is.null(model_data$stan_data$src_obs)) stop("the plain Stan reference has no missing-source rows", call. = FALSE)
   lines <- character(0)
 
   lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
@@ -1761,6 +1762,7 @@ generate_bivariate_cumulative_likelihood_code <- function(model_data) {
 #' Generate likelihood code for bivariate SDT
 #' @noRd
 generate_bivariate_likelihood_code <- function(model_data) {
+  if (!is.null(model_data$stan_data$src_obs)) stop("the plain Stan reference has no missing-source rows", call. = FALSE)
   lines <- character(0)
   
   lines <- c(lines, generate_param_lp_bivariate("dprime", model_data$dprime_fixed, model_data$dprime_random, model_data$smooth_data[["dprime"]]))
@@ -1920,6 +1922,7 @@ generate_bivariate_likelihood_code <- function(model_data) {
 #' Generate likelihood code for bivariate DP model
 #' @noRd
 generate_bivariate_dp_likelihood_code <- function(model_data) {
+  if (!is.null(model_data$stan_data$src_obs)) stop("the plain Stan reference has no missing-source rows", call. = FALSE)
   lines <- generate_bivariate_likelihood_code(model_data)
 
   target_idx <- grep("target \\+=", lines)
@@ -2089,6 +2092,7 @@ generate_cdp_likelihood_code <- function(model_data) {
 #' Generate likelihood code for 2D-VRDP model
 #' @noRd
 generate_vrdp2d_likelihood_code <- function(model_data) {
+  if (!is.null(model_data$stan_data$src_obs)) stop("the plain Stan reference has no missing-source rows", call. = FALSE)
   lines <- character(0)
   
   varying_source_criteria <- isTRUE(model_data$varying_source_criteria)

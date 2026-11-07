@@ -92,6 +92,13 @@ link_cdf_r <- function(x, link_name) {
 #'       the data columns, and the modal and mean predicted category.}
 #'     \item{`type = "prediction"`, `summary = FALSE`}{An S x N matrix of
 #'       simulated categorical responses.}
+#'     \item{Missing source ratings}{In the bivariate families, when some rows
+#'       have no source rating, a simulated source rating (`type = "prediction"`,
+#'       data used for fitting) is `NA` wherever the design would not have asked
+#'       for one: for a simulated detection response that never carries one, or,
+#'       when the pattern is not a function of the detection response, for the
+#'       rows that have none. Probabilities (`type = "response"`) are the model's
+#'       cells.}
 #'   }
 #' @examples
 #' \dontrun{
@@ -247,6 +254,10 @@ predict.broc_fit <- function(object, newdata = NULL, type = c("response", "predi
           pred_y1[s, n] <- ((cell - 1) %% K1) + 1L
           pred_y2[s, n] <- ((cell - 1) %/% K1) + 1L
         }
+      }
+      sdz <- if (is.null(newdata)) .source_design(model)
+      if (!is.null(sdz)) {
+        pred_y2[if (sdz$rule) !(pred_y1 %in% sdz$levels) else matrix(sdz$obs[col(pred_y2)] == 0L, S, N)] <- NA_integer_
       }
       if (summary) {
         pred_summary <- data.frame(

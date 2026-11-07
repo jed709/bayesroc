@@ -63,13 +63,25 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     cells <- .cell_of_rows(model, by)
     cf <- .cell_frame(model, by, cells)
     w <- .row_weights(model)
+    sd <- .source_design(model, say = TRUE)
     if (type == "joint") {
       # the surface scans both axes over a grid, so it is drawn for the typical participant
+      if (!is.null(sd) && observed) {
+        message("Observed points are not drawn on the ROC surface: they need the source rating at every ",
+                "detection response, and some rows have none.")
+        observed <- FALSE
+      }
       setup <- .plot_setup(fit, model, ndraws, NA)
       return(.roc_joint_plot(.roc_joint(model, setup, cells, cf, w, prob, observed), by, prob))
     }
     setup <- .plot_setup(fit, model, ndraws, re_formula)
-    return(.roc_conditional_plot(.roc_conditional(model, setup, cells, cf, w, by, scale, prob, observed), by, scale, prob, re_formula))
+    parts <- if (is.null(sd)) {
+      .roc_conditional(model, setup, cells, cf, w, by, scale, prob, observed)
+    } else {
+      .roc_conditional(model, setup, cells, cf, if (sd$rule) w else w * sd$obs, by, scale, prob, observed,
+                       bands = as.list(sd$levels), w_obs = w * sd$obs)
+    }
+    return(.roc_conditional_plot(parts, by, scale, prob, re_formula))
   }
   if (fam %in% c("cumulative", "bivariate_cumulative")) {
     stop("ROC curves are not defined for the ", family_display_name(fam), " family: ordinal ",
@@ -97,13 +109,24 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     pairs <- .pair_cells(model, by, cells, roles$signal, roles$noise)
     if (!length(pairs)) stop("No cell has both signal and noise items.", call. = FALSE)
     u <- .roc_u_grid(K - 1L)
+    sd <- if (bivariate && resp == 2L) .source_design(model, say = TRUE)
+    if (!is.null(sd) && sd$rule) {
+      cp <- .roc_conditional(model, setup, cells, cf, w, by, scale, prob, observed, bands = list(sd$levels),
+                             w_obs = w * sd$obs)
+      tidy <- function(x) if (!is.null(x)) cbind(x[setdiff(names(x), c(".band", ".n"))], .dim = "Source")
+      return(list(curves = tidy(cp$curves), pts = tidy(cp$pts), what = roles$what, n_cells = cp$n_cells))
+    }
+    wr <- if (is.null(sd)) w else w * sd$obs
     y_obs <- if (bivariate && resp == 2L) model$stan_data$y2 else model$stan_data$y
-    surv <- .roc_survival_pairs(model, setup, pairs, w, resp, u, cores)
+    surv <- .roc_survival_pairs(model, setup, pairs, wr, resp, u, cores)
     curves <- list(); points <- list()
     for (lev in names(pairs)) {
       pr <- pairs[[lev]]
       curves[[lev]] <- cbind(.roc_band(surv[[lev]]$noise, surv[[lev]]$signal, scale, prob), .cell = lev)
-      if (observed) points[[lev]] <- cbind(.roc_observed(y_obs, w, pr$signal, pr$noise, K, scale), .cell = lev)
+      if (observed) {
+        keep <- function(i) i[wr[i] > 0]
+        points[[lev]] <- cbind(.roc_observed(y_obs, wr, keep(pr$signal), keep(pr$noise), K, scale), .cell = lev)
+      }
     }
     dim_label <- if (roles$what == "source") "Source" else "Detection"
     curves <- cbind(merge(do.call(rbind, curves), cf, by = ".cell", sort = FALSE), .dim = dim_label)

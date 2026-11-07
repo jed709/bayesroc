@@ -149,8 +149,8 @@ def _trim_config(config, n_keep=1):
     return c
 
 
-_DATA_TOP = ("y", "is_old", "counts", "source", "rk", "y2", "item_type", "target_pos", "m_alt", "X_crit")
-_DATA_INT = ("y", "source", "rk", "y2", "item_type", "target_pos", "m_alt")
+_DATA_TOP = ("y", "is_old", "counts", "source", "rk", "y2", "item_type", "target_pos", "m_alt", "X_crit", "src_obs")
+_DATA_INT = ("y", "source", "rk", "y2", "item_type", "target_pos", "m_alt", "src_obs")
 
 
 def _data_of(config):

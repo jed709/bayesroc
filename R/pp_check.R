@@ -87,12 +87,20 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
     K <- if (!is.null(model$family$n_rkg)) model$family$n_rkg else 2L
     cat_labels <- c("Remember", "Know", "Guess")[seq_len(K)]
   } else {
-    probs <- .predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
-                           cores = cores, margin = if (bivariate) response)
+    sd <- if (bivariate && response == 2L) .source_design(model, say = TRUE)
+    probs <- if (is.null(sd)) {
+      .predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE, re_formula = re_formula,
+                    cores = cores, margin = if (bivariate) response)
+    } else {
+      .asked_source_probs(.predict_broc(fit, type = "response", ndraws = ndraws, summary = FALSE,
+                                        re_formula = re_formula, cores = cores), sd)
+    }
     y_obs <- if (bivariate && response == 2L) model$stan_data$y2 else model$stan_data$y
     K <- dim(probs)[3]
     labs <- if (bivariate && response == 2L) model$model_data$response2_labels else model$model_data$response_labels
+    if (!is.null(sd)) labs <- c(labs, "not asked")
     cat_labels <- if (length(labs) == K) as.character(labs) else as.character(seq_len(K))
+    if (!is.null(sd)) y_obs[sd$obs == 0L] <- K
   }
   counts <- .row_weights(model)[rows]
   cells <- droplevels(.ppc_cells(model, by)[rows])
@@ -125,6 +133,18 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
   mixed <- any(tapply(as.integer(role), cells, function(v) length(unique(v)) > 1L))
   if (!mixed) return(cells)
   interaction(cells, role, sep = " / ", drop = TRUE, lex.order = TRUE)
+}
+
+.asked_source_probs <- function(joint, sd) {
+  d <- dim(joint)
+  S <- d[1]; N <- d[2]; K1 <- d[3]; K2 <- d[4]
+  A <- .source_asked(sd, N, K1)
+  q <- array(0, c(S, N, K2))
+  for (j in seq_len(K1)) q <- q + array(joint[, , j, ], c(S, N, K2)) * array(rep(A[, j], each = S), c(S, N, K2))
+  out <- array(0, c(S, N, K2 + 1L))
+  out[, , seq_len(K2)] <- q
+  out[, , K2 + 1L] <- pmax(1 - rowSums(q, dims = 2L), 0)
+  out
 }
 
 .ppc_replicate <- function(probs, counts, cell, n_cells, K) {
@@ -278,15 +298,28 @@ pp_check.broc_fit <- function(object, type = c("bars", "rootogram", "stat", "lin
   S <- d[1]; N <- d[2]; K1 <- d[3]; K2 <- d[4]
   flat <- array(probs, c(S, N, K1 * K2))                       # category (j, k) -> (k - 1) * K1 + j
   y <- (model$stan_data$y2 - 1L) * K1 + model$stan_data$y
+  sd <- .source_design(model, say = TRUE)
+  KJ <- K1 * K2
+  if (!is.null(sd)) {
+    A <- .source_asked(sd, N, K1)
+    flat <- flat * array(rep(A[, rep(seq_len(K1), K2)], each = S), c(S, N, KJ))
+    flat <- array(c(flat, pmax(1 - rowSums(flat, dims = 2L), 0)), c(S, N, KJ + 1L))
+    y[sd$obs == 0L] <- KJ + 1L
+    KJ <- KJ + 1L
+  }
   counts <- .row_weights(model)
   cells <- droplevels(.ppc_cells(model, by))
   levs <- levels(cells)
   obs <- t(vapply(levs, function(l) {
     i <- which(cells == l)
-    vapply(seq_len(K1 * K2), function(k) sum(counts[i][y[i] == k]), numeric(1))
-  }, numeric(K1 * K2)))
+    vapply(seq_len(KJ), function(k) sum(counts[i][y[i] == k]), numeric(1))
+  }, numeric(KJ)))
   obs <- matrix(obs, nrow = length(levs))
-  pred <- .ppc_replicate(flat, counts, as.integer(cells), length(levs), K1 * K2)
+  pred <- .ppc_replicate(flat, counts, as.integer(cells), length(levs), KJ)
+  if (KJ > K1 * K2) {
+    obs <- obs[, seq_len(K1 * K2), drop = FALSE]
+    pred <- pred[, , seq_len(K1 * K2), drop = FALSE]
+  }
   mu <- apply(pred, c(2, 3), mean); sd <- apply(pred, c(2, 3), stats::sd)
   z <- (obs - mu) / pmax(sd, 1)
   df <- data.frame(cell = rep(levs, times = K1 * K2), y1 = rep(rep(seq_len(K1), times = K2), each = length(levs)),

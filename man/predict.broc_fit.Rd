@@ -74,6 +74,13 @@ S = draws, N = observations, K = response categories.}
 the data columns, and the modal and mean predicted category.}
 \item{\code{type = "prediction"}, \code{summary = FALSE}}{An S x N matrix of
 simulated categorical responses.}
+\item{Missing source ratings}{In the bivariate families, when some rows
+have no source rating, a simulated source rating (\code{type = "prediction"},
+data used for fitting) is \code{NA} wherever the design would not have asked
+for one: for a simulated detection response that never carries one, or,
+when the pattern is not a function of the detection response, for the
+rows that have none. Probabilities (\code{type = "response"}) are the model's
+cells.}
 }
 }
 \description{
