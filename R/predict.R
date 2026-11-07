@@ -2459,6 +2459,12 @@ probs_dpsdt <- function(params, thresh, is_old, link_name, S, N, K, has_sigma) {
     p[, , K] <- p[, , K] + lam
     probs[, old, ] <- p
   }
+  if (!is.null(params[["lambda_L"]]) && any(!old)) {
+    lam <- params[["lambda_L"]][, !old, drop = FALSE]
+    p <- probs[, !old, , drop = FALSE] * as.vector(1 - lam)
+    p[, , 1] <- p[, , 1] + lam
+    probs[, !old, ] <- p
+  }
   pmax(probs, 0)
 }
 

@@ -24,6 +24,7 @@
                                 sigma  = "sigma_R", sigma2 = "sigma_F",
                                 rho = "rho_target", rho_N = "rho_lure"),
     metadt               = list(mratio = "mratio_old", mratio_N = "mratio_new"),
+    dpsdt                = list(lambda_L = "lambda_new"),
     cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_shift = "cutpoints_shift",
                                 criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
@@ -281,11 +282,29 @@ uvsd <- function(link = link_probit()) {
 #'       \quad (k < K)}
 #' \deqn{P(Y \le K \mid \mathrm{old} = 1) = 1}
 #'
+#' With `lambda_new`, new items are recollected too, with probability
+#' \eqn{\lambda_N}, and a recollected new item gives the lowest rating Y = 1
+#' (recall-to-reject):
+#' \deqn{P(Y = k \mid \mathrm{old} = 0) = \lambda_N\,1[k = 1] + (1 - \lambda_N)\,
+#'       \big(\Phi(c_k) - \Phi(c_{k-1})\big)}
+#' Without it, \eqn{\lambda_N = 0} and new items follow the EVSD baseline above.
+#'
+#' ## Source memory
+#' The same model is the dual-process source model of Yonelinas (1999). Code
+#' the source-B items as old (`old = 1`) and the source-A items as new
+#' (`old = 0`), with ratings from 1 ("sure A") to K ("sure B"). `lambda` is then
+#' the recollection of source B, which sends an item to rating K, and
+#' `lambda_new` the recollection of source A, which sends it to rating 1. With
+#' `dprime ~ 0` the source ROC is linear, with intercept `lambda` and slope
+#' \eqn{(1 - \lambda)/(1 - \lambda_N)}.
+#'
 #' ## Parameters
 #' \describe{
 #'   \item{dprime}{(required) Familiarity sensitivity. Identity link.}
 #'   \item{criterion}{(required) K-1 thresholds. Identity link.}
-#'   \item{lambda}{(required) Recollection probability. Logit link.}
+#'   \item{lambda}{(required) Recollection probability of old items. Logit link.}
+#'   \item{lambda_new}{(optional) Recollection probability of new items, which
+#'     gives the lowest rating. If omitted, fixed at 0. Logit link.}
 #'   \item{sigma}{(optional) SD of the familiarity signal distribution. If
 #'     omitted, fixed at 1 (= EVSD familiarity). Log link.}
 #' }
@@ -305,6 +324,12 @@ uvsd <- function(link = link_probit()) {
 #'   Psychology: Learning, Memory, and Cognition*, *20*(6), 1341-1354.
 #'   https://doi.org/10.1037/0278-7393.20.6.1341
 #'
+#' Yonelinas, A. P. (1999). The contribution of recollection and familiarity
+#'   to recognition and source-memory judgments: A formal dual-process model
+#'   and an analysis of receiver operating characteristics. *Journal of
+#'   Experimental Psychology: Learning, Memory, and Cognition*, *25*(6),
+#'   1415-1434. https://doi.org/10.1037/0278-7393.25.6.1415
+#'
 #' @return A `broc_family` object.
 #' @seealso [evsd()], [uvsd()], [mixture()], [bivariate_dp()].
 #' @export
@@ -322,10 +347,14 @@ dpsd <- function(link = link_probit()) {
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
-                      description = "recollection probability"),
+                      description = "recollection probability of old items"),
+        lambda_L = list(required = FALSE, default = NULL, link = "logit",
+                        null_value = NULL, null_description = "fixed at 0",
+                        description = "recollection probability of new items (lowest rating)"),
         sigma = list(required = FALSE, default = NULL, link = "log",
                      null_value = 1, null_description = "fixed at 1")
       ),
+      external_aliases = .param_name_map("dpsdt"),
       description = "Dual Process Signal Detection Model"
     ),
     class = "broc_family"

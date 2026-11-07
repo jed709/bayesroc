@@ -825,7 +825,8 @@ extern "C" void bayesroc_r_mafc_probs(const double* d, const double* sg, const d
 // Plain C entry for R's .C(): weighted survival curves of the detection response.
 // th [S, R, J] thresholds, mu, sig, lam, mu2 [S, R], u [U], w [R]; dims = {S, R, J, U, kind,
 // path, threads}. kind 0: normal(mu, sig); 1: (1 - lam) normal + lam at the top response;
-// 2: (1 - lam) normal(mu, sig) + lam normal(mu2, sig). path 1: criterion j lies at u[j] along
+// 2: (1 - lam) normal(mu, sig) + lam normal(mu2, sig); 4: (1 - lam) normal + lam at the top
+// response where mu2 = 1, at the bottom one where mu2 = 0. path 1: criterion j lies at u[j] along
 // the row's own thresholds (extended by ext at both ends, linear between knots); path 0: at
 // u[j] itself. acc [S, U] receives sum over rows of w * max(1 - F(criterion), 0).
 static inline bvn::v4d vlink_surv(bvn::v4d z, int link) {
@@ -869,7 +870,7 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
       for (int64_t s = 0; s < S; ++s) {
         const int64_t sr = s + S * r;
         const bvn::v4d vm = splat(mu[sr]), vis = splat(1.0 / sig[sr]);
-        const bvn::v4d vl = splat(kind ? lam[sr] : 0.0), vm2 = splat(kind == 2 ? mu2[sr] : 0.0);
+        const bvn::v4d vl = splat(kind ? lam[sr] : 0.0), vm2 = splat(kind == 2 || kind == 4 ? mu2[sr] : 0.0);
         if (path) {
           for (int64_t j = 0; j < J; ++j) knots[j + 1] = th[sr + S * R * j];
           knots[0] = knots[1] - e;
@@ -882,6 +883,7 @@ extern "C" void bayesroc_r_det_survival(const double* th, const double* mu, cons
           bvn::v4d sv = vlink_surv((c - vm) * vis, link);
           if (kind == 1) sv = vl + (splat(1.0) - vl) * sv;
           else if (kind == 2) sv = (splat(1.0) - vl) * sv + vl * vlink_surv((c - vm2) * vis, link);
+          else if (kind == 4) sv = (splat(1.0) - vl) * sv + vl * vm2;
           accumulate_surv(out, s, S, j, U, wr, sv);
         }
       }

@@ -144,7 +144,7 @@ collect_batch_params <- function(model_data, family_name) {
     )
   }
 
-  if (family_name == "mixture" && isTRUE(model_data$has_lambda_L)) {
+  if (family_name %in% c("mixture", "dpsdt") && isTRUE(model_data$has_lambda_L)) {
     params[["lambda_L"]] <- list(
       fixed  = model_data$lambda_L_fixed,
       random = model_data$lambda_L_random,
@@ -297,7 +297,7 @@ collect_batch_params <- function(model_data, family_name) {
   params[[".has_lure_mixture"]] <- isTRUE(model_data$has_lure_mixture) && family_name == "mixture"
   params[[".has_dprime_L"]] <- isTRUE(model_data$has_dprime_L) && family_name == "mixture"
   params[[".has_sigma_L"]]  <- isTRUE(model_data$has_sigma_L) && family_name == "mixture"
-  params[[".has_lambda_L"]] <- isTRUE(model_data$has_lambda_L) && family_name == "mixture"
+  params[[".has_lambda_L"]] <- isTRUE(model_data$has_lambda_L) && family_name %in% c("mixture", "dpsdt")
   params[[".is_cumulative"]] <- family_name == "cumulative"
   params[[".has_dp_fixed"]] <- !is.null(model_data$dprime_fixed) && model_data$dprime_fixed$n_coef > 0
   params[[".is_source_mixture"]] <- family_name == "source_mixture"
@@ -3278,6 +3278,7 @@ emit_likelihood_dpsdt <- function(L, params) {
   L$add("    double obs_lp = 0.0;")
   L$add("    double d_mu_raw = 0.0;")
   L$add("    double d_lambda_raw = 0.0;")
+  if (isTRUE(params[[".has_lambda_L"]])) L$add("    double d_lambda_L_raw = 0.0;")
   L$add("    double d_thresh_lo = 0.0, d_thresh_hi = 0.0;")
   if (has_sigma) {
     L$add("    double d_sigma_raw = 0.0;")
@@ -3319,6 +3320,29 @@ emit_likelihood_dpsdt <- function(L, params) {
   }
   L$add("      }")
 
+  if (isTRUE(params[[".has_lambda_L"]])) {
+    L$add("    } else {")
+    L$add("      if (yn == 1) {")
+    L$add(sprintf("        auto dr = batch_sdt::dpsdt_bottom_cell%s(thresh_n(0) - mu, lambda_L_val);", lsuf))
+    L$add("        obs_lp = dr.lp;")
+    L$add("        d_thresh_hi = dr.d_z;")
+    L$add("        d_lambda_L_raw = dr.d_lambda;")
+    L$add("        k_hi = 0;")
+    L$add("      } else {")
+    L$add("        double z_lo_val = thresh_n(yn - 2) - mu;")
+    L$add("        double z_hi_val = yn < K ? thresh_n(yn - 1) - mu : 0.0;")
+    L$add(sprintf("        auto dr = batch_sdt::dpsdt_non_bottom_cell%s(z_lo_val, z_hi_val, lambda_L_val, yn, K);", lsuf))
+    L$add("        obs_lp = dr.lp;")
+    L$add("        d_thresh_lo = dr.d_z_lo;")
+    L$add("        d_thresh_hi = yn < K ? dr.d_z_hi : 0.0;")
+    L$add("        d_lambda_L_raw = dr.d_lambda;")
+    L$add("        k_lo = yn - 2;")
+    L$add("        if (yn < K) k_hi = yn - 1;")
+    L$add("      }")
+    L$add("      d_mu_raw = -(d_thresh_lo + d_thresh_hi);")
+    L$add("      d_lambda_raw = 0.0;")
+    L$add("    }")
+  } else {
   # --- New item: standard EVSDT (mu=0, s=1) ---
   L$add("    } else {")
   L$add("      batch_sdt::CellResult res;")
@@ -3339,6 +3363,7 @@ emit_likelihood_dpsdt <- function(L, params) {
   L$add("      d_mu_raw = -(d_thresh_lo + d_thresh_hi);")
   L$add("      d_lambda_raw = 0.0;")
   L$add("    }")
+  }
 
   if (params[[".has_counts"]]) {
     L$add("    total_lp += obs_lp * count_n;")
@@ -4333,6 +4358,24 @@ emit_gradient_accumulation_dpsdt <- function(L, model_data, params, has_crit_re)
     }
   }
   L$add("    }")
+
+  if (isTRUE(params[[".has_lambda_L"]])) {
+    L$add("")
+    L$add(sprintf("    double d_lambda_L_n = is_old_n > 0 ? 0.0 : d_lambda_L_raw * lambda_L_val * (1.0 - lambda_L_val)%s;",
+                  count_mult))
+    L$add("    if (is_old_n <= 0) {")
+    L$add("      for (int p = 0; p < P_lamL; ++p) grad_beta_lamL(p) += d_lambda_L_n * X_lamL_d(n, p);")
+    lamL_re_idx <- 0
+    if (!is.null(params[["lambda_L"]]$random)) {
+      for (group in names(params[["lambda_L"]]$random)) {
+        lamL_re_idx <- lamL_re_idx + 1
+        re <- params[["lambda_L"]]$random[[group]]
+        tag <- lamL_re_tag(lamL_re_idx)
+        emit_re_gradient(L, tag, re, group, "d_lambda_L_n", "lambda_L", lamL_re_idx, "lamL", indent = "      ")
+      }
+    }
+    L$add("    }")
+  }
 
   # ---- Threshold gradient ----
   emit_thresh_gradient_extended(L, model_data, params, has_crit_re)

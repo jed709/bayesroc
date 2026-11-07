@@ -304,6 +304,10 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
                       fixed, if (fixed == "rho_target") "target" else "lure"))
     }
   }
+  if (family$family == "dpsdt" && "lambda_L" %in% names(params)) {
+    stop("'lambda_L' is not a dpsd parameter: the recollection probability of new items is 'lambda_new'.",
+         call. = FALSE)
+  }
   metad_mratio_shared <- FALSE
   if (family$family == "metadt") {
     given <- names(params)[!vapply(params, identical_to_null_formula, logical(1))]
@@ -926,12 +930,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
 
   has_dprime_L <- !is.null(parsed[["dprime_L"]]) && family$family == "mixture"
   has_sigma_L <- !is.null(parsed[["sigma_L"]]) && family$family == "mixture"
-  has_lambda_L <- !is.null(parsed[["lambda_L"]]) && family$family == "mixture"
+  has_lambda_L <- !is.null(parsed[["lambda_L"]]) && family$family %in% c("mixture", "dpsdt")
   
   if (has_dprime_L && !has_lambda_L) {
     stop("lambda_L formula is required when dprime_L is specified (lure mixture model)")
   }
-  if (has_lambda_L && !has_dprime_L) {
+  if (has_lambda_L && !has_dprime_L && family$family == "mixture") {
     stop("dprime_L formula is required when lambda_L is specified (lure mixture model)")
   }
   has_lure_mixture <- has_dprime_L && has_lambda_L

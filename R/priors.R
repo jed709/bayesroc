@@ -111,7 +111,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "lambda2", "lambda2_B",
                      "rec", "fam", "sigma_R", "sigma_F", "rec_crit", "know_crit",
                      "rho_target", "rho_lure",
-                     "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new", "bias",
+                     "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new", "lambda_new", "bias",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
                      "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
                      "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale",
@@ -139,6 +139,7 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "rho_lure") dpar <- "rho_N"
     if (dpar == "mratio_old") dpar <- "mratio"
     if (dpar == "mratio_new") dpar <- "mratio_N"
+    if (dpar == "lambda_new") dpar <- "lambda_L"
   }
   
   prior <- .normalize_prior(prior, class)
@@ -1219,6 +1220,7 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     if (!is.null(model$family$external_aliases[["mratio"]])) result$dpar <- gsub("^mratio$", "mratio_old", result$dpar)
     result$dpar <- gsub("^mratio_N$", "mratio_new", result$dpar)
   }
+  if (model$family$family == "dpsdt") result$dpar <- gsub("^lambda_L$", "lambda_new", result$dpar)
   cum <- model$family$family %in% c("cumulative", "bivariate_cumulative")
   for (s in list(c("", "criterion"), c("2", "criterion2"))) {
     if (!isTRUE(model$model_data[[paste0("has_", s[2], "_scale")]])) next

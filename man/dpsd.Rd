@@ -28,6 +28,24 @@ distribution is UVSD with mean d' and SD sigma:
 \deqn{P(Y \le k \mid \mathrm{old} = 1) = (1 - \lambda)\,\Phi\!\Big(\frac{c_k - d'}{\sigma}\Big)
       \quad (k < K)}
 \deqn{P(Y \le K \mid \mathrm{old} = 1) = 1}
+
+With \code{lambda_new}, new items are recollected too, with probability
+\eqn{\lambda_N}, and a recollected new item gives the lowest rating Y = 1
+(recall-to-reject):
+\deqn{P(Y = k \mid \mathrm{old} = 0) = \lambda_N\,1[k = 1] + (1 - \lambda_N)\,
+      \big(\Phi(c_k) - \Phi(c_{k-1})\big)}
+Without it, \eqn{\lambda_N = 0} and new items follow the EVSD baseline above.
+}
+
+\subsection{Source memory}{
+
+The same model is the dual-process source model of Yonelinas (1999). Code
+the source-B items as old (\code{old = 1}) and the source-A items as new
+(\code{old = 0}), with ratings from 1 ("sure A") to K ("sure B"). \code{lambda} is then
+the recollection of source B, which sends an item to rating K, and
+\code{lambda_new} the recollection of source A, which sends it to rating 1. With
+\code{dprime ~ 0} the source ROC is linear, with intercept \code{lambda} and slope
+\eqn{(1 - \lambda)/(1 - \lambda_N)}.
 }
 
 \subsection{Parameters}{
@@ -35,7 +53,9 @@ distribution is UVSD with mean d' and SD sigma:
 \describe{
 \item{dprime}{(required) Familiarity sensitivity. Identity link.}
 \item{criterion}{(required) K-1 thresholds. Identity link.}
-\item{lambda}{(required) Recollection probability. Logit link.}
+\item{lambda}{(required) Recollection probability of old items. Logit link.}
+\item{lambda_new}{(optional) Recollection probability of new items, which
+gives the lowest rating. If omitted, fixed at 0. Logit link.}
 \item{sigma}{(optional) SD of the familiarity signal distribution. If
 omitted, fixed at 1 (= EVSD familiarity). Log link.}
 }
@@ -56,6 +76,12 @@ Yonelinas, A. P. (1994). Receiver-operating characteristics in recognition
 memory: Evidence for a dual-process model. \emph{Journal of Experimental
 Psychology: Learning, Memory, and Cognition}, \emph{20}(6), 1341-1354.
 https://doi.org/10.1037/0278-7393.20.6.1341
+
+Yonelinas, A. P. (1999). The contribution of recollection and familiarity
+to recognition and source-memory judgments: A formal dual-process model
+and an analysis of receiver operating characteristics. \emph{Journal of
+Experimental Psychology: Learning, Memory, and Cognition}, \emph{25}(6),
+1415-1434. https://doi.org/10.1037/0278-7393.25.6.1415
 }
 \seealso{
 \code{\link[=evsd]{evsd()}}, \code{\link[=uvsd]{uvsd()}}, \code{\link[=mixture]{mixture()}}, \code{\link[=bivariate_dp]{bivariate_dp()}}.

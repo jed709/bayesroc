@@ -1957,12 +1957,13 @@ def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link
     return _fused_cache[key](y, d, m_old, m_new, is_old, thresh_mid, gaps_per_obs)
 
 
-def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
+def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit", edge=None):
     """Fully-vectorized batch log-likelihood for DPSDT with custom JVP.
 
-    DPSDT: P = lambda * I(y==K) + (1-lambda) * cell_p.
+    DPSDT: P = lambda * I(y==edge) + (1-lambda) * cell_p, edge = K unless given.
     Operates on entire [N]-shaped arrays directly.
     """
+    edge = K if edge is None else int(edge)
     n_thresh = K - 1
     n_gaps = n_thresh - 1
     mid_idx = (n_thresh - 1) // 2
@@ -2016,7 +2017,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
         z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
         cell_p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
 
-        is_top = (y == K).astype(_FLOAT)
+        is_top = (y == edge).astype(_FLOAT)
         p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
         return jnp.log(p)
 
@@ -2048,7 +2049,7 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit"):
         _D_cell_p, _pl_cell_p, _ph_cell_p = _CELL(z_lo, z_hi)
         cell_p = jnp.clip(_D_cell_p, _pfloor())
 
-        is_top = (y == K).astype(_FLOAT)
+        is_top = (y == edge).astype(_FLOAT)
         p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
         val = jnp.log(p)
 
@@ -3848,7 +3849,7 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", l
 
 
 def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
-                       gap_link="log", has_sigma=False, link_name="probit"):
+                       gap_link="log", has_sigma=False, link_name="probit", edge=None):
     """Fully-vectorized fused log-likelihood for DPSDT (old items only)."""
     N = y.shape[0]
     n_gaps = K - 2
@@ -3859,9 +3860,9 @@ def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
     else:
         gaps_per_obs = gaps.T
 
-    key = ("batch_dpsdt", int(K), bool(is_softplus), str(link_name))
+    key = ("batch_dpsdt", int(K), bool(is_softplus), str(link_name)) + (() if edge is None else (int(edge),))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_dpsdt_loglik(int(K), bool(is_softplus), str(link_name))
+        _fused_cache[key] = _make_fused_batch_dpsdt_loglik(int(K), bool(is_softplus), str(link_name), edge)
     return _fused_cache[key](y, mu, sigma_val, lambda_val, thresh_mid, gaps_per_obs)
 
 
@@ -3969,9 +3970,15 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
             return fused_loglik_dpsdt(y[i], K, mu_rows[i], sd_signal[i], lambda_val[i], thresh_mid[i],
                                       _gap_rows(log_gaps, i), gap_link, has_sigma=has_sigma, link_name=link_name)
 
-        def new_ll(i):
-            return fused_loglik_simple(y[i], K, mu_rows[i], sd_noise[i], thresh_mid[i],
-                                       _gap_rows(log_gaps, i), gap_link, link_name=link_name)
+        if lambda_L is not None:
+            def new_ll(i):
+                return fused_loglik_dpsdt(y[i], K, mu_rows[i], sd_noise[i], lambda_L[i], thresh_mid[i],
+                                          _gap_rows(log_gaps, i), gap_link, has_sigma=False, link_name=link_name,
+                                          edge=1)
+        else:
+            def new_ll(i):
+                return fused_loglik_simple(y[i], K, mu_rows[i], sd_noise[i], thresh_mid[i],
+                                           _gap_rows(log_gaps, i), gap_link, link_name=link_name)
 
         log_lik = _by_item_type(is_old, old_ll, new_ll, N, kwargs.get("is_old_static"))
         if counts is not None:

@@ -1679,6 +1679,9 @@ generate_likelihood_code <- function(model_data, family_name) {
 
   if (family_name == "mafc") return(c(lines, generate_mafc_likelihood_code(model_data)))
 
+  if (family_name == "dpsdt" && isTRUE(model_data$has_lambda_L)) {
+    stop("the plain Stan reference has no new-item recollection (lambda_new)", call. = FALSE)
+  }
   if ((has_encoding_params || isTRUE(model_data$has_lure_mixture)) && family_name %in% c("mixture", "dpsdt")) {
     lines <- c(lines, generate_likelihood_with_encoding_branch(model_data, family_name))
   } else {

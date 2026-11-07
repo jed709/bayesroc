@@ -233,6 +233,21 @@ inline DpsdtNonTopResult dpsdt_non_top_cell(double z_lo, double z_hi,
           cr.d_z_lo, cr.d_z_hi, d_lambda};
 }
 
+inline DpsdtTopResult dpsdt_bottom_cell(double z, double lambda) {
+  double Phi_z = Phi(z);
+  double P = lambda + (1.0 - lambda) * Phi_z;
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
+  double inv_P = 1.0 / P;
+  return {std::log(P), (1.0 - lambda) * phi(z) * inv_P, Qn(z) * inv_P};
+}
+
+inline DpsdtNonTopResult dpsdt_non_bottom_cell(double z_lo, double z_hi,
+                                                double lambda, int yn, int K) {
+  CellResult cr = yn == K ? edge_hi(z_lo) : cell_log_prob(z_lo, z_hi);
+  double d_lambda = 1.0 - lambda < 1e-15 ? 0.0 : -1.0 / (1.0 - lambda);
+  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp, cr.d_z_lo, cr.d_z_hi, d_lambda};
+}
+
 // ============================================================
 // Mixture SDT helpers
 // ============================================================
@@ -362,6 +377,21 @@ inline DpsdtNonTopResult dpsdt_non_top_cell_t(double z_lo, double z_hi, double l
 }
 
 template <class L>
+inline DpsdtTopResult dpsdt_bottom_cell_t(double z, double lambda) {
+  double P = lambda + (1.0 - lambda) * L::cdf(z);
+  if (P < kPFloor) return {std::log(kPFloor), 0.0, 0.0};
+  double inv_P = 1.0 / P;
+  return {std::log(P), (1.0 - lambda) * L::pdf(z) * inv_P, L::ccdf(z) * inv_P};
+}
+
+template <class L>
+inline DpsdtNonTopResult dpsdt_non_bottom_cell_t(double z_lo, double z_hi, double lambda, int yn, int K) {
+  CellResult cr = yn == K ? edge_hi_t<L>(z_lo) : cell_log_prob_t<L>(z_lo, z_hi);
+  double d_lambda = 1.0 - lambda < 1e-15 ? 0.0 : -1.0 / (1.0 - lambda);
+  return {std::log(std::fmax(1.0 - lambda, kPFloor)) + cr.lp, cr.d_z_lo, cr.d_z_hi, d_lambda};
+}
+
+template <class L>
 inline MixtureCellResult mixture_cell_t(double z1_lo, double z1_hi, double z2_lo, double z2_hi,
                                         double lambda, int yn, int K) {
   CellProbResult cp1, cp2;
@@ -417,6 +447,10 @@ inline DpsdtTopResult dpsdt_top_cell_logit(double z, double l) { return dpsdt_to
 inline DpsdtNonTopResult dpsdt_non_top_cell_logit(double a, double b, double l, int yn, int K) {
   return dpsdt_non_top_cell_t<LogitLink>(a, b, l, yn, K);
 }
+inline DpsdtTopResult dpsdt_bottom_cell_logit(double z, double l) { return dpsdt_bottom_cell_t<LogitLink>(z, l); }
+inline DpsdtNonTopResult dpsdt_non_bottom_cell_logit(double a, double b, double l, int yn, int K) {
+  return dpsdt_non_bottom_cell_t<LogitLink>(a, b, l, yn, K);
+}
 inline MixtureCellResult mixture_cell_logit(double a, double b, double c, double d, double l, int yn, int K) {
   return mixture_cell_t<LogitLink>(a, b, c, d, l, yn, K);
 }
@@ -431,6 +465,10 @@ inline CellResult edge_hi_cloglog(double z) { return edge_hi_t<CloglogLink>(z); 
 inline DpsdtTopResult dpsdt_top_cell_cloglog(double z, double l) { return dpsdt_top_cell_t<CloglogLink>(z, l); }
 inline DpsdtNonTopResult dpsdt_non_top_cell_cloglog(double a, double b, double l, int yn, int K) {
   return dpsdt_non_top_cell_t<CloglogLink>(a, b, l, yn, K);
+}
+inline DpsdtTopResult dpsdt_bottom_cell_cloglog(double z, double l) { return dpsdt_bottom_cell_t<CloglogLink>(z, l); }
+inline DpsdtNonTopResult dpsdt_non_bottom_cell_cloglog(double a, double b, double l, int yn, int K) {
+  return dpsdt_non_bottom_cell_t<CloglogLink>(a, b, l, yn, K);
 }
 inline MixtureCellResult mixture_cell_cloglog(double a, double b, double c, double d, double l, int yn, int K) {
   return mixture_cell_t<CloglogLink>(a, b, c, d, l, yn, K);

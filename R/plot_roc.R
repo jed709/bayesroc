@@ -489,7 +489,8 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
   }
   sig <- one
   if (fam == "uvsdt" || (fam == "dpsdt" && isTRUE(md$has_sigma))) sig <- ifelse(old, as.vector(tps[["sigma"]]), 1)
-  lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps[["lambda"]]), 0) else NULL
+  lam <- if (fam == "dpsdt") ifelse(old, as.vector(tps[["lambda"]]), if (is.null(tps[["lambda_L"]])) 0 else as.vector(tps[["lambda_L"]])) else NULL
+  if (fam == "dpsdt" && !is.null(tps[["lambda_L"]])) return(list(mu = mu, sig = sig, lam = lam, mu_rec = as.numeric(old), kind = 4L))
   list(mu = mu, sig = sig, lam = lam, mu_rec = NULL, kind = if (fam == "dpsdt") 1L else 0L)
 }
 
