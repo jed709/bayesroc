@@ -3587,7 +3587,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
     INF = _OPEN
 
     def _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
-              R_I, R_S, R_I_B, R_S_B, thresh1_mid, gv1, thresh2_mid, gv2):
+              R_I, R_S, R_I_B, R_S_B, thresh1_mid, gv1, thresh2_mid, gv2, midx):
         c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
         c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
         N = y1.shape[0]
@@ -3633,8 +3633,13 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         biv_on = biv_raw > _pfloor()
         bounded_biv = jnp.where(biv_on, biv_raw, _pfloor())
 
-        Pcp, _, dPcp = _phi_diff(jnp.full_like(z_cp, -INF), z_cp)
-        pm, dpm_a, _, dpm_c, dpm_d, dpm_r = _bvn_rect(z_cp, jnp.full_like(z_cp, INF), z2_lo, z2_hi, rho_val)
+        mg = jnp.minimum(midx, N - 1)
+        z_cp_g = z_cp[mg]
+        Pcp_g, _, dPcp_g = _phi_diff(jnp.full_like(z_cp_g, -INF), z_cp_g)
+        pm_g, dpm_a_g, _, dpm_c_g, dpm_d_g, dpm_r_g = _bvn_rect(z_cp_g, jnp.full_like(z_cp_g, INF), z2_lo[mg],
+                                                               z2_hi[mg], rho_val[mg])
+        put = lambda v: jnp.zeros(N, dtype=v.dtype).at[midx].set(v, mode="drop")
+        Pcp, dPcp, pm, dpm_a, dpm_c, dpm_d, dpm_r = (put(v) for v in (Pcp_g, dPcp_g, pm_g, dpm_a_g, dpm_c_g, dpm_d_g, dpm_r_g))
         marg_raw = Pcp * D_src + pm
         marg_on = marg_raw > _pfloor()
         bounded_marg = jnp.where(marg_on, marg_raw, _pfloor())
@@ -3642,7 +3647,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         is_A = item_type == 2
         R_I_eff = jnp.where(is_A, R_I, R_I_B)
         R_S_eff = jnp.where(is_A, R_S, R_S_B)
-        is_y1_top = y1 == K1
+        is_y1_top = (y1 == K1) & ~is_new
         is_corner = (is_A & (y1 == K1) & (y2 == 1)) | ((item_type == 3) & (y1 == K1) & (y2 == K2))
         w1 = 1.0 - R_I_eff
         w2 = jnp.where(is_y1_top, R_I_eff * (1.0 - R_S_eff), 0.0)
@@ -3665,17 +3670,17 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
     @custom_jvp
     def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, rho_N_val,
-                     R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2):
+                     R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx):
         gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
         return _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
-                     thresh1_mid, gap_fn(gaps1), thresh2_mid, gap_fn(gaps2))[0]
+                     thresh1_mid, gap_fn(gaps1), thresh2_mid, gap_fn(gaps2), midx)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         (y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, rho_N_val,
-         R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
+         R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx) = primals
         (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho, d_rho_N,
-         d_R_I, d_R_S, d_R_I_B, d_R_S_B, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
+         d_R_I, d_R_S, d_R_I_B, d_R_S_B, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2, _) = tangents
         if gap_link_is_softplus:
             gv1 = jax.nn.softplus(gaps1)
             gd1 = jax.nn.sigmoid(gaps1)
@@ -3687,7 +3692,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
             gv2 = jnp.exp(gaps2)
             gd2 = gv2
         val, prob, q = _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
-                             thresh1_mid, gv1, thresh2_mid, gv2)
+                             thresh1_mid, gv1, thresh2_mid, gv2, midx)
         inv_P = jnp.where(q["prob_raw"] > _pfloor(), 1.0 / prob, 0.0)
 
         def f(m):
@@ -3767,8 +3772,9 @@ def fused_loglik_bounded_bivariate_dp(y1, y2, item_type, K1, K2, mu1, mu2, sigma
                                        rho_val, rho_N_val, R_I, R_S,
                                        R_I_B=None, R_S_B=None,
                                        thresh1_mid=None, gaps1=None,
-                                       thresh2_mid=None, gaps2=None, gap_link="log"):
-    """Fully-vectorized fused log-likelihood for bounded bivariate_dp."""
+                                       thresh2_mid=None, gaps2=None, gap_link="log", part=None):
+    """Fully-vectorized fused log-likelihood for bounded bivariate_dp; `part` is the padded index of the
+    (old, y1 == K1) rows whose marginal rectangle enters the likelihood, or None for all rows."""
     if R_I_B is None:
         R_I_B = R_I
     if R_S_B is None:
@@ -3791,9 +3797,10 @@ def fused_loglik_bounded_bivariate_dp(y1, y2, item_type, K1, K2, mu1, mu2, sigma
     if key not in _fused_cache:
         _fused_cache[key] = _make_fused_batch_bounded_bivariate_dp_loglik(
             int(K1), int(K2), bool(is_softplus))
+    midx = jnp.arange(N, dtype=jnp.int32) if part is None else jnp.asarray(part, dtype=jnp.int32)
     return _fused_cache[key](y1, y2, item_type, mu1, mu2, sigma1, sigma2,
                               rho_val, rho_N_val, R_I, R_S, R_I_B, R_S_B,
-                              thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs)
+                              thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs, midx)
 
 
 def fused_loglik_cdp(y, rk, is_old, old_idx, is_old_resp, K, J,
@@ -4192,7 +4199,7 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
                 R_I=R_I, R_S=R_S, R_I_B=R_I_B, R_S_B=R_S_B,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,
-                gap_link=gap_link),
+                gap_link=gap_link, part=kwargs.get("part")),
                 lambda: fused_loglik_dpsdt(y1, K1, mu1, sd1, jnp.where(is_A, R_I, R_I_B), thresh1_mid, log_gaps1,
                                            gap_link))
             if counts is not None:
@@ -4212,6 +4219,29 @@ def _cdp_index(rk, N):
     cap_u, cap_j = _cdp_caps(rk, N)
     pad = lambda ix, cap: np.concatenate([ix, np.full(cap - len(ix), N)]).astype(np.int32)
     return pad(np.flatnonzero(rk == 0), cap_u), pad(np.flatnonzero(rk != 0), cap_j)
+
+
+def _bdp_index(item_type, y1, K1, N):
+    sel = (np.asarray(item_type).reshape(-1) != 1) & (np.asarray(y1).reshape(-1) == int(K1))
+    cap = _bdp_cap(item_type, y1, K1, N)
+    ix = np.flatnonzero(sel)
+    return np.concatenate([ix, np.full(cap - len(ix), N)]).astype(np.int32)
+
+
+def _bdp_cap(item_type, y1, K1, N):
+    if N <= 256:
+        return N
+    m = int(((np.asarray(item_type).reshape(-1) != 1) & (np.asarray(y1).reshape(-1) == int(K1))).sum())
+    return min(N, max(256, -(-m // 256) * 256))
+
+
+def _bdp_part(config):
+    if config.get("bdp_m") is not None:
+        return config["bdp_m"]
+    st = config.get("_static", config)
+    if config.get("family") != "bivariate_dp" or not config.get("bounded") or st.get("y2") is None:
+        return None
+    return jnp.asarray(_bdp_index(st["item_type"], st["y"], int(st["K"]), int(st["N"])))
 
 
 def _cdp_caps(rk, N):
@@ -5520,6 +5550,7 @@ def sdt_model(config):
                 lambda2_B=trial_params.get("lambda2_B"),
                 dprime2=trial_params.get("dprime2"),
                 bounded=config.get("bounded", False),
+                part=_bdp_part(config),
                 thresh1_mid=thresh_mid_vec,
                 log_gaps1=log_gaps_obs,
                 thresh2_mid=_t2_mid_fused,

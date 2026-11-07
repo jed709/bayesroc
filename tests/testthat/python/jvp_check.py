@@ -100,7 +100,7 @@ def uni_case(kind, link, N=400, K=6, seed=2):
     return f, args, list(range(1, len(args)))
 
 
-def biv_case(kind, N=400, K=6, seed=3):
+def biv_case(kind, N=400, K=6, seed=3, part=False):
     rng = np.random.default_rng(seed)
     ng = K - 2
     ints = [jnp.asarray(rng.integers(1, K + 1, N), dtype=jnp.int32),
@@ -122,6 +122,9 @@ def biv_case(kind, N=400, K=6, seed=3):
              "bounded_bivariate_dp": nb._make_fused_batch_bounded_bivariate_dp_loglik}[kind](K, K, False)
         cont = base
     args = ints + cont + th
+    if kind == "bounded_bivariate_dp":
+        midx = nb._bdp_index(ints[2], ints[0], K, N) if part else np.arange(N)
+        return f, args + [jnp.asarray(midx, dtype=jnp.int32)], list(range(3, len(args)))
     return f, args, list(range(3, len(args)))
 
 
@@ -201,6 +204,9 @@ CASES = {
     "cdp_rk_corr": lambda: cdp_case(2, corr=True),
     "cdp_rkg_corr": lambda: cdp_case(3, corr=True),
     "cdp_rkg_tail_corr": lambda: cdp_case(3, crit=(4.0, 3.5), corr=True),
+    "cdp_rk_tail": lambda: cdp_case(2, crit=(4.0, 3.5)),
+    "cdp_rk_tail_corr": lambda: cdp_case(2, crit=(4.0, 3.5), corr=True),
+    "bounded_bivariate_dp_part": lambda: biv_case("bounded_bivariate_dp", part=True),
 }
 for _k in ("simple", "dpsdt", "mixture", "source_mixture"):
     for _l in ("probit", "logit", "cloglog"):

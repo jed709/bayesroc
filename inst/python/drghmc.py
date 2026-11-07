@@ -169,6 +169,9 @@ def _data_of(config):
     if config.get("family") == "cdp" and config.get("rk") is not None and not _rkg_structural(config):
         import numpyro_backend as backend
         top["cdp_u"], top["cdp_j"] = (jnp.asarray(ix) for ix in backend._cdp_index(config["rk"], int(config["N"])))
+    if config.get("family") == "bivariate_dp" and config.get("bounded") and config.get("y2") is not None:
+        import numpyro_backend as backend
+        top["bdp_m"] = jnp.asarray(backend._bdp_index(config["item_type"], config["y"], int(config["K"]), int(config["N"])))
     return dict(top=top, params=params, re=res, extra=extra)
 
 
@@ -227,6 +230,9 @@ def _signature(config, chains, parallel, ctrl, step, map_key=None):
     if family == "cdp" and not keep and config.get("rk") is not None:
         import numpyro_backend as backend
         c["<cdp caps>"] = list(backend._cdp_caps(config["rk"], int(config["N"])))
+    if family == "bivariate_dp" and config.get("bounded") and config.get("y2") is not None:
+        import numpyro_backend as backend
+        c["<bdp cap>"] = backend._bdp_cap(config["item_type"], config["y"], int(config["K"]), int(config["N"]))
     for k in ("y", "y2", "rk"):
         if not keep and isinstance(c.get(k), list):
             c[k] = ["<rows>", len(c[k])]
