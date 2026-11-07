@@ -22,9 +22,11 @@ test_that("install_jax_backend() errors when overwrite = FALSE on existing venv"
   expect_error(install_jax_backend(overwrite = FALSE), "already exists")
 })
 
-test_that("XLA compile cache lives under R_user_dir and can be disabled or moved", {
+test_that("XLA compile cache is opt-in, lives under R_user_dir and can be moved", {
   old <- options(bayesroc.xla_cache = NULL)
   on.exit(options(old))
+  expect_identical(.xla_cache_dir(), "0")
+  options(bayesroc.xla_cache = TRUE)
   expect_identical(.xla_cache_dir(),
                    normalizePath(file.path(tools::R_user_dir("bayesroc", "cache"), "xla"),
                                  winslash = "/", mustWork = FALSE))
