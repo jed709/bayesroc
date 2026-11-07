@@ -6254,7 +6254,7 @@ class _FoldPrograms:
             return ss, tot, jax.lax.map(lambda z: coords.model_v(z, parts), ss.z), ex
 
         if self.parallel:
-            self.initf = jax.pmap(init, in_axes=(0, 0, None), axis_name="chain")
+            self.initf = jax.pmap(init, in_axes=(0, {k: 0 for k in coords.keys}, None), axis_name="chain")
             self.prog = jax.pmap(run, in_axes=(0, None, None, None), axis_name="chain")
             self.shard = jax.pmap(lambda x: x)
         else:
