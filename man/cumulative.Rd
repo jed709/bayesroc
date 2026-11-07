@@ -34,14 +34,16 @@ takes no predictors (\code{rating ~ 1}).
 
 \describe{
 \item{cutpoints}{K-1 ordered cutpoints (a midpoint and K-2 ordered gaps; default \code{~ 1}).
-Without \code{cutpoints_scale}, every term has one coefficient per cutpoint (the midpoint
-and each log gap) and a random effect is K-1 correlated shifts per group. Identity link.
-Set priors via \code{thresh_mid} and \code{log_gaps}.}
-\item{cutpoints_scale}{(optional) Makes the cutpoints location-scale:
-\eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t} set by the gap
-intercepts. \code{cutpoints} then gives the location \eqn{L} (the mean cutpoint), one
-coefficient per term, and \code{cutpoints_scale} gives the log scale \eqn{s}, which has no
-intercept of its own. A positive location coefficient moves responses down.}
+Every term has one coefficient per cutpoint (the midpoint and each log gap) and a
+random effect is K-1 correlated shifts per group. Identity link. Set priors via
+\code{thresh_mid} and \code{log_gaps}.}
+\item{cutpoints_shift, cutpoints_scale}{(optional) Move one baseline set of cutpoints
+as a whole: \eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t}
+set by the baseline gaps. \code{cutpoints_shift} gives the location \eqn{L} (the mean
+cutpoint), one coefficient per term, and \code{cutpoints_scale} the log scale \eqn{s}.
+\code{cutpoints} is then the baseline and takes no terms. A positive shift coefficient
+moves responses down. See the shifting and scaling section of \code{\link[=brf]{brf()}}, including
+cell-means formulas such as \code{cutpoints_scale ~ 0 + cond}.}
 }
 }
 
@@ -49,8 +51,7 @@ intercept of its own. A positive location coefficient moves responses down.}
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{# random-intercept ordinal model with a condition shift
 broc(brf(rating ~ 1,
-         cutpoints ~ condition + (1 | subj) + (1 | item),
-         cutpoints_scale ~ 1,
+         cutpoints_shift ~ condition + (1 | subj) + (1 | item),
          family = cumulative()), data = dat)
 # per-cutpoint condition and subject effects
 broc(brf(rating ~ 1,

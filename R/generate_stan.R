@@ -5,16 +5,16 @@
 
 generate_stan_code_v2 <- function(model_data, family, batch_info = NULL) {
 
-  code <- paste(
-    generate_functions_block_v2(model_data, family, batch_info = batch_info),
-    generate_data_block_v2(model_data, family, batch_info = batch_info),
-    generate_transformed_data_block_v2(model_data, family),
-    generate_parameters_block_v2(model_data, family),
-    generate_transformed_parameters_block_v2(model_data, family),
-    generate_model_block_v2(model_data, family, batch_info = batch_info),
-    generate_generated_quantities_block_v2(model_data, family, batch_info = batch_info),
-    sep = "\n"
-  )
+  blocks <- .ls_sum_zero_blocks(list(
+    functions = generate_functions_block_v2(model_data, family, batch_info = batch_info),
+    data = generate_data_block_v2(model_data, family, batch_info = batch_info),
+    tdata = generate_transformed_data_block_v2(model_data, family),
+    params = generate_parameters_block_v2(model_data, family),
+    tparams = generate_transformed_parameters_block_v2(model_data, family),
+    model = generate_model_block_v2(model_data, family, batch_info = batch_info),
+    gq = generate_generated_quantities_block_v2(model_data, family, batch_info = batch_info)
+  ), model_data)
+  code <- paste(unlist(blocks, use.names = FALSE), collapse = "\n")
 
   if (identical(model_data$gap_link, "softplus")) {
     code <- gsub("beta_log_gaps", "beta_raw_gaps", code)
@@ -1117,6 +1117,51 @@ generate_thresh_code_cdp <- function(model_data) {
 
 #' Generate parameter linear predictor (standard version for non-encoding params)
 #' @noRd
+.ls_normalised <- function(model_data, which = 1L) {
+  pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
+  isTRUE(model_data[[paste0("has_", pn)]]) && isTRUE(model_data[[paste0(pn, "_fixed")]]$normalised_shape)
+}
+
+.ls_sum_zero_blocks <- function(blocks, model_data) {
+  add_data <- character(0)
+  add_tp <- character(0)
+  sz <- function(re, decl, tp, basis_decl) {
+    m <- regmatches(blocks$params, regexec(re, blocks$params))[[1]]
+    if (!length(m)) stop("internal: no gap declaration to normalise", call. = FALSE)
+    fill <- function(x) gsub("%s", m[2], x, fixed = TRUE)
+    blocks$params <<- sub(re, fill(decl), blocks$params)
+    add_data <<- c(add_data, fill(basis_decl))
+    add_tp <<- c(add_tp, fill(tp))
+  }
+  if (.ls_normalised(model_data, 1L)) {
+    sz("  matrix\\[([^],]+), 1\\] beta_log_gaps;[^\n]*", "  vector[%s-1] beta_log_gaps_z;",
+       "  matrix[%s, 1] beta_log_gaps = to_matrix(ls_gap_basis * beta_log_gaps_z, %s, 1);",
+       "  matrix[%s, %s-1] ls_gap_basis;")
+  }
+  if (.ls_normalised(model_data, 2L)) {
+    if (isTRUE(model_data$varying_source_criteria)) {
+      sz("  matrix\\[n_vset, (K2-2)\\] beta_log_gaps_2_varying;[^\n]*", "  matrix[n_vset, %s-1] beta_log_gaps_2_varying_z;",
+         "  matrix[n_vset, %s] beta_log_gaps_2_varying = beta_log_gaps_2_varying_z * ls_gap_basis2';",
+         "  matrix[%s, %s-1] ls_gap_basis2;")
+    } else {
+      sz("  matrix\\[(K2-2), 1\\] beta_log_gaps_2;[^\n]*", "  vector[%s-1] beta_log_gaps_2_z;",
+         "  matrix[%s, 1] beta_log_gaps_2 = to_matrix(ls_gap_basis2 * beta_log_gaps_2_z, %s, 1);",
+         "  matrix[%s, %s-1] ls_gap_basis2;")
+    }
+  }
+  if (!length(add_tp)) return(blocks)
+  blocks$data <- sub("\n}\\s*$", paste0("\n", paste(add_data, collapse = "\n"), "\n}"), blocks$data)
+  blocks$tparams <- sub("transformed parameters {", paste0("transformed parameters {\n", paste(add_tp, collapse = "\n")),
+                        blocks$tparams, fixed = TRUE)
+  blocks
+}
+
+.sum_zero_basis <- function(n) {
+  if (n < 2L) return(matrix(0, n, 0))
+  H <- stats::contr.helmert(n)
+  unname(sweep(H, 2L, sqrt(colSums(H^2)), "/"))
+}
+
 .ls_scale_coefs <- function(model_data, which = 1L) {
   pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
   if (!isTRUE(model_data[[paste0("has_", pn)]])) return(0L)

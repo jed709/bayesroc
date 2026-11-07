@@ -18,7 +18,7 @@ test_that("evsdt: batch and plain Stan agree", {
 test_that("cumulative: batch path engages and agrees with plain Stan", {
   skip_if_no_cmdstan()
   d <- .fixture_univariate()
-  .assert_batch_plain_agree(brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()), d)
+  .assert_batch_plain_agree(brf(item_resp ~ 1, cutpoints_shift ~ cond, family = cumulative()), d)
 })
 
 .tol_batch <- 0.03
@@ -54,6 +54,6 @@ test_that("evsdt: batch and plain Stan posteriors agree", {
 test_that("cumulative: batch and plain Stan posteriors agree", {
   skip_if_not_slow()
   skip_if_no_cmdstan()
-  .assert_batch_plain_posterior(brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()),
+  .assert_batch_plain_posterior(brf(item_resp ~ 1, cutpoints_shift ~ cond, family = cumulative()),
                                 .fixture_univariate(), c("beta_thresh_mid[1]", "beta_thresh_mid[2]"))
 })

@@ -271,7 +271,7 @@ test_that("an anchor on the lower of two central thresholds is centred half a ga
     u <- mk(K, brf(y | old ~ 1, criterion ~ 1, family = evsd()))
     expect_equal(pr(u, "thresh_mid"), if (odd) "normal(0.2, 0.75)" else "normal(0.5, 0.75)")
     ls <- mk(K, brf(y | old ~ 1, criterion ~ 1, criterion_scale ~ 1, family = evsd()))
-    expect_equal(pr(ls, "thresh_mid"), "normal(0.5, 0.75)")
+    expect_equal(pr(ls, "criterion_shift"), "normal(0.5, 0.75)")
     cu <- mk(K, brf(y ~ 1, cutpoints ~ 1, family = cumulative()))
     expect_equal(pr(cu, "thresh_mid"), if (odd) "normal(-0.3, 1.5)" else "normal(0, 1.5)")
     bc <- mk(K, brf(resp(y, y2) ~ 1, cutpoints ~ 1, cutpoints2 ~ 1, rho ~ 1, family = bivariate_cumulative()))

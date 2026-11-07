@@ -140,7 +140,7 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
       mterm <- if (length(mids) == length(coefs)) coefs else sub("^beta_thresh_mid", "", mids)
       vm <- grepl("_varying[", mids, fixed = TRUE)
       if (any(vm)) mterm[vm] <- vapply(mids[vm], function(v) bin_of(as.integer(sub(".*\\[([0-9]+)\\]$", "\\1", v))), "")
-      add(paste0(lab, ": ", if (isTRUE(crit$location_scale)) "location (mean)" else .crit_mid_label(J)), mids,
+      add(if (isTRUE(crit$location_scale)) paste0(lab, " shift") else paste0(lab, ": ", .crit_mid_label(J)), mids,
           mterm, "identity")
     }
     gp <- .gap_param(gl, sfx)
@@ -160,7 +160,8 @@ plot.broc_fit <- function(x, ...) plot_estimates(x, ...)
         else .crit_gap_label(gi[i], J)
       }, character(1))
       o <- order(ifelse(is.na(gi), Inf, .crit_gap_hi(gi, J)), seq_along(gaps))
-      add(paste0(lab, ": gaps"), gaps[o], glab[o], if (gl == "softplus") "softplus" else "log")
+      add(paste0(lab, if (isTRUE(crit$location_scale)) ": baseline gaps" else ": gaps"), gaps[o], glab[o],
+          if (gl == "softplus") "softplus" else "log")
     }
   }
   out <- do.call(rbind, rows)

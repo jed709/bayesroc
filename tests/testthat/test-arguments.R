@@ -2,7 +2,7 @@ test_that("a cumulative response formula takes no predictors", {
   expect_identical(.cumulative_rhs("1", "cutpoints"), "0")
   expect_identical(.cumulative_rhs("0", "cutpoints"), "0")
   expect_error(.cumulative_rhs("x", "cutpoints"), "cutpoints ~ x")
-  expect_error(.cumulative_rhs("1 + (1 | sub)", "cutpoints"), "cutpoints_scale")
+  expect_error(.cumulative_rhs("1 + (1 | sub)", "cutpoints"), "cutpoints_shift")
   expect_error(.cumulative_rhs("f", "cutpoints2", "The mu2 formula"), "The mu2 formula")
 })
 

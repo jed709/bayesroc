@@ -53,8 +53,10 @@
 #' @param dpar Distributional parameter the prior applies to, e.g. `"dprime"`,
 #'   `"sigma"`, `"lambda"`. For criterion priors use `"thresh_mid"` / `"log_gaps"`
 #'   (`"thresh_mid2"` / `"log_gaps2"` for the second response axis in bivariate
-#'   families). Family-specific aliases (`cutpoints`, `cutpoints2`,
-#'   `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
+#'   families). With `criterion_shift`, the shift's coefficients are
+#'   `dpar = "criterion_shift"` (`"criterion2_shift"`), and its scale's
+#'   `"criterion_scale"`. Family-specific aliases (`cutpoints`, `cutpoints2`,
+#'   `cutpoints_shift`, `cutpoints_scale`, `rec`, `fam`, `sigma_R`, `sigma_F`) are also
 #'   accepted. The correlation prior of a cross-parameter group `(... | id | g)` is
 #'   `dpar = "cross_<id>"`. `NULL` applies the prior to every parameter in
 #'   `class`. [get_broc_prior()] lists every settable prior with its `dpar` and
@@ -112,7 +114,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
                      "mratio", "mratio_N", "sigma_meta", "mratio_old", "mratio_new", "bias",
                      "thresh_mid", "log_gaps", "thresh_mid2", "log_gaps2",
                      "mu", "mu1", "mu2", "cutpoints", "cutpoints2",
-                     "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale")
+                     "criterion_scale", "cutpoints_scale", "criterion2_scale", "cutpoints2_scale",
+                     "criterion_shift", "cutpoints_shift", "criterion2_shift", "cutpoints2_shift")
     if (!dpar %in% valid_dpars && !grepl("^cross_[A-Za-z0-9_.]+$", dpar)) {
       stop("Invalid dpar '", dpar, "'. Valid dpars: ",
            paste(valid_dpars, collapse = ", "))
@@ -125,6 +128,8 @@ broc_prior <- function(prior, class, dpar = NULL, coef = NULL, group = NULL) {
     if (dpar == "cutpoints2") dpar <- "criterion2"
     if (dpar == "cutpoints_scale") dpar <- "criterion_scale"
     if (dpar == "cutpoints2_scale") dpar <- "criterion2_scale"
+    if (dpar %in% c("criterion_shift", "cutpoints_shift")) dpar <- "thresh_mid"
+    if (dpar %in% c("criterion2_shift", "cutpoints2_shift")) dpar <- "thresh_mid2"
 
     if (dpar == "rec") dpar <- "dprime"
     if (dpar == "fam") dpar <- "dprime2"
@@ -729,7 +734,22 @@ get_fixed_prior <- function(lookup, dpar, coef = NULL) {
     src <- isTRUE(model_data$family %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d"))
     pl$b$thresh_mid2 <- .shift_normal(pl$b$thresh_mid2, if (src) -0.5 else -0.3)
   }
-  .link_scale_priors(pl, model_data)
+  pl <- .link_scale_priors(pl, model_data)
+  link <- if (identical(model_data$gap_link, "softplus")) function(x) log1p(exp(x)) else exp
+  for (g in c("", "2")) {
+    sc <- paste0("criterion", g, "_scale")
+    if (!isTRUE(model_data[[paste0("has_", sc)]]) || !isTRUE(model_data[[paste0(sc, "_fixed")]]$normalised_shape)) next
+    gk <- paste0("log_gaps", g)
+    gp <- pl$b[[gk]] %||% "normal(0, 1)"
+    m <- regmatches(gp, regexec("^\\s*normal\\(\\s*([^,]+),\\s*([^)]+)\\)\\s*$", gp))[[1]]
+    if (length(m) != 3L) next
+    mu <- as.numeric(m[2])
+    if (!sc %in% pl$user_set$b) {
+      pl$b[[sc]] <- paste0("normal(", .fmt_num(log(link(mu)) - log(link(0))), ", ", trimws(m[3]), ")")
+    }
+    if (!gk %in% pl$user_set$b) pl$b[[gk]] <- paste0("normal(0, ", trimws(m[3]), ")")
+  }
+  pl
 }
 
 .lower_central_anchor <- function(n_thresh, location_scale) {
@@ -1199,7 +1219,16 @@ get_broc_prior <- function(object, data = NULL, family = NULL,
     if (!is.null(model$family$external_aliases[["mratio"]])) result$dpar <- gsub("^mratio$", "mratio_old", result$dpar)
     result$dpar <- gsub("^mratio_N$", "mratio_new", result$dpar)
   }
-  
+  cum <- model$family$family %in% c("cumulative", "bivariate_cumulative")
+  for (s in list(c("", "criterion"), c("2", "criterion2"))) {
+    if (!isTRUE(model$model_data[[paste0("has_", s[2], "_scale")]])) next
+    gaps <- result$dpar == paste0("log_gaps", s[1]) & result$class == "b"
+    result$coef[gaps] <- sub("_.*$", "", result$coef[gaps])
+    result$dpar[result$dpar == paste0("thresh_mid", s[1])] <-
+      paste0(if (cum) sub("criterion", "cutpoints", s[2]) else s[2], "_shift")
+    if (cum) result$dpar[result$dpar == paste0(s[2], "_scale")] <- paste0(sub("criterion", "cutpoints", s[2]), "_scale")
+  }
+
   result
 }
 
@@ -1315,7 +1344,7 @@ print.broc_prior_table <- function(x, ...) {
     tab <- get_broc_prior(model, priors = p)
     if (any(tab$source == "user")) next
     if (is.null(all_tab)) all_tab <- get_broc_prior(model)
-    cand <- all_tab[all_tab$class == p$class & (is.null(p$dpar) | all_tab$dpar == (p$dpar %||% "")), , drop = FALSE]
+    cand <- all_tab[all_tab$class == p$class & (is.null(p$dpar) | all_tab$dpar %in% c(p$dpar, p$dpar_input)), , drop = FALSE]
     spec <- paste0("class = \"", p$class, "\"",
                    if (!is.null(p$dpar)) paste0(", dpar = \"", p$dpar_input %||% p$dpar, "\""),
                    if (!is.null(p$coef)) paste0(", coef = \"", p$coef, "\""),

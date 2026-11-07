@@ -32,13 +32,13 @@ predictors. Cell probabilities by 4-corner differencing:
 
 \describe{
 \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (a midpoint and ordered
-gaps; default \code{~ 1}), one coefficient per cutpoint unless \code{cutpoints_scale} is given,
-as in \code{\link[=cumulative]{cumulative()}}. Identity link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
-\item{cutpoints_scale}{(optional) Location-scale cutpoints for dimension 1; see
-\code{\link[=cumulative]{cumulative()}}.}
+gaps; default \code{~ 1}), one coefficient per cutpoint, as in \code{\link[=cumulative]{cumulative()}}. Identity
+link. Set priors via \code{thresh_mid} and \code{log_gaps}.}
+\item{cutpoints_shift, cutpoints_scale}{(optional) Shift and scale one baseline set of
+cutpoints for dimension 1; see \code{\link[=cumulative]{cumulative()}}.}
 \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default \code{~ 1}).
 Identity link. Set priors via \code{thresh_mid2} and \code{log_gaps2}.}
-\item{cutpoints2_scale}{(optional) Location-scale cutpoints for dimension 2.}
+\item{cutpoints2_shift, cutpoints2_scale}{(optional) The same for dimension 2.}
 \item{rho}{(required) Correlation between dimensions; effective
 \eqn{\rho = \tanh(\rho_{\text{param}})}. Fisher z link.}
 }
@@ -47,8 +47,7 @@ Identity link. Set priors via \code{thresh_mid2} and \code{log_gaps2}.}
 \subsection{Formula syntax}{
 
 \if{html}{\out{<div class="sourceCode">}}\preformatted{broc(brf(resp(y1, y2) ~ 1,
-         cutpoints ~ x1 + (1 | subj),
-         cutpoints_scale ~ 1,
+         cutpoints_shift ~ x1 + (1 | subj),
          cutpoints2 ~ x2 + (1 | subj),
          rho ~ 1,
          family = bivariate_cumulative()),

@@ -35,8 +35,10 @@ only for models with \code{s()}/\code{t2()} smooth terms).}
 \item{dpar}{Distributional parameter the prior applies to, e.g. \code{"dprime"},
 \code{"sigma"}, \code{"lambda"}. For criterion priors use \code{"thresh_mid"} / \code{"log_gaps"}
 (\code{"thresh_mid2"} / \code{"log_gaps2"} for the second response axis in bivariate
-families). Family-specific aliases (\code{cutpoints}, \code{cutpoints2},
-\code{cutpoints_scale}, \code{rec}, \code{fam}, \code{sigma_R}, \code{sigma_F}) are also
+families). With \code{criterion_shift}, the shift's coefficients are
+\code{dpar = "criterion_shift"} (\code{"criterion2_shift"}), and its scale's
+\code{"criterion_scale"}. Family-specific aliases (\code{cutpoints}, \code{cutpoints2},
+\code{cutpoints_shift}, \code{cutpoints_scale}, \code{rec}, \code{fam}, \code{sigma_R}, \code{sigma_F}) are also
 accepted. The correlation prior of a cross-parameter group \code{(... | id | g)} is
 \code{dpar = "cross_<id>"}. \code{NULL} applies the prior to every parameter in
 \code{class}. \code{\link[=get_broc_prior]{get_broc_prior()}} lists every settable prior with its \code{dpar} and

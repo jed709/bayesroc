@@ -330,6 +330,7 @@ broc <- function(formula = NULL, data = NULL, family = NULL, priors = NULL,
     }
   }
   params <- .canonical_param_formulas(params, family)
+  params <- .shift_scale_formulas(params, family)
 
   criterion  <- params[["criterion"]]
   sigma      <- params[["sigma"]]
@@ -1252,10 +1253,12 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       criterion2_scale_fixed$X <- criterion2_scale_fixed$X[, keep, drop = FALSE]
       criterion2_scale_fixed$coef_names <- criterion2_scale_fixed$coef_names[keep]
       criterion2_scale_fixed$n_coef <- sum(keep)
+      criterion2_scale_fixed$normalised_shape <- own$normalised_shape
     }
     criterion2_scale_random <- build_random_effects_structure(parsed$criterion2_scale$random, data, encoding_vars, is_old_var)
     stan_data$P_criterion2_scale <- criterion2_scale_fixed$n_coef
     stan_data$X_criterion2_scale <- criterion2_scale_fixed$X
+    if (isTRUE(criterion2_scale_fixed$normalised_shape)) stan_data$ls_gap_basis2 <- .sum_zero_basis(K2 - 2L)
   }
 
   criterion_scale_fixed <- NULL
@@ -1265,6 +1268,7 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     criterion_scale_random <- build_random_effects_structure(parsed$criterion_scale$random, data, encoding_vars, is_old_var)
     stan_data$P_criterion_scale <- criterion_scale_fixed$n_coef
     stan_data$X_criterion_scale <- criterion_scale_fixed$X
+    if (isTRUE(criterion_scale_fixed$normalised_shape)) stan_data$ls_gap_basis <- .sum_zero_basis(n_thresh - 1L)
   }
 
   lambda_fixed <- NULL
@@ -2025,14 +2029,9 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
 #' @noRd
 .criterion_scale_design <- function(parsed_param, data, encoding_vars, is_old_var, N) {
   fx <- parsed_param$fixed
-  if (!isTRUE(fx$intercept) && length(fx$terms)) {
-    message("criterion_scale: the gaps carry the scale's intercept, so its formula is coded ",
-            "with contrasts and no intercept.")
-  }
-  fx$intercept <- TRUE
   if (!length(fx$terms)) {
     return(list(X = matrix(0, nrow = N, ncol = 0), n_coef = 0, coef_names = character(0),
-                has_encoding = FALSE, formula = ~ 1))
+                has_encoding = FALSE, formula = ~ 1, normalised_shape = FALSE))
   }
   fe <- build_fixed_effects_matrix(build_formula_from_parsed(fx), data, encoding_vars, is_old_var,
                                    conditional_terms = extract_conditional_from_parsed(parsed_param),
@@ -2041,6 +2040,8 @@ get_re_info_from_all <- function(group, dprime_re, criterion_re, sigma_re,
   fe$X <- fe$X[, keep, drop = FALSE]
   fe$coef_names <- fe$coef_names[keep]
   fe$n_coef <- sum(keep)
+  fe$normalised_shape <- !isTRUE(fx$intercept) && fe$n_coef > 0 &&
+    max(abs(qr.resid(qr(fe$X), rep(1, nrow(fe$X))))) < 1e-8
   fe
 }
 
@@ -3378,8 +3379,8 @@ fit_bivariate_cumulative <- function(mu1, mu2, cutpoints, cutpoints2, rho,
 .cumulative_rhs <- function(rhs, cut_name, what = "The response formula") {
   if (!length(attr(stats::terms(stats::as.formula(paste("~", rhs))), "term.labels"))) return("0")
   stop(what, " of a cumulative model takes no predictors; they go on the cutpoints. `", cut_name, " ~ ", rhs,
-       "` gives each cutpoint its own effects, and adding a `", cut_name, "_scale` formula makes `", cut_name,
-       " ~ ", rhs, "` move all cutpoints together (a positive coefficient moves responses down).", call. = FALSE)
+       "` gives each cutpoint its own effects, and `", cut_name, "_shift ~ ", rhs,
+       "` moves all cutpoints together (a positive coefficient moves responses down).", call. = FALSE)
 }
 
 #' Rename parameters in Stan code for bivariate cumulative models
@@ -3706,6 +3707,29 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
       params[[internal]] <- params[[given]]
       params[[given]] <- NULL
     }
+  }
+  params
+}
+
+.shift_scale_formulas <- function(params, family) {
+  m <- .param_name_map(family$family)
+  shown <- function(p) m[[p]] %||% p
+  for (p in list(c("criterion", "criterion_shift", "criterion_scale"),
+                 c("criterion2", "criterion2_shift", "criterion2_scale"))) {
+    sh <- params[[p[2]]]
+    sc <- params[[p[3]]]
+    if (is.null(sh) && is.null(sc)) next
+    cr <- params[[p[1]]]
+    if (!is.null(cr) && !identical(paste(deparse(cr[[length(cr)]]), collapse = ""), "1")) {
+      stop("With ", shown(p[2]), " or ", shown(p[3]), ", `", shown(p[1]), "` is the baseline set of criteria and ",
+           "takes no terms, but it has `", paste(deparse(cr[[length(cr)]]), collapse = ""), "`. ",
+           "Put terms that move every criterion together in `", shown(p[2]), " ~ ...` and terms that stretch ",
+           "the gaps in `", shown(p[3]), " ~ ...`; without either, each term of `", shown(p[1]),
+           "` has its own coefficient for every criterion.", call. = FALSE)
+    }
+    params[[p[1]]] <- sh %||% ~ 1
+    params[[p[2]]] <- NULL
+    params[[p[3]]] <- sc %||% ~ 1
   }
   params
 }

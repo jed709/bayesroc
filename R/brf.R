@@ -57,23 +57,35 @@ resp <- function(response1, response2) {
 #' intercept with its own slope only, and
 #' `(1 + x || gr(g, cor_thresholds = FALSE))` makes every effect independent.
 #'
-#' @section Location-scale criteria:
-#' A `criterion_scale` formula (`cutpoints_scale` in the cumulative families) gives the
-#' criteria a location and a scale, \eqn{c_j = L + e^{s} (t_j - \bar t)}, where the shape
-#' \eqn{t} comes from the gap intercepts. The `criterion` formula then sets the location
-#' \eqn{L}, the mean criterion: each fixed effect, random effect or smooth has one
-#' coefficient and moves every criterion together. The `criterion_scale` formula sets the
-#' log scale \eqn{s}: each term stretches or shrinks every gap by the same factor. Its
-#' intercept is fixed at 0, because the gap intercepts already set the spread, and it takes
-#' fixed effects, random effects (including `|id|` correlations with other parameters) and
-#' smooths. `criterion_scale ~ 1` gives criteria that only shift. `cor_thresholds` has no
-#' effect here, since each criterion term has a single component.
+#' @section Shifting and scaling the criteria:
+#' A `criterion` formula gives every term its own coefficient for each of the K - 1
+#' criteria. `criterion_shift` and `criterion_scale` (`cutpoints_shift` and
+#' `cutpoints_scale` in the cumulative families) instead keep one baseline set of
+#' criteria and move it as a whole, \eqn{c_j = L + e^{s} (t_j - \bar t)}, where the shape
+#' \eqn{t} comes from the baseline gaps. Each term of `criterion_shift` has one
+#' coefficient and moves every criterion together: \eqn{L} is the mean criterion, and its
+#' intercept is the baseline's location. Each term of `criterion_scale` stretches or
+#' shrinks every gap by the same factor: \eqn{s} is the log scale, and the baseline gaps set
+#' the spread at \eqn{s = 0}. Both take fixed effects, random effects (including `|id|`
+#' correlations with other parameters) and smooths. Either can be given alone, and
+#' `criterion` is then the baseline, so it takes no terms (`criterion ~ 1` or omitted).
+#' `cor_thresholds` has no effect here, since each term has a single component.
 #'
-#' `criterion2_scale` (`cutpoints2_scale` in [bivariate_cumulative()]) does the same for the
-#' source criteria of the bivariate families. With varying source criteria, each set of source
-#' criteria (one per detection response bin) has its own location and shape intercepts, its
-#' own random effects on the location, and its own scale coefficients: every term of the
-#' `criterion2_scale` formula is estimated separately for each bin.
+#' A cell-means formula gives each level its own value. With `criterion_shift ~ 0 + cond`
+#' each level has its own location and the baseline is the shape only. With
+#' `criterion_scale ~ 0 + cond` each level has its own spread, and the baseline gap
+#' parameters (log gaps, or raw gaps with `gap_link = "softplus"`) sum to zero, so the
+#' baseline is the shape only. These per-level scales take the gap prior's location and
+#' scale by default, and the shape takes `normal(0, sd)` with the gap prior's sd. With an
+#' intercept, as in `criterion_scale ~ cond`, the intercept is the baseline gaps and the
+#' terms are contrasts against it.
+#'
+#' `criterion2_shift` and `criterion2_scale` (`cutpoints2_shift` and `cutpoints2_scale` in
+#' [bivariate_cumulative()]) do the same for the source criteria of the bivariate
+#' families. With varying source criteria, each set of source criteria (one per detection
+#' response bin) has its own location and shape, its own random effects on the location,
+#' and its own scale coefficients: every term of the `criterion2_scale` formula is
+#' estimated separately for each bin.
 #'
 #' @examples
 #' # Standard SDT
@@ -89,12 +101,15 @@ resp <- function(response1, response2) {
 #' brf(resp(conf, rk_var) | old ~ 1 + (1|subj),
 #'      fam ~ 1, criterion ~ 1, rec_crit ~ 1)
 #'
-#' # Location-scale criteria
+#' # Criteria that shift and stretch as a whole
 #' brf(conf | old ~ cond + (1|subj),
-#'      criterion ~ cond + (1|subj), criterion_scale ~ cond + (1|subj))
+#'      criterion_shift ~ cond + (1|subj), criterion_scale ~ cond + (1|subj))
+#'
+#' # A spread for each condition
+#' brf(conf | old ~ cond, criterion_scale ~ 0 + cond)
 #'
 #' # Cumulative
-#' brf(rating ~ 1, cutpoints ~ cond + (1|subj), cutpoints_scale ~ 1)
+#' brf(rating ~ 1, cutpoints_shift ~ cond + (1|subj))
 #' @export
 brf <- function(formula, ..., family = NULL, priors = NULL, encoding_vars = NULL,
                 counts = NULL, gap_link = NULL, smooth_info = NULL) {

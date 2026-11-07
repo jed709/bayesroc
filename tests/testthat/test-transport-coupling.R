@@ -39,7 +39,7 @@
     vrdp2d = rhs("resp(det, src) | type", c("dprime2", "discrim", "criterion", "criterion2", "lambda"), nest, vrdp2d()),
     cdp = rhs("resp(conf4, rk) | old", c("criterion", "fam", "rec_crit", "know_crit"), nest, cdp(old_levels = 2:4)),
     ls_varying = brf(resp(det, src) | type ~ 1 + (1 | subj), discrim ~ 1, rho ~ 1, criterion ~ 1 + (1 | subj),
-                     criterion2 ~ 0 + g + (1 | subj), criterion2_scale ~ x + (1 | subj),
+                     criterion2_shift ~ 0 + g + (1 | subj), criterion2_scale ~ x + (1 | subj),
                      family = bivariate_gaussian(source_criteria = "varying")),
     cor_thresholds = brf(conf | old ~ 1 + (1 | subj), criterion ~ g + (1 + x | gr(subj, cor_thresholds = FALSE)) +
                            (1 | gr(item, cor_thresholds = FALSE)), family = evsd()),

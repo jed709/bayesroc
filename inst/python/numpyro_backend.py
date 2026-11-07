@@ -77,6 +77,33 @@ def _grid_strings(strs, shape):
     return arr
 
 
+def _sum_zero_basis(n):
+    """Orthonormal basis [n, n-1] of the vectors summing to zero (normalised Helmert contrasts, as R's)."""
+    H = np.zeros((n, max(n - 1, 0)))
+    for j in range(n - 1):
+        H[:j + 1, j] = -1.0
+        H[j + 1, j] = j + 1.0
+    return H / np.sqrt(np.sum(H * H, axis=0)) if n > 1 else H
+
+
+def _sum_zero_gaps(name, prior_rows, rows=False):
+    """Shape gaps that sum to zero in each row: rows [R][n] of prior strings -> [R, n]. The free
+    coordinates `name`_z are standard normal, corrected by a factor to each gap's own prior on the
+    full vector; `name` is the full vector, as Stan's transformed parameter."""
+    R, n = len(prior_rows), len(prior_rows[0])
+    H = jnp.asarray(_sum_zero_basis(n), dtype=_FLOAT)
+    if n < 2:
+        g = jnp.zeros((R, n))
+    else:
+        z = numpyro.sample(f"{name}_z", dist.Normal(0, 1).expand([R, n - 1]) if R > 1 or rows else dist.Normal(0, 1).expand([n - 1]))
+        z = z.reshape(R, n - 1)
+        g = z @ H.T
+        lp = sum(parse_prior(prior_rows[r][k]).log_prob(g[r, k]) for r in range(R) for k in range(n))
+        numpyro.factor(f"{name}_shape", lp - jnp.sum(dist.Normal(0, 1).log_prob(z)))
+    numpyro.deterministic(name, g if R > 1 or rows else g[0])
+    return g
+
+
 def _grid_sample(name, strs, shape, transform=None):
     """Sample one array site whose elements carry their own prior strings."""
     tf = transform or (lambda d: d)
@@ -5006,7 +5033,9 @@ def sdt_model(config):
         crit_ls = bool(config.get("crit_ls")) and n_gaps > 0
         if crit_ls:
             gap_pri = [_gap_prior(k, 0) for k in range(n_gaps)]
-            if P_crit == 1 and len(set(gap_pri)) == 1:
+            if config.get("crit_ls_norm"):
+                beta_log_gaps = _sum_zero_gaps(gap_param_prefix, [gap_pri])[0].reshape(n_gaps, 1)
+            elif P_crit == 1 and len(set(gap_pri)) == 1:
                 beta_log_gaps = numpyro.sample(gap_param_prefix,
                                                parse_prior(gap_pri[0]).expand([n_gaps])).reshape(n_gaps, 1)
             else:
@@ -5265,7 +5294,12 @@ def sdt_model(config):
 
                 if n_gaps2 > 0:
                     gap2_name = "beta_raw_gaps_2_varying" if gap_link == "softplus" else "beta_log_gaps_2_varying"
-                    beta_log_gaps_2 = _grid_sample(gap2_name, v2_gaps, (n_vset, n_gaps2))
+                    if config.get("crit2_ls_norm"):
+                        pri_rows = [list(r) * n_gaps2 if len(r) == 1 else list(r) for r in v2_gaps]
+                        pri_rows = pri_rows * n_vset if len(pri_rows) == 1 else pri_rows
+                        beta_log_gaps_2 = _sum_zero_gaps(gap2_name, pri_rows, rows=True)
+                    else:
+                        beta_log_gaps_2 = _grid_sample(gap2_name, v2_gaps, (n_vset, n_gaps2))
                 else:
                     beta_log_gaps_2 = None
 
@@ -5345,7 +5379,10 @@ def sdt_model(config):
                                          per_gap2_priors[k] if has_per_gap2 else prior_log_gaps2)
                                for j in range(c2_n_coef)] for k in range(n_gaps2)]
                     g2_uniform = len({p for row in g2_pri for p in row}) == 1
-                    if crit2_ls:
+                    if crit2_ls and config.get("crit2_ls_norm"):
+                        beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef)).at[:, 0].set(
+                            _sum_zero_gaps(gap2_name_ij, [[g2_pri[k][0] for k in range(n_gaps2)]])[0])
+                    elif crit2_ls:
                         beta_log_gaps2 = jnp.zeros((n_gaps2, c2_n_coef))
                         for k in range(n_gaps2):
                             site = f"{gap2_name_ij}[{k+1}]" if c2_n_coef == 1 else f"{gap2_name_ij}[{k+1},1]"

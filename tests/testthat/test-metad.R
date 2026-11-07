@@ -105,7 +105,7 @@ test_that("metad batch and plain Stan agree on log density and gradient for ever
                           d = .sim_metad(K = 8, relative = TRUE, centred = TRUE, m_new = 1.1)),
     one_side = list(f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), mratio_new ~ x + (1 | sub),
                             family = metad()), d = .sim_metad(K = 4)),
-    crit_scale = list(f = brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), criterion_scale ~ 1 + (1 | sub),
+    crit_scale = list(f = brf(conf | old ~ 1 + (1 | sub), criterion_shift ~ 1 + (1 | sub), criterion_scale ~ 1 + (1 | sub),
                               mratio ~ cond + (1 | sub), family = metad("relative")), d = .sim_metad(relative = TRUE)))
   for (nm in names(cfgs)) {
     cf <- cfgs[[nm]]

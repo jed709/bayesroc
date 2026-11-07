@@ -518,6 +518,8 @@ build_numpyro_config <- function(model) {
   }
   if (!is.null(md$gap_link)) config$gap_link <- md$gap_link
   if (isTRUE(md$has_criterion_scale)) config$crit_ls <- TRUE
+  if (.ls_normalised(md, 1L)) config$crit_ls_norm <- TRUE
+  if (.ls_normalised(md, 2L)) config$crit2_ls_norm <- TRUE
   if (isTRUE(md$has_criterion2_scale)) {
     config$crit2_ls <- TRUE
     if (isTRUE(md$varying_source_criteria)) config$crit2_re_mode <- "per_bin"

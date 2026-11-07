@@ -9,10 +9,10 @@
   data.frame(rating = as.integer(y), rater = factor(g$rater), item = factor(g$item), grp = factor(grp[g$rater]))
 }
 
-test_that("predictors go on the cutpoints, as per-cutpoint effects or one shift with cutpoints_scale", {
+test_that("predictors go on the cutpoints, as per-cutpoint effects or one shift with cutpoints_shift", {
   d <- .sim_ordinal()
   expect_error(broc(brf(rating ~ grp + (1 | rater), family = cumulative()), d), "cutpoints ~ grp")
-  m <- broc(brf(rating ~ 1, cutpoints ~ grp + (1 | rater) + (1 | item), cutpoints_scale ~ 1, family = cumulative()), d)
+  m <- broc(brf(rating ~ 1, cutpoints_shift ~ grp + (1 | rater) + (1 | item), family = cumulative()), d)
   md <- m$model_data
   expect_equal(md$stan_data$P_dprime, 0)
   expect_length(md$dprime_random, 0)
@@ -31,7 +31,7 @@ test_that("the random-intercept ordinal model: JAX and batch Stan log-likelihood
   skip_if_no_jax()
   skip_if_no_cmdstan()
   d <- .sim_ordinal()
-  m <- broc(brf(rating ~ 1, cutpoints ~ grp + (1 | rater) + (1 | item), cutpoints_scale ~ 1, family = cumulative()), d)
+  m <- broc(brf(rating ~ 1, cutpoints_shift ~ grp + (1 | rater) + (1 | item), family = cumulative()), d)
   fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
                                   iter_sampling = 5, seed = 2, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
@@ -50,7 +50,7 @@ test_that("the random-intercept ordinal model fits on both backends and recovers
   skip_if_no_jax()
   skip_if_no_cmdstan()
   d <- .sim_ordinal()
-  m <- broc(brf(rating ~ 1, cutpoints ~ grp + (1 | rater) + (1 | item), cutpoints_scale ~ 1, family = cumulative()), d)
+  m <- broc(brf(rating ~ 1, cutpoints_shift ~ grp + (1 | rater) + (1 | item), family = cumulative()), d)
   fj <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2, parallel_chains = 2, iter_warmup = 500,
                  iter_sampling = 400, seed = 2, progress_bar = FALSE)
   fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, iter_warmup = 400, iter_sampling = 400,

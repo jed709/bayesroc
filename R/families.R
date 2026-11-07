@@ -6,6 +6,12 @@
 # =============================================================================
 
 #' @noRd
+.crit_shift_spec <- function() {
+  list(required = FALSE, default = NULL, link = "identity",
+       null_value = "k-1", null_description = "criteria parameterized by a midpoint and K-2 gaps",
+       description = "criterion shift: moves every criterion together")
+}
+
 .crit_scale_spec <- function() {
   list(required = FALSE, default = NULL, link = "log",
        null_value = "k-1", null_description = "criteria parameterized by a midpoint and K-2 gaps",
@@ -18,10 +24,12 @@
                                 sigma  = "sigma_R", sigma2 = "sigma_F",
                                 rho = "rho_target", rho_N = "rho_lure"),
     metadt               = list(mratio = "mratio_old", mratio_N = "mratio_new"),
-    cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_scale = "cutpoints_scale"),
+    cumulative           = list(dprime = "mu", criterion = "cutpoints", criterion_shift = "cutpoints_shift",
+                                criterion_scale = "cutpoints_scale"),
     bivariate_cumulative = list(dprime = "mu", discrim = "mu2",
-                                criterion = "cutpoints", criterion_scale = "cutpoints_scale",
-                                criterion2 = "cutpoints2", criterion2_scale = "cutpoints2_scale"),
+                                criterion = "cutpoints", criterion_shift = "cutpoints_shift",
+                                criterion_scale = "cutpoints_scale", criterion2 = "cutpoints2",
+                                criterion2_shift = "cutpoints2_shift", criterion2_scale = "cutpoints2_scale"),
     list()
   )
 }
@@ -180,6 +188,7 @@ evsd <- function(link = link_probit(), meta_noise = c("gaussian", "lognormal")) 
                           description = if (meta_noise == "gaussian")
                             "SD of the Gaussian meta-noise between decision and rating"
                           else "SD of the lognormal noise in the confidence criteria"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity")
       ),
@@ -242,6 +251,7 @@ uvsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         sigma = list(required = TRUE, default = NULL, link = "log")
@@ -308,6 +318,7 @@ dpsd <- function(link = link_probit()) {
       link = link,
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
@@ -402,6 +413,7 @@ mixture <- function(link = link_probit()) {
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "d' for state 1 (high state)"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
@@ -451,22 +463,23 @@ mixture <- function(link = link_probit()) {
 #' ## Parameters
 #' \describe{
 #'   \item{cutpoints}{K-1 ordered cutpoints (a midpoint and K-2 ordered gaps; default `~ 1`).
-#'     Without `cutpoints_scale`, every term has one coefficient per cutpoint (the midpoint
-#'     and each log gap) and a random effect is K-1 correlated shifts per group. Identity link.
-#'     Set priors via `thresh_mid` and `log_gaps`.}
-#'   \item{cutpoints_scale}{(optional) Makes the cutpoints location-scale:
-#'     \eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t} set by the gap
-#'     intercepts. `cutpoints` then gives the location \eqn{L} (the mean cutpoint), one
-#'     coefficient per term, and `cutpoints_scale` gives the log scale \eqn{s}, which has no
-#'     intercept of its own. A positive location coefficient moves responses down.}
+#'     Every term has one coefficient per cutpoint (the midpoint and each log gap) and a
+#'     random effect is K-1 correlated shifts per group. Identity link. Set priors via
+#'     `thresh_mid` and `log_gaps`.}
+#'   \item{cutpoints_shift, cutpoints_scale}{(optional) Move one baseline set of cutpoints
+#'     as a whole: \eqn{c_k(x) = L(x) + e^{s(x)} (t_k - \bar t)}, with the shape \eqn{t}
+#'     set by the baseline gaps. `cutpoints_shift` gives the location \eqn{L} (the mean
+#'     cutpoint), one coefficient per term, and `cutpoints_scale` the log scale \eqn{s}.
+#'     `cutpoints` is then the baseline and takes no terms. A positive shift coefficient
+#'     moves responses down. See the shifting and scaling section of [brf()], including
+#'     cell-means formulas such as `cutpoints_scale ~ 0 + cond`.}
 #' }
 #'
 #' ## Formula syntax
 #' ```
 #' # random-intercept ordinal model with a condition shift
 #' broc(brf(rating ~ 1,
-#'          cutpoints ~ condition + (1 | subj) + (1 | item),
-#'          cutpoints_scale ~ 1,
+#'          cutpoints_shift ~ condition + (1 | subj) + (1 | item),
 #'          family = cumulative()), data = dat)
 #' # per-cutpoint condition and subject effects
 #' broc(brf(rating ~ 1,
@@ -493,6 +506,7 @@ cumulative <- function(link = link_probit()) {
       params = list(
         dprime    = list(required = TRUE, default = NULL, link = "identity",
                          description = "linear predictor for location"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "threshold/cutpoint parameters")
@@ -525,13 +539,13 @@ cumulative <- function(link = link_probit()) {
 #' ## Parameters
 #' \describe{
 #'   \item{cutpoints}{K1-1 ordered cutpoints for dimension 1 (a midpoint and ordered
-#'     gaps; default `~ 1`), one coefficient per cutpoint unless `cutpoints_scale` is given,
-#'     as in [cumulative()]. Identity link. Set priors via `thresh_mid` and `log_gaps`.}
-#'   \item{cutpoints_scale}{(optional) Location-scale cutpoints for dimension 1; see
-#'     [cumulative()].}
+#'     gaps; default `~ 1`), one coefficient per cutpoint, as in [cumulative()]. Identity
+#'     link. Set priors via `thresh_mid` and `log_gaps`.}
+#'   \item{cutpoints_shift, cutpoints_scale}{(optional) Shift and scale one baseline set of
+#'     cutpoints for dimension 1; see [cumulative()].}
 #'   \item{cutpoints2}{K2-1 ordered cutpoints for dimension 2 (default `~ 1`).
 #'     Identity link. Set priors via `thresh_mid2` and `log_gaps2`.}
-#'   \item{cutpoints2_scale}{(optional) Location-scale cutpoints for dimension 2.}
+#'   \item{cutpoints2_shift, cutpoints2_scale}{(optional) The same for dimension 2.}
 #'   \item{rho}{(required) Correlation between dimensions; effective
 #'     \eqn{\rho = \tanh(\rho_{\text{param}})}. Fisher z link.}
 #' }
@@ -539,8 +553,7 @@ cumulative <- function(link = link_probit()) {
 #' ## Formula syntax
 #' ```
 #' broc(brf(resp(y1, y2) ~ 1,
-#'          cutpoints ~ x1 + (1 | subj),
-#'          cutpoints_scale ~ 1,
+#'          cutpoints_shift ~ x1 + (1 | subj),
 #'          cutpoints2 ~ x2 + (1 | subj),
 #'          rho ~ 1,
 #'          family = bivariate_cumulative()),
@@ -565,6 +578,7 @@ bivariate_cumulative <- function() {
                           description = "linear predictor for dimension 2 location"),
         criterion  = list(required = TRUE, default = NULL, link = "identity",
                           description = "dimension 1 threshold/cutpoint parameters"),
+        criterion2_shift = .crit_shift_spec(),
         criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "dimension 2 threshold/cutpoint parameters"),
@@ -646,6 +660,7 @@ source_mixture <- function(link = link_probit()) {
       params = list(
         dprime = list(required = TRUE, default = NULL, link = "identity",
                       description = "d' for attended Source A items (Psi_A location)"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity"),
         lambda = list(required = TRUE, default = NULL, link = "logit",
@@ -852,9 +867,11 @@ bivariate_gaussian <- function(source_criteria = c("common", "varying", "varying
                      null_value = 0, null_description = "fixed at 0",
                      description = "rho_N correlation for new items"),
 
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
+        criterion2_shift = .crit_shift_spec(),
         criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Discrimination thresholds (c2)")
@@ -1034,9 +1051,11 @@ bivariate_dp <- function(source_criteria = c("common", "varying", "varying_share
                          null_description = "constrained equal to lambda2",
                          description = "source recollection probability for Source B"),
 
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Detection thresholds (c1)"),
+        criterion2_shift = .crit_shift_spec(),
         criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Discrimination thresholds (c2)")
@@ -1191,6 +1210,7 @@ cdp <- function(old_levels = NULL) {
         rho_N     = list(required = FALSE, default = NULL, link = "fisherz",
                          null_value = 0, null_description = "fixed at 0",
                          description = "Correlation of recollection and familiarity for lures"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Confidence thresholds (tau) on memory strength M = R + F")
@@ -1297,6 +1317,7 @@ metad <- function(metac = c("absolute", "relative"), link = link_probit()) {
         mratio_N = list(required = FALSE, default = NULL, link = "log",
                         null_value = 0, null_description = "fixed at 1",
                         description = "M-ratio (meta-d'/d') for \"new\" responses"),
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Thresholds: the middle one is the type-1 criterion, the rest confidence criteria")
@@ -1509,9 +1530,11 @@ vrdp2d <- function(source_criteria = c("common", "varying", "varying_shared_new"
                       null_value = 1, null_description = "fixed at 1",
                       description = "sigma_S: SD on source dimension for recollected items"),
         
+        criterion_shift = .crit_shift_spec(),
         criterion_scale = .crit_scale_spec(),
         criterion = list(required = TRUE, default = NULL, link = "identity",
                          description = "Item dimension thresholds (K1-1 thresholds)"),
+        criterion2_shift = .crit_shift_spec(),
         criterion2_scale = .crit_scale_spec(),
         criterion2 = list(required = TRUE, default = NULL, link = "identity",
                           description = "Source dimension thresholds (K2-1 thresholds, or K1x(K2-1) if varying)")

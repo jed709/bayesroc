@@ -61,7 +61,7 @@ test_that("cumulative: Stan and JAX agree", {
   skip_if_not_slow()
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate()
-  m <- broc(brf(item_resp ~ 1, cutpoints ~ cond, cutpoints_scale ~ 1, family = cumulative()),
+  m <- broc(brf(item_resp ~ 1, cutpoints_shift ~ cond, family = cumulative()),
             d)
   fs <- fit_broc(m, backend = "stan", refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
