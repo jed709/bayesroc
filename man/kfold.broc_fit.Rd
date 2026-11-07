@@ -6,6 +6,7 @@
 \usage{
 \method{kfold}{broc_fit}(
   x,
+  ...,
   K = 10,
   Ksub = NULL,
   folds = NULL,
@@ -13,11 +14,15 @@
   joint = FALSE,
   type = c("trial", "cell"),
   save_fits = FALSE,
-  ...
+  model_names = NULL
 )
 }
 \arguments{
 \item{x}{A \code{broc_fit} object from \code{\link[=fit_broc]{fit_broc()}}.}
+
+\item{...}{Further \code{broc_fit} objects of the same data, which are
+cross-validated on the same folds and compared, and arguments passed to
+\code{\link[=fit_broc]{fit_broc()}} for the refits.}
 
 \item{K}{Number of folds (default 10). Ignored when \code{folds} or \code{group}
 determines it.}
@@ -49,13 +54,16 @@ trial-level fits.}
 \item{save_fits}{If \code{TRUE}, keep the refits (with their log-likelihood files)
 in the result.}
 
-\item{...}{Arguments passed to \code{\link[=fit_broc]{fit_broc()}} for the refits.}
+\item{model_names}{Names of the models when several fits are given;
+defaults to the deparsed arguments.}
 }
 \value{
 An object of class \code{c("kfold", "loo")} with \code{estimates}
 (\code{elpd_kfold}, \code{p_kfold}, \code{kfoldic}) and \code{pointwise}, usable with
 \code{\link[loo:loo_compare]{loo::loo_compare()}}. \code{p_kfold} is the full-data log pointwise predictive
 density minus \code{elpd_kfold}, and is \code{NA} when \code{x} has no log-likelihood.
+With several fits, a list of class \code{broc_kfold_list} with the \code{kfolds} and
+their \code{\link[loo:loo_compare]{loo::loo_compare()}} table \code{diffs}.
 }
 \description{
 Exact K-fold cross-validation, following \code{brms::kfold()}: the model is refit
@@ -82,12 +90,17 @@ per-bin random effects are handled the same way.
 Folds are fitted one after another. Each refit uses the fit's backend,
 sampler, number of chains and draws per chain; arguments in \code{...} are passed
 to \code{\link[=fit_broc]{fit_broc()}} and override them (e.g. \code{iter_warmup}, \code{control}, \code{seed},
-\code{refresh}). A \code{seed} is offset by the fold number for each refit.
+\code{refresh}). A \code{seed} is offset by the fold number for each refit. Refits
+that would leave out the same trials (as with \code{folds = "loo"} on aggregated
+data) are run once.
+
+Several fits of the same data are cross-validated on the same folds, so
+their pointwise differences are paired, as \code{\link[loo:loo_compare]{loo::loo_compare()}} assumes.
 }
 \examples{
 \dontrun{
 kf <- kfold(fit, K = 10)
 kf_sub <- kfold(fit, group = "subject")
-loo::loo_compare(kfold(fit1, group = "subject"), kfold(fit2, group = "subject"))
+kfold(fit1, fit2, group = "subject")
 }
 }

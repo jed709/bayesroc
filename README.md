@@ -154,7 +154,7 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 - `?broc`: main entry point
 - `?brf`: formula composition
 - `?fit_broc`: fitting (Stan or JAX)
-- `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`,
+- `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`, `kfold(fit)`,
   `posterior_epred(fit)`, `posterior_linpred(fit)`: S3 methods on the fitted model
 - `?estimates`, `?compare_estimates`: parameters on their natural scale per design
   cell (the numbers behind `plot(fit)` and the first section of `summary(fit)`), and
@@ -193,6 +193,28 @@ produces. The two are not comparable via `loo_compare()`.
 `save_broc_fit()` (and `fit_broc(file = )`) writes the sidecar next to the saved
 fit as `<file>_loglik.npy` whenever the fit kept its log-likelihood, so `loo()`
 works after `load_broc_fit()`; pass `include_loglik = FALSE` to skip it.
+
+## K-fold cross-validation
+
+`kfold()` follows `brms::kfold()`: the same `K`, `Ksub`, `folds` (`"stratified"`,
+`"grouped"`, `"loo"` or a vector), `group` and `joint` arguments, and the result
+works with `loo_compare()`. With `group` and no `folds`, it leaves out one level
+at a time, which scores prediction for new subjects or items, something PSIS-LOO
+cannot do.
+
+```r
+kf <- kfold(fit, group = "subject")                 # leave one subject out
+kfold(fit1, fit2, K = 10)                           # same folds, compared
+kf <- kfold(fit, K = 5, save_fits = TRUE)
+pp <- kfold_predict(kf)                             # held-out y and yrep
+```
+
+Units are trials, as in `loo()` (`type = "cell"` for rows). Each refit keeps
+every row and gives the held-out trials zero weight. The refit is then the same
+model, with the same compiled program, on the training data. Its draws of a
+held-out level's effects come from the estimated population distribution, as with
+brms' `sample_new_levels = "gaussian"`. Folds run one after another; arguments
+in `...` go to `fit_broc()`.
 
 ## Sampling until convergence and precision targets are met
 

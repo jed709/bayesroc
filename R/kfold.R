@@ -27,9 +27,17 @@
 #' Folds are fitted one after another. Each refit uses the fit's backend,
 #' sampler, number of chains and draws per chain; arguments in `...` are passed
 #' to [fit_broc()] and override them (e.g. `iter_warmup`, `control`, `seed`,
-#' `refresh`). A `seed` is offset by the fold number for each refit.
+#' `refresh`). A `seed` is offset by the fold number for each refit. Refits
+#' that would leave out the same trials (as with `folds = "loo"` on aggregated
+#' data) are run once.
+#'
+#' Several fits of the same data are cross-validated on the same folds, so
+#' their pointwise differences are paired, as [loo::loo_compare()] assumes.
 #'
 #' @param x A `broc_fit` object from [fit_broc()].
+#' @param ... Further `broc_fit` objects of the same data, which are
+#'   cross-validated on the same folds and compared, and arguments passed to
+#'   [fit_broc()] for the refits.
 #' @param K Number of folds (default 10). Ignored when `folds` or `group`
 #'   determines it.
 #' @param Ksub Optional subset of folds to run: a single number draws that many
@@ -53,77 +61,74 @@
 #'   trial-level fits.
 #' @param save_fits If `TRUE`, keep the refits (with their log-likelihood files)
 #'   in the result.
-#' @param ... Arguments passed to [fit_broc()] for the refits.
+#' @param model_names Names of the models when several fits are given;
+#'   defaults to the deparsed arguments.
 #' @return An object of class `c("kfold", "loo")` with `estimates`
 #'   (`elpd_kfold`, `p_kfold`, `kfoldic`) and `pointwise`, usable with
 #'   [loo::loo_compare()]. `p_kfold` is the full-data log pointwise predictive
 #'   density minus `elpd_kfold`, and is `NA` when `x` has no log-likelihood.
+#'   With several fits, a list of class `broc_kfold_list` with the `kfolds` and
+#'   their [loo::loo_compare()] table `diffs`.
 #' @examples
 #' \dontrun{
 #' kf <- kfold(fit, K = 10)
 #' kf_sub <- kfold(fit, group = "subject")
-#' loo::loo_compare(kfold(fit1, group = "subject"), kfold(fit2, group = "subject"))
+#' kfold(fit1, fit2, group = "subject")
 #' }
 #' @importFrom loo kfold
 #' @method kfold broc_fit
 #' @export
-kfold.broc_fit <- function(x, K = 10, Ksub = NULL, folds = NULL, group = NULL,
+kfold.broc_fit <- function(x, ..., K = 10, Ksub = NULL, folds = NULL, group = NULL,
                            joint = FALSE, type = c("trial", "cell"),
-                           save_fits = FALSE, ...) {
+                           save_fits = FALSE, model_names = NULL) {
   type <- match.arg(type)
   joint <- .kfold_joint(joint)
-  model <- attr(x, "broc_model")
-  if (is.null(model)) stop("Fit object must have 'broc_model' attribute. Use fit_broc() to fit the model.", call. = FALSE)
-  N <- as.integer(model$stan_data$N)
-  counts <- model$stan_data$counts
-  aggregated <- !is.null(counts)
-  counts <- if (aggregated) as.integer(counts) else rep(1L, N)
-  if (!aggregated) type <- "trial"
-  trial <- identical(type, "trial")
-  unit_row <- if (trial) rep.int(seq_len(N), counts) else seq_len(N)
-  U <- length(unit_row)
-
-  gvar <- NULL
-  if (!is.null(group)) {
-    if (!is.character(group) || length(group) != 1L || !group %in% names(model$data)) {
-      stop("`group` must name a column of the model data. Columns: ",
-           paste(setdiff(names(model$data), ""), collapse = ", "), call. = FALSE)
-    }
-    if (nrow(model$data) != N) stop("internal: model data and likelihood rows differ", call. = FALSE)
-    gvar <- factor(model$data[[group]])[unit_row]
+  dots <- list(...)
+  is_fit <- vapply(dots, inherits, logical(1), "broc_fit")
+  fits <- c(list(x), dots[is_fit])
+  dots <- dots[!is_fit]
+  if (is.null(model_names)) {
+    cl <- as.list(match.call(expand.dots = FALSE)$...)
+    model_names <- c(deparse1(substitute(x)), vapply(cl[is_fit], deparse1, ""))
   }
-  if (joint == "group" && is.null(gvar)) stop("`joint = \"group\"` needs `group`.", call. = FALSE)
+  if (length(model_names) != length(fits)) stop("`model_names` must have one name per fit.", call. = FALSE)
+
+  lay <- .kfold_layout(x, type, group)
+  if (joint == "group" && is.null(lay$gvar)) stop("`joint = \"group\"` needs `group`.", call. = FALSE)
+  U <- length(lay$unit_row)
 
   if (is.null(folds)) {
-    if (is.null(gvar)) {
+    if (is.null(lay$gvar)) {
       fold_type <- "random"
       folds <- loo::kfold_split_random(K, U)
     } else {
       fold_type <- "group"
-      folds <- as.integer(gvar)
-      K <- nlevels(gvar)
+      folds <- as.integer(lay$gvar)
+      K <- nlevels(lay$gvar)
       message("Setting 'K' to the number of levels of '", group, "' (", K, ")")
     }
   } else if (is.character(folds) && length(folds) == 1L) {
     fold_type <- match.arg(folds, c("loo", "stratified", "grouped"))
-    if (fold_type %in% c("stratified", "grouped") && is.null(gvar)) {
+    if (fold_type %in% c("stratified", "grouped") && is.null(lay$gvar)) {
       stop("Argument 'group' is required for fold type '", fold_type, "'.", call. = FALSE)
     }
     if (fold_type == "loo") {
       folds <- seq_len(U)
       K <- U
-      message("Setting 'K' to the number of ", if (trial) "trials" else "rows", " (", K, ")")
+      message("Setting 'K' to the number of ", if (lay$trial) "trials" else "rows", " (", K, ")")
     } else if (fold_type == "stratified") {
-      folds <- loo::kfold_split_stratified(K, gvar)
+      folds <- loo::kfold_split_stratified(K, lay$gvar)
     } else {
-      folds <- loo::kfold_split_grouped(K, gvar)
+      folds <- loo::kfold_split_grouped(K, lay$gvar)
     }
   } else {
     fold_type <- "custom"
-    if (trial && aggregated && length(folds) == N && N != U) folds <- folds[unit_row]
+    N <- length(lay$counts)
+    if (lay$trial && lay$aggregated && length(folds) == N && N != U) folds <- folds[lay$unit_row]
     if (length(folds) != U) {
-      stop("If 'folds' is a vector, it must have one entry per ", if (trial) "trial" else "row",
-           " (", U, ")", if (trial && aggregated) paste0(" or per row (", N, ")") else "", ".", call. = FALSE)
+      stop("If 'folds' is a vector, it must have one entry per ", if (lay$trial) "trial" else "row",
+           " (", U, ")", if (lay$trial && lay$aggregated) paste0(" or per row (", N, ")") else "", ".",
+           call. = FALSE)
     }
     folds <- as.integer(factor(folds))
     K <- max(folds)
@@ -141,18 +146,78 @@ kfold.broc_fit <- function(x, K = 10, Ksub = NULL, folds = NULL, group = NULL,
     Ksub <- sort(if (one) sample(seq_len(K), Ksub) else unique(Ksub))
   }
 
+  spec <- list(K = K, Ksub = Ksub, folds = folds, fold_type = fold_type, group = group,
+               joint = joint, save_fits = save_fits)
+  res <- vector("list", length(fits))
+  for (m in seq_along(fits)) {
+    lay_m <- if (m == 1L) lay else .kfold_layout(fits[[m]], type, group)
+    if (!identical(lay_m$unit_row, lay$unit_row) || !identical(lay_m$gvar, lay$gvar)) {
+      stop("All fits must be of the same data: '", model_names[m], "' has different rows, counts or ",
+           "groups from '", model_names[1], "'.", call. = FALSE)
+    }
+    if (length(fits) > 1L) message("Model '", model_names[m], "'")
+    res[[m]] <- .kfold_run(fits[[m]], lay_m, spec, dots)
+    attr(res[[m]], "model_name") <- model_names[m]
+  }
+  if (length(res) == 1L) return(res[[1]])
+  names(res) <- model_names
+  structure(list(kfolds = res, diffs = loo::loo_compare(res)), class = "broc_kfold_list")
+}
+
+#' @export
+print.broc_kfold_list <- function(x, ...) {
+  for (nm in names(x$kfolds)) {
+    cat("Output of model '", nm, "':\n", sep = "")
+    print(x$kfolds[[nm]], ...)
+    cat("\n")
+  }
+  cat("Model comparisons:\n")
+  print(x$diffs, ...)
+  invisible(x)
+}
+
+.kfold_layout <- function(fit, type, group) {
+  model <- attr(fit, "broc_model")
+  if (is.null(model)) stop("Fit object must have 'broc_model' attribute. Use fit_broc() to fit the model.", call. = FALSE)
+  N <- as.integer(model$stan_data$N)
+  counts <- model$stan_data$counts
+  aggregated <- !is.null(counts)
+  counts <- if (aggregated) as.integer(counts) else rep(1L, N)
+  trial <- !aggregated || identical(type, "trial")
+  unit_row <- if (trial) rep.int(seq_len(N), counts) else seq_len(N)
+  gvar <- NULL
+  if (!is.null(group)) {
+    if (!is.character(group) || length(group) != 1L || !group %in% names(model$data)) {
+      stop("`group` must name a column of the model data. Columns: ",
+           paste(setdiff(names(model$data), ""), collapse = ", "), call. = FALSE)
+    }
+    if (nrow(model$data) != N) stop("internal: model data and likelihood rows differ", call. = FALSE)
+    gvar <- factor(model$data[[group]])[unit_row]
+  }
+  list(model = model, counts = counts, aggregated = aggregated, trial = trial, unit_row = unit_row, gvar = gvar)
+}
+
+.kfold_run <- function(x, lay, spec, dots) {
+  model <- lay$model
+  counts <- lay$counts
+  unit_row <- lay$unit_row
+  gvar <- lay$gvar
+  N <- length(counts)
+  K <- spec$K
+  Ksub <- spec$Ksub
+  folds <- spec$folds
+  joint <- spec$joint
+  omit_of <- function(k) if (spec$fold_type == "loo" && !is.null(gvar)) which(gvar == gvar[k]) else which(folds == k)
   sets <- lapply(Ksub, function(k) {
-    omitted <- if (fold_type == "loo" && !is.null(gvar)) which(gvar == gvar[k]) else which(folds == k)
-    predicted <- if (fold_type == "loo") k else omitted
+    omitted <- omit_of(k)
+    predicted <- if (spec$fold_type == "loo") k else omitted
     om <- tabulate(unit_row[omitted], N)
     list(k = k, omitted = om, predicted = predicted,
          key = paste(c(which(om > 0L), om[om > 0L]), collapse = ","))
   })
   keys <- unique(vapply(sets, `[[`, "", "key"))
+  units <- .kfold_units(sets, unit_row, counts, lay$trial, joint, gvar)
 
-  units <- .kfold_units(sets, unit_row, counts, trial, joint, gvar)
-
-  dots <- list(...)
   fit_args <- list(backend = x$.backend, sampler = x$.sampler, chains = x$.num_chains,
                    iter_sampling = x$.iter_sampling)
   fit_args[names(dots)] <- dots
@@ -162,8 +227,8 @@ kfold.broc_fit <- function(x, K = 10, Ksub = NULL, folds = NULL, group = NULL,
   seed <- fit_args$seed
 
   elpd <- rep(NA_real_, length(units$rows))
-  fits <- if (save_fits) array(list(), dim = c(length(keys), 3L),
-                               dimnames = list(NULL, c("fit", "omitted", "predicted"))) else NULL
+  fits <- if (spec$save_fits) array(list(), dim = c(length(keys), 3L),
+                                    dimnames = list(NULL, c("fit", "omitted", "predicted"))) else NULL
   for (i in seq_along(keys)) {
     sk <- Filter(function(s) identical(s$key, keys[i]), sets)
     ks <- vapply(sk, `[[`, 0L, "k")
@@ -174,9 +239,8 @@ kfold.broc_fit <- function(x, K = 10, Ksub = NULL, folds = NULL, group = NULL,
     j <- which(units$set %in% match(ks, Ksub))
     M <- .kfold_unit_ll(fit_k, units, j)
     elpd[j] <- apply(M, 2L, .log_mean_exp)
-    if (save_fits) {
-      fits[i, ] <- list(fit_k, list(which(counts - sk[[1]]$omitted < counts)),
-                        list(sort(unique(unlist(lapply(sk, `[[`, "predicted"))))))
+    if (spec$save_fits) {
+      fits[i, ] <- list(fit_k, omit_of(ks[1]), sort(unique(unlist(lapply(sk, `[[`, "predicted")))))
     } else {
       suppressMessages(drop_loglik(fit_k))
     }
@@ -195,14 +259,85 @@ kfold.broc_fit <- function(x, K = 10, Ksub = NULL, folds = NULL, group = NULL,
                      SE = sqrt(n * apply(pointwise, 2L, stats::var)))
   rownames(estimates) <- colnames(pointwise)
   out <- list(estimates = estimates, pointwise = pointwise)
-  atts <- list(K = K, Ksub = Ksub, group = group, folds = folds, fold_type = fold_type,
-               joint = joint, broc_type = type)
+  atts <- list(K = K, Ksub = Ksub, group = spec$group, folds = folds, fold_type = spec$fold_type,
+               joint = joint, broc_type = if (lay$trial) "trial" else "cell")
   attributes(out)[names(atts)] <- atts
-  if (save_fits) {
+  if (spec$save_fits) {
     out$fits <- fits
     out$data <- model$data
+    out$counts <- counts
   }
   structure(out, class = c("kfold", "loo"), dims = c(NA_integer_, n))
+}
+
+#' Predictions of the Held-Out Data from K-Fold Refits
+#'
+#' Simulates each held-out trial from the refit that left it out, following
+#' `brms::kfold_predict()`. Every trial of an aggregated row is simulated
+#' separately.
+#'
+#' @param x A `kfold` object from [kfold()][kfold.broc_fit] run with
+#'   `save_fits = TRUE`.
+#' @param response Passed to [predict()][predict.broc_fit]: `NULL` (default)
+#'   simulates every response of the family; `1` or `2` one response of a
+#'   family with two responses.
+#' @param ... Further arguments passed to [predict()][predict.broc_fit], such as
+#'   `ndraws` or `seed`.
+#' @return A list with `y`, the observed responses of the held-out trials in
+#'   trial order, and `yrep`, an S x n matrix of simulated responses. When the
+#'   family has two responses and `response = NULL`, `y` and `yrep` are lists
+#'   with one element per response, named as in
+#'   `predict(type = "prediction", summary = FALSE)`.
+#' @examples
+#' \dontrun{
+#' kf <- kfold(fit, K = 5, save_fits = TRUE)
+#' pp <- kfold_predict(kf)
+#' }
+#' @export
+kfold_predict <- function(x, response = NULL, ...) {
+  if (!inherits(x, "kfold")) stop("'x' must be a 'kfold' object.", call. = FALSE)
+  if (is.null(x$fits) || is.null(x$counts)) {
+    stop("Slots 'fits' and 'counts' are required. Please run kfold with save_fits = TRUE.", call. = FALSE)
+  }
+  trial_row <- rep.int(seq_along(x$counts), x$counts)
+  cell <- identical(attr(x, "broc_type"), "cell")
+  parts <- lapply(seq_len(nrow(x$fits)), function(i) {
+    fit_k <- x$fits[[i, "fit"]]
+    pred <- x$fits[[i, "predicted"]]
+    tr <- if (cell) which(trial_row %in% pred) else pred
+    rows <- trial_row[tr]
+    yrep <- predict(fit_k, newdata = x$data[rows, , drop = FALSE], type = "prediction", summary = FALSE,
+                    response = response, ...)
+    list(trials = tr, y = .kfold_observed(attr(fit_k, "broc_model"), rows, yrep, response), yrep = yrep)
+  })
+  o <- order(unlist(lapply(parts, `[[`, "trials")))
+  if (is.list(parts[[1]]$yrep)) {
+    nm <- names(parts[[1]]$yrep)
+    y <- stats::setNames(lapply(nm, function(k) unlist(lapply(parts, function(p) p$y[[k]]))[o]), nm)
+    yrep <- stats::setNames(lapply(nm, function(k) {
+      do.call(cbind, lapply(parts, function(p) p$yrep[[k]]))[, o, drop = FALSE]
+    }), nm)
+  } else {
+    y <- unlist(lapply(parts, `[[`, "y"))[o]
+    yrep <- do.call(cbind, lapply(parts, `[[`, "yrep"))[, o, drop = FALSE]
+  }
+  list(y = y, yrep = yrep)
+}
+
+.kfold_observed <- function(model, rows, yrep, response) {
+  sd <- model$stan_data
+  rk <- if (!is.null(sd$rk)) {
+    v <- as.integer(sd$rk)
+    v[v <= 0L] <- NA_integer_
+    v
+  }
+  src <- list(y = sd$y, y1 = sd$y, y2 = sd$y2, rk = rk)
+  if (is.list(yrep)) {
+    return(stats::setNames(lapply(names(yrep), function(k) as.integer(src[[k]][rows])), names(yrep)))
+  }
+  second <- identical(as.integer(response), 2L)
+  v <- if (!second) sd$y else if (identical(model$family$family, "cdp")) rk else sd$y2
+  as.integer(v[rows])
 }
 
 .kfold_joint <- function(joint) {
