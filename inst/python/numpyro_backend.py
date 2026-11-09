@@ -2089,11 +2089,87 @@ def _mafc_bias(config, bias_res, cross_contribs, N, M):
     return jnp.concatenate([bias.T, jnp.zeros((N, 1), dtype=_FLOAT)], 1)
 
 
+_LN_LEVELS = 12
+_LN_NARROW = 1e-3
+
+
+def _ln_bisect(f, lo, hi, increasing, n=80):
+    def body(_, b):
+        l, h = b
+        m = 0.5 * (l + h)
+        up = (f(m) > 0.0) != increasing
+        return jnp.where(up, m, l), jnp.where(up, h, m)
+    return 0.5 * sum(jax.lax.fori_loop(0, n, body, (lo, hi)))
+
+
+def _ln_density(a, l, s):
+    """g(l) = -dC/dl of the lognormal meta-noise cumulative C(l) = E_z Phi(a - exp(l + s z)), with its
+    derivatives in (a, l, s): g = int exp(h(t)) / (2 pi s) dt, h(t) = t - (e^t - a)^2 / 2 - (t - l)^2 / (2 s^2).
+    h is concave except between the inflections at e^t = (a +- sqrt(a^2 - 8 / s^2)) / 4, so it has at most two
+    modes; each is found by bisection and integrated by Gauss-Legendre panels graded outward from it."""
+    is2 = 1.0 / (s * s)
+    h = lambda t: t - 0.5 * (jnp.exp(t) - a) ** 2 - 0.5 * (t - l) ** 2 * is2
+    dh = lambda t: 1.0 - jnp.exp(t) * (jnp.exp(t) - a) - (t - l) * is2
+    d2h = lambda t: -jnp.exp(t) * (2.0 * jnp.exp(t) - a) - is2
+    disc = a * a - 8.0 * is2
+    two = (disc > 0.0) & (a > 0.0)
+    sq = jnp.sqrt(jnp.maximum(disc, 0.0))
+    t1 = jnp.where(two, jnp.log(jnp.maximum(0.25 * (a - sq), 1e-300)), 0.0)
+    t2 = jnp.where(two, jnp.log(jnp.maximum(0.25 * (a + sq), 1e-300)), 0.0)
+    LB = jnp.minimum(l, 0.0) - 60.0
+    UB = jnp.maximum(l, jnp.log(jnp.abs(a) + 3.0))
+    e1 = ~two | (dh(t1) < 0.0)
+    e2 = two & (dh(t2) > 0.0)
+    m1 = _ln_bisect(dh, LB, jnp.where(two, t1, UB), False)
+    m2 = _ln_bisect(dh, jnp.where(two, t2, LB), UB, False)
+    v = _ln_bisect(dh, t1, t2, True)
+    tstar = jnp.log(0.5 * (a + jnp.sqrt(a * a + 4.0)))
+    lower = lambda m: jnp.minimum(jnp.minimum(m, l), tstar) - 12.0 * s
+    upper = lambda m: jnp.maximum(jnp.maximum(m, l), tstar) + 12.0 * s
+    sides = [(m1, lower(m1), e1), (m1, jnp.where(e2, v, upper(m1)), e1),
+             (m2, jnp.where(e1, v, lower(m2)), e2), (m2, upper(m2), e2)]
+    x = jnp.asarray((_GL16_X + 1.0) / 2.0, dtype=a.dtype)
+    W = jnp.asarray(_GL16_W / 2.0, dtype=a.dtype)
+    off = jnp.asarray(0.25 * (2.0 ** np.arange(_LN_LEVELS + 1) - 1.0), dtype=a.dtype)
+    ts, ws = [], []
+    for m, end, on in sides:
+        sc = 1.0 / jnp.sqrt(jnp.maximum(-d2h(m), 1e-24))
+        L = jnp.where(on, jnp.abs(end - m), 0.0)
+        sg = jnp.where(end >= m, 1.0, -1.0)
+        b = jnp.minimum(sc[..., None] * off, L[..., None])
+        b = jnp.concatenate([b, L[..., None]], -1)
+        lo, wd = b[..., :-1], b[..., 1:] - b[..., :-1]
+        ts.append(m[..., None, None] + sg[..., None, None] * (lo[..., None] + wd[..., None] * x))
+        ws.append(jnp.broadcast_to(wd[..., None] * W, ts[-1].shape))
+    t = jnp.minimum(jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ts], -1), 300.0)
+    wt = jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ws], -1)
+    ht = t - 0.5 * (jnp.exp(t) - a[..., None]) ** 2 - 0.5 * (t - l[..., None]) ** 2 * is2[..., None]
+    ref =jnp.max(jnp.where(wt > 0.0, ht, -jnp.inf), -1, keepdims=True)
+    F = wt * jnp.exp(ht - ref)
+    c = jnp.exp(ref[..., 0]) / (2.0 * np.pi * s)
+    dl = (t - l[..., None]) * is2[..., None]
+    return (c * jnp.sum(F, -1), c * jnp.sum(F * (jnp.exp(t) - a[..., None]), -1), c * jnp.sum(F * dl, -1),
+            c * jnp.sum(F * (dl * dl * s[..., None] - 1.0 / s[..., None]), -1))
+
+
+def _ln_narrow(a, ln, dl, s):
+    """A lognormal meta-noise cell between log distances ln and ln + dl for small dl, P = int g over the
+    band by 2-point Gauss-Legendre: (P, dP/da, dP/dln at fixed dl, dP/d dl, dP/ds)."""
+    out = [0.0] * 5
+    for xj in (0.5 - 0.5 / np.sqrt(3.0), 0.5 + 0.5 / np.sqrt(3.0)):
+        g, ga, gl, gs = _ln_density(a, ln + xj * dl, s)
+        out = [out[0] + 0.5 * dl * g, out[1] + 0.5 * dl * ga, out[2] + 0.5 * dl * gl,
+               out[3] + 0.5 * g + 0.5 * dl * xj * gl, out[4] + 0.5 * dl * gs]
+    return tuple(out)
+
+
 def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
     """Lognormal meta-noise (evsd with sigma_meta, Shekhar & Rahnev 2021) log-likelihood with custom JVP:
     the decision on x ~ N(mu, 1) against the middle threshold c0, the confidence criteria on the side of
-    the decision at c0 + (c_k - c0) exp(s z), one z ~ N(0, 1) per trial."""
+    the decision at c0 + (c_k - c0) exp(s z), one z ~ N(0, 1) per trial. An interior cell enters by its near
+    distance and the log ratio of its distances, log1p(gap / D_near), and a narrow one by _ln_narrow."""
     n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
     half = K // 2
 
     def _pieces(y, mu, sm, thresh_mid, gaps):
@@ -2110,12 +2186,34 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
         D_hi = sgn * (thresh[rows, k_hi] - thresh_mid)
         open_near = jnp.where(old, open_lo, open_hi)
         open_far = jnp.where(old, open_hi, open_lo)
+        inner = ~open_near & ~open_far
         D_near = jnp.where(open_near, 1.0, jnp.where(old, D_lo, D_hi))
-        D_far = jnp.where(open_far, 1.0, jnp.where(old, D_hi, D_lo))
+        gap = (jnp.where(inner, gap_vals[rows, jnp.asarray(own_idx)[y - 1]], 1.0) if n_thresh > 1
+               else jnp.ones_like(mu))
+        D_far = jnp.where(open_far, 1.0, jnp.where(inner, D_near + gap, jnp.where(old, D_hi, D_lo)))
         ln = jnp.where(open_near, -jnp.inf, jnp.log(D_near))
         lf = jnp.where(open_far, jnp.inf, jnp.log(D_far))
-        out = _lnoise_raw(sgn * (mu - thresh_mid), ln, lf, sm)
-        return out, (old, sgn, open_near, open_far, D_near, D_far, k_lo, k_hi, gap_vals)
+        a = sgn * (mu - thresh_mid)
+        dl = jnp.log1p(gap / D_near)
+        out = _lnoise_raw(a, ln, lf, sm)
+        narrow = inner & (dl < _LN_NARROW * jnp.minimum(1.0, sm))
+
+        def over(o):
+            P, dPa, dPl, dPd, dPs = _ln_narrow(a, jnp.where(narrow, ln, 0.0), jnp.where(narrow, dl, 1e-4), sm)
+            Pc = jnp.maximum(P, _pfloor())
+            ip = jnp.where(P > _pfloor(), 1.0 / Pc, 0.0)
+            return tuple(jnp.where(narrow, u, w) for u, w in zip((jnp.log(Pc), dPa * ip, dPl * ip, dPd * ip,
+                                                                  dPs * ip), o))
+        wide = (out[0], out[1], out[2], out[3], out[4])
+        lp, da, d_ln, d_x, ds = jax.lax.cond(jnp.any(narrow), over, lambda o: o, wide)
+        k_near = jnp.where(old, k_lo, k_hi)
+        k_far = jnp.where(old, k_hi, k_lo)
+        g_near = jnp.where(open_near, 0.0, d_ln / D_near)
+        g_far = jnp.where(open_far, 0.0, d_x / D_far)
+        GA = jnp.where(narrow, (d_ln - d_x * gap / D_far) / D_near, jnp.where(open_near, g_far, g_near + g_far))
+        GB = jnp.where(narrow, d_x / D_far, jnp.where(inner, g_far, 0.0))
+        k_a = jnp.where(open_near, k_far, k_near)
+        return (lp, da, ds), (sgn, GA, GB, k_a, inner, gap_vals)
 
     @custom_jvp
     def _lnoise(y, mu, sm, thresh_mid, gaps):
@@ -2125,16 +2223,11 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
     def _lnoise_jvp(primals, tangents):
         y, mu, sm, thresh_mid, gaps = primals
         _, t_mu, t_sm, t_mid, t_gaps = tangents
-        (lp, da, dln, dlf, ds), (old, sgn, open_near, open_far, D_near, D_far, k_lo, k_hi, gap_vals) =             _pieces(*primals)
-        g_near = jnp.where(open_near, 0.0, dln / D_near)
-        g_far = jnp.where(open_far, 0.0, dlf / D_far)
-        g_lo = sgn * jnp.where(old, g_near, g_far)
-        g_hi = sgn * jnp.where(old, g_far, g_near)
-        d_c = -sgn * (da + g_near + g_far)
+        (lp, da, ds), (sgn, GA, GB, k_a, inner, gap_vals) = _pieces(*primals)
         gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
-        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
-        d_gaps = (gm[:, k_lo].T * g_lo[:, None] + gm[:, k_hi].T * g_hi[:, None]) * gap_d
-        tan = (sgn * da * t_mu + ds * t_sm + (d_c + g_lo + g_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        d_gaps = _lw_gap_grads(sgn * GA, GB, k_a, jnp.asarray(own_mask, dtype=gaps.dtype)[:, y - 1], inner,
+                               gap_mask, gap_d)
+        tan = sgn * da * t_mu + ds * t_sm - sgn * da * t_mid + jnp.sum(d_gaps * t_gaps, axis=1)
         return lp, tan
 
     return _lnoise
