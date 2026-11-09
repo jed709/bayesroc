@@ -3167,13 +3167,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
     own_tau = _own_full[np.arange(J) + 1]
     own_tau_mask = np.concatenate([_own_full_mask[:, 1:J], np.zeros((n_gaps, 1))], axis=1)
 
-    def _narrow(rk, has_lo, has_hi, old_idx, gv, gaps, mid, tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
-        inner = has_lo & has_hi
+    def _narrow(rk, has_hi, old_idx, gv, gaps, mid, tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+        inner = has_hi
         k = jnp.clip(old_idx, 0, J - 1)
         gap = jnp.where(inner, gv[jnp.arange(rk.shape[0]), jnp.asarray(own_tau)[k]], 1.0) if n_gaps else \
             jnp.ones_like(mu_R)
-        judged = rk > 0
-        kind = jnp.where(~judged, 0, jnp.where(rk == 1, 1, jnp.where(rk == 2, 2 if n_rkg == 2 else 3, 4)))
+        kind = jnp.where(rk == 1, 1, jnp.where(rk == 2, 2 if n_rkg == 2 else 3, 4))
         lo = jnp.where(inner, tau_lo, 0.0)
         narrow = inner & (_cdp_strip_scale(kind, lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) < _NARROW_U)
         gs = jnp.where(narrow, gap, 1e-3)
@@ -3202,7 +3201,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         return [tuple(q[j][:4]) for j in range(2)]
 
     @custom_jvp
-    def _batch_fused(y, rk, is_old_val, old_idx, is_old_resp_val,
+    def _batch_fused(y, rk, is_old_val, old_idx,
                      mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr,
                      thresh_mid, gaps):
         gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
@@ -3217,15 +3216,13 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         sigma_M = jnp.sqrt(sigma_R**2 + sigma_F**2 + 2.0 * corr * sigma_R * sigma_F)
         rho = (sigma_R + corr * sigma_F) / jnp.clip(sigma_M, 1e-10)
 
-        has_lo = (is_old_resp_val == 1)
-        has_hi = ~has_lo | (old_idx < J - 1)
-        k_hi = jnp.where(has_lo, jnp.clip(old_idx + 1, 0, J - 1), 0)
-        tau_lo = jnp.where(has_lo, c[obs_idx, jnp.clip(old_idx, 0, J - 1)], -_OPEN)
+        has_hi = old_idx < J - 1
+        k_hi = jnp.clip(old_idx + 1, 0, J - 1)
+        tau_lo = c[obs_idx, jnp.clip(old_idx, 0, J - 1)]
         tau_hi = jnp.where(has_hi, c[obs_idx, k_hi], _OPEN)
-        judged = rk > 0
 
         z_cR = (c_R - mu_R) / jnp.clip(sigma_R, 1e-10)
-        z_lo = jnp.where(has_lo, (tau_lo - mu_M) / jnp.clip(sigma_M, 1e-10), -_OPEN)
+        z_lo = (tau_lo - mu_M) / jnp.clip(sigma_M, 1e-10)
         z_hi = jnp.where(has_hi, (tau_hi - mu_M) / jnp.clip(sigma_M, 1e-10), _OPEN)
 
 
@@ -3235,7 +3232,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_band = _band_from_q(z_lo, z_hi, c1_[6], c0[6])
             p_K_strip = bv_cR_hi - bv_cR_lo
             p_rk = jnp.where(rk == 1, p_band - p_K_strip, p_K_strip)
-            tail = judged & (p_rk < _TAIL_SWITCH)
+            tail = p_rk < _TAIL_SWITCH
             p_t = _rk_tail(tail, rk == 1, z_cR, z_lo, z_hi, rho)[0]
             p_rk = jnp.clip(jnp.where(tail, p_t, p_rk), _pfloor())
         else:
@@ -3270,29 +3267,28 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_K_raw = p_band - p_R_raw - p_G_raw
 
             p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
-            tail = judged & ~(p_sel >= _TAIL_SWITCH)
+            tail = ~(p_sel >= _TAIL_SWITCH)
             t_lp, _ = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
-                                jnp.where(has_lo, tau_lo, -jnp.inf), jnp.where(has_hi, tau_hi, jnp.inf), corr)
+                                tau_lo, jnp.where(has_hi, tau_hi, jnp.inf), corr)
             p_rk = jnp.where(tail, jnp.exp(t_lp), p_sel)
 
-        prob = jnp.where(judged, p_rk, p_band)
-        val = jnp.log(jnp.clip(prob, _pfloor()))
-        narrow, _, kind, lo, gs, _, g1 = _narrow(rk, has_lo, has_hi, old_idx, gv, gaps, thresh_mid, tau_lo, mu_R, sigma_R,
+        val = jnp.log(jnp.clip(p_rk, _pfloor()))
+        narrow, _, kind, lo, gs, _, g1 = _narrow(rk, has_hi, old_idx, gv, gaps, thresh_mid, tau_lo, mu_R, sigma_R,
                                                  mu_F, sigma_F, c_R, c_K, corr)
         val = jax.lax.cond(jnp.any(narrow), lambda v: jnp.where(narrow, jnp.log(jnp.clip(
             _cdp_strip_split(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, g1)[0], _pfloor())), v),
             lambda v: v, val)
         if n_rkg == 3:
-            empty = judged & (rk == 3) & has_lo & (c_R + c_K <= tau_lo)
+            empty = (rk == 3) & (c_R + c_K <= tau_lo)
             val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
         return val
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
-        (y, rk, is_old_val, old_idx, is_old_resp_val,
+        (y, rk, is_old_val, old_idx,
          mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr,
          thresh_mid_v, gaps_v) = primals
-        (_, _, _, _, _,
+        (_, _, _, _,
          d_mu_R, d_sigma_R, d_mu_F, d_sigma_F, d_c_R, d_c_K, d_corr,
          d_thresh_mid_v, d_gaps_v) = tangents
 
@@ -3313,18 +3309,16 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         inv_sF = 1.0 / jnp.clip(sigma_F, 1e-10)
         inv_sM = 1.0 / jnp.clip(sigma_M, 1e-10)
 
-        has_tau_lo = (is_old_resp_val == 1)
-        has_tau_hi = ~has_tau_lo | (old_idx < J - 1)
+        has_tau_hi = old_idx < J - 1
         k_tau_lo = jnp.clip(old_idx, 0, n_thresh - 1)
-        k_tau_hi = jnp.where(has_tau_lo, jnp.clip(old_idx + 1, 0, n_thresh - 1), 0)
-        judged = rk > 0
+        k_tau_hi = jnp.clip(old_idx + 1, 0, n_thresh - 1)
 
-        tau_lo = jnp.where(has_tau_lo, c[obs_idx, k_tau_lo], -_OPEN)
+        tau_lo = c[obs_idx, k_tau_lo]
         tau_hi = jnp.where(has_tau_hi, c[obs_idx, k_tau_hi], _OPEN)
 
         z_cR = (c_R - mu_R) * inv_sR
         z_hi = jnp.where(has_tau_hi, (tau_hi - mu_M) * inv_sM, _OPEN)
-        z_lo = jnp.where(has_tau_lo, (tau_lo - mu_M) * inv_sM, -_OPEN)
+        z_lo = (tau_lo - mu_M) * inv_sM
 
 
         if n_rkg == 2:
@@ -3340,7 +3334,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         p_band = _band_from_q(z_lo, z_hi, cdfs[1][6], cdfs[0][6])
 
         phi_hi = jnp.where(has_tau_hi, cdfs[0][7], 0.0)
-        phi_lo = jnp.where(has_tau_lo, cdfs[1][7], 0.0)
+        phi_lo = cdfs[1][7]
 
         # d sigma_M / d sigma_R, d sigma_M / d sigma_F and the R-M correlation's derivatives
         sR_over_sM = (sigma_R + corr * sigma_F) * inv_sM
@@ -3355,12 +3349,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_K_strip = bv_cR_hi - bv_cR_lo
             is_R = (rk == 1)
             p_rk_raw = jnp.where(is_R, p_band - p_K_strip, p_K_strip)
-            tail = judged & (p_rk_raw < _TAIL_SWITCH)
+            tail = p_rk_raw < _TAIL_SWITCH
             t_p, t_dzcR, t_dzlo, t_dzhi, t_drho = _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho)
             p_rk_raw = jnp.where(tail, t_p, p_rk_raw)
             p_rk = jnp.clip(p_rk_raw, _pfloor())
-            prob_raw = jnp.where(judged, p_rk_raw, p_band)
-            prob = jnp.where(judged, p_rk, p_band)
+            prob_raw = p_rk_raw
+            prob = p_rk
             val = jnp.log(jnp.clip(prob, _pfloor()))
             inv_prob = jnp.where(prob_raw > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
 
@@ -3370,10 +3364,10 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             g_zlo = jnp.where(tail, t_dzlo, jnp.where(is_R, -(phi_lo - d_bvCRlo_z2), -d_bvCRlo_z2))
             g_rho = jnp.where(tail, t_drho, jnp.where(is_R, -d_bvCRhi_rho + d_bvCRlo_rho,
                                                         d_bvCRhi_rho - d_bvCRlo_rho))
-            dlp_dzcR = jnp.where(judged, g_zcR * inv_prob, 0.0)
-            dlp_dzhi = jnp.where(has_tau_hi, jnp.where(judged, g_zhi, phi_hi) * inv_prob, 0.0)
-            dlp_dzlo = jnp.where(has_tau_lo, jnp.where(judged, g_zlo, -phi_lo) * inv_prob, 0.0)
-            dlp_drho = jnp.where(judged, g_rho * inv_prob, 0.0)
+            dlp_dzcR = g_zcR * inv_prob
+            dlp_dzhi = jnp.where(has_tau_hi, g_zhi * inv_prob, 0.0)
+            dlp_dzlo = g_zlo * inv_prob
+            dlp_drho = g_rho * inv_prob
 
             d_val_dmuR = (dlp_dzcR * (-inv_sR) +
                           (dlp_dzhi + dlp_dzlo) * (-inv_sM))
@@ -3440,16 +3434,16 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_K_raw = p_band - p_R_raw - p_G_raw
 
             p_sel = jnp.where(rk == 1, p_R_raw, jnp.where(rk == 2, p_K_raw, p_G_raw))
-            tail = judged & ~(p_sel >= _TAIL_SWITCH)
+            tail = ~(p_sel >= _TAIL_SWITCH)
             t_lp, t_d = _cdp_tail(tail, rk, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
-                                  jnp.where(has_tau_lo, tau_lo, -jnp.inf),
+                                  tau_lo,
                                   jnp.where(has_tau_hi, tau_hi, jnp.inf), corr)
             p_cell = jnp.where(tail, jnp.exp(t_lp), p_sel)
             p_rk = p_cell
-            prob = jnp.where(judged, p_rk, p_band)
+            prob = p_rk
             val = jnp.log(jnp.clip(prob, _pfloor()))
             inv_prob = jnp.where(prob > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
-            closed = judged & ~tail
+            closed = ~tail
 
             dlp_dpR = jnp.where(closed & (rk == 1), inv_prob, 0.0)
             dlp_dpK = jnp.where(closed & (rk == 2), inv_prob, 0.0)
@@ -3457,7 +3451,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
             eff_dpR = dlp_dpR - dlp_dpK
             eff_dpG = dlp_dpG - dlp_dpK
-            eff_dpBand = dlp_dpK + jnp.where(judged, 0.0, inv_prob)
+            eff_dpBand = dlp_dpK
 
 
             dGhi_dtau = jnp.where(case1_hi, 0.0,
@@ -3558,7 +3552,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
              d_val_dtau_hi) = (jnp.where(live, d, 0.0) for d in (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF,
                                                               d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
                                                               d_val_dtau_hi))
-            empty = judged & (rk == 3) & has_tau_lo & (c_R + c_K <= tau_lo)
+            empty = (rk == 3) & (c_R + c_K <= tau_lo)
             val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
             d_val_dmuR = jnp.where(empty, 0.0, d_val_dmuR)
             d_val_dsigR = jnp.where(empty, 0.0, d_val_dsigR)
@@ -3570,9 +3564,9 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             d_val_dtau_lo = jnp.where(empty, -_EMPTY_SLOPE, d_val_dtau_lo)
             d_val_dtau_hi = jnp.where(empty, 0.0, d_val_dtau_hi)
 
-        d_t_k_lo = jnp.where(has_tau_lo, d_val_dtau_lo, 0.0)
+        d_t_k_lo = d_val_dtau_lo
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)
-        narrow, inner, kind, lo, gs, k_own, g1 = _narrow(rk, has_tau_lo, has_tau_hi, old_idx, gv, gaps_v, thresh_mid_v, tau_lo,
+        narrow, inner, kind, lo, gs, k_own, g1 = _narrow(rk, has_tau_hi, old_idx, gv, gaps_v, thresh_mid_v, tau_lo,
                                                          mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
         if n_rkg == 3:
             narrow = narrow & ~empty
@@ -3588,7 +3582,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
          gA_tau, gB_tau) = jax.lax.cond(jnp.any(narrow), strip, lambda o: o, base)
 
         d_lp_d_thresh_mid = gA_tau
-        k_anchor = jnp.where(has_tau_lo, k_tau_lo, k_tau_hi)
+        k_anchor = k_tau_lo
         d_lp_d_gaps = _lw_gap_grads(gA_tau, gB_tau, k_anchor, jnp.asarray(own_tau_mask)[:, k_own], inner,
                                     gap_mask_np, gd)
 
@@ -3903,10 +3897,10 @@ def fused_loglik_bounded_bivariate_dp(y1, y2, item_type, K1, K2, mu1, mu2, sigma
                               thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs, midx)
 
 
-def fused_loglik_cdp(y, rk, is_old, old_idx, is_old_resp, K, J,
+def fused_loglik_cdp(y, rk, is_old, old_idx, K, J,
                       mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
                       thresh_mid, gaps, gap_link="log", n_rkg=2, corr=None):
-    """Fully-vectorized fused log-likelihood for CDP."""
+    """Fully-vectorized fused log-likelihood for CDP, over judged "old" responses (rk >= 1)."""
     N = y.shape[0]
     n_gaps = J - 1
     is_softplus = (gap_link == "softplus")
@@ -3921,7 +3915,7 @@ def fused_loglik_cdp(y, rk, is_old, old_idx, is_old_resp, K, J,
     if key not in _fused_cache:
         _fused_cache[key] = _make_fused_batch_cdp_loglik(
             int(K), int(J), bool(is_softplus), int(n_rkg), has_corr)
-    return _fused_cache[key](y, rk, is_old, old_idx, is_old_resp,
+    return _fused_cache[key](y, rk, is_old, old_idx,
                               mu_R, sigma_R, mu_F, sigma_F, c_R, c_K,
                               jnp.zeros_like(mu_R) if corr is None else corr,
                               thresh_mid, gaps_per_obs)
@@ -4357,7 +4351,8 @@ def _cdp_caps(rk, N):
 def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
                c_R, c_K, J, old_level_map, n_rkg, counts=None,
                thresh_mid=None, log_gaps=None, gap_link="log", rk_static=None, corr=None, part=None):
-    """Compute log-likelihood for CDP (Continuous Dual-Process) model.
+    """Compute log-likelihood for CDP (Continuous Dual-Process) model: unjudged rows (rk = 0, which include every
+    "new" response) by the equal-variance cell on M, judged rows by the CDP kernel. `rk_static`: the data's rk.
 
     Args:
         y: [N] confidence response (1-indexed)
@@ -4385,13 +4380,11 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
         old_level_map_0 = jnp.array(old_level_map, dtype=jnp.int32)
         y_expanded = y[:, None]
         match = (y_expanded == old_level_map_0[None, :])
-        is_old_resp = jnp.any(match, axis=1).astype(_FLOAT)
         old_idx = jnp.argmax(match, axis=1)
 
-        def judged_ll(i, y_i, rk_i, old_idx_i, is_old_resp_i):
+        def judged_ll(i, y_i, rk_i, old_idx_i):
             return fused_loglik_cdp(
-                y=y_i, rk=rk_i, is_old=is_old[i],
-                old_idx=old_idx_i, is_old_resp=is_old_resp_i,
+                y=y_i, rk=rk_i, is_old=is_old[i], old_idx=old_idx_i,
                 K=K, J=J,
                 mu_R=mu_R[i], sigma_R=sigma_R[i], mu_F=mu_F[i], sigma_F=sigma_F[i],
                 c_R=c_R[i], c_K=c_K[i],
@@ -4402,11 +4395,11 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
             u, j = part
             cap_u, cap_j = int(u.shape[0]), int(j.shape[0])
         else:
-            cap_u, cap_j = (0, N) if rk_static is None else _cdp_caps(rk_static, N)
+            cap_u, cap_j = _cdp_caps(rk_static, N)
             u = jnp.nonzero(rk == 0, size=cap_u, fill_value=N)[0]
             j = jnp.nonzero(rk != 0, size=cap_j, fill_value=N)[0]
         if cap_u == 0:
-            log_lik = judged_ll(jnp.arange(N), y, rk, old_idx, is_old_resp)
+            log_lik = judged_ll(jnp.arange(N), y, rk, old_idx)
         else:
             unjudged = rk == 0
             y_band = jnp.where(match.any(axis=1), old_idx + 2, 1).astype(jnp.int32)
@@ -4421,8 +4414,7 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
                 y_j = jnp.where(unjudged[jg], old_level_map_0[0], y[jg])
                 match_j = y_j[:, None] == old_level_map_0[None, :]
                 log_lik = log_lik.at[j].set(
-                    judged_ll(jg, y_j, jnp.where(unjudged[jg], 1, rk[jg]), jnp.argmax(match_j, axis=1),
-                              jnp.any(match_j, axis=1).astype(_FLOAT)), mode="drop")
+                    judged_ll(jg, y_j, jnp.where(unjudged[jg], 1, rk[jg]), jnp.argmax(match_j, axis=1)), mode="drop")
         if counts is not None:
             log_lik = log_lik * counts
         return log_lik

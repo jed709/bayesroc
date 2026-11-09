@@ -51,13 +51,11 @@ def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4), corr=False):
     rng = np.random.default_rng(seed)
     n_gaps = J - 1
     f = nb._make_fused_batch_cdp_loglik(J + 5, J, False, n_rkg=n_rkg, has_corr=corr)
-    is_old_resp = rng.integers(0, 2, N).astype(np.float64)
     args = [
         jnp.asarray(rng.integers(1, J + 6, N), dtype=jnp.int32),
         jnp.asarray(rng.integers(1, n_rkg + 1, N), dtype=jnp.int32),
         jnp.asarray(rng.integers(0, 2, N).astype(np.float64)),
         jnp.asarray(rng.integers(0, J, N), dtype=jnp.int32),
-        jnp.asarray(is_old_resp),
         jnp.asarray(rng.normal(0.8, 0.3, N)),
         jnp.asarray(rng.uniform(0.6, 1.4, N)),
         jnp.asarray(rng.normal(0.6, 0.3, N)),
@@ -68,7 +66,7 @@ def cdp_case(n_rkg, N=300, J=5, seed=1, crit=(1.5, 0.4), corr=False):
         jnp.asarray(rng.normal(0.3, 0.2, N)),
         jnp.asarray(rng.normal(-0.5, 0.2, (N, n_gaps))),
     ]
-    return f, args, [i for i in range(5, 14) if corr or i != 11]
+    return f, args, [i for i in range(4, 13) if corr or i != 10]
 
 
 def _u(rng, lo, hi, N):
