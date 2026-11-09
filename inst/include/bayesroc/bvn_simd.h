@@ -283,6 +283,16 @@ inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& 
   const v4d bl = -dl * ib, bh = dh * ib;
   gl = vsel(old, bl, -bh);
   gh = vsel(old, bh, -bl);
+  for (int k = 0; k < 4; ++k) {
+    if (!(Qa[k] < 1e-280 || D[k] < 1e-280 || Qc[k] < 1e-280)) continue;
+    const double lQa = bvn_tail::log_Q(ua[k]), lQc = bvn_tail::log_Q(uc[k]);
+    const bvn_tail::Band b = bvn_tail::band(ul[k], uh[k]);
+    lp[k] = lQa + b.ld - lQc;
+    ga[k] = -s[k] * std::exp(bvn_tail::log_phi(ua[k]) - lQa);
+    gc[k] = s[k] * std::exp(bvn_tail::log_phi(uc[k]) - lQc);
+    gl[k] = old[k] ? -b.Al : -b.Au;
+    gh[k] = old[k] ? b.Au : b.Al;
+  }
 }
 
 inline void metad_array(int64_t n, const double* const* in, double* const* out) {

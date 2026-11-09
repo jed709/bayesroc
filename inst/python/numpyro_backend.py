@@ -1543,6 +1543,9 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
     return _batch_fused
 
 
+_METAD_DEEP = 1e20
+
+
 def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     """(lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c) of log P(R | S) + log P'(cell) - log P'(R | S), every
     term an upper-tail probability after reflecting "new" responses."""
@@ -1562,8 +1565,19 @@ def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
     ic = jnp.where(Qc > fl, 1.0 / jnp.maximum(Qc, fl), 0.0)
     lp = jnp.log(jnp.maximum(Qa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Qc, fl))
-    bl, bh = -dl * ib, dh * ib
-    return lp, -s * da * ia, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), s * dc * ic
+    ga, gc, bl, bh = -s * da * ia, s * dc * ic, -dl * ib, dh * ib
+    deep = (Qa < _METAD_DEEP * fl) | (D < _METAD_DEEP * fl) | (Qc < _METAD_DEEP * fl)
+    pick = lambda x, safe: jnp.where(deep, x, safe)
+    ua_s, uc_s, ul_s, uh_s = pick(ua, 0.0), pick(uc, 0.0), pick(ul, 0.0), pick(uh, 1.0)
+    lQa, lQc, lD = _log_q(ua_s), _log_q(uc_s), _log_diff_phi(ul_s, uh_s)
+    lphi = lambda x: -0.5 * x * x - _LOG_SQRT_2PI
+    edge = lambda x: jnp.abs(x) < 0.5 * _OPEN
+    ga = jnp.where(deep, -s * jnp.exp(lphi(ua_s) - lQa), ga)
+    gc = jnp.where(deep, s * jnp.exp(lphi(uc_s) - lQc), gc)
+    bl = jnp.where(deep, jnp.where(edge(ul_s), -jnp.exp(lphi(ul_s) - lD), 0.0), bl)
+    bh = jnp.where(deep, jnp.where(edge(uh_s), jnp.exp(lphi(uh_s) - lD), 0.0), bh)
+    lp = jnp.where(deep, lQa + lD - lQc, lp)
+    return lp, ga, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), gc
 
 
 def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
@@ -1588,8 +1602,37 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
     ic = jnp.where(Pc > fl, 1.0 / jnp.maximum(Pc, fl), 0.0)
     s = jnp.where(old, -1.0, 1.0).astype(z_a.dtype)
     lp = jnp.log(jnp.maximum(Pa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Pc, fl))
-    return (lp, s * pdf(z_a) * ia, jnp.where(lo_open, 0.0, -pdf(zl) * ib), jnp.where(hi_open, 0.0, pdf(zh) * ib),
-            -s * pdf(z_c) * ic)
+    ga, gl, gh, gc = s * pdf(z_a) * ia, -pdf(zl) * ib, pdf(zh) * ib, -s * pdf(z_c) * ic
+    deep = (Pa < _METAD_DEEP * fl) | (D < _METAD_DEEP * fl) | (Pc < _METAD_DEEP * fl)
+    pick = lambda x, safe: jnp.where(deep, x, safe)
+    za_s, zc_s, zl_s, zh_s = pick(z_a, 0.0), pick(z_c, 0.0), pick(zl, 0.0), pick(zh, 1.0)
+    lS, lF, lpdf = _link_log_tails(link_name)
+    lPa = jnp.where(old, lS(za_s), lF(za_s))
+    lPc = jnp.where(old, lS(zc_s), lF(zc_s))
+    med = 0.0 if link_name == "logit" else _CLOGLOG_MED
+    inner = ~lo_open & ~hi_open
+    il, ih = jnp.where(inner, zl_s, 0.0), jnp.where(inner, zh_s, 1.0)
+    l_in = jnp.where(il >= med, lS(il) + jnp.log(-jnp.expm1(lS(ih) - lS(il))),
+                     lF(ih) + jnp.log(-jnp.expm1(lF(il) - lF(ih))))
+    lD = jnp.where(lo_open & hi_open, 0.0, jnp.where(lo_open, lF(zh_s), jnp.where(hi_open, lS(zl_s), l_in)))
+    ga = jnp.where(deep, s * jnp.exp(lpdf(za_s) - lPa), ga)
+    gc = jnp.where(deep, -s * jnp.exp(lpdf(zc_s) - lPc), gc)
+    gl = jnp.where(deep, -jnp.exp(lpdf(zl_s) - lD), gl)
+    gh = jnp.where(deep, jnp.exp(lpdf(zh_s) - lD), gh)
+    lp = jnp.where(deep, lPa + lD - lPc, lp)
+    return lp, ga, jnp.where(lo_open, 0.0, gl), jnp.where(hi_open, 0.0, gh), gc
+
+
+def _link_log_tails(link_name):
+    """log survival, log CDF and log density of the logistic or Gumbel-min latent distribution, each
+    accurate far into its tails."""
+    if link_name == "logit":
+        return (lambda x: -jax.nn.softplus(x)), (lambda x: -jax.nn.softplus(-x)), _log_logit_pdf
+    lS = lambda x: -jnp.exp(jnp.minimum(x, _CLOGLOG_HI))
+    lF = lambda x: jnp.where(x < -20.0, x - 0.5 * jnp.exp(jnp.minimum(x, -20.0)),
+                             jnp.log(-jnp.expm1(-jnp.exp(jnp.maximum(jnp.minimum(x, _CLOGLOG_HI), -20.0)))))
+    lpdf = lambda x: jnp.minimum(x, _CLOGLOG_HI) - jnp.exp(jnp.minimum(x, _CLOGLOG_HI))
+    return lS, lF, lpdf
 
 
 def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit"):
