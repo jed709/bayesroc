@@ -1383,10 +1383,9 @@ def _probit_narrow(z_lo, w, inner):
     ws = jnp.where(narrow, w, 1e-3)
     m = jnp.where(narrow, m0, 0.0)
     m2, w2 = m * m, ws * ws
-    he2 = m2 - 1.0
-    he4 = m2 * (m2 - 6.0) + 3.0
-    he6 = m2 * (m2 * (m2 - 15.0) + 45.0) - 15.0
-    s = w2 * (he2 / 24.0 + w2 * (he4 / 1920.0 + w2 * he6 / 322560.0))
+    u2 = (ws * m) ** 2
+    s = ((u2 - w2) / 24.0 + (u2 * (u2 - 6.0 * w2) + 3.0 * w2 * w2) / 1920.0 +
+         (u2 * (u2 * (u2 - 15.0 * w2) + 45.0 * w2 * w2) - 15.0 * w2 * w2 * w2) / 322560.0)
     lp = jnp.log(ws) - 0.5 * m2 - _LOG_SQRT_2PI + jnp.log1p(s)
     k = jnp.exp(-0.125 * w2) / (ws * (1.0 + s))
     return narrow, lp, -2.0 * k * jnp.sinh(0.5 * m * ws), k * jnp.exp(-0.5 * m * ws)
@@ -1398,9 +1397,11 @@ def _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi):
     inner = has_lo & has_hi
     lp, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
     narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
-    lp = jnp.where(narrow, lpn, lp)
-    gA = jnp.where(narrow, rA, jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
-    gB = jnp.where(narrow, rB, jnp.where(inner, g_hi, 0.0))
+    lfl = jnp.log(_pfloor())
+    kept = lpn > lfl
+    lp = jnp.where(narrow, jnp.where(kept, lpn, lfl), lp)
+    gA = jnp.where(narrow, jnp.where(kept, rA, 0.0), jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
+    gB = jnp.where(narrow, jnp.where(kept, rB, 0.0), jnp.where(inner, g_hi, 0.0))
     return lp, gA, gB
 
 
@@ -1414,18 +1415,40 @@ def _log_logit_pdf(x):
     return -a - 2.0 * jnp.log1p(jnp.exp(-a))
 
 
+def _logit_lA(z_lo, w):
+    m = z_lo + 0.5 * w
+    am = jnp.maximum(jnp.abs(m), 1e-300)
+    xs = jnp.minimum(0.5 * w, 0.5)
+    lA = (2.0 * _LOG2 + am + jnp.log(-jnp.expm1(-2.0 * am)) - _LOG2 + jnp.log(jnp.sinh(xs)) +
+          _log_logit_pdf(z_lo + w) + _log_logit_pdf(z_lo))
+    return m, lA
+
+
 def _logit_inner(z_lo, w):
     h = z_lo + w
     x = 0.5 * w
     lp = x + jnp.log(-jnp.expm1(-2.0 * x)) - 2.0 * _LOG2 - _logcosh(0.5 * h) - _logcosh(0.5 * z_lo)
     fh, fl = _logit_pdf(h), _logit_pdf(z_lo)
-    m = z_lo + x
-    am = jnp.maximum(jnp.abs(m), 1e-300)
-    xs = jnp.minimum(x, 0.5)
-    lA = (2.0 * _LOG2 + am + jnp.log(-jnp.expm1(-2.0 * am)) - _LOG2 + jnp.log(jnp.sinh(xs)) + _log_logit_pdf(h) +
-          _log_logit_pdf(z_lo))
+    m, lA = _logit_lA(z_lo, w)
     A = jnp.where(w < 1.0, -jnp.sign(m) * jnp.exp(lA), fh - fl)
     return lp, A, fh
+
+
+def _inner_ratios(link_name, z_lo, w, lp):
+    """(A / P, B / P) of an interior logit or cloglog cell (z_lo, z_lo + w) of log mass lp, taken in
+    log space so that they hold where the cell's mass and densities underflow."""
+    _, _, lpdf = _link_log_tails(link_name)
+    h = z_lo + w
+    rB = jnp.exp(lpdf(h) - lp)
+    if link_name == "logit":
+        m, lA = _logit_lA(z_lo, w)
+        near = -jnp.sign(m) * jnp.exp(lA - lp)
+    else:
+        l = jnp.minimum(z_lo, _CLOGLOG_HI)
+        wl = jnp.maximum(w, 1e-300)
+        gap = jnp.exp(jnp.minimum(l + wl + jnp.log(-jnp.expm1(-wl)), 700.0))
+        near = jnp.expm1(jnp.minimum(wl, 700.0) - gap) * jnp.exp(lpdf(z_lo) - lp)
+    return jnp.where(w < 1.0, near, rB - jnp.exp(lpdf(z_lo) - lp)), rB
 
 
 def _cloglog_inner(z_lo, w):
@@ -1458,7 +1481,10 @@ def _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi):
         pdf = _link_fns(link_name)[1]
         pdf_lo, pdf_hi = pdf(z_lo), pdf(z_hi)
         lpi, A_in, B_in = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, ws)
-        D = jnp.where(inner, jnp.exp(lpi), _link_diff_fn(link_name)(z_lo, z_hi))
+        wide = inner & (ws > 0.5 * jnp.maximum(1.0, jnp.abs(ls)))
+        A_in = jnp.where(wide, pdf_hi - pdf_lo, A_in)
+        B_in = jnp.where(wide, pdf_hi, B_in)
+        D = jnp.where(inner & ~wide, jnp.exp(lpi), _link_diff_fn(link_name)(z_lo, z_hi))
     A = jnp.where(inner, A_in, jnp.where(has_lo, -pdf_lo, pdf_hi))
     B = jnp.where(inner, B_in, 0.0)
     return D, A, B, jnp.where(has_lo, z_lo, z_hi)
@@ -1793,7 +1819,8 @@ def _ln_D(a, w, Pa, Qa):
     sub = jnp.where(u >= 0.0, ndtr(-u) - Qa, Pa - ndtr(u))
     m = a - 0.5 * w
     h2 = 0.25 * w * w
-    m2 = m * m
+    mc = jnp.clip(m, -40.0, 40.0)
+    m2 = mc * mc
     he2, he4, he6 = m2 - 1.0, m2 * m2 - 6.0 * m2 + 3.0, m2 * m2 * m2 - 15.0 * m2 * m2 + 45.0 * m2 - 15.0
     ser = w * _ln_pdf(m) * (1.0 + h2 * (he2 / 6.0 + h2 * (he4 / 120.0 + h2 * he6 / 5040.0)))
     return jnp.maximum(jnp.where(w <= _LN_WSER, ser, sub), 1e-300)
@@ -1803,10 +1830,11 @@ def _ln_dD_da(a, w, pa):
     """d/da of _ln_D, with the same series for small w."""
     m = a - 0.5 * w
     h2 = 0.25 * w * w
-    m2 = m * m
-    he3, he5 = m * (m2 - 3.0), m * (m2 * m2 - 10.0 * m2 + 15.0)
-    he7 = m * (m2 * m2 * m2 - 21.0 * m2 * m2 + 105.0 * m2 - 105.0)
-    ser = -w * _ln_pdf(m) * (m + h2 * (he3 / 6.0 + h2 * (he5 / 120.0 + h2 * he7 / 5040.0)))
+    mc = jnp.clip(m, -40.0, 40.0)
+    m2 = mc * mc
+    he3, he5 = mc * (m2 - 3.0), mc * (m2 * m2 - 10.0 * m2 + 15.0)
+    he7 = mc * (m2 * m2 * m2 - 21.0 * m2 * m2 + 105.0 * m2 - 105.0)
+    ser = -w * _ln_pdf(m) * (mc + h2 * (he3 / 6.0 + h2 * (he5 / 120.0 + h2 * he7 / 5040.0)))
     return jnp.where(w <= _LN_WSER, ser, pa - _ln_pdf(a - w))
 
 
@@ -2145,7 +2173,8 @@ def _ln_density(a, l, s):
         lo, wd = b[..., :-1], b[..., 1:] - b[..., :-1]
         ts.append(m[..., None, None] + sg[..., None, None] * (lo[..., None] + wd[..., None] * x))
         ws.append(jnp.broadcast_to(wd[..., None] * W, ts[-1].shape))
-    t = jnp.minimum(jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ts], -1), 300.0)
+    t = jnp.minimum(jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ts], -1),
+                    300.0 if jax.config.jax_enable_x64 else 43.0)
     wt = jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ws], -1)
     ht = t - 0.5 * (jnp.exp(t) - a[..., None]) ** 2 - 0.5 * (t - l[..., None]) ** 2 * is2[..., None]
     ref =jnp.max(jnp.where(wt > 0.0, ht, -jnp.inf), -1, keepdims=True)
@@ -2178,7 +2207,7 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
 
     def _pieces(y, mu, sm, thresh_mid, gaps):
         gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
-        thresh = build(thresh_mid, gap_vals)
+        dist = build(jnp.zeros_like(thresh_mid), gap_vals)
         old = y > half
         sgn = jnp.where(old, 1.0, -1.0)
         open_lo = jnp.where(old, y == half + 1, y == 1)
@@ -2186,8 +2215,8 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
         k_hi = jnp.clip(y - 1, 0, n_thresh - 1)
         k_lo = jnp.clip(y - 2, 0, n_thresh - 1)
         rows = jnp.arange(y.shape[0])
-        D_lo = sgn * (thresh[rows, k_lo] - thresh_mid)
-        D_hi = sgn * (thresh[rows, k_hi] - thresh_mid)
+        D_lo = sgn * dist[rows, k_lo]
+        D_hi = sgn * dist[rows, k_hi]
         open_near = jnp.where(old, open_lo, open_hi)
         open_far = jnp.where(old, open_hi, open_lo)
         inner = ~open_near & ~open_far
@@ -2212,7 +2241,7 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
         lp, da, d_ln, d_x, ds = jax.lax.cond(jnp.any(narrow), over, lambda o: o, wide)
         k_near = jnp.where(old, k_lo, k_hi)
         k_far = jnp.where(old, k_hi, k_lo)
-        g_near = jnp.where(open_near, 0.0, d_ln / D_near)
+        g_near = jnp.where(open_near | (D_near <= 0.0), 0.0, d_ln / jnp.where(D_near > 0.0, D_near, 1.0))
         g_far = jnp.where(open_far, 0.0, d_x / D_far)
         GA = jnp.where(narrow, (d_ln - d_x * gap / D_far) / D_near, jnp.where(open_near, g_far, g_near + g_far))
         GB = jnp.where(narrow, d_x / D_far, jnp.where(inner, g_far, 0.0))
@@ -2278,11 +2307,13 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
             sel, lb, rA, rB = _probit_narrow(ls, w, inner)
         else:
             lb, A, B = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, w)
-            sel = inner
+            sel = inner & ~(w > 0.5 * jnp.maximum(1.0, jnp.abs(ls)))
             Db = jnp.exp(lb)
             ib = jnp.where(Db > _pfloor(), 1.0 / jnp.maximum(Db, _pfloor()), 0.0)
-            rA, rB = A * ib, B * ib
-            lb = jnp.log(jnp.maximum(Db, _pfloor()))
+            deep_b = Db < _METAD_DEEP * _pfloor()
+            dA, dB = _inner_ratios(link_name, jnp.where(deep_b, ls, 0.0), jnp.where(deep_b, w, 1.0),
+                                   jnp.where(deep_b, lb, 0.0))
+            rA, rB = jnp.where(deep_b, dA, A * ib), jnp.where(deep_b, dB, B * ib)
         lp, g_a, g_lo, g_hi, g_c = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo), jnp.where(sel, _OPEN, z_hi),
                                                c + off, old, link_name)
         g_lo = jnp.where(y > 1, g_lo, 0.0)
@@ -2818,11 +2849,12 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         one_minus_rho2 = jnp.clip(1.0 - rho_val ** 2, 1e-20)
         sigma_cond = jnp.maximum(sigma2 * jnp.sqrt(one_minus_rho2), sigma2 * 1e-6)
         inv_sc = 1.0 / sigma_cond
-        z_cp = jnp.where(item_type == 1, -1e6, -mu2 / (rho_val * sigma2 + 1e-30))
-        z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
-        split = (z_cp > z1_lo) & (z_cp < z1_hi)
-        above_only = z_cp <= z1_lo
-        below_only = z_cp >= z1_hi
+        is_new = item_type == 1
+        z_cp = jnp.where(is_new, -1e6, -mu2 / (rho_val * sigma2 + 1e-30))
+        z_cp_eff = jnp.where(is_new, z1_lo, jnp.clip(z_cp, z1_lo, z1_hi))
+        split = ~is_new & (z_cp > z1_lo) & (z_cp < z1_hi)
+        above_only = is_new | (z_cp <= z1_lo)
+        below_only = ~is_new & (z_cp >= z1_hi)
         obs = jnp.arange(y2.shape[0])
         k2_hi = jnp.clip(y2 - 1, 0, n_thresh2 - 1)
         k2_lo = jnp.clip(y2 - 2, 0, n_thresh2 - 1)
@@ -3726,10 +3758,10 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         rho_sigma2 = rho_val * sigma2 + 1e-30
         is_new = item_type == 1
         z_cp = jnp.where(is_new, -1e6, -mu2 / rho_sigma2)
-        z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
-        split = (z_cp > z1_lo) & (z_cp < z1_hi)
-        above_only = z_cp <= z1_lo
-        below_only = z_cp >= z1_hi
+        z_cp_eff = jnp.where(is_new, z1_lo, jnp.clip(z_cp, z1_lo, z1_hi))
+        split = ~is_new & (z_cp > z1_lo) & (z_cp < z1_hi)
+        above_only = is_new | (z_cp <= z1_lo)
+        below_only = ~is_new & (z_cp >= z1_hi)
         zs_hi = jnp.where(has2_hi, c2[obs_idx, k2_hi] * inv_sc, INF)
         zs_lo = jnp.where(has2_lo, c2[obs_idx, k2_lo] * inv_sc, -INF)
         ws = w2 * sigma2 * inv_sc
@@ -4404,7 +4436,8 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
             unjudged = rk == 0
             y_band = jnp.where(match.any(axis=1), old_idx + 2, 1).astype(jnp.int32)
             mu_M = mu_R + mu_F
-            sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 + (0.0 if corr is None else 2.0 * corr * sigma_R * sigma_F))
+            sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 +
+                            (0.0 if corr is None else 2.0 * jnp.clip(corr, -_RHO_MAX, _RHO_MAX) * sigma_R * sigma_F))
             ug = jnp.minimum(u, N - 1)
             log_lik = jnp.zeros(N, dtype=_FLOAT).at[u].set(
                 fused_loglik_simple(y_band[ug], J + 1, mu_M[ug], sd_M[ug], thresh_mid[ug], _gap_rows(log_gaps, ug),

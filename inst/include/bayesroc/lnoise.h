@@ -155,7 +155,8 @@ inline void load4(const double* X, const double* W, int i, v4d& x, v4d& w) {
 inline v4d vpdf(v4d x) { return splat(bvn_tail::kInvSqrt2Pi) * bvn::vexp(splat(-0.5) * x * x); }
 
 inline v4d vD(v4d a, v4d w, const bvn::PhiV& ph, v4d u, const Side& sd) {
-  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, m2 = m * m, one = splat(1.0);
+  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, one = splat(1.0);
+  const v4d mc = bvn::vmax(bvn::vmin(m, splat(40.0)), splat(-40.0)), m2 = mc * mc;
   const v4d he2 = m2 - one, he4 = m2 * m2 - splat(6.0) * m2 + splat(3.0);
   const v4d he6 = m2 * m2 * m2 - splat(15.0) * m2 * m2 + splat(45.0) * m2 - splat(15.0);
   const v4d ser = w * vpdf(m) * (one + h2 * (he2 / splat(6.0) + h2 * (he4 / splat(120.0) + h2 * he6 / splat(5040.0))));
@@ -163,10 +164,11 @@ inline v4d vD(v4d a, v4d w, const bvn::PhiV& ph, v4d u, const Side& sd) {
 }
 
 inline v4d vdDda(v4d a, v4d w, const bvn::PhiV& ph, const Side& sd) {
-  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, m2 = m * m;
-  const v4d he3 = m * (m2 - splat(3.0)), he5 = m * (m2 * m2 - splat(10.0) * m2 + splat(15.0));
-  const v4d he7 = m * (m2 * m2 * m2 - splat(21.0) * m2 * m2 + splat(105.0) * m2 - splat(105.0));
-  const v4d ser = -w * vpdf(m) * (m + h2 * (he3 / splat(6.0) + h2 * (he5 / splat(120.0) + h2 * he7 / splat(5040.0))));
+  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w;
+  const v4d mc = bvn::vmax(bvn::vmin(m, splat(40.0)), splat(-40.0)), m2 = mc * mc;
+  const v4d he3 = mc * (m2 - splat(3.0)), he5 = mc * (m2 * m2 - splat(10.0) * m2 + splat(15.0));
+  const v4d he7 = mc * (m2 * m2 * m2 - splat(21.0) * m2 * m2 + splat(105.0) * m2 - splat(105.0));
+  const v4d ser = -w * vpdf(m) * (mc + h2 * (he3 / splat(6.0) + h2 * (he5 / splat(120.0) + h2 * he7 / splat(5040.0))));
   return bvn::vsel(w <= splat(kWSer), ser, splat(sd.pa) - ph.dP);
 }
 
