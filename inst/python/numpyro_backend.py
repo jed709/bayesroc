@@ -3788,7 +3788,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         return jnp.log(prob), prob, parts
 
     @custom_jvp
-    def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, rho_N_val,
+    def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
                      R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx):
         gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
         return _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
@@ -3796,9 +3796,9 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
-        (y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, rho_N_val,
+        (y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
          R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx) = primals
-        (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho, d_rho_N,
+        (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho,
          d_R_I, d_R_S, d_R_I_B, d_R_S_B, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2, _) = tangents
         gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
         gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
@@ -3869,7 +3869,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
 
 def fused_loglik_bounded_bivariate_dp(y1, y2, item_type, K1, K2, mu1, mu2, sigma1, sigma2,
-                                       rho_val, rho_N_val, R_I, R_S,
+                                       rho_val, R_I, R_S,
                                        R_I_B=None, R_S_B=None,
                                        thresh1_mid=None, gaps1=None,
                                        thresh2_mid=None, gaps2=None, gap_link="log", part=None):
@@ -3899,7 +3899,7 @@ def fused_loglik_bounded_bivariate_dp(y1, y2, item_type, K1, K2, mu1, mu2, sigma
             int(K1), int(K2), bool(is_softplus))
     midx = jnp.arange(N, dtype=jnp.int32) if part is None else jnp.asarray(part, dtype=jnp.int32)
     return _fused_cache[key](y1, y2, item_type, mu1, mu2, sigma1, sigma2,
-                              rho_val, rho_N_val, R_I, R_S, R_I_B, R_S_B,
+                              rho_val, R_I, R_S, R_I_B, R_S_B,
                               thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs, midx)
 
 
@@ -4295,7 +4295,7 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
             log_lik = _with_marginal(fused_loglik_bounded_bivariate_dp(
                 y1, y2, item_type, K1, K2,
                 mu1=mu1, mu2=mu2, sigma1=sd1, sigma2=sd2,
-                rho_val=rho_n, rho_N_val=rho_N,
+                rho_val=rho_n,
                 R_I=R_I, R_S=R_S, R_I_B=R_I_B, R_S_B=R_S_B,
                 thresh1_mid=thresh1_mid, gaps1=log_gaps1,
                 thresh2_mid=thresh2_mid, gaps2=log_gaps2,

@@ -115,8 +115,7 @@ def biv_case(kind, N=400, K=6, seed=3, part=False):
         base = [_n(rng, 1.0, 0.7, N), _n(rng, 0.5, 0.7, N), _u(rng, 0.7, 1.5, N),
                 _u(rng, 0.7, 1.5, N), _u(rng, -0.7, 0.7, N)]
         if kind == "bounded_bivariate_dp":
-            base += [_u(rng, -0.7, 0.7, N), _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N),
-                     _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N)]
+            base += [_u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N), _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N)]
         f = {"bivariate_sdt": nb._make_fused_batch_bivariate_sdt_loglik,
              "bounded_bivariate_sdt": nb._make_fused_batch_bounded_bivariate_sdt_loglik,
              "bounded_bivariate_dp": nb._make_fused_batch_bounded_bivariate_dp_loglik}[kind](K, K, False)
