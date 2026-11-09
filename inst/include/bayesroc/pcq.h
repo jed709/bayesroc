@@ -264,7 +264,7 @@ inline bool log_int_unit(int n, const double* a, const double* c, double* dc, do
   u.n = 0;
   int idx[kUnitMax];
   for (int j = 0; j < n; ++j) {
-    if (a[j] == 0.0) continue;
+    if (a[j] == 0.0 && c[j] > 30.0) continue;
     if (a[j] != 1.0 || c[j] <= kUnitMinC || u.n == kUnitMax) return false;
     idx[u.n] = j;
     u.c[u.n++] = c[j];

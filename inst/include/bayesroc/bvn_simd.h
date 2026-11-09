@@ -189,12 +189,30 @@ inline void vprobit_triple(v4d x, v4d& P, v4d& dP, v4d& q) {
   dP = e * vhorner<14>(kProbitG, t);
 }
 
+constexpr double kHalfPhi[16] = {0.3989422804014327, -0.06649038006690544, 0.009973557010035817, -0.0011873282154804543, 0.00011543468761615529, -9.444656259503615e-06, 6.659693516316651e-07, -4.122667414862689e-08, 2.2735298243728065e-09, -1.1301171641619213e-10, 5.1124347902563106e-12, -2.121761474217046e-13, 8.133418984498675e-15, -2.896516732371323e-16, 9.631274849017947e-18, -3.0033007593711877e-19};
+
+inline v4d vhalf_phi(v4d x) { return x * vhorner<16>(kHalfPhi, x * x); }
+
+inline v4d vprobit_band(v4d l, v4d h, v4d Pl, v4d Ph, v4d ql, v4d qh, v4d& dl, v4d& dh) {
+  const v4d zero = splat(0.0);
+  v4d D = vsel(l >= zero, ql - qh, Ph - Pl);
+  const v4i narrow = (l < zero) & (h >= zero) & (h - l < splat(1.0));
+  if (narrow[0] | narrow[1] | narrow[2] | narrow[3]) {
+    const v4d c = splat(0.3989422804014327), half = splat(-0.5);
+    const v4d lc = vmax(l, splat(-1.0)), hc = vmin(h, splat(1.0));
+    D = vsel(narrow, vhalf_phi(h) + vhalf_phi(-l), D);
+    dl = vsel(narrow, c * vexp(half * lc * lc), dl);
+    dh = vsel(narrow, c * vexp(half * hc * hc), dh);
+  }
+  return D;
+}
+
 inline void probit_cell4(v4d l, v4d h, v4d& lp, v4d& glo, v4d& ghi) {
   const v4d zero = splat(0.0), fl = splat(1e-300);
   v4d Pl, dl, ql, Ph, dh, qh;
   vprobit_triple(l, Pl, dl, ql);
   vprobit_triple(h, Ph, dh, qh);
-  v4d D = vsel(l >= zero, ql - qh, Ph - Pl);
+  v4d D = vprobit_band(l, h, Pl, Ph, ql, qh, dl, dh);
   v4d p = vmax(D, fl);
   v4d inv = vsel(D > fl, splat(1.0) / p, zero);
   lp = vlog(p);
@@ -206,7 +224,7 @@ inline void probit_diff4(v4d l, v4d h, v4d& D, v4d& pl, v4d& ph) {
   v4d Pl, ql, Ph, qh;
   vprobit_triple(l, Pl, pl, ql);
   vprobit_triple(h, Ph, ph, qh);
-  D = vsel(l >= splat(0.0), ql - qh, Ph - Pl);
+  D = vprobit_band(l, h, Pl, Ph, ql, qh, pl, ph);
 }
 
 inline void probit_diff_range(int64_t i0, int64_t i1, const double* zlo, const double* zhi, double* D,
@@ -279,7 +297,7 @@ inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& 
   vprobit_triple(uh, Ph, dh, qh);
   const v4d Qa = vsel(ua >= zero, qa, one - qa);
   const v4d Qc = vsel(uc >= zero, qc, one - qc);
-  const v4d D = vsel(ul >= zero, ql - qh, Ph - Pl);
+  const v4d D = vprobit_band(ul, uh, Pl, Ph, ql, qh, dl, dh);
   const v4d ia = vsel(Qa > fl, one / vmax(Qa, fl), zero);
   const v4d ib = vsel(D > fl, one / vmax(D, fl), zero);
   const v4d ic = vsel(Qc > fl, one / vmax(Qc, fl), zero);
@@ -450,6 +468,23 @@ inline void corners(const v4d* H, const v4d* K, v4d rho, v4d& r, v4d& dAdr, Corn
   else corners_n<NC, 128>(H, K, A, kX128, kW128, out);
 }
 
+struct Phi2V {
+  v4d live, q, norm, r;
+};
+
+inline Phi2V vphi2_setup(v4d rho) {
+  const v4d r = vmin(vmax(rho, splat(-kRhoMax)), splat(kRhoMax)), one = splat(1.0), c = one - r * r;
+  return {vsel(vabs(rho) < splat(kRhoMax), one, splat(0.0)), splat(0.5) / c, splat(0.15915494309189535) / vsqrt(c), r};
+}
+
+inline v4d vphi2(v4d x, v4d y, const Phi2V& f) {
+  const v4d zero = splat(0.0), big = splat(1e9);
+  const v4i fin = (vabs(x) < big) & (vabs(y) < big);
+  const v4d xs = vsel(fin, x, zero), ys = vsel(fin, y, zero);
+  const v4d d = f.live * f.norm * vexp(-(xs * xs - splat(2.0) * f.r * xs * ys + ys * ys) * f.q);
+  return vsel(fin, d, zero);
+}
+
 inline void vphi_diff(v4d lo, v4d hi, v4d& D, v4d& dlo, v4d& dhi) {
   PhiV H = vacc_phi(hi), L = vacc_phi(lo);
   D = vsel(lo >= splat(0.0), L.Q - H.Q, H.P - L.P);
@@ -485,7 +520,8 @@ inline void rect4m(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4
   d1h = D1h * D2 + c[0].dh - c[2].dh;
   d2l = D1 * D2l - c[2].dk + c[3].dk;
   d2h = D1 * D2h + c[0].dk - c[1].dk;
-  drho = (c[0].dA - c[1].dA - c[2].dA + c[3].dA) * dAdr;
+  const Phi2V f = vphi2_setup(rho);
+  drho = vphi2(b1, b2, f) - vphi2(a1, b2, f) - vphi2(b1, a2, f) + vphi2(a1, a2, f);
 }
 
 inline void rect4(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d& d1h,
@@ -557,7 +593,7 @@ inline void cdf4(v4d h, v4d k, v4d rho, v4d& p, v4d& dh, v4d& dk, v4d& drho) {
   p = H.P * K.P + c[0].I;
   dh = H.dP * K.P + c[0].dh;
   dk = H.P * K.dP + c[0].dk;
-  drho = c[0].dA * dAdr;
+  drho = vphi2(h, k, vphi2_setup(rho));
 }
 
 template <int NP, int NM>
@@ -578,6 +614,7 @@ inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* o
     }
     P[a] = b < a ? P[b] : vacc_phi(in[a]);
   }
+  const Phi2V f = vphi2_setup(rho);
   for (int q = 0; q < NP; ++q) {
     const PhiV& Ph = P[q];
     const PhiV& Pk = P[NP + q];
@@ -585,7 +622,7 @@ inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* o
     o[0] = Ph.P * Pk.P + c[q].I;
     o[1] = Ph.dP * Pk.P + c[q].dh;
     o[2] = Ph.P * Pk.dP + c[q].dk;
-    o[3] = c[q].dA * dAdr;
+    o[3] = vphi2(H[q], K[q], f);
     o[4] = Ph.Q;
     o[5] = Ph.dP;
     o[6] = Pk.Q;
@@ -678,8 +715,10 @@ inline void vrdp4(const v4d* in, v4d* out) {
   vprobit_triple(z1rl, P1rl, d1rl, q1rl);
   vprobit_triple(z2rh, P2rh, d2rh, q2rh);
   vprobit_triple(z2rl, P2rl, d2rl, q2rl);
-  v4d D1f = vsel(z1fl >= zero, q1fl - q1fh, P1fh - P1fl), D2n = vsel(z2l >= zero, q2nl - q2nh, P2nh - P2nl);
-  v4d D1r = vsel(z1rl >= zero, q1rl - q1rh, P1rh - P1rl), D2r = vsel(z2rl >= zero, q2rl - q2rh, P2rh - P2rl);
+  v4d D1f = vprobit_band(z1fl, z1fh, P1fl, P1fh, q1fl, q1fh, d1fl, d1fh);
+  v4d D2n = vprobit_band(z2l, z2h, P2nl, P2nh, q2nl, q2nh, d2nl, d2nh);
+  v4d D1r = vprobit_band(z1rl, z1rh, P1rl, P1rh, q1rl, q1rh, d1rl, d1rh);
+  v4d D2r = vprobit_band(z2rl, z2rh, P2rl, P2rh, q2rl, q2rh, d2rl, d2rh);
   v4d p1f = vmax(D1f, floor20), p2n = vmax(D2n, floor20), p1r = vmax(D1r, floor20), p2r = vmax(D2r, floor20);
   v4d pfam = p1f * p2n, prec = p1r * p2r, oml = splat(1.0) - lam;
   v4d praw = oml * pfam + lam * prec;

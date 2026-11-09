@@ -25,7 +25,8 @@
     expect_true(isTRUE(r$custom_jvp), label = paste(k, "has a custom JVP"))
     expect_true(r$finite, label = k)
     expect_lt(r$primal_abs, 1e-10, label = paste(k, "JVP primal vs plain value"))
-    expect_lt(r$tangent_abs, 1e-8, label = paste(k, "JVP tangent vs autodiff of the value"))
+    tol <- if (grepl("^cdp_", k)) 2e-7 else 1e-8
+    expect_lt(r$tangent_abs, tol, label = paste(k, "JVP tangent vs autodiff of the value"))
   }
 }
 
@@ -36,7 +37,7 @@ test_that("every univariate kernel's custom JVP is the exact derivative of its v
   .jvp_expect(.run_py_check("jvp_check.py", paste(.kernels_jax, collapse = ",")), .kernels_jax)
 })
 
-test_that("every native-backed kernel's pure-JAX custom JVP is the exact derivative of its value", {
+test_that("every native-backed kernel's pure-JAX custom JVP matches autodiff of its value, to quadrature accuracy where the rho derivative is closed form", {
   skip_if_not_slow()
   skip_if_no_jax()
   ks <- setdiff(.kernels, .kernels_jax)

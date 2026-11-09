@@ -303,10 +303,15 @@ def _cloglog_pdf(x):
     return jnp.exp(xc - jnp.exp(xc))
 
 
+def _logit_pdf(x):
+    e = jnp.exp(-jnp.abs(x))
+    return e / (1.0 + e) ** 2
+
+
 def _link_fns(link_name):
     """(CDF, PDF) pair for a latent-distribution link."""
     if link_name == "logit":
-        return jax_expit, lambda x: jax_expit(x) * (1.0 - jax_expit(x))
+        return jax_expit, _logit_pdf
     if link_name == "cloglog":
         return _cloglog_cdf, _cloglog_pdf
     return (lambda x: _probit_triple(x)[0]), (lambda x: _probit_triple(x)[1])
@@ -608,8 +613,15 @@ def _dw_corners(HK, rho):
     return r, jax.lax.switch(tier, [branch(m) for m in _DW_TIER_NODES], None)
 
 
-def _dw_dA_drho(r, rho):
-    return jnp.where(jnp.abs(rho) < _RHO_MAX, 1.0 / jnp.sqrt(1.0 - r * r), 0.0)
+def _phi2_density(x, y, rho):
+    """The bivariate normal density at (x, y), the exact derivative of the CDF in rho; zero at an open
+    edge and at or past the rho clamp, as the kernels' derivative in rho is."""
+    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
+    c = (1.0 - r) * (1.0 + r)
+    fin = (jnp.abs(x) < 1e9) & (jnp.abs(y) < 1e9) & (jnp.abs(rho) < _RHO_MAX)
+    xs, ys = jnp.where(fin, x, 0.0), jnp.where(fin, y, 0.0)
+    d = jnp.exp(-(xs * xs - 2.0 * r * xs * ys + ys * ys) / (2.0 * c)) / (2.0 * np.pi * jnp.sqrt(c))
+    return jnp.where(fin, d, 0.0)
 
 
 _ACC_PHI_C = [0.5893276044905619, 0.47231061768868227, 0.1485473376619552, 0.03611913148900286, 0.006378297104388951, 0.0006592194044005224, -1.1534346994167076e-05, -1.541999589462102e-05, -1.4350295963176838e-06, 2.671384604629693e-07, 5.842069382918476e-08, -4.878387335732758e-09, -2.0166300903829314e-09, 1.2065191939381096e-10, 7.135408878679637e-11, -4.885139134318498e-12, -2.630066125081603e-12, 2.7380131795870467e-13, 9.691376820174753e-14]
@@ -681,7 +693,37 @@ def _phi_diff(z_lo, z_hi):
         return D, -pdf_lo, pdf_hi
     Ph, dh, Qh = _probit_triple(z_hi)
     Pl, dl, Ql = _probit_triple(z_lo)
-    return jnp.where(z_lo >= 0, Ql - Qh, Ph - Pl), -dl, dh
+    dl, dh = _band_pdfs(z_lo, z_hi, dl, dh)
+    return _probit_band(z_lo, z_hi, Pl, Ph, Ql, Qh), -dl, dh
+
+
+_HALF_PHI = (0.3989422804014327, -0.06649038006690544, 0.009973557010035817, -0.0011873282154804543, 0.00011543468761615529, -9.444656259503615e-06, 6.659693516316651e-07, -4.122667414862689e-08, 2.2735298243728065e-09, -1.1301171641619213e-10, 5.1124347902563106e-12, -2.121761474217046e-13, 8.133418984498675e-15, -2.896516732371323e-16, 9.631274849017947e-18, -3.0033007593711877e-19)
+
+
+def _half_phi(x):
+    return x * _horner(_HALF_PHI[::-1], x * x)
+
+
+def _band_narrow(z_lo, z_hi):
+    return (z_lo < 0) & (z_hi >= 0) & (z_hi - z_lo < 1.0)
+
+
+def _probit_band(z_lo, z_hi, Pl, Ph, Ql, Qh):
+    D = jnp.where(z_lo >= 0, Ql - Qh, Ph - Pl)
+    if D.dtype != jnp.float64:
+        return D
+    narrow = _band_narrow(z_lo, z_hi)
+    return jnp.where(narrow, _half_phi(jnp.clip(z_hi, -1.0, 1.0)) + _half_phi(jnp.clip(-z_lo, -1.0, 1.0)), D)
+
+
+def _band_pdfs(z_lo, z_hi, dl, dh):
+    """The edge densities to pair with _probit_band: exact where the band is the series (|z| < 1), so that the
+    derivative matches the value there."""
+    if dl.dtype != jnp.float64:
+        return dl, dh
+    narrow = _band_narrow(z_lo, z_hi)
+    exact = lambda x: jnp.exp(-0.5 * jnp.clip(x, -1.0, 1.0) ** 2 - _LOG_SQRT_2PI)
+    return jnp.where(narrow, exact(z_lo), dl), jnp.where(narrow, exact(z_hi), dh)
 
 
 def _dw_rect_grads_jax(z1_lo, z1_hi, z2_lo, z2_hi, rho):
@@ -694,14 +736,15 @@ def _dw_rect_grads_jax(z1_lo, z1_hi, z2_lo, z2_hi, rho):
             dD1_hi * D2 + hh[1] - hl[1],
             D1 * dD2_lo - hl[2] + ll[2],
             D1 * dD2_hi + hh[2] - lh[2],
-            (hh[3] - lh[3] - hl[3] + ll[3]) * _dw_dA_drho(r, rho))
+            _phi2_density(z1_hi, z2_hi, rho) - _phi2_density(z1_lo, z2_hi, rho) - _phi2_density(z1_hi, z2_lo, rho)
+            + _phi2_density(z1_lo, z2_lo, rho))
 
 
 def _dw_cdf_grads_jax(h, k, rho):
     r, (c,) = _dw_corners(((h, k),), rho)
     Ph, dh, _ = _acc_phi_and_deriv(h)
     Pk, dk, _ = _acc_phi_and_deriv(k)
-    return Ph * Pk + c[0], dh * Pk + c[1], Ph * dk + c[2], c[3] * _dw_dA_drho(r, rho)
+    return Ph * Pk + c[0], dh * Pk + c[1], Ph * dk + c[2], _phi2_density(h, k, rho)
 
 
 _BVN_FFI = False
@@ -790,10 +833,59 @@ def _log_diff_phi(lo, hi):
     return jnp.where(hi > lo, out, -jnp.inf)
 
 
+_GL16_X, _GL16_W = np.polynomial.legendre.leggauss(16)
+_GRADE_LEVELS = 6
+
+
+def _graded_log_integral(g, px, ps):
+    """log of the integral of exp(g) over (px[..., 0], px[..., -1]), split at the sorted points px
+    [..., P], on Gauss-Legendre panels graded geometrically from each point's local scale ps out to
+    the middle of each piece (as bvn_tail.h)."""
+    A, B = px[..., :-1], px[..., 1:]
+    H = 0.5 * jnp.maximum(B - A, 0.0)
+    k = jnp.arange(_GRADE_LEVELS + 1.0) / _GRADE_LEVELS
+    vals = []
+    for end, sc, sign in ((A, ps[..., :-1], 1.0), (B, ps[..., 1:], -1.0)):
+        ratio = jnp.maximum(H / jnp.maximum(sc, 1e-300), 1.0)
+        offs = jnp.where((ratio > 1.0)[..., None], H[..., None] * ratio[..., None] ** (k - 1.0), H[..., None] * k)
+        offs = jnp.concatenate([jnp.zeros_like(offs[..., :1]), offs], axis=-1)
+        lo, hi = offs[..., :-1], offs[..., 1:]
+        h = 0.5 * (hi - lo)
+        xs = end[..., None, None] + sign * ((lo + h)[..., None] + h[..., None] * _GL16_X)
+        lw = jnp.log(jnp.maximum(h[..., None] * _GL16_W, 1e-300))
+        v = lw + g(xs.reshape(xs.shape[:-3] + (-1,))).reshape(xs.shape)
+        v = jnp.where((h > 0.0)[..., None] & jnp.isfinite(v), v, jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
+        vals.append(v.reshape(v.shape[:-3] + (-1,)))
+    return jax.scipy.special.logsumexp(jnp.concatenate(vals, axis=-1), axis=-1)
+
+
+def _tail_split_points(dg, m, left, right, kinks):
+    """Sorted split points (the ends, the mode and the integrand's transitions inside the range)
+    and their local scales; `kinks` is a list of (point, width) with non-finite points ignored. The
+    mode's scale is at most the narrowest transition's width, as one may lie beside it."""
+    width = jnp.ones_like(m)
+    for x, w in kinks:
+        width = jnp.where(jnp.isfinite(x), jnp.minimum(width, w), width)
+    d = 1e-3 * width
+    curv = -(dg(m + d) - dg(m - d)) / (2.0 * d)
+    mode_scale = jnp.minimum(1.0 / jnp.sqrt(jnp.maximum(jnp.where(jnp.isfinite(curv), curv, 1.0), 1.0)), width)
+    big = jnp.full_like(m, jnp.inf)
+    pts = [left, m, right]
+    scl = [big, mode_scale, big]
+    for x, w in kinks:
+        inside = jnp.isfinite(x) & (x > left) & (x < right)
+        pts.append(jnp.where(inside, x, m))
+        scl.append(jnp.where(inside, w, mode_scale))
+    px, ps = jnp.stack(pts, -1), jnp.stack(scl, -1)
+    order = jnp.argsort(px, axis=-1)
+    return jnp.take_along_axis(px, order, -1), jnp.take_along_axis(ps, order, -1)
+
+
 def _rect_tail_jax(a1, b1, a2, b2, rho):
     """Tail-accurate P(a1 < Z1 < b1, a2 < Z2 < b2; rho) and its derivatives in
     (a1, b1, a2, b2, rho): log-space Gauss-Legendre over the log-concave integrand
     phi(x) P(a2 < Z2 < b2 | x) around its mode; same algorithm as bvn_tail.h."""
+    clamped = ~(jnp.abs(rho) < 0.999999)
     rho = jnp.clip(rho, -0.999999, 0.999999)
     s = jnp.sqrt((1.0 - rho) * (1.0 + rho))
     lo = jnp.maximum(a1, -40.0)
@@ -844,21 +936,11 @@ def _rect_tail_jax(a1, b1, a2, b2, rho):
         return jnp.where((edge - m) * direction > 0.0, e, m)
     left = reach(-1.0, lo)
     right = reach(1.0, hi)
-    k = jnp.arange(4.0)
-    vals = []
-    for A0, B0 in ((left, m), (m, right)):
-        w = B0 - A0
-        A = A0[..., None] + w[..., None] * k / 4.0
-        h = w[..., None] / 8.0
-        c0 = A + h
-        xs = c0[..., None] + h[..., None] * _GL32_X
-        lw = jnp.log(jnp.maximum(h[..., None] * _GL32_W, 1e-300))
-        v = lw + g(xs.reshape(xs.shape[:-2] + (-1,))).reshape(xs.shape)
-        v = jnp.where((w > 0.0)[..., None, None] & jnp.isfinite(v), v,
-                      jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
-        vals.append(v.reshape(v.shape[:-2] + (-1,)))
-    allv = jnp.concatenate(vals, axis=-1)
-    lp = jax.scipy.special.logsumexp(allv, axis=-1)
+    safe = jnp.where(rho == 0.0, 1.0, rho)
+    kw = s / jnp.abs(safe)
+    kinks = [(jnp.where(rho == 0.0, jnp.inf, a2 / safe), kw), (jnp.where(rho == 0.0, jnp.inf, b2 / safe), kw)]
+    px, ps = _tail_split_points(dg, m, left, right, kinks)
+    lp = _graded_log_integral(g, px, ps)
     lp = jnp.where(ok, lp, -jnp.inf)
     p = jnp.exp(lp)
 
@@ -877,7 +959,7 @@ def _rect_tail_jax(a1, b1, a2, b2, rho):
         xs, ys = jnp.where(fin, x, 0.0), jnp.where(fin, y, 0.0)
         v = jnp.exp(-(xs * xs - 2.0 * rho * xs * ys + ys * ys) / (2.0 * s * s) - jnp.log(s) - 1.8378770664093455)
         return jnp.where(fin, v, 0.0)
-    drho = phi2(b1, b2) - phi2(a1, b2) - phi2(b1, a2) + phi2(a1, a2)
+    drho = jnp.where(clamped, 0.0, phi2(b1, b2) - phi2(a1, b2) - phi2(b1, a2) + phi2(a1, a2))
     return p, d1l, d1h, d2l, d2h, drho
 
 
@@ -936,19 +1018,13 @@ def _lin_log_integral_jax(Al, Bl, Au, Bu, a, b):
         return jnp.where((edge - m) * direction > 0.0, e, m)
     left = reach(-1.0, lo)
     right = reach(1.0, hi)
-    k = jnp.arange(4.0)
-    vals = []
-    for A0, B0 in ((left, m), (m, right)):
-        w = B0 - A0
-        A = A0[..., None] + w[..., None] * k / 4.0
-        h = w[..., None] / 8.0
-        xs = (A + h)[..., None] + h[..., None] * _GL32_X
-        lw = jnp.log(jnp.maximum(h[..., None] * _GL32_W, 1e-300))
-        v = lw + g(xs.reshape(xs.shape[:-2] + (-1,))).reshape(xs.shape)
-        v = jnp.where((w > 0.0)[..., None, None] & jnp.isfinite(v), v,
-                      jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
-        vals.append(v.reshape(v.shape[:-2] + (-1,)))
-    lp = jax.scipy.special.logsumexp(jnp.concatenate(vals, axis=-1), axis=-1)
+    kinks = []
+    for A_, B_ in ((Al, Bl), (Au, Bu)):
+        live = jnp.isfinite(A_) & (B_ != 0.0)
+        safe = jnp.where(live, B_, 1.0)
+        kinks.append((jnp.where(live, -jnp.where(live, A_, 0.0) / safe, jnp.inf), 1.0 / jnp.abs(safe)))
+    px, ps = _tail_split_points(dg, m, left, right, kinks)
+    lp = _graded_log_integral(g, px, ps)
     return jnp.where(ok & jnp.isfinite(gm), lp, -jnp.inf)
 
 
@@ -1355,7 +1431,8 @@ def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     Ph, dh, qh = _probit_triple(uh)
     Qa = jnp.where(ua >= 0, qa, 1.0 - qa)
     Qc = jnp.where(uc >= 0, qc, 1.0 - qc)
-    D = jnp.where(ul >= 0, ql - qh, Ph - Pl)
+    D = _probit_band(ul, uh, Pl, Ph, ql, qh)
+    dl, dh = _band_pdfs(ul, uh, dl, dh)
     ia = jnp.where(Qa > fl, 1.0 / jnp.maximum(Qa, fl), 0.0)
     ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
     ic = jnp.where(Qc > fl, 1.0 / jnp.maximum(Qc, fl), 0.0)
@@ -1504,9 +1581,9 @@ def _ln_mode(a, l, s):
     x = a - w
     L = _ln_lam(x)
     sw = s * w
-    zl = -L * sw
+    zl = jnp.maximum(-L * sw, -40.0)
     d2 = -1.0 - L * s * sw - L * (x + L) * sw * sw
-    z = -zl / d2
+    z = jnp.clip(L * sw / d2, zl, 0.0)
 
     def body(_, st):
         z, zl, zr = st
@@ -1522,7 +1599,7 @@ def _ln_mode(a, l, s):
         zn = jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr))
         return zn, zl, zr
 
-    z, _, _ = jax.lax.fori_loop(0, 40, body, (z, zl, jnp.zeros_like(z)))
+    z, _, _ = jax.lax.fori_loop(0, 60, body, (z, zl, jnp.zeros_like(z)))
     w = jnp.exp(l + s * z)
     x = a - w
     L = _ln_lam(x)
@@ -1535,63 +1612,168 @@ def _ln_interval(lo, hi):
                      jax.scipy.special.ndtr(hi) - jax.scipy.special.ndtr(lo))
 
 
-def _ln_kdiff(u, Pa, Qa):
-    return jnp.where(u >= 0.0, jax.scipy.special.ndtr(-u) - Qa, Pa - jax.scipy.special.ndtr(u))
+_LN_GH8_X, _LN_GH8_W = np.polynomial.hermite_e.hermegauss(8)
+_LN_GH8_W = _LN_GH8_W / np.sqrt(2.0 * np.pi)
+_LN_WSER = 0.01
+
+
+def _ln_pdf(t):
+    return jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI)
+
+
+def _ln_D(a, w, Pa, Qa):
+    """Phi(a) - Phi(a - w) = P(0 < T <= w), by a midpoint Hermite series for w <= 0.01 (no cancellation)."""
+    ndtr = jax.scipy.special.ndtr
+    u = a - w
+    sub = jnp.where(u >= 0.0, ndtr(-u) - Qa, Pa - ndtr(u))
+    m = a - 0.5 * w
+    h2 = 0.25 * w * w
+    m2 = m * m
+    he2, he4, he6 = m2 - 1.0, m2 * m2 - 6.0 * m2 + 3.0, m2 * m2 * m2 - 15.0 * m2 * m2 + 45.0 * m2 - 15.0
+    ser = w * _ln_pdf(m) * (1.0 + h2 * (he2 / 6.0 + h2 * (he4 / 120.0 + h2 * he6 / 5040.0)))
+    return jnp.maximum(jnp.where(w <= _LN_WSER, ser, sub), 1e-300)
+
+
+def _ln_dD_da(a, w, pa):
+    """d/da of _ln_D, with the same series for small w."""
+    m = a - 0.5 * w
+    h2 = 0.25 * w * w
+    m2 = m * m
+    he3, he5 = m * (m2 - 3.0), m * (m2 * m2 - 10.0 * m2 + 15.0)
+    he7 = m * (m2 * m2 * m2 - 21.0 * m2 * m2 + 105.0 * m2 - 105.0)
+    ser = -w * _ln_pdf(m) * (m + h2 * (he3 / 6.0 + h2 * (he5 / 120.0 + h2 * he7 / 5040.0)))
+    return jnp.where(w <= _LN_WSER, ser, pa - _ln_pdf(a - w))
+
+
+def _ln_mode_k(a, l, s, zs, Pa, Qa):
+    """Mode of K's integrand phi(z) D(w(z)) on (0, min(zs, 40)) and its curvature; `atzs` where it has no
+    interior mode there (the integrand rises up to zs)."""
+    zr0 = jnp.minimum(jnp.maximum(zs, 0.0), 40.0)
+
+    def gd(z):
+        w = jnp.exp(l + s * z)
+        x = a - w
+        r = _ln_pdf(x) / _ln_D(a, w, Pa, Qa)
+        sw = s * w
+        return -z + r * sw, -1.0 + r * s * sw + r * (x - r) * sw * sw
+
+    g_r, d2_r = gd(zr0)
+    atzs = (zr0 <= 0.0) | (g_r >= 0.0)
+    g0, _ = gd(jnp.zeros_like(a))
+
+    def body(_, st):
+        z, zl, zr = st
+        g, d2 = gd(z)
+        zl = jnp.where(g > 0.0, z, zl)
+        zr = jnp.where(g > 0.0, zr, z)
+        zn = jnp.where(d2 < 0.0, z - g / jnp.where(d2 < 0.0, d2, -1.0), 0.5 * (zl + zr))
+        zn = jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr))
+        return zn, zl, zr
+
+    z, _, _ = jax.lax.fori_loop(0, 40, body, (jnp.clip(g0, 0.0, zr0), jnp.zeros_like(a), zr0))
+    _, d2 = gd(z)
+    zk = jnp.where(atzs, jnp.where(zr0 <= 0.0, 0.0, zr0), z)
+    d2k = jnp.where(atzs, jnp.where(zr0 <= 0.0, -1.0, d2_r), d2)
+    return zk, d2k, atzs
+
+
+def _ln_mode_e(a, l, s, zs, es):
+    """Mode in e = T - a, above es, of C's T-route integrand phi(e) P(zs < Z <= Z(a + e)) (log-concave): it moves
+    far above es when s is small and Z(a + e) is deep in the lower tail."""
+    ndtr = jax.scipy.special.ndtr
+
+    def slope(e):
+        T = a + e
+        Z = (jnp.log(T) - l) / s
+        diff = jnp.where(zs >= 0.0, ndtr(-zs) - ndtr(-Z), ndtr(Z) - ndtr(zs))
+        return -e + _ln_pdf(Z) / jnp.maximum(diff, 1e-300) / (s * T)
+
+    lo0 = es + 1e-9 * jnp.maximum(1.0, jnp.abs(es))
+    hi0 = es + 80.0
+
+    def body(_, lh):
+        lo, hi = lh
+        mid = 0.5 * (lo + hi)
+        up = slope(mid) > 0.0
+        return jnp.where(up, mid, lo), jnp.where(up, hi, mid)
+
+    lo, hi = jax.lax.fori_loop(0, 50, body, (lo0, hi0))
+    return 0.5 * (lo + hi)
 
 
 def _ln_cum(a, l, s, Pa, Qa, pa):
-    """(C, K, dC/da, dK/da, dC/dl, dC/ds) for C = P(T > e^(l + s Z)), T ~ N(a, 1), and K = Phi(a) - C, each
-    accumulated pointwise; dK/dl = -dC/dl and dK/ds = -dC/ds."""
-    zm, d2 = _ln_mode(a, l, s)
-    zs = (-jnp.log(s) - l) / s
-    agh = zs >= zm + _LN_R
-    pdf = lambda t: jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI)
+    """(C, K, dC/da, dK/da, dC/dl, dC/ds) for C = P(T > e^(l + s Z)), T ~ N(a, 1), and K = Phi(a) - C. The
+    smaller of the two (picked by an 8-node Gauss-Hermite estimate of C) is integrated around its own mode,
+    the other is Phi(a) less it; dK/dl = -dC/dl and dK/ds = -dC/ds. Outside the Gauss-Hermite regime K's
+    z-piece runs from max(min(zs, 0) - R, zs - 20) to zs, as its mass sits at z >= 0 up to zs."""
     ndtr = jax.scipy.special.ndtr
+    pdf = _ln_pdf
+    zs = (-jnp.log(s) - l) / s
+    c8 = jnp.sum(_LN_GH8_W * ndtr(a[..., None] - jnp.exp(l[..., None] + s[..., None] * _LN_GH8_X)), -1)
+    tk = c8 > 0.5 * Pa
+    zm, d2m = _ln_mode(a, l, s)
+    zk, d2k, atzs = _ln_mode_k(a, l, s, zs, Pa, Qa)
+    zt = jnp.where(tk, zk, zm)
+    d2t = jnp.where(tk, d2k, d2m)
+    sct = jnp.where(d2t < 0.0, 1.0 / jnp.sqrt(jnp.where(d2t < 0.0, -d2t, 1.0)), 1.0)
+    agh = jnp.where(tk, ~atzs & (zs >= zk + _LN_R * jnp.maximum(sct, 1.0)), zs >= zm + _LN_R)
+    sign = jnp.where(tk, 1.0, -1.0)[..., None]
+    a_, l_, s_, Pa_, Qa_, pa_, tk_ = (v[..., None] for v in (a, l, s, Pa, Qa, pa, tk))
 
-    sc = jnp.where(agh, 1.0 / jnp.sqrt(-d2), 1.0)
-    h0 = jnp.where(agh, -0.5 * zm * zm + _log_q(-(a - jnp.exp(l + s * zm))), 0.0)
-    zg = zm[..., None] + sc[..., None] * _LN_GH_X
-    wg = jnp.exp(l[..., None] + s[..., None] * zg)
-    ug = a[..., None] - wg
+    def target(z, w):
+        u = a_ - w
+        pu = pdf(u)
+        f = jnp.where(tk_, _ln_D(a_, w, Pa_, Qa_), ndtr(u))
+        fa = jnp.where(tk_, _ln_dD_da(a_, w, pa_), pu)
+        return f, fa, sign * pu * w, sign * pu * w * z
+
+    sc = jnp.where(agh, sct, 1.0)
+    wt = jnp.exp(l + s * zt)
+    ft = jnp.where(tk, _ln_D(a, wt, Pa, Qa), ndtr(a - wt))
+    h0 = jnp.where(agh, -0.5 * zt * zt + jnp.log(jnp.maximum(ft, 1e-300)), 0.0)
+    zg = zt[..., None] + sc[..., None] * _LN_GH_X
+    wg = jnp.exp(l_ + s_ * zg)
     eg = jnp.exp(-0.5 * zg * zg + _LN_GH_LW - h0[..., None])
-    pu = pdf(ug)
     cg = sc * jnp.exp(h0) / np.sqrt(2.0 * np.pi)
-    g_agh = [cg * jnp.sum(v, -1) for v in (eg * ndtr(ug), eg * _ln_kdiff(ug, Pa[..., None], Qa[..., None]),
-                                            eg * pu, eg * (pa[..., None] - pu), -eg * pu * wg, -eg * pu * wg * zg)]
+    g_agh = [cg * jnp.sum(eg * v, -1) for v in target(zg, wg)]
 
-    zc = jnp.minimum(zm, zs)
-    lo = zc - _LN_R
-    hi = jnp.minimum(zc + _LN_R, zs)
+    zc = jnp.minimum(zt, zs)
+    lo = jnp.where(tk, jnp.maximum(jnp.minimum(zs, 0.0) - _LN_R, zs - 20.0), zc - _LN_R)
+    hi = jnp.where(tk, zs, jnp.minimum(zc + _LN_R, zs))
     h = 0.5 * jnp.maximum(hi - lo, 0.0)
     z = (lo + h)[..., None] + h[..., None] * _LN_GL_X
-    w = jnp.exp(l[..., None] + s[..., None] * z)
-    u = a[..., None] - w
+    w = jnp.exp(l_ + s_ * z)
     pz = _LN_GL_W * pdf(z)
-    pu = pdf(u)
-    cz = h
-    vz = [cz * jnp.sum(v, -1) for v in (pz * ndtr(u), pz * _ln_kdiff(u, Pa[..., None], Qa[..., None]), pz * pu,
-                                         pz * (pa[..., None] - pu), -pz * pu * w, -pz * pu * w * z)]
+    vz = [h * jnp.sum(pz * v, -1) for v in target(z, w)]
 
     es = 1.0 / s - a
     elo = jnp.maximum(es, -_LN_R)
     net = es - jnp.where(zs < 0.0, _ln_lam(zs), 0.0)
     ehi = jnp.where((es > 0.0) & (net * _LN_R > 40.0), es + 40.0 / jnp.where(net > 0.0, net, 1.0),
                     jnp.maximum(es, 0.0) + _LN_R)
-    he = 0.5 * jnp.maximum(ehi - elo, 0.0)
-    e = (elo + he)[..., None] + he[..., None] * _LN_GL_X
-    ae = jnp.maximum(a[..., None] + e, 1e-300)
-    Z = (jnp.log(ae) - l[..., None]) / s[..., None]
-    pe = _LN_GL_W * pdf(e)
-    pZ = pdf(Z) / s[..., None]
+    ehi = jnp.where(tk, ehi, jnp.maximum(ehi, _ln_mode_e(a, l, s, zs, es) + _LN_R))
     zsb = zs[..., None]
-    diff = jnp.where(zsb >= 0.0, ndtr(-zsb) - ndtr(-Z), ndtr(Z) - ndtr(zsb))
-    ve = [he * jnp.sum(v, -1) for v in (pe * diff, pe * ndtr(-Z), pe * pZ / ae, -pe * pZ / ae, -pe * pZ,
-                                        -pe * pZ * Z)]
+
+    def piece_e(lo_e, hi_e):
+        he = 0.5 * jnp.maximum(hi_e - lo_e, 0.0)
+        e = (lo_e + he)[..., None] + he[..., None] * _LN_GL_X
+        ae = jnp.maximum(a_ + e, 1e-300)
+        Z = (jnp.log(ae) - l_) / s_
+        pe = _LN_GL_W * pdf(e)
+        pZ = pdf(Z) / s_
+        diff = jnp.where(zsb >= 0.0, ndtr(-zsb) - ndtr(-Z), ndtr(Z) - ndtr(zsb))
+        f = jnp.where(tk_, ndtr(-Z), diff)
+        return [he * jnp.sum(pe * v, -1) for v in (f, -sign * pZ / ae, sign * pZ, sign * pZ * Z)]
+
+    ve = piece_e(elo, ehi)
+    vb = piece_e(jnp.minimum(es, -_LN_R), jnp.full_like(es, -_LN_R))
     Qzs = ndtr(-zs)
-    kc = _ln_interval(-a, elo) * Qzs
-    split = [vz[0] + ve[0], vz[1] + ve[1] + kc, vz[2] + ve[2], vz[3] + ve[3] + pa * Qzs, vz[4] + ve[4],
-             vz[5] + ve[5]]
-    return [jnp.where(agh, x, y) for x, y in zip(g_agh, split)]
+    kc = jnp.where(tk, _ln_interval(-a, es) * Qzs, 0.0)
+    kca = jnp.where(tk, pa * Qzs, 0.0)
+    split = [vz[0] + ve[0] + vb[0] + kc, vz[1] + ve[1] + vb[1] + kca, vz[2] + ve[2] + vb[2], vz[3] + ve[3] + vb[3]]
+    T, Ta, Tl, Ts = [jnp.where(agh, x, y) for x, y in zip(g_agh, split)]
+    return [jnp.where(tk, Pa - T, T), jnp.where(tk, T, Pa - T), jnp.where(tk, pa - Ta, Ta), jnp.where(tk, Ta, pa - Ta),
+            jnp.where(tk, -Tl, Tl), jnp.where(tk, -Ts, Ts)]
 
 
 def _lnoise_cell_jax(a, ln, lf, s):
@@ -2051,12 +2233,14 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit", 
         cell_p = jnp.clip(_D_cell_p, _pfloor())
 
         is_top = (y == edge).astype(_FLOAT)
-        p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
+        p_raw = lambda_val * is_top + (1.0 - lambda_val) * cell_p
+        p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
+        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
 
-        d_lp_d_lambda = (is_top - cell_p) / p
+        d_lp_d_lambda = (is_top - cell_p) * inv_p
 
-        d_lp_d_cell = (1.0 - lambda_val) / p
+        d_lp_d_cell = jnp.where(_D_cell_p > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
 
         pdf_hi = _ph_cell_p
         pdf_lo = _pl_cell_p
@@ -2193,13 +2377,15 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
         _D_p2, _pl_p2, _ph_p2 = _CELL(z2_lo, z2_hi)
         p2 = jnp.clip(_D_p2, _pfloor())
 
-        p = jnp.clip(lambda_val * p1 + (1.0 - lambda_val) * p2, _pfloor())
+        p_raw = lambda_val * p1 + (1.0 - lambda_val) * p2
+        p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
+        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
 
-        d_lp_d_lambda = (p1 - p2) / p
+        d_lp_d_lambda = (p1 - p2) * inv_p
 
-        d_lp_d_p1 = lambda_val / p
-        d_lp_d_p2 = (1.0 - lambda_val) / p
+        d_lp_d_p1 = jnp.where(_D_p1 > _pfloor(), lambda_val * inv_p, 0.0)
+        d_lp_d_p2 = jnp.where(_D_p2 > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
 
         pdf1_hi = _ph_p1
         pdf1_lo = _pl_p1
@@ -2351,13 +2537,15 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
         _D_p_noise, _pl_p_noise, _ph_p_noise = _CELL(z_noise_lo, z_noise_hi)
         p_noise = jnp.clip(_D_p_noise, _pfloor())
 
-        p = jnp.clip(lambda_val * p_att + (1.0 - lambda_val) * p_noise, _pfloor())
+        p_raw = lambda_val * p_att + (1.0 - lambda_val) * p_noise
+        p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
+        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
 
-        d_lp_d_lambda = (p_att - p_noise) / p
+        d_lp_d_lambda = (p_att - p_noise) * inv_p
 
-        d_lp_d_patt = lambda_val / p
-        d_lp_d_pnoise = (1.0 - lambda_val) / p
+        d_lp_d_patt = jnp.where(_D_p_att > _pfloor(), lambda_val * inv_p, 0.0)
+        d_lp_d_pnoise = jnp.where(_D_p_noise > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
 
         pdf_att_hi = _ph_p_att
         pdf_att_lo = _pl_p_att
@@ -2987,10 +3175,14 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
         P1rl, d1rl, q1rl = _probit_triple(z1_rec_lo)
         P2rh, d2rh, q2rh = _probit_triple(z2_rec_hi)
         P2rl, d2rl, q2rl = _probit_triple(z2_rec_lo)
-        D1f = jnp.where(z1_fam_lo >= 0, q1fl - q1fh, P1fh - P1fl)
-        D2n = jnp.where(z2_lo >= 0, q2nl - q2nh, P2nh - P2nl)
-        D1r = jnp.where(z1_rec_lo >= 0, q1rl - q1rh, P1rh - P1rl)
-        D2r = jnp.where(z2_rec_lo >= 0, q2rl - q2rh, P2rh - P2rl)
+        D1f = _probit_band(z1_fam_lo, z1_fam_hi, P1fl, P1fh, q1fl, q1fh)
+        D2n = _probit_band(z2_lo, z2_hi, P2nl, P2nh, q2nl, q2nh)
+        D1r = _probit_band(z1_rec_lo, z1_rec_hi, P1rl, P1rh, q1rl, q1rh)
+        D2r = _probit_band(z2_rec_lo, z2_rec_hi, P2rl, P2rh, q2rl, q2rh)
+        d1fl, d1fh = _band_pdfs(z1_fam_lo, z1_fam_hi, d1fl, d1fh)
+        d2nl, d2nh = _band_pdfs(z2_lo, z2_hi, d2nl, d2nh)
+        d1rl, d1rh = _band_pdfs(z1_rec_lo, z1_rec_hi, d1rl, d1rh)
+        d2rl, d2rh = _band_pdfs(z2_rec_lo, z2_rec_hi, d2rl, d2rh)
         p1_fam   = jnp.clip(D1f, _pfloor())
         p2_noise = jnp.clip(D2n, _pfloor())
         p1_rec   = jnp.clip(D1r, _pfloor())

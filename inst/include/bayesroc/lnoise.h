@@ -44,6 +44,9 @@ constexpr double kR = 8.5;
 constexpr double kRho = 4.0;
 constexpr double kKappa = 0.5;
 constexpr double kFloor = 1e-300;
+constexpr double kWSer = 0.01;
+constexpr double kH8X[8] = {-4.1445471861258945, -2.8024858612875416, -1.636519042435108, -0.5390798113513751, 0.5390798113513751, 1.636519042435108, 2.8024858612875416, 4.1445471861258945};
+constexpr double kH8W[8] = {0.00011261453837536765, 0.009635220120788258, 0.11723990766175905, 0.37301225767907736, 0.37301225767907736, 0.11723990766175905, 0.009635220120788258, 0.00011261453837536765};
 
 using bvn::splat;
 using bvn::v4d;
@@ -72,8 +75,16 @@ inline bvn::PhiV vphi(v4d x) {
 inline bvn::PhiV phi1(double x) { return vphi(splat(x)); }
 
 inline double lam(double x) {
+  if (x < 0.0) return 1.0 / bvn_tail::mills(-x);
   bvn::PhiV p = phi1(x);
   return p.dP[0] / p.P[0];
+}
+
+inline v4d vlam(v4d x, const bvn::PhiV& ph) {
+  v4d r = ph.dP / ph.P;
+  for (int k = 0; k < 4; ++k)
+    if (x[k] < 0.0) r[k] = 1.0 / bvn_tail::mills(-x[k]);
+  return r;
 }
 
 inline double log_Phi(double x) {
@@ -87,8 +98,8 @@ inline void mode2(double a, double l0, double l1, double s, double* zm, double* 
   const v4d va = splat(a), vs = splat(s), vl = v4d{l0, l1, l0, l1};
   v4d w = bvn::vexp(vl), x = va - w, sw = vs * w;
   bvn::PhiV ph = vphi(x);
-  v4d L = ph.dP / ph.P;
-  v4d zl = -L * sw, zr = splat(0.0);
+  v4d L = vlam(x, ph);
+  v4d zl = bvn::vmax(-L * sw, splat(-40.0)), zr = splat(0.0);
   v4d h2 = splat(-1.0) - L * vs * sw - L * (x + L) * sw * sw;
   v4d z = -zl / h2;
   for (int it = 0; it < 60; ++it) {
@@ -96,7 +107,7 @@ inline void mode2(double a, double l0, double l1, double s, double* zm, double* 
     x = va - w;
     sw = vs * w;
     ph = vphi(x);
-    L = ph.dP / ph.P;
+    L = vlam(x, ph);
     v4d g = -z - L * sw;
     h2 = splat(-1.0) - L * vs * sw - L * (x + L) * sw * sw;
     zl = bvn::vsel(g > splat(0.0), z, zl);
@@ -141,25 +152,104 @@ inline void load4(const double* X, const double* W, int i, v4d& x, v4d& w) {
   }
 }
 
-inline void piece_z(double a, double l, double s, double lo, double hi, const Side& sd, Cum& r) {
+inline v4d vpdf(v4d x) { return splat(bvn_tail::kInvSqrt2Pi) * bvn::vexp(splat(-0.5) * x * x); }
+
+inline v4d vD(v4d a, v4d w, const bvn::PhiV& ph, v4d u, const Side& sd) {
+  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, m2 = m * m, one = splat(1.0);
+  const v4d he2 = m2 - one, he4 = m2 * m2 - splat(6.0) * m2 + splat(3.0);
+  const v4d he6 = m2 * m2 * m2 - splat(15.0) * m2 * m2 + splat(45.0) * m2 - splat(15.0);
+  const v4d ser = w * vpdf(m) * (one + h2 * (he2 / splat(6.0) + h2 * (he4 / splat(120.0) + h2 * he6 / splat(5040.0))));
+  return bvn::vmax(bvn::vsel(w <= splat(kWSer), ser, kdiff(ph, u, sd)), splat(kFloor));
+}
+
+inline v4d vdDda(v4d a, v4d w, const bvn::PhiV& ph, const Side& sd) {
+  const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, m2 = m * m;
+  const v4d he3 = m * (m2 - splat(3.0)), he5 = m * (m2 * m2 - splat(10.0) * m2 + splat(15.0));
+  const v4d he7 = m * (m2 * m2 * m2 - splat(21.0) * m2 * m2 + splat(105.0) * m2 - splat(105.0));
+  const v4d ser = -w * vpdf(m) * (m + h2 * (he3 / splat(6.0) + h2 * (he5 / splat(120.0) + h2 * he7 / splat(5040.0))));
+  return bvn::vsel(w <= splat(kWSer), ser, splat(sd.pa) - ph.dP);
+}
+
+struct Tgt {
+  double t, ta, tl, ts;
+};
+
+inline void target_terms(v4d z, v4d w, v4d va, bool tk, const Side& sd, v4d& f, v4d& fa, v4d& fl, v4d& fs) {
+  const v4d u = va - w;
+  const bvn::PhiV ph = vphi(u);
+  const v4d sign = splat(tk ? 1.0 : -1.0);
+  f = tk ? vD(va, w, ph, u, sd) : ph.P;
+  fa = tk ? vdDda(va, w, ph, sd) : ph.dP;
+  fl = sign * ph.dP * w;
+  fs = fl * z;
+}
+
+inline void piece_t(double a, double l, double s, double lo, double hi, bool tk, const Side& sd, Tgt& r) {
   const int k = rule_index(hi - lo), n = 4 * (k + 2);
   const double *X = kRuleX[k], *W = kRuleW[k], h = 0.5 * (hi - lo);
-  const v4d va = splat(a), vl = splat(l), vs = splat(s), c0 = splat(lo + h), vh = splat(h), vpa = splat(sd.pa);
-  v4d P = splat(0.0), KV = P, DA = P, KA = P, DL = P, DS = P;
+  const v4d va = splat(a), vl = splat(l), vs = splat(s), c0 = splat(lo + h), vh = splat(h);
+  v4d T = splat(0.0), TA = T, TL = T, TS = T;
   for (int i = 0; i < n; i += 4) {
     v4d x, wt;
     load4(X, W, i, x, wt);
-    v4d z = c0 + vh * x, w = bvn::vexp(vl + vs * z), u = va - w;
-    bvn::PhiV ph = vphi(u);
-    v4d pz = wt * bvn::vexp(splat(-0.5) * z * z), q = pz * ph.dP;
-    P += pz * ph.P;
-    KV += pz * kdiff(ph, u, sd);
-    DA += q;
-    KA += pz * (vpa - ph.dP);
-    DL -= q * w;
-    DS -= q * w * z;
+    v4d z = c0 + vh * x, w = bvn::vexp(vl + vs * z), f, fa, fl, fs;
+    target_terms(z, w, va, tk, sd, f, fa, fl, fs);
+    v4d pz = wt * bvn::vexp(splat(-0.5) * z * z);
+    T += pz * f;
+    TA += pz * fa;
+    TL += pz * fl;
+    TS += pz * fs;
   }
-  accumulate(P, KV, DA, KA, DL, DS, h * bvn_tail::kInvSqrt2Pi, r);
+  const double c = h * bvn_tail::kInvSqrt2Pi;
+  r.t += c * hsum(T);
+  r.ta += c * hsum(TA);
+  r.tl += c * hsum(TL);
+  r.ts += c * hsum(TS);
+}
+
+inline double scalar_D(double a, double w, const Side& sd) {
+  v4d f, fa, fl, fs;
+  target_terms(splat(0.0), splat(w), splat(a), true, sd, f, fa, fl, fs);
+  return f[0];
+}
+
+inline void mode_k(double a, double l, double s, double zs, const Side& sd, double& zk, double& d2k, bool& atzs) {
+  auto gd = [&](double z, double& g, double& d2) {
+    const double w = fexp(l + s * z), x = a - w, sw = s * w;
+    const double r = phi1(x).dP[0] / scalar_D(a, w, sd);
+    g = -z + r * sw;
+    d2 = -1.0 + r * s * sw + r * (x - r) * sw * sw;
+  };
+  double zr = std::fmin(std::fmax(zs, 0.0), 40.0), g, d2;
+  if (!(zr > 0.0)) {
+    zk = 0.0;
+    d2k = -1.0;
+    atzs = true;
+    return;
+  }
+  gd(zr, g, d2);
+  if (g >= 0.0) {
+    zk = zr;
+    d2k = d2;
+    atzs = true;
+    return;
+  }
+  double g0, d20;
+  gd(0.0, g0, d20);
+  double zl = 0.0, z = std::fmin(std::fmax(g0, 0.0), zr);
+  for (int it = 0; it < 60; ++it) {
+    gd(z, g, d2);
+    if (g > 0.0) zl = z; else zr = z;
+    double zn = d2 < 0.0 ? z - g / d2 : 0.5 * (zl + zr);
+    if (!(zn > zl && zn < zr)) zn = 0.5 * (zl + zr);
+    bool done = std::fabs(zn - z) < 1e-6 || zr - zl < 1e-6;
+    z = zn;
+    if (done) break;
+  }
+  gd(z, g, d2);
+  zk = z;
+  d2k = d2;
+  atzs = false;
 }
 
 inline void piece_e(double a, double l, double s, double zs, double es, double lo, double hi, Cum& r) {
@@ -184,55 +274,96 @@ inline void piece_e(double a, double l, double s, double zs, double es, double l
   accumulate(P, KV, DA, -DA, DL, DS, h * bvn_tail::kInvSqrt2Pi, r);
 }
 
+inline double mode_e(double a, double l, double s, double zs, double es) {
+  const bool up = zs >= 0.0;
+  const double Ps = zs < -40.0 ? 0.0 : upper(zs);
+  auto slope = [&](double e) {
+    const double T = a + e, Z = (flog(T) - l) / s;
+    const bvn::PhiV ph = phi1(Z);
+    const double diff = up ? Ps - ph.Q[0] : ph.P[0] - Ps;
+    return -e + ph.dP[0] / std::fmax(diff, 1e-300) / (s * T);
+  };
+  double lo = es + 1e-9 * std::fmax(1.0, std::fabs(es)), hi = es + 80.0;
+  for (int it = 0; it < 50 && hi - lo > 1e-6; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    if (slope(mid) > 0.0) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
 inline Cum cum_at(double a, double l, double s, double zm, double d2, const Side& sd) {
   const double zs = (-flog(s) - l) / s;
-  Cum r{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  if (zs >= zm + kR) {
-    const double sc = 1.0 / std::sqrt(-d2), h0 = -0.5 * zm * zm + log_Phi(a - fexp(l + s * zm));
-    const v4d va = splat(a), vl = splat(l), vs = splat(s), vz = splat(zm), vsc = splat(sc), vh0 = splat(h0);
-    const v4d vpa = splat(sd.pa);
-    v4d P = splat(0.0), KV = P, DA = P, KA = P, DL = P, DS = P;
+  double c8 = 0.0;
+  for (int i = 0; i < 8; i += 4) {
+    v4d x, wt;
+    load4(kH8X, kH8W, i, x, wt);
+    c8 += hsum(wt * vphi(splat(a) - bvn::vexp(splat(l) + splat(s) * x)).P);
+  }
+  const bool tk = c8 > 0.5 * sd.Pa;
+  double zt = zm, d2t = d2;
+  bool gh;
+  if (tk) {
+    bool atzs;
+    mode_k(a, l, s, zs, sd, zt, d2t, atzs);
+    const double sc = d2t < 0.0 ? 1.0 / std::sqrt(-d2t) : 1.0;
+    gh = !atzs && zs >= zt + kR * std::fmax(sc, 1.0);
+  } else {
+    gh = zs >= zm + kR;
+  }
+  Tgt r{0.0, 0.0, 0.0, 0.0};
+  if (gh) {
+    const double sc = d2t < 0.0 ? 1.0 / std::sqrt(-d2t) : 1.0, wt0 = fexp(l + s * zt);
+    const double ft = tk ? scalar_D(a, wt0, sd) : 0.0;
+    const double h0 = -0.5 * zt * zt + (tk ? flog(ft) : log_Phi(a - wt0));
+    const v4d va = splat(a), vl = splat(l), vs = splat(s), vz = splat(zt), vsc = splat(sc), vh0 = splat(h0);
+    v4d T = splat(0.0), TA = T, TL = T, TS = T;
     for (int i = 0; i < 24; i += 4) {
       v4d x, lw;
       load4(kHX, kHLW, i, x, lw);
-      v4d z = vz + vsc * x, w = bvn::vexp(vl + vs * z), u = va - w;
-      bvn::PhiV ph = vphi(u);
-      v4d e = bvn::vexp(splat(-0.5) * z * z + lw - vh0), q = e * ph.dP;
-      P += e * ph.P;
-      KV += e * kdiff(ph, u, sd);
-      DA += q;
-      KA += e * (vpa - ph.dP);
-      DL -= q * w;
-      DS -= q * w * z;
+      v4d z = vz + vsc * x, w = bvn::vexp(vl + vs * z), f, fa, fl, fs;
+      target_terms(z, w, va, tk, sd, f, fa, fl, fs);
+      v4d e = bvn::vexp(splat(-0.5) * z * z + lw - vh0);
+      T += e * f;
+      TA += e * fa;
+      TL += e * fl;
+      TS += e * fs;
     }
-    accumulate(P, KV, DA, KA, DL, DS, sc * fexp(h0) * bvn_tail::kInvSqrt2Pi, r);
-    return r;
-  }
-  const double zc = zm < zs ? zm : zs;
-  const double lo = zc - kR, hi = zc + kR < zs ? zc + kR : zs;
-  const double es = 1.0 / s - a;
-  const double elo = es > -kR ? es : -kR;
-  double ehi = (es > 0.0 ? es : 0.0) + kR;
-  if (es > 0.0) {
-    const double net = es - (zs < 0.0 ? lam(zs) : 0.0);
-    if (net * kR > 40.0) ehi = es + 40.0 / net;
-  }
-  const double bz = hi > lo ? phi1(hi).P[0] : 0.0;
-  const double be = ehi > elo ? phi1(-zs).P[0] : 0.0;
-  if (bz >= be) {
-    if (hi > lo) piece_z(a, l, s, lo, hi, sd, r);
-    if (ehi > elo && be > 1e-17 * std::fmin(r.p, r.k)) piece_e(a, l, s, zs, es, elo, ehi, r);
+    const double c = sc * fexp(h0) * bvn_tail::kInvSqrt2Pi;
+    r = {c * hsum(T), c * hsum(TA), c * hsum(TL), c * hsum(TS)};
   } else {
-    if (ehi > elo) piece_e(a, l, s, zs, es, elo, ehi, r);
-    if (hi > lo && bz > 1e-17 * std::fmin(r.p, r.k)) piece_z(a, l, s, lo, hi, sd, r);
+    const double zc = zt < zs ? zt : zs;
+    const double lo = tk ? std::fmax(std::fmin(zs, 0.0) - kR, zs - 20.0) : zc - kR;
+    const double hi = tk ? zs : (zc + kR < zs ? zc + kR : zs);
+    if (hi > lo) piece_t(a, l, s, lo, hi, tk, sd, r);
+    const double es = 1.0 / s - a;
+    const double elo = es > -kR ? es : -kR;
+    double ehi = (es > 0.0 ? es : 0.0) + kR;
+    if (es > 0.0) {
+      const double net = es - (zs < 0.0 ? lam(zs) : 0.0);
+      if (net * kR > 40.0) ehi = es + 40.0 / net;
+    }
+    if (!tk) ehi = std::fmax(ehi, mode_e(a, l, s, zs, es) + kR);
+    const double be = ehi > elo ? phi1(-zs).P[0] : 0.0;
+    if (be > 0.0 && (be > 1e-17 * r.t || tk)) {
+      Cum e{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+      piece_e(a, l, s, zs, es, elo, ehi, e);
+      if (es < -kR) piece_e(a, l, s, zs, es, es, -kR, e);
+      if (tk) {
+        const double qz = phi1(zs).Q[0], Qzs = zs >= 0.0 ? qz : 1.0 - qz;
+        r.t += e.k + bvn_tail::interval(-a, es) * Qzs;
+        r.ta += e.dka + sd.pa * Qzs;
+        r.tl -= e.dl;
+        r.ts -= e.ds;
+      } else {
+        r.t += e.p;
+        r.ta += e.da;
+        r.tl += e.dl;
+        r.ts += e.ds;
+      }
+    }
   }
-  if (be > 0.0) {
-    const double qz = phi1(zs).Q[0], Qzs = zs >= 0.0 ? qz : 1.0 - qz;
-    const double ee = es > -kR ? es : -kR;
-    r.k += bvn_tail::interval(-a, ee) * Qzs;
-    r.dka += sd.pa * Qzs;
-  }
-  return r;
+  if (tk) return {sd.Pa - r.t, r.t, sd.pa - r.ta, r.ta, -r.tl, -r.ts};
+  return {r.t, sd.Pa - r.t, r.ta, sd.pa - r.ta, r.tl, r.ts};
 }
 
 inline Side side_of(double a) {

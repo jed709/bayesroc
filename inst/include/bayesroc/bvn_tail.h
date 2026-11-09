@@ -18,7 +18,7 @@ constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kTailSwitch = 1e-6;
 constexpr double kDomain = 40.0;
 constexpr double kSpan = 25.0;
-constexpr int kPanels = 2;
+constexpr int kMaxGrade = 30;
 constexpr int kNodes = 20;
 
 constexpr double kGX[kNodes] = {-0.993128599185095, -0.9639719272779138, -0.912234428251326, -0.8391169718222188, -0.7463319064601508, -0.636053680726515, -0.5108670019508271, -0.37370608871541955, -0.22778585114164507, -0.07652652113349734, 0.07652652113349734, 0.22778585114164507, 0.37370608871541955, 0.5108670019508271, 0.636053680726515, 0.7463319064601508, 0.8391169718222188, 0.912234428251326, 0.9639719272779138, 0.993128599185095};
@@ -93,6 +93,13 @@ struct Cond {
     return {log_phi(x) + b.ld, -x + k * R, -1.0 + k * k * (lA - uA - R * R)};
   }
   double g(double x) const { return log_phi(x) + band((a2 - rho * x) / s, (b2 - rho * x) / s).ld; }
+  int kinks(double* x, double* w) const {
+    int n = 0;
+    if (rho == 0.0) return 0;
+    if (std::isfinite(a2)) { x[n] = a2 / rho; w[n++] = s / std::fabs(rho); }
+    if (std::isfinite(b2)) { x[n] = b2 / rho; w[n++] = s / std::fabs(rho); }
+    return n;
+  }
 };
 
 inline double lphi2(double x, double y, double rho, double s) {
@@ -149,31 +156,60 @@ inline double log_integral(const C& c, double a, double b) {
     double x = m + dir * T;
     ends[side] = (x - edge) * dir >= 0.0 ? edge : x;
   }
-  double vals[2 * kPanels * kNodes];
-  int nv = 0;
-  double vmax = -kInf;
-  double segA[2] = {ends[0], m}, segB[2] = {m, ends[1]};
-  for (int sgi = 0; sgi < 2; ++sgi) {
-    double A0 = segA[sgi], B0 = segB[sgi];
-    if (!(B0 > A0)) continue;
-    for (int j = 0; j < kPanels; ++j) {
-      double A = A0 + (B0 - A0) * j / kPanels, B = A0 + (B0 - A0) * (j + 1) / kPanels;
-      double h = 0.5 * (B - A), c0 = 0.5 * (A + B), lh = std::log(h);
-      for (int q = 0; q < kNodes; ++q) {
-        double v = lh + std::log(kGW[q]) + c.g(c0 + h * kGX[q]);
-        vals[nv++] = v;
-        if (v > vmax) vmax = v;
+  double px[5] = {ends[0], m, ends[1], kInf, kInf}, ps[5] = {kInf, 1.0 / std::sqrt(cv), kInf, kInf, kInf};
+  int np = 3;
+  double kx[2], kw[2];
+  const int nk = c.kinks(kx, kw);
+  for (int k = 0; k < nk; ++k) ps[1] = std::fmin(ps[1], kw[k]);
+  for (int k = 0; k < nk; ++k) {
+    if (!(kx[k] > ends[0] && kx[k] < ends[1]) || kx[k] == m) continue;
+    int at = np;
+    while (at > 0 && px[at - 1] > kx[k]) {
+      px[at] = px[at - 1];
+      ps[at] = ps[at - 1];
+      --at;
+    }
+    px[at] = kx[k];
+    ps[at] = kw[k];
+    ++np;
+  }
+  double vmax = -kInf, acc = 0.0;
+  auto panel = [&](double A, double B) {
+    double h = 0.5 * (B - A), c0 = 0.5 * (A + B), lh = std::log(h);
+    for (int q = 0; q < kNodes; ++q) {
+      double v = lh + std::log(kGW[q]) + c.g(c0 + h * kGX[q]);
+      if (!(v > -kInf)) continue;
+      if (v > vmax) {
+        acc = acc * std::exp(vmax - v) + 1.0;
+        vmax = v;
+      } else {
+        acc += std::exp(v - vmax);
+      }
+    }
+  };
+  for (int i = 0; i + 1 < np; ++i) {
+    double A = px[i], B = px[i + 1];
+    if (!(B > A)) continue;
+    double H = 0.5 * (B - A);
+    for (int side = 0; side < 2; ++side) {
+      double end = side == 0 ? A : B, dir = side == 0 ? 1.0 : -1.0, sc = side == 0 ? ps[i] : ps[i + 1];
+      int n = sc < H ? std::min(static_cast<int>(std::ceil(std::log2(H / sc))), kMaxGrade) : 0;
+      double inner = 0.0;
+      for (int j = n; j >= 0; --j) {
+        double outer = H * std::ldexp(1.0, -j);
+        double x0 = end + dir * inner, x1 = end + dir * outer;
+        panel(std::fmin(x0, x1), std::fmax(x0, x1));
+        inner = outer;
       }
     }
   }
-  if (nv == 0 || !std::isfinite(vmax)) return -kInf;
-  double acc = 0.0;
-  for (int i = 0; i < nv; ++i) acc += std::exp(vals[i] - vmax);
+  if (!(acc > 0.0) || !std::isfinite(vmax)) return -kInf;
   return vmax + std::log(acc);
 }
 
 inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
   Rect r{-kInf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const bool clamped = !(std::fabs(rho) < 0.999999);
   if (rho > 0.999999) rho = 0.999999;
   if (rho < -0.999999) rho = -0.999999;
   double s = std::sqrt((1.0 - rho) * (1.0 + rho));
@@ -185,7 +221,7 @@ inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
   if (std::isfinite(a1)) r.d1l = -std::exp(log_phi(a1) + band((a2 - rho * a1) / s, (b2 - rho * a1) / s).ld);
   if (std::isfinite(b2)) r.d2h = std::exp(log_phi(b2) + band((a1 - rho * b2) / s, (b1 - rho * b2) / s).ld);
   if (std::isfinite(a2)) r.d2l = -std::exp(log_phi(a2) + band((a1 - rho * a2) / s, (b1 - rho * a2) / s).ld);
-  r.drho = std::exp(lphi2(b1, b2, rho, s)) - std::exp(lphi2(a1, b2, rho, s))
+  r.drho = clamped ? 0.0 : std::exp(lphi2(b1, b2, rho, s)) - std::exp(lphi2(a1, b2, rho, s))
          - std::exp(lphi2(b1, a2, rho, s)) + std::exp(lphi2(a1, a2, rho, s));
   return r;
 }
@@ -303,7 +339,13 @@ inline Rect rect_full(double a1, double b1, double a2, double b2, double rho, Dw
   r.d1h = pdf(b1) * D2 + c[0].dh - c[2].dh;
   r.d2l = -D1 * pdf(a2) - c[2].dk + c[3].dk;
   r.d2h = D1 * pdf(b2) + c[0].dk - c[1].dk;
-  r.drho = (c[0].dA - c[1].dA - c[2].dA + c[3].dA) * nd.dAdr;
+  if (std::fabs(rho) < 0.999999) {
+    double s = std::sqrt((1.0 - rho) * (1.0 + rho));
+    r.drho = std::exp(lphi2(b1, b2, rho, s)) - std::exp(lphi2(a1, b2, rho, s)) - std::exp(lphi2(b1, a2, rho, s))
+           + std::exp(lphi2(a1, a2, rho, s));
+  } else {
+    r.drho = 0.0;
+  }
   return r;
 }
 
@@ -320,6 +362,12 @@ struct LinCond {
     return {log_phi(x) + b.ld, -x + q, -1.0 - Bu * Bu * uA + Bl * Bl * lA - q * q};
   }
   double g(double x) const { return log_phi(x) + band(lo_at(x), hi_at(x)).ld; }
+  int kinks(double* x, double* w) const {
+    int n = 0;
+    if (std::isfinite(Al) && Bl != 0.0) { x[n] = -Al / Bl; w[n++] = 1.0 / std::fabs(Bl); }
+    if (std::isfinite(Au) && Bu != 0.0) { x[n] = -Au / Bu; w[n++] = 1.0 / std::fabs(Bu); }
+    return n;
+  }
 };
 
 struct GaussLine {
