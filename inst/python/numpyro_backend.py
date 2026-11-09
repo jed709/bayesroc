@@ -339,22 +339,6 @@ def _empty_cell_lp(violation):
     return jnp.log(_pfloor()) - _EMPTY_SLOPE * violation
 
 
-
-def _link_cell_fn(link_name):
-    """(P(lo < Z < hi), pdf(lo), pdf(hi)) for the link's latent distribution, with each pdf
-    the exact derivative of the CDF used for the probability. Probit uses the native kernel
-    (Phi to ~1e-9 relative in both tails) when it is loaded."""
-    if link_name == "probit":
-        def cell(lo, hi):
-            lo, hi = jnp.broadcast_arrays(jnp.asarray(lo), jnp.asarray(hi))
-            D, neg_pdf_lo, pdf_hi = _phi_diff(lo, hi)
-            return D, -neg_pdf_lo, pdf_hi
-        return cell
-    diff = _link_diff_fn(link_name)
-    pdf = _link_fns(link_name)[1]
-    return lambda lo, hi: (diff(lo, hi), pdf(lo), pdf(hi))
-
-
 def _link_diff_fn(link_name):
     """P(lo < Z < hi) for the link's latent distribution, differenced on the side of
     the median the interval lies on so upper-tail cells never cancel to zero."""
@@ -650,10 +634,6 @@ def _acc_phi_and_deriv(x):
     q = e * t * Cu
     G = (1.0 - t) / 0.2316419 * Cu + 0.2316419 * t * t * (Cu + t * Du)
     return jnp.where(x >= 0, 1.0 - q, q), e * G, q
-
-
-def _acc_phi_deriv(x):
-    return _acc_phi_and_deriv(x)[1]
 
 
 def _acc_phi_diff(z_lo, z_hi):
@@ -1348,14 +1328,6 @@ def _bvn_cdf(h, k, rho):
                         ninf, h, ninf, k, r)
     return t[0], t[2], t[4], t[5]
 
-
-def _phi(x):
-    """Standard normal PDF (double precision)."""
-    return jnp.exp(-0.5 * x**2) / jnp.sqrt(2.0 * jnp.pi)
-
-# =============================================================================
-# Fully-vectorized batch loglik (no vmap)
-# =============================================================================
 
 def _thresh_layout(K):
     """The mid-anchor + gaps threshold layout for K categories: (n_thresh, mid_idx, gap_mask,
@@ -2590,39 +2562,6 @@ def _batch_build_thresh(thresh_mid, gap_vals, n_gaps, mid_idx, n_upper):
         upper_cumsum = jnp.cumsum(upper_gaps, axis=1)
         parts.append(thresh_mid[:, None] + upper_cumsum)
     return jnp.concatenate(parts, axis=1)
-
-
-def _gap_mask_runs(gap_mask):
-    gm = np.asarray(gap_mask)
-    lo = np.zeros(gm.shape[0], dtype=np.int32)
-    hi = np.full(gm.shape[0], -1, dtype=np.int32)
-    sg = np.zeros(gm.shape[0])
-    for g in range(gm.shape[0]):
-        nz = np.nonzero(gm[g])[0]
-        if nz.size:
-            lo[g], hi[g], sg[g] = nz[0], nz[-1], gm[g, nz[0]]
-            assert np.all(gm[g, nz[0]:nz[-1] + 1] == sg[g])
-    return lo, hi, sg
-
-
-def _batch_gap_grads(d_thresh_k_hi, d_thresh_k_lo, k_hi, k_lo,
-                     has_hi, has_lo, gap_derivs, gap_mask):
-    """[N, n_gaps] gap gradients. Each gap moves a contiguous run of thresholds by +-1,
-    so the threshold-to-gap map is a range test on the threshold index."""
-    if not isinstance(gap_mask, np.ndarray):
-        gm = jnp.asarray(gap_mask)
-        d_lp_d_gap_val = gm[:, k_hi] * d_thresh_k_hi[None, :] + gm[:, k_lo] * d_thresh_k_lo[None, :]
-        return (d_lp_d_gap_val * gap_derivs.T).T
-    lo, hi, sg = _gap_mask_runs(gap_mask)
-    lo = jnp.asarray(lo)[None, :]
-    hi = jnp.asarray(hi)[None, :]
-    sg = jnp.asarray(sg)[None, :]
-    kh = k_hi[:, None]
-    kl = k_lo[:, None]
-    in_hi = (kh >= lo) & (kh <= hi)
-    in_lo = (kl >= lo) & (kl <= hi)
-    return sg * (jnp.where(in_hi, d_thresh_k_hi[:, None], 0.0) +
-                 jnp.where(in_lo, d_thresh_k_lo[:, None], 0.0)) * gap_derivs
 
 
 def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
@@ -7040,24 +6979,6 @@ def _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy, in
             return d["aux"], d["start"]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
-
-def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
-    """Per-chain unconstrained starting points as a site dict (leading chain axis when
-    chains > 1), from the same rule DR-G-HMC uses."""
-    import drghmc as dr
-    shapes, _, _ = dr._model_info(sdt_model, config)
-    keys = sorted(shapes)
-    off, o = {}, 0
-    for k in keys:
-        sz = int(np.prod(shapes[k]))
-        off[k] = (slice(o, o + sz), tuple(shapes[k]))
-        o += sz
-    th = dr._initial_positions(sdt_model, config, keys, off, o, chains, seed, init_strategy,
-                               init_radius, init_z)
-    th = _rkg_lift(config, th, lambda r: {k: jnp.asarray(r[off[k][0]].reshape(off[k][1])) for k in keys}, off)
-    z = {k: jnp.asarray(th[:, off[k][0]].reshape((chains,) + off[k][1])) for k in keys}
-    return z if chains > 1 else {k: v[0] for k, v in z.items()}
 
 
 def nuts_initial_mass(coords):

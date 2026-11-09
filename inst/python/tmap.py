@@ -35,18 +35,6 @@ _CAND_MIN_DIM = 10
 _MAX_LINK = 4_000_000
 
 
-def _cct():
-    from numpyro.distributions.transforms import CorrCholeskyTransform
-    return CorrCholeskyTransform()
-
-
-def _corr_logjac(y, L):
-    """log |dR/dy| of the LKJ factor's unconstrained coordinates y (L its Cholesky factor):
-    the CorrCholesky transform to L, then L -> R = L L', whose Jacobian is prod L_ii^(D-1-i)."""
-    D = L.shape[0]
-    return _cct().log_abs_det_jacobian(y, L) + jnp.sum((D - 1 - jnp.arange(D)) * jnp.log(jnp.diag(L)))
-
-
 _TRIL = {}
 
 
@@ -142,14 +130,6 @@ def _corr_to_model_bwd(res, cts):
 
 
 _corr_to_model.defvjp(_corr_to_model_fwd, _corr_to_model_bwd)
-
-
-def _corr_to_sampled(y, p):
-    """Inverse of _corr_to_model: (yp, Lp, L)."""
-    t = _cct()
-    L = t(y)
-    Lp = jnp.linalg.cholesky((L @ L.T)[p][:, p])
-    return t.inv(Lp), Lp, L
 
 
 class _Block:

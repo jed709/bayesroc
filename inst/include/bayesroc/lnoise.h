@@ -371,12 +371,6 @@ inline Side side_of(double a) {
   return {p.P[0], a >= 0.0 ? p.Q[0] : 1.0 - p.Q[0], p.dP[0]};
 }
 
-inline Cum cum(double a, double l, double s) {
-  double zm[2], d2[2];
-  mode2(a, l, l, s, zm, d2);
-  return cum_at(a, l, s, zm[0], d2[0], side_of(a));
-}
-
 inline Cell cell(double a, double ln, double lf, double s) {
   const bool on = ln == -bvn_tail::kInf, of = lf == bvn_tail::kInf;
   double zm[2] = {0.0, 0.0}, d2[2] = {-1.0, -1.0};

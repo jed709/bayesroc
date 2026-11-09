@@ -327,19 +327,4 @@ python_version <- function(python) {
 .jax_state <- new.env(parent = emptyenv())
 
 #' @noRd
-.jax_ready <- function(python = NULL) {
-  py <- python %||% jax_python()
-  if (is.null(py) || !file.exists(py)) return(FALSE)
-  key <- normalizePath(py, winslash = "/", mustWork = FALSE)
-  if (is.null(.jax_state$ready)) .jax_state$ready <- list()
-  if (!is.null(.jax_state$ready[[key]])) return(.jax_state$ready[[key]])
-  out <- suppressWarnings(tryCatch(
-    system2(py, c("-c", shQuote("import jax, numpyro; print('ok')")), stdout = TRUE, stderr = FALSE),
-    error = function(e) character(0)))
-  ok <- identical(utils::tail(out, 1), "ok")
-  .jax_state$ready[[key]] <- ok
-  ok
-}
-
-#' @noRd
 `%||%` <- function(a, b) if (is.null(a)) b else a

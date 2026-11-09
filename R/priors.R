@@ -1407,18 +1407,6 @@ print.broc_prior_table <- function(x, ...) {
        cov_mid = g$mid[cov], cov_gaps = g$gaps[, cov, drop = FALSE])
 }
 
-.stan_prior_vec <- function(name, priors) {
-  if (length(priors) == 0) return(character(0))
-  if (length(unique(priors)) == 1L) return(sprintf("  %s ~ %s;", name, priors[1]))
-  sprintf("  %s[%d] ~ %s;", name, seq_along(priors), priors)
-}
-
-.stan_prior_mat <- function(name, priors) {
-  if (length(priors) == 0) return(character(0))
-  if (length(unique(as.vector(priors))) == 1L) return(sprintf("  to_vector(%s) ~ %s;", name, priors[1]))
-  sprintf("  %s[%d, %d] ~ %s;", name, as.vector(row(priors)), as.vector(col(priors)), as.vector(priors))
-}
-
 .re_param_names <- function() {
   c("dprime", "criterion", "sigma", "lambda", "dprime2", "sigma2", "dprime_B", "lambda_B",
     "discrim", "discrim_B", "sigma_B", "sigma2_B", "rho", "rho_B", "rho_N", "criterion2",

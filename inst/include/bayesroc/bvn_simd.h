@@ -147,30 +147,6 @@ struct PhiV {
   v4d P, dP, Q;
 };
 
-inline void vpoly_triple(v4d x, v4d& P, v4d& dP, v4d& q) {
-  v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * vabs(x));
-  v4d e = splat(0.3989422804014327) * vexp(splat(-0.5) * x * x);
-  q = e * t * (splat(0.319381530) + t * (splat(-0.356563782) + t * (splat(1.781477937) +
-               t * (splat(-1.821255978) + t * splat(1.330274429)))));
-  v4d G = splat(1.3787727090824242) + t * (splat(-2.9180615078705534) + t * (splat(9.303925945620334) +
-          t * (splat(-15.71822236097206) + t * (splat(14.843177660082445) +
-          t * (splat(-7.430322503492646) + t * splat(1.5407364812748756))))));
-  P = vsel(x >= splat(0.0), splat(1.0) - q, q);
-  dP = e * G;
-}
-
-inline void vpoly_pair(v4d x, v4d& P, v4d& dP) {
-  v4d t = splat(1.0) / (splat(1.0) + splat(0.2316419) * vabs(x));
-  v4d e = splat(0.3989422804014327) * vexp(splat(-0.5) * x * x);
-  v4d p = e * t * (splat(0.319381530) + t * (splat(-0.356563782) + t * (splat(1.781477937) +
-               t * (splat(-1.821255978) + t * splat(1.330274429)))));
-  v4d G = splat(1.3787727090824242) + t * (splat(-2.9180615078705534) + t * (splat(9.303925945620334) +
-          t * (splat(-15.71822236097206) + t * (splat(14.843177660082445) +
-          t * (splat(-7.430322503492646) + t * splat(1.5407364812748756))))));
-  P = vsel(x >= splat(0.0), splat(1.0) - p, p);
-  dP = e * G;
-}
-
 constexpr double kProbitC[12] = {0.23164256724403792, 0.2316161018958152, 0.21963988229322737, 0.19034147705499127, 0.182843173379805, 0.023627126024141354, 0.3261383197776697, -0.4226294412990229, 0.566393164718276, -0.42518433981895243, 0.14839140546152088, -0.019505298125989647};
 constexpr double kProbitG[14] = {1.0000028804980357, -0.00011425112737684096, 0.001956685225065126, -0.019177470139476724, 0.12026315990835201, -0.510972748965256, 1.5177140282601391, -3.1995984292291655, 4.79844987841736, -5.063837790314006, 3.656934740253874, -1.7097165426172967, 0.46231487164147905, -0.05421893181564818};
 
@@ -430,13 +406,6 @@ inline CornerV vcorner(v4d h, v4d k, v4d A, const double* W, const Nodes<M>& nd)
   return {c * S0, -c * (h * S1 - k * S2), -c * (k * S1 - h * S2), (S0 + A * T) * splat(kInv4Pi)};
 }
 
-inline CornerV csel(v4i m, const CornerV& a, const CornerV& b) {
-  return {vsel(m, a.I, b.I), vsel(m, a.dh, b.dh), vsel(m, a.dk, b.dk), vsel(m, a.dA, b.dA)};
-}
-
-inline bool any_lane(v4i m) { return (m[0] | m[1] | m[2] | m[3]) != 0; }
-inline bool all_lanes(v4i m) { return (m[0] & m[1] & m[2] & m[3]) != 0; }
-
 template <int NC, int M>
 inline void corners_n(const v4d* H, const v4d* K, v4d A, const double* X, const double* W, CornerV* out) {
   Nodes<M> nd;
@@ -522,11 +491,6 @@ inline void rect4m(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4
   d2h = D1 * D2h + c[0].dk - c[1].dk;
   const Phi2V f = vphi2_setup(rho);
   drho = vphi2(b1, b2, f) - vphi2(a1, b2, f) - vphi2(b1, a2, f) + vphi2(a1, a2, f);
-}
-
-inline void rect4(v4d a1, v4d b1, v4d a2, v4d b2, v4d rho, v4d& p, v4d& d1l, v4d& d1h,
-                  v4d& d2l, v4d& d2h, v4d& drho) {
-  rect4m<15>(a1, b1, a2, b2, rho, p, d1l, d1h, d2l, d2h, drho);
 }
 
 using Rect4Fn = void (*)(v4d, v4d, v4d, v4d, v4d, v4d&, v4d&, v4d&, v4d&, v4d&, v4d&);

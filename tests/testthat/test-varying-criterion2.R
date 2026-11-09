@@ -91,7 +91,6 @@ test_that("varying source criteria: a cell-means criterion2 formula gives each c
   expect_identical(cm$model_data$criterion2$coef_names, c("gE1", "gE2", "x"))
   expect_identical(cm$model_data$criterion2$cov_names, "x")
   expect_equal(as.integer(sd$vcell), as.integer(d$g))
-  expect_identical(.vset_labels(cm$model_data)[c(1, 5, 8)], c("1:gE1", "1:gE2", "4:gE2"))
   expect_length(build_numpyro_config(cm)$prior_vary2$mid, 8L)
   tr <- suppressMessages(.varying_model(d, criterion2 ~ 1 + g + x, bivariate_gaussian(source_criteria = "varying")))
   expect_equal(c(tr$stan_data$n_vcell, tr$stan_data$n_vset), c(1L, 4L))

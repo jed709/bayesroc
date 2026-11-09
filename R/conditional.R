@@ -3,20 +3,6 @@
 #' Support for conditional() in SDT formulas. Allows predictors to apply
 #' only to a subset of observations defined by a where condition.
 
-#' Conditional Term Marker
-#'
-#' Used in formulas to indicate that a predictor should only vary for
-#' observations matching the where condition. Observations not matching
-#' share a single intercept column.
-#'
-#' @param term A factor variable name
-#' @param where A logical expression evaluated on the data
-#' @return This function should not be called directly
-#' @noRd
-conditional <- function(term, where) {
-  stop("conditional() should only be used inside formulas, not called directly.")
-}
-
 #' Detect conditional() in a Term String
 #'
 #' Parses a term string like 'conditional(production, where = group == "matched")'

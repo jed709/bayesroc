@@ -1,6 +1,15 @@
 # Per-row, per-draw reference implementations of the cell probabilities, against which the
 # vectorised probability functions are tested.
 
+link_cdf_r <- function(x, link_name) {
+  switch(link_name,
+    probit = pnorm(x),
+    logit  = plogis(x),
+    cloglog = -expm1(-exp(pmin(x, 700))),
+    stop("Unknown link: ", link_name)
+  )
+}
+
 .ref_probs_bivariate_sdt <- function(params, thresh, thresh2, item_type, S, N, K1, K2, model) {
   md <- model$model_data
   dprime <- params$dprime
@@ -208,3 +217,176 @@
   probs
 }
 
+compute_bounded_prob_r <- function(resp1, resp2, K1, K2,
+                                    mu_I, mu_S, sigma_I, sigma_S,
+                                    c1, c2, rho) {
+  if (abs(rho) < 1e-10) {
+    return(compute_bivariate_prob_r(resp1, resp2, K1, K2,
+                                     mu_I, mu_S, sigma_I, sigma_S,
+                                     c1, c2, 0.0))
+  }
+
+  cp <- mu_I - sigma_I * mu_S / (rho * sigma_S)
+  y_lo <- if (resp1 == 1)  -Inf else c1[resp1 - 1]
+  y_hi <- if (resp1 == K1)  Inf else c1[resp1]
+
+  below_only <- y_hi <= cp
+  above_only <- y_lo >= cp
+
+  sigma_cond <- sigma_S * sqrt(1 - rho * rho)
+  prob <- 0.0
+
+  if (below_only) {
+    prob <- compute_bivariate_prob_r(resp1, resp2, K1, K2,
+                                      mu_I, 0.0, sigma_I, sigma_cond,
+                                      c1, c2, 0.0)
+  } else if (above_only) {
+    prob <- compute_bivariate_prob_r(resp1, resp2, K1, K2,
+                                      mu_I, mu_S, sigma_I, sigma_S,
+                                      c1, c2, rho)
+  } else {
+    z_cp <- (cp - mu_I) / sigma_I
+
+    z_ylo_b <- if (resp1 == 1) -8.0 else (c1[resp1 - 1] - mu_I) / sigma_I
+    prob_below <- 0.0
+    if (resp2 == 1) {
+      zs_hi <- c2[1] / sigma_cond
+      prob_below <- (pnorm(z_cp) - pnorm(z_ylo_b)) * pnorm(zs_hi)
+    } else if (resp2 == K2) {
+      zs_lo <- c2[K2 - 1] / sigma_cond
+      prob_below <- (pnorm(z_cp) - pnorm(z_ylo_b)) * (1 - pnorm(zs_lo))
+    } else {
+      zs_lo <- c2[resp2 - 1] / sigma_cond
+      zs_hi <- c2[resp2] / sigma_cond
+      prob_below <- (pnorm(z_cp) - pnorm(z_ylo_b)) * (pnorm(zs_hi) - pnorm(zs_lo))
+    }
+    prob <- prob + prob_below
+
+    z_yhi_a <- if (resp1 == K1) 8.0 else (c1[resp1] - mu_I) / sigma_I
+    z2_a <- (c2 - mu_S) / sigma_S
+    prob_above <- 0.0
+
+    if (resp2 == 1 && resp1 == K1) {
+      prob_above <- pnorm(z2_a[1]) - binormal_cdf_r(z_cp, z2_a[1], rho)
+    } else if (resp2 == K2 && resp1 == K1) {
+      prob_above <- 1 - pnorm(z2_a[K2 - 1]) - pnorm(z_cp) +
+                    binormal_cdf_r(z_cp, z2_a[K2 - 1], rho)
+    } else if (resp2 == 1) {
+      prob_above <- binormal_cdf_r(z_yhi_a, z2_a[1], rho) -
+                    binormal_cdf_r(z_cp, z2_a[1], rho)
+    } else if (resp2 == K2) {
+      prob_above <- pnorm(z_yhi_a) - pnorm(z_cp) -
+                    binormal_cdf_r(z_yhi_a, z2_a[K2 - 1], rho) +
+                    binormal_cdf_r(z_cp, z2_a[K2 - 1], rho)
+    } else if (resp1 == K1) {
+      prob_above <- pnorm(z2_a[resp2]) - pnorm(z2_a[resp2 - 1]) -
+                    binormal_cdf_r(z_cp, z2_a[resp2], rho) +
+                    binormal_cdf_r(z_cp, z2_a[resp2 - 1], rho)
+    } else {
+      prob_above <- binormal_cdf_r(z_yhi_a, z2_a[resp2], rho) -
+                    binormal_cdf_r(z_yhi_a, z2_a[resp2 - 1], rho) -
+                    binormal_cdf_r(z_cp, z2_a[resp2], rho) +
+                    binormal_cdf_r(z_cp, z2_a[resp2 - 1], rho)
+    }
+    prob <- prob + prob_above
+  }
+
+  prob
+}
+
+compute_bounded_marginal_source_r <- function(resp_src, K2, mu_I, mu_S,
+                                                sigma_I, sigma_S, rho, c2) {
+  if (abs(rho) < 1e-10) {
+    return(univariate_cell_prob_r(resp_src, K2, mu_S, sigma_S, c2))
+  }
+
+  cp <- mu_I - sigma_I * mu_S / (rho * sigma_S)
+  sigma_cond <- sigma_S * sqrt(1 - rho * rho)
+  z_cp <- (cp - mu_I) / sigma_I
+  p_below <- pnorm(z_cp)
+
+  prob <- 0
+
+  if (resp_src == 1) {
+    prob <- prob + p_below * pnorm(c2[1] / sigma_cond)
+  } else if (resp_src == K2) {
+    prob <- prob + p_below * (1 - pnorm(c2[K2 - 1] / sigma_cond))
+  } else {
+    prob <- prob + p_below * (pnorm(c2[resp_src] / sigma_cond) - pnorm(c2[resp_src - 1] / sigma_cond))
+  }
+
+  z2 <- (c2 - mu_S) / sigma_S
+
+  if (resp_src == 1) {
+    prob <- prob + pnorm(z2[1]) - binormal_cdf_r(z_cp, z2[1], rho)
+  } else if (resp_src == K2) {
+    prob <- prob + 1 - pnorm(z2[K2 - 1]) - pnorm(z_cp) + binormal_cdf_r(z_cp, z2[K2 - 1], rho)
+  } else {
+    prob <- prob + pnorm(z2[resp_src]) - pnorm(z2[resp_src - 1]) -
+            binormal_cdf_r(z_cp, z2[resp_src], rho) +
+            binormal_cdf_r(z_cp, z2[resp_src - 1], rho)
+  }
+
+  prob
+}
+
+compute_bivariate_prob_r <- function(resp1, resp2, K1, K2,
+                                      mu1, mu2, sigma1, sigma2,
+                                      c1, c2, rho) {
+  z1 <- (c1 - mu1) / sigma1
+  z2 <- (c2 - mu2) / sigma2
+
+  if (rho == 0) {
+    p1 <- univariate_cell_prob_from_z(resp1, K1, z1)
+    p2 <- univariate_cell_prob_from_z(resp2, K2, z2)
+    return(p1 * p2)
+  }
+
+  if (resp1 == 1 && resp2 == 1) {
+    return(binormal_cdf_r(z1[1], z2[1], rho))
+  }
+  if (resp1 == 1 && resp2 == K2) {
+    return(pnorm(z1[1]) - binormal_cdf_r(z1[1], z2[K2 - 1], rho))
+  }
+  if (resp1 == K1 && resp2 == 1) {
+    return(pnorm(z2[1]) - binormal_cdf_r(z2[1], z1[K1 - 1], rho))
+  }
+  if (resp1 == K1 && resp2 == K2) {
+    return(1 - pnorm(z1[K1 - 1]) - pnorm(z2[K2 - 1]) +
+             binormal_cdf_r(z1[K1 - 1], z2[K2 - 1], rho))
+  }
+  if (resp1 == 1) {
+    return(binormal_cdf_r(z1[1], z2[resp2], rho) -
+             binormal_cdf_r(z1[1], z2[resp2 - 1], rho))
+  }
+  if (resp2 == 1) {
+    return(binormal_cdf_r(z1[resp1], z2[1], rho) -
+             binormal_cdf_r(z1[resp1 - 1], z2[1], rho))
+  }
+  if (resp1 == K1) {
+    return(pnorm(z2[resp2]) - pnorm(z2[resp2 - 1]) -
+             binormal_cdf_r(z1[K1 - 1], z2[resp2], rho) +
+             binormal_cdf_r(z1[K1 - 1], z2[resp2 - 1], rho))
+  }
+  if (resp2 == K2) {
+    return(pnorm(z1[resp1]) - pnorm(z1[resp1 - 1]) -
+             binormal_cdf_r(z2[K2 - 1], z1[resp1], rho) +
+             binormal_cdf_r(z1[resp1 - 1], z2[K2 - 1], rho))
+  }
+  binormal_cdf_r(z1[resp1], z2[resp2], rho) -
+    binormal_cdf_r(z1[resp1], z2[resp2 - 1], rho) -
+    binormal_cdf_r(z1[resp1 - 1], z2[resp2], rho) +
+    binormal_cdf_r(z1[resp1 - 1], z2[resp2 - 1], rho)
+}
+
+univariate_cell_prob_r <- function(resp, K, mu, sigma, thresh) {
+  if (resp == 1) return(pnorm((thresh[1] - mu) / sigma))
+  if (resp == K) return(1 - pnorm((thresh[K - 1] - mu) / sigma))
+  pnorm((thresh[resp] - mu) / sigma) - pnorm((thresh[resp - 1] - mu) / sigma)
+}
+
+univariate_cell_prob_from_z <- function(resp, K, z) {
+  if (resp == 1) return(pnorm(z[1]))
+  if (resp == K) return(1 - pnorm(z[K - 1]))
+  pnorm(z[resp]) - pnorm(z[resp - 1])
+}

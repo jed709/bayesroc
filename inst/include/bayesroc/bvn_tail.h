@@ -73,8 +73,6 @@ inline Band band(double lo, double hi) {
   return {std::log(D), pl / D, pu / D};
 }
 
-inline double log_diff_Phi(double lo, double hi) { return band(lo, hi).ld; }
-
 struct Rect {
   double lp, p, d1l, d1h, d2l, d2h, drho;
 };

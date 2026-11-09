@@ -54,9 +54,3 @@ test_that("evsd + cloglog (JAX): predictions are complete distributions and R re
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5)
 })
-
-test_that("R-side cloglog CDF matches the Gumbel-min CDF and the JAX clamp", {
-  x <- c(-800, -30, -1, 0, 1, 3.5, 10, 800)
-  expect_equal(link_cdf_r(x, "cloglog"), 1 - exp(-exp(pmin(x, 700))), tolerance = 1e-15)
-  expect_true(all(diff(link_cdf_r(x, "cloglog")) >= 0))
-})

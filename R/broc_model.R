@@ -125,10 +125,6 @@ validate_broc_data <- function(data, brf_obj, family, encoding_vars, counts) {
   invisible(TRUE)
 }
 
-.as_is_old <- function(v) {
-  suppressWarnings(if (is.factor(v)) as.numeric(as.character(v)) else as.numeric(v))
-}
-
 #' Specify a Bayesian SDT Model
 #'
 #' Builds a model specification from a formula, family, and (optional) priors,
@@ -3274,12 +3270,6 @@ rename_stan_data_bivariate_cumulative <- function(stan_data) {
 
 .vcell_of <- function(md, N = length(md$stan_data$y)) as.integer(md$stan_data$vcell %||% rep(1L, N))
 .n_vcell <- function(md) as.integer(md$stan_data$n_vcell %||% 1L)
-.vset_labels <- function(md) {
-  b <- .vbin_labels(md)
-  cl <- md$criterion2$vcell_names %||% "(Intercept)"
-  if (length(cl) == 1L) return(b)
-  paste0(rep(b, times = length(cl)), ":", rep(cl, each = length(b)))
-}
 
 # vbin of a model; without a stored map, one set per response
 .vbin_of <- function(md) as.integer(md$stan_data$vbin %||% seq_len(md$K))

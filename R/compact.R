@@ -26,76 +26,12 @@
 
 .PACK_BLOCK <- 2^22
 
-.pack_blocks <- function(x, write) {
-  n <- length(x)
-  if (n <= .PACK_BLOCK) return(.zc(write(x)))
-  starts <- seq(1, n, by = .PACK_BLOCK)
-  lapply(starts, function(s) .zc(write(x[s:min(n, s + .PACK_BLOCK - 1)])))
-}
-
-.unpack_blocks <- function(raw, zstd, read) {
-  if (is.raw(raw)) return(read(.zd(raw, zstd)))
-  unlist(lapply(raw, function(b) read(.zd(b, zstd))), use.names = FALSE)
-}
-
 .col_range <- function(M) {
   P <- ncol(M)
   mn <- numeric(P); mx <- numeric(P)
   for (j in seq_len(P)) { cj <- M[, j]; mn[j] <- min(cj); mx[j] <- max(cj) }
   list(min = mn, max = mx)
 }
-
-.pack_array <- function(arr, store = "f64") {
-  store <- match.arg(store, .RE_STORE)
-  d <- dim(arr); if (is.null(d)) d <- length(arr)
-  x <- as.double(arr)
-  if (!all(is.finite(x))) {
-    stop(".pack_array: non-finite values not supported.", call. = FALSE)
-  }
-  has_qs2 <- .have_qs2()
-  if (store %in% c("f64", "f32")) {
-    w <- if (store == "f64") 8L else 4L
-    return(list(codec = store, dim = d, qs2 = has_qs2,
-                raw = .pack_blocks(x, function(v)
-                  .byte_shuffle(writeBin(v, raw(), w, "little"), w))))
-  }
-  S <- prod(d[1:2]); P <- length(x) %/% S
-  M <- matrix(x, S, P)
-  rg <- .col_range(M); rng <- rg$max - rg$min; rng[rng <= 0] <- 1
-  lv <- if (store == "int16") 65535 else 255
-  codes <- as.integer(round(sweep(sweep(M, 2, rg$min, "-"), 2, rng, "/") * lv))
-  b <- if (store == "int16") {
-    .pack_blocks(codes - 32768L, function(v)
-      .byte_shuffle(writeBin(v, raw(), 2L, "little"), 2L))
-  } else {
-    .pack_blocks(codes - 128L, function(v) writeBin(v, raw(), 1L, "little"))
-  }
-  list(codec = store, dim = d, qs2 = has_qs2, min = rg$min, max = rg$max,
-       raw = b)
-}
-
-.unpack_array <- function(p) {
-  d <- p$dim; n <- prod(d)
-  if (p$codec %in% c("f64", "f32")) {
-    w <- if (p$codec == "f64") 8L else 4L
-    return(array(.unpack_blocks(p$raw, p$qs2, function(b)
-      readBin(.byte_unshuffle(b, w), "double", length(b) %/% w, w, endian = "little")), d))
-  }
-  S <- prod(d[1:2]); P <- n %/% S
-  lv <- if (p$codec == "int16") 65535 else 255
-  ints <- if (p$codec == "int16") {
-    .unpack_blocks(p$raw, p$qs2, function(b)
-      readBin(.byte_unshuffle(b, 2L), "integer", length(b) %/% 2L, 2L,
-              endian = "little")) + 32768L
-  } else {
-    .unpack_blocks(p$raw, p$qs2, function(b)
-      readBin(b, "integer", length(b), 1L, endian = "little")) + 128L
-  }
-  M <- matrix(ints, S, P); rng <- p$max - p$min; rng[rng <= 0] <- 1
-  array(as.double(sweep(sweep(M / lv, 2, rng, "*"), 2, p$min, "+")), d)
-}
-
-.is_packed <- function(x) is.list(x) && !is.null(x$codec) && !is.null(x$raw)
 
 .re_var_pattern <- "^(z_|u_)"
 
@@ -115,7 +51,7 @@
   for (s in seq(1L, length(re), by = per)) {
     j <- s:min(length(re), s + per - 1L)
     x <- as.vector(da[, , re[j], drop = FALSE])
-    if (!all(is.finite(x))) stop(".pack_array: non-finite values not supported.", call. = FALSE)
+    if (!all(is.finite(x))) stop(".pack_re_draws: non-finite values not supported.", call. = FALSE)
     blocks[[length(blocks) + 1L]] <- if (store %in% c("f64", "f32")) {
       w <- if (store == "f64") 8L else 4L
       .zc(.byte_shuffle(writeBin(x, raw(), w, "little"), w))

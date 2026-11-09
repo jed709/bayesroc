@@ -150,78 +150,9 @@
   invisible(side)
 }
 
-.merge_loglik_npy <- function(paths, restart, out_path, chunk = 64e6) {
-  hs <- lapply(paths, .loglik_meta); shp <- lapply(hs, `[[`, "shape")
-  descr <- hs[[1]]$descr; isz <- hs[[1]]$isz
-  if (any(vapply(hs, function(h) h$descr, "") != descr))
-    stop(".merge_loglik_npy: log_lik files have mixed dtypes.", call. = FALSE)
-
-  copy_block <- function(con_in, con_out, nbytes) {
-    while (nbytes > 0) {
-      take <- min(nbytes, chunk)
-      writeBin(readBin(con_in, "raw", take), con_out)
-      nbytes <- nbytes - take
-    }
-  }
-  need <- sum(vapply(paths, file.size, 0))
-  free <- .disk_free_bytes(dirname(out_path))
-  if (is.finite(free) && free < need + 2^28)
-    stop(sprintf(paste0(".merge_loglik_npy: merged log_lik sidecar needs ~%.1f GB but only ",
-                        "%.1f GB is free on the target volume (%s)."),
-                 need / 1e9, free / 1e9, dirname(out_path)), call. = FALSE)
-  ok <- FALSE
-  on.exit(if (!ok) unlink(out_path), add = TRUE)
-  con_out <- file(out_path, "wb"); on.exit(close(con_out), add = TRUE, after = FALSE)
-
-  if (restart == "warm") {
-    C <- shp[[1]][1]; N <- shp[[1]][3]
-    if (!all(vapply(shp, function(s) s[1] == C && s[3] == N, logical(1))))
-      stop(".merge_loglik_npy(warm): chain/N mismatch across rounds.", call. = FALSE)
-    .npy_write_prefix(con_out, c(C, sum(vapply(shp, `[`, 1L, 2L)), N), descr)
-    cons <- lapply(paths, function(p) file(p, "rb"))
-    on.exit(lapply(cons, close), add = TRUE)
-    for (cc in seq_len(C)) {
-      for (r in seq_along(paths)) {
-        nb <- as.double(shp[[r]][2]) * N * isz
-        seek(cons[[r]], hs[[r]]$offset + (cc - 1) * nb)
-        copy_block(cons[[r]], con_out, nb)
-      }
-    }
-  } else {
-    D <- shp[[1]][2]; N <- shp[[1]][3]
-    if (!all(vapply(shp, function(s) s[2] == D && s[3] == N, logical(1))))
-      stop(".merge_loglik_npy(cold): draw/N mismatch across rounds.", call. = FALSE)
-    .npy_write_prefix(con_out, c(sum(vapply(shp, `[`, 1L, 1L)), D, N), descr)
-    for (r in seq_along(paths)) {
-      con_r <- file(paths[[r]], "rb"); seek(con_r, hs[[r]]$offset)
-      copy_block(con_r, con_out, as.double(shp[[r]][1]) * D * N * isz)
-      close(con_r)
-    }
-  }
-  ok <- TRUE
-  invisible(out_path)
-}
-
 # =============================================================================
 # Resource Probes
 # =============================================================================
-
-.disk_free_bytes <- function(path) {
-  out <- tryCatch({
-    if (.Platform$OS.type == "windows") {
-      root <- normalizePath(path, winslash = "\\", mustWork = FALSE)
-      drv <- sub("^([A-Za-z]:).*$", "\\1", root)
-      x <- system2("powershell", c("-NoProfile", "-Command",
-                                   sprintf("(Get-PSDrive %s).Free", sub(":", "", drv))),
-                   stdout = TRUE, stderr = FALSE)
-      as.numeric(x[1])
-    } else {
-      x <- system2("df", c("-Pk", shQuote(path)), stdout = TRUE, stderr = FALSE)
-      as.numeric(strsplit(trimws(x[2]), "\\s+")[[1]][4]) * 1024
-    }
-  }, error = function(e) NA_real_, warning = function(w) NA_real_)
-  if (length(out) != 1L || !is.finite(out)) NA_real_ else out
-}
 
 .ram_probe <- new.env(parent = emptyenv())
 
