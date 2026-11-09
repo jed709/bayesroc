@@ -1958,11 +1958,26 @@ def _lnoise_cell_jax(a, ln, lf, s):
     return lp, da, n[4] * iP, -f[4] * iP, (n[5] - f[5]) * iP
 
 
-def _lnoise_raw(a, ln, lf, s):
+def _lnoise_raw(a, ln, lf, s, narrow_cells=True):
+    """(lp, d/da, d/dln, d/dlf, d/ds) of a lognormal meta-noise cell; a cell with lf - ln < _LN_NARROW min(1, s)
+    is the band integral of _ln_narrow."""
     a, ln, lf, s = jnp.broadcast_arrays(*(jnp.asarray(v) for v in (a, ln, lf, s)))
     if _native_ok(a):
-        return _native_call("lnoise_cell", 5, (a, ln, lf, s))
-    return _lnoise_cell_jax(a, ln, lf, s)
+        out = _native_call("lnoise_cell", 5, (a, ln, lf, s))
+    else:
+        out = _lnoise_cell_jax(a, ln, lf, s)
+    if not narrow_cells:
+        return out
+    dl = lf - ln
+    narrow = jnp.isfinite(ln) & jnp.isfinite(lf) & (dl < _LN_NARROW * jnp.minimum(1.0, s))
+
+    def over(o):
+        P, dPa, dPl, dPd, dPs = _ln_narrow(a, jnp.where(narrow, ln, 0.0), jnp.where(narrow, dl, 1e-4), s)
+        Pc = jnp.maximum(P, _pfloor())
+        ip = jnp.where(P > _pfloor(), 1.0 / Pc, 0.0)
+        new = (jnp.log(Pc), dPa * ip, (dPl - dPd) * ip, dPd * ip, dPs * ip)
+        return tuple(jnp.where(narrow, u, w) for u, w in zip(new, o))
+    return jax.lax.cond(jnp.any(narrow), over, lambda o: tuple(o), tuple(out))
 
 
 @custom_jvp
@@ -2206,7 +2221,7 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
         lf = jnp.where(open_far, jnp.inf, jnp.log(D_far))
         a = sgn * (mu - thresh_mid)
         dl = jnp.log1p(gap / D_near)
-        out = _lnoise_raw(a, ln, lf, sm)
+        out = _lnoise_raw(a, ln, lf, sm, narrow_cells=False)
         narrow = inner & (dl < _LN_NARROW * jnp.minimum(1.0, sm))
 
         def over(o):
