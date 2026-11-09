@@ -733,7 +733,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
     try:
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
                          ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"),
@@ -742,7 +742,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
+                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
@@ -1277,7 +1277,7 @@ def _bvn_cdf_multi(pairs, extras, rho):
     ks = arrs[1:2 * n:2]
     xs = arrs[2 * n:2 * n + m]
     r = arrs[-1]
-    if _native_ok(r) and (n, m) in ((2, 1), (3, 0), (4, 2)):
+    if _native_ok(r) and (n, m) in ((2, 1), (4, 2)):
         out = _native_call(f"bvn_cdf{n}", 8 * n + 2 * m, [*hs, *ks, *xs, r])
         return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
                                                                  for j in range(m)]
@@ -1378,6 +1378,18 @@ def _probit_narrow(z_lo, w, inner):
     lp = jnp.log(ws) - 0.5 * m2 - _LOG_SQRT_2PI + jnp.log1p(s)
     k = jnp.exp(-0.125 * w2) / (ws * (1.0 + s))
     return narrow, lp, -2.0 * k * jnp.sinh(0.5 * m * ws), k * jnp.exp(-0.5 * m * ws)
+
+
+def _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi):
+    """log P, d log P / dz_a at fixed width and d log P / dw of the probit cell of _cell_lw, from the native
+    log-space cell kernel and, for narrow cells, the midpoint series."""
+    inner = has_lo & has_hi
+    lp, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
+    narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
+    lp = jnp.where(narrow, lpn, lp)
+    gA = jnp.where(narrow, rA, jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
+    gB = jnp.where(narrow, rB, jnp.where(inner, g_hi, 0.0))
+    return lp, gA, gB
 
 
 def _logcosh(x):
@@ -1499,11 +1511,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
         w = (gap_vals[obs, jnp.asarray(own_idx)[y_idx]] / sigma_val if gap_vals.shape[1]
              else jnp.ones_like(z_lo))
         inner = has_lo & has_hi
-        lp, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
-        narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
-        lp = jnp.where(narrow, lpn, lp)
-        gA = jnp.where(narrow, rA, jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
-        gB = jnp.where(narrow, rB, jnp.where(inner, g_hi, 0.0))
+        lp, gA, gB = _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi)
         cell = (None, gA, gB, jnp.where(has_lo, z_lo, z_hi), w, jnp.where(has_lo, k_lo, k_hi), inner)
         return lp, cell
 
