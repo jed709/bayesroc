@@ -20,6 +20,7 @@ parent levels and crossed factors stay untied as well. For fixed (Lam, s) the ma
 (x, beta, zeta) -> (x, beta, z) is a triangular bijection; sampling zeta with its log-Jacobian
 leaves the posterior of the model's own parameters unchanged."""
 import re
+import os
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -226,8 +227,9 @@ class _Block:
         return jnp.stack([jnp.reshape(post[s], (-1,))[0 if t is None else t] for s, t in self.sd_sites])
 
     def order(self, post):
-        """The order the block's LKJ factor is sampled in (TMap.corr), None for the model's."""
-        return (post.get("__corr_perm") or {}).get(self.prefix)
+        """The order the block's LKJ factor is sampled in (TMap.corr); without one the model's, None for the identity."""
+        p = (post.get("__corr_perm") or {}).get(self.prefix)
+        return getattr(self, "mperm", None) if p is None else p
 
     def A(self, post):
         """The prior factor: u = A z. With a sampled order p the factor L_p is of R[p][:, p] and
@@ -467,6 +469,14 @@ def _coef_design(config, conf, param, off, n_thresh, mid, gap_prefix, batched):
             flats = [_beta_site(off, None, [(f"beta_{param}[{j + 1}]", None), (f"beta_{param}", (j,))]) for j in range(P)]
             if P == 1 and flats[0] is None and batched:
                 flats = [batched.get(param)]
+            if param == "know_crit" and "know_crit_shift" in off:
+                import numpyro_backend as nb
+                kb = nb._rkg_knob(config)
+                nf = np.asarray(kb["B_perp"]).shape[1]
+                X = np.concatenate([X @ np.asarray(kb["B_perp"], dtype=float), X @ np.asarray(kb["V"], dtype=float)], 1)
+                flats = [_beta_site(off, None, [(f"know_crit_free[{k + 1}]", None), ("know_crit_free", (k,))])
+                         for k in range(nf)] + [_beta_site(off, None, [(f"know_crit_shift[{j + 1}]", None), ("know_crit_shift", (j,))])
+                                                for j in range(X.shape[1] - nf)]
         else:
             X, centre, flats = np.zeros((N, 0)), None, []       # mu with no coefficients of its own
         comps.append((0, flats))
@@ -1163,9 +1173,19 @@ class TMap:
                         + np.arange(cb["dim"])).astype(np.int32))
         return tuple(jnp.asarray(x) for x in out)
 
+    def _last(self, cb, p):
+        """A block's LKJ order with the R/K/G slack dimensions last (numpyro_backend._rkg_plan)."""
+        import numpyro_backend as nb
+        back = nb._rkg_back(getattr(self, "rkg_plan", None), cb["prefix"])
+        return p if back is None else nb._force_last(p, back, cb["dim"])
+
+    def _mperm(self, cb):
+        """The block's model order: identity, or the slack dimensions last."""
+        return self._last(cb, np.arange(cb["dim"]))
+
     def _corr_perms(self, parts):
         """The correlated blocks' sampled orders from the anchors in parts()."""
-        return list(parts[len(parts) - len(self.corr):]) if self.corr else []
+        return [self._last(cb, p) for cb, p in zip(self.corr, parts[len(parts) - len(self.corr):])] if self.corr else []
 
     def with_order(self, data, parts, key="corr_perm"):
         """`data` (a data bundle, or under key "_corr_perm" a config) for a model whose correlated
@@ -1198,7 +1218,7 @@ class TMap:
         for cb, p in zip(self.corr, self._corr_perms(parts)):
             yp = th[cb["sl"]]
             _, _, Lp = _cc_fwd(yp)
-            M = jnp.take(Lp, jnp.argsort(p), axis=0)
+            M = jnp.take(jnp.take(Lp, jnp.argsort(p), axis=0), jnp.asarray(self._mperm(cb)), axis=0)
             L = jnp.linalg.cholesky(M @ M.T)
             th = th.at[cb["sl"]].set(_cc_inv(L)[0]).at[cb["z"]].set(solve_triangular(L, M @ th[cb["z"]], lower=True))
         return th
@@ -1206,8 +1226,8 @@ class TMap:
     def orders(self, aux):
         """The correlated blocks' sampled orders stored in packed anchors [chains, A]."""
         a = self._complete(np.asarray(aux)[:1])[0]
-        return [jnp.asarray(np.rint(a[self.corr_at + cb["at"]:self.corr_at + cb["at"] + cb["dim"]]).astype(np.int32)
-                            + np.arange(cb["dim"], dtype=np.int32)) for cb in self.corr]
+        return [jnp.asarray(self._last(cb, np.rint(a[self.corr_at + cb["at"]:self.corr_at + cb["at"] + cb["dim"]]).astype(np.int32)
+                                       + np.arange(cb["dim"], dtype=np.int32))) for cb in self.corr]
 
     def with_order_of(self, data, aux, key="corr_perm"):
         """with_order from packed anchors."""
@@ -1223,9 +1243,10 @@ class TMap:
             Lk, Rk, zk = (f"{s}_{cb['prefix']}" for s in ("L_corr", "corr", "z"))
             if Lk not in out or Rk not in out:
                 continue
-            L = np.linalg.cholesky(np.asarray(out[Rk], dtype=np.float64))
+            q = self._mperm(cb)
+            L = np.linalg.cholesky(np.asarray(out[Rk], dtype=np.float64)[..., q, :][..., :, q])
             if zk in out:
-                M = np.asarray(out[Lk], dtype=np.float64)[..., np.argsort(np.asarray(p)), :]
+                M = np.asarray(out[Lk], dtype=np.float64)[..., np.argsort(np.asarray(p)), :][..., q, :]
                 out[zk][...] = np.linalg.solve(L, M @ np.asarray(out[zk], dtype=np.float64))
             out[Lk][...] = L
 
@@ -1233,6 +1254,7 @@ class TMap:
         """Inverse of to_model."""
         for cb, p in zip(self.corr, self._corr_perms(parts)):
             _, _, L = _cc_fwd(th[cb["sl"]])
+            L = jnp.take(L, jnp.argsort(jnp.asarray(self._mperm(cb))), axis=0)
             Mp = jnp.take(L, p, axis=0)
             Lp = jnp.linalg.cholesky(Mp @ Mp.T)
             th = th.at[cb["sl"]].set(_cc_inv(Lp)[0]).at[cb["z"]].set(solve_triangular(Lp, jnp.take(L @ th[cb["z"]], p, axis=0), lower=True))
@@ -1645,6 +1667,7 @@ class TMap:
                                             cn[np.argsort(-strength[d0 + cn], kind="stable")]])
                         if np.any(sb.kept_index[d0 + p[:len(kn)]] < 0):
                             raise RuntimeError(f"bayesroc: the kept dimensions of {sb.name} do not lead its LKJ order")
+                    p = self._last(cb, p)
                     corr[cb["at"]:cb["at"] + dim] = p - np.arange(dim)
                     idx[d0 + p] = d0 + np.arange(dim)
             # informed dims first in reversed natural order, then the rest by falling weight
@@ -1672,15 +1695,16 @@ class TMap:
         out = []
         for sb in self.sbs:
             A = sb.A(post0)
-            Ainv = solve_triangular(A, jnp.eye(sb.D, dtype=A.dtype), lower=True)
+            tri = all(getattr(b, "mperm", None) is None for b in sb.blocks)
+            Ainv = solve_triangular(A, jnp.eye(sb.D, dtype=A.dtype), lower=True) if tri else sb.Ainv(post0).astype(A.dtype)
             Q = Ainv.T @ Ainv
             cap = _NEWTON_CAP * jnp.sqrt(jnp.diag(A @ A.T))[:, None]
             eye = jnp.eye(sb.D, dtype=A.dtype)
 
             def neg_grad(u):
-                z = solve_triangular(A, u, lower=True)
+                z = solve_triangular(A, u, lower=True) if tri else Ainv @ u
                 g = sb.get(vg(sb.put(th, z), OFF)[1]) - z
-                return solve_triangular(A.T, g, lower=False)
+                return solve_triangular(A.T, g, lower=False) if tri else Ainv.T @ g
 
             def expand(u):
                 qs = jax.lax.map(lambda j: neg_grad(u + _FD_STEP * jnp.where(j < 0, 0.0, eye[jnp.maximum(j, 0)])[:, None]),
@@ -1723,7 +1747,15 @@ def build(model, config, off, unflatten, split=False, links=True):
             sb.links = []
             sb.links_kept = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
-    return TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
+    import numpyro_backend as nb
+    tm = TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
+    tm.rkg_plan = nb._rkg_plan(config)
+    for sb in sbs:
+        for b in sb.blocks:
+            back = nb._rkg_back(tm.rkg_plan, b.prefix)
+            if back is not None:
+                b.mperm = nb._force_last(np.arange(b.dim), back, b.dim)
+    return tm
 
 
 def split_supers(tm, aux, threshold=0.1, masks=None, cand_map="nc"):
@@ -1757,5 +1789,6 @@ def split_supers(tm, aux, threshold=0.1, masks=None, cand_map="nc"):
         sb.links_kept = sb.links if sb.cand is None else [
             (e, cd[m], ed[m], W) for e, cd, ed, W in sb.links for m in [~sb.cand[cd]] if m.any()]
     new = TMap(sbs, tm.post)
+    new.rkg_plan = getattr(tm, "rkg_plan", None)
     new._anch = tm._anch
     return new, flags

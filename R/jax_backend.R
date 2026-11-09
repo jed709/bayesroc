@@ -846,7 +846,8 @@ bayesroc_clear_cache <- function(path = NULL) {
   f32 <- identical(precision %||% control$precision, "f32") && identical(sampler, "nuts")
   bvn_lib <- .bvn_ffi_lib(python)
   c("current",
-    XLA_FLAGS = paste0("--xla_force_host_platform_device_count=", device_count),
+    XLA_FLAGS = paste0("--xla_force_host_platform_device_count=", device_count,
+                       " --xla_cpu_collective_call_terminate_timeout_seconds=86400"),
     TF_CPP_MIN_LOG_LEVEL = "2",   # XLA's C++ log lines (cache loads, slow-compile alarms) are noise to the user
     BAYESROC_XLA_CACHE = .xla_cache_dir(),
     BAYESROC_BVN_FFI = if (is.null(bvn_lib)) "" else bvn_lib,

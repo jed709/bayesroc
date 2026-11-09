@@ -210,9 +210,10 @@ def _centre_init(vals, config):
                     for j in cols:
                         vals[keys[j]] = b[j] + float(m @ b)
 
+    knob = _rkg_knob(config)
     for pname, pc in (config.get("params") or {}).items():
         c = _centre_of(pc)
-        if c is None:
+        if c is None or (pname == "know_crit" and knob is not None):
             continue
         if pname == "criterion2":
             shift("beta_thresh_mid_2", c)
@@ -4458,6 +4459,372 @@ def _smooth_info_scale(sd, info, w):
     return v, -0.5 * jnp.dot(v, v) - jnp.sum(jnp.log(jnp.diagonal(Kc)))
 
 
+def _upper_tail_inv(logq):
+    """z with log P(Z > z) = logq, in log space (no underflow)."""
+    lim = max(-600.0, float(np.log(np.finfo(np.dtype(logq.dtype)).tiny)) + 7.0)
+    lq_s = jnp.maximum(logq, lim)
+    z_a = -jax.scipy.special.ndtri(jnp.exp(lq_s))
+    t = jnp.maximum(-2.0 * logq, 1.0)
+    z_b = jnp.sqrt(jnp.maximum(t - jnp.log(t) - jnp.log(2.0 * jnp.pi), 1e-6))
+    z = jnp.where(logq > lim, z_a, z_b)
+    for _ in range(3):
+        lt = jax.scipy.special.log_ndtr(-z)
+        z = z + (lt - logq) * jnp.exp(lt + 0.5 * z ** 2 + 0.5 * jnp.log(2.0 * jnp.pi))
+    return z
+
+
+@jax.custom_jvp
+def _trunc_quantile(low, s):
+    """z ~ N(0,1) truncated to (low, inf) as the quantile of s ~ N(0,1), from the smaller tail:
+    Phi(-z) = Phi(-low) Phi(-s). The JVP differentiates that identity, dz = (phi(low) Phi(-s) dlow +
+    Phi(-low) phi(s) ds) / phi(z), in log space."""
+    ln = jax.scipy.special.log_ndtr
+    logq = ln(-low) + ln(-s)
+    logp = jnp.logaddexp(ln(low), ln(s) + ln(-low))
+    h = jnp.log(0.5)
+    return jnp.where(logq <= logp, _upper_tail_inv(jnp.minimum(logq, h)), -_upper_tail_inv(jnp.minimum(logp, h)))
+
+
+@_trunc_quantile.defjvp
+def _trunc_quantile_jvp(primals, tangents):
+    low, s = primals
+    dlow, ds = tangents
+    z = _trunc_quantile(low, s)
+    ln = jax.scipy.special.log_ndtr
+    hz = 0.5 * z ** 2
+    g_low = jnp.exp(-0.5 * low ** 2 + ln(-s) + hz)
+    g_s = jnp.exp(ln(-low) - 0.5 * s ** 2 + hz)
+    return z, g_low * dlow + g_s * ds
+
+
+@jax.custom_jvp
+def _trunc_logw(lo, hi):
+    """log(Phi(hi) - Phi(lo)), from the smaller tail."""
+    ln = jax.scipy.special.log_ndtr
+    up = lo + hi > 0
+    a = jnp.where(up, ln(-lo), ln(hi))
+    b = jnp.where(up, ln(-hi), ln(lo))
+    return a + jnp.log(-jnp.expm1(jnp.minimum(b - a, 0.0)))
+
+
+@_trunc_logw.defjvp
+def _trunc_logw_jvp(primals, tangents):
+    lo, hi = primals
+    dlo, dhi = tangents
+    w = _trunc_logw(lo, hi)
+    c = 0.5 * jnp.log(2.0 * jnp.pi)
+    return w, jnp.exp(-0.5 * hi ** 2 - c - w) * dhi - jnp.exp(-0.5 * lo ** 2 - c - w) * dlo
+
+
+def _log_phi(x):
+    return -0.5 * x ** 2 - 0.5 * jnp.log(2.0 * jnp.pi)
+
+
+@jax.custom_jvp
+def _trunc_lm(lo, logw):
+    """log(Phi(lo + W) - Phi(lo)) from lo and logw = log W, accurate for any W > 0: a midpoint
+    expansion while W max(1, |lo| + W) < 1e-3, else _trunc_logw."""
+    W = jnp.exp(logw)
+    m = lo + 0.5 * W
+    small = W * jnp.maximum(1.0, jnp.abs(lo) + W) < 1e-3
+    Ws = jnp.where(small, W, 0.0)
+    ms = jnp.where(small, m, 0.0)
+    lm_s = logw + _log_phi(ms) + jnp.log1p(Ws ** 2 * (ms ** 2 - 1.0) / 24.0)
+    lo_l = jnp.where(small, 0.0, lo)
+    lm_l = _trunc_logw(lo_l, lo_l + jnp.where(small, 1.0, W))
+    return jnp.where(small, lm_s, lm_l)
+
+
+@_trunc_lm.defjvp
+def _trunc_lm_jvp(primals, tangents):
+    lo, logw = primals
+    dlo, dlogw = tangents
+    lm = _trunc_lm(lo, logw)
+    W = jnp.exp(logw)
+    m = lo + 0.5 * W
+    hi = lo + W
+    small = W * jnp.maximum(1.0, jnp.abs(lo) + W) < 1e-3
+    u = jnp.where(small, -W * m, 1.0)
+    exprel = jnp.where(jnp.abs(u) < 1e-8, 1.0, jnp.expm1(u) / jnp.where(u == 0.0, 1.0, u))
+    g_lo_s = -jnp.where(small, m, 0.0) * exprel * jnp.exp(jnp.where(small, logw + _log_phi(lo) - lm, -jnp.inf))
+    g_lo_l = jnp.exp(jnp.where(small, -jnp.inf, _log_phi(hi) - lm)) - jnp.exp(jnp.where(small, -jnp.inf, _log_phi(lo) - lm))
+    g_w = jnp.exp(logw + _log_phi(hi) - lm)
+    return lm, jnp.where(small, g_lo_s, g_lo_l) * dlo + g_w * dlogw
+
+
+@jax.custom_jvp
+def _trunc2_quantile(lo, hi, s):
+    """z ~ N(0,1) truncated to (lo, hi) as the quantile of s ~ N(0,1), from the smaller tail:
+    Phi(-z) = Phi(-lo) Phi(-s) + Phi(s) Phi(-hi)."""
+    ln = jax.scipy.special.log_ndtr
+    logq = jnp.logaddexp(ln(-lo) + ln(-s), ln(s) + ln(-hi))
+    logp = jnp.logaddexp(ln(lo) + ln(-s), ln(s) + ln(hi))
+    h = jnp.log(0.5)
+    return jnp.where(logq <= logp, _upper_tail_inv(jnp.minimum(logq, h)), -_upper_tail_inv(jnp.minimum(logp, h)))
+
+
+@_trunc2_quantile.defjvp
+def _trunc2_quantile_jvp(primals, tangents):
+    lo, hi, s = primals
+    dlo, dhi, ds = tangents
+    z = _trunc2_quantile(lo, hi, s)
+    ln = jax.scipy.special.log_ndtr
+    hz = 0.5 * z ** 2
+    g_lo = jnp.exp(-0.5 * lo ** 2 + ln(-s) + hz)
+    g_hi = jnp.exp(-0.5 * hi ** 2 + ln(s) + hz)
+    g_s = jnp.exp(_trunc_logw(lo, hi) - 0.5 * s ** 2 + hz)
+    return z, g_lo * dlo + g_hi * dhi + g_s * ds
+
+
+@jax.custom_jvp
+def _trunc2w_quantile(lo, logw, s):
+    """_trunc2_quantile on (lo, lo + W) from logw = log W, with derivatives that stay accurate as
+    W -> 0."""
+    return _trunc2_quantile(lo, lo + jnp.exp(logw), s)
+
+
+@_trunc2w_quantile.defjvp
+def _trunc2w_quantile_jvp(primals, tangents):
+    lo, logw, s = primals
+    dlo, dlogw, ds = tangents
+    hi = lo + jnp.exp(logw)
+    z = _trunc2_quantile(lo, hi, s)
+    ln = jax.scipy.special.log_ndtr
+    hz = 0.5 * z ** 2
+    g_lo = jnp.exp(-0.5 * lo ** 2 + ln(-s) + hz)
+    g_hi = jnp.exp(-0.5 * hi ** 2 + ln(s) + hz)
+    g_w = jnp.exp(-0.5 * hi ** 2 + ln(s) + hz + logw)
+    g_s = jnp.exp(_trunc_lm(lo, logw) - 0.5 * s ** 2 + hz)
+    return z, (g_lo + g_hi) * dlo + g_w * dlogw + g_s * ds
+
+
+def _rkg_guess(config):
+    config = config.get("_static", config)
+    if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
+        return None
+    y = np.asarray(config["y"])
+    rk = np.asarray(config["rk"])
+    olm = np.asarray(config["old_level_map"])
+    band = np.full(y.shape[0], -1)
+    for j, lev in enumerate(olm):
+        band[y == lev] = j
+    live = np.ones(y.shape[0], bool) if config.get("counts") is None or config.get("rows_live") else np.asarray(config["counts"]) > 0
+    G = np.where((band >= 0) & (rk == 3) & live)[0]
+    if G.size == 0:
+        return None
+    return G, band[G]
+
+
+def _rkg_plan(config):
+    """Static plan for the per-level slack of the CDP R/K/G Guess constraint.
+
+    Picks the grouping factor whose rec_crit/know_crit random effects carry the slack: a set of units,
+    each a pair (rec_crit term, know_crit term) with the same loading or a single term: 0/1 loadings
+    that partition the trials, else terms of disjoint supports with any loadings, where a level whose
+    Guess trials load with both signs bounds its slack on both sides and the Guess trials outside
+    every support are left to the know-criterion shift. The terms may sit in one cross-correlated block or in blocks of
+    their own. Each block's sampled site is keyed as the model samples it: ("x", cor_id) for a
+    cross-correlated block, ("r", index) for a per-parameter block (correlated, whitened, one term
+    or batched) and ("t", index, term) for one term of an uncorrelated block. Returns None when no
+    factor fits."""
+    st = config.get("_static", config)
+    g = _rkg_guess(st)
+    if g is None:
+        return None
+    G, band = g
+    Nn = int(np.asarray(st["y"]).shape[0])
+    res = st.get("random_effects") or []
+
+    def loads(rc):
+        nt = int(rc["n_terms"])
+        if rc.get("type", "index") == "index":
+            if rc.get("term_idx") is not None:
+                A = np.zeros((Nn, nt))
+                ti = np.asarray(rc["term_idx"], dtype=np.int64)
+                A[np.flatnonzero(ti > 0), ti[ti > 0] - 1] = 1.0
+                return A
+            return np.ones((Nn, nt))
+        A = np.asarray(rc["Z"], dtype=float)
+        return A[:, None] if A.ndim == 1 else A
+
+    def partition(cols):
+        b = [j for j, (_, a) in enumerate(cols) if np.all((a == 0) | (a == 1))]
+        ones = [j for j in b if np.all(cols[j][1] == 1)]
+        if ones:
+            return [ones[0]]
+        if b and np.all(sum(cols[j][1] for j in b) == 1):
+            return b
+        return None
+
+    def disjoint(cols):
+        taken, out = np.zeros(Nn, bool), []
+        for j, (_, a) in enumerate(cols):
+            sup = a != 0
+            if np.any(sup[G]) and not np.any(sup & taken):
+                out.append(j)
+                taken |= sup
+        return out or None
+
+    n_th = int(st.get("n_thresh", int(st.get("K", 2)) - 1))
+    c_mid = (n_th + 1) // 2 - 1
+    scal_groups = st.get("crit_scalar_groups")
+
+    def crit_cols(rc):
+        nt = int(rc["n_terms"])
+        loc = rc.get("location_only") or (st.get("crit_scalar") and scal_groups is None) or (
+            scal_groups is not None and rc.get("group") in scal_groups)
+        R = nt if rc.get("location_only") else nt // n_th
+        dims = list(range(R)) if loc else [c_mid * R + r for r in range(R)]
+        if rc.get("type", "index") == "index":
+            if rc.get("term_idx") is not None:
+                A = np.zeros((Nn, R))
+                ti = np.asarray(rc["term_idx"], dtype=np.int64)
+                A[np.flatnonzero(ti > 0), ti[ti > 0] - 1] = 1.0
+            else:
+                A = np.ones((Nn, R))
+        else:
+            A = np.asarray(rc["Z"], dtype=float)
+            A = A[:, None] if A.ndim == 1 else A
+        return [(dims[r], A[:, r]) for r in range(R)]
+
+    cross_off = {}
+    for i, rc in enumerate(res):
+        cid = rc.get("cor_id")
+        if cid is not None:
+            o = cross_off.setdefault(cid, [0])
+            rc_off = o[0]
+            o[0] += int(rc["n_terms"])
+            cross_off.setdefault((cid, i), rc_off)
+
+    def site(i, j):
+        rc = res[i]
+        if rc.get("cor_id") is not None:
+            return ("x", rc["cor_id"]), cross_off[(rc["cor_id"], i)] + j
+        if int(rc["n_terms"]) > 1 and not rc.get("correlated", True):
+            return ("t", i, j), 0
+        return ("r", i), j
+
+    best = None
+    for group in sorted({rc["group"] for rc in res if rc.get("param") in ("rec_crit", "know_crit", "criterion")}):
+        cols = {"rec_crit": [], "know_crit": [], "criterion": []}
+        idx = None
+        for i, rc in enumerate(res):
+            if rc.get("group") != group or rc.get("param") not in cols:
+                continue
+            if rc["param"] == "criterion":
+                cols["criterion"] += [((i, j), a) for j, a in crit_cols(rc)]
+            else:
+                A = loads(rc)
+                for j in range(A.shape[1]):
+                    cols[rc["param"]].append(((i, j), A[:, j]))
+            idx = rc["index"]
+
+        def pair_k(js):
+            out = []
+            for j in js:
+                k_ref, ind = cols["know_crit"][j]
+                m = [r for r, a in cols["rec_crit"] if np.array_equal(a, ind)]
+                out.append((m[0] if m else None, k_ref, None, ind))
+            return out
+
+        units = None
+        for how, src in ((partition, "know_crit"), (partition, "rec_crit"), (partition, "criterion"),
+                         (disjoint, "know_crit"), (disjoint, "rec_crit")):
+            js = how(cols[src]) if cols[src] else None
+            if js is None:
+                continue
+            if src == "know_crit":
+                units = pair_k(js)
+            elif src == "rec_crit":
+                units = [(cols["rec_crit"][j][0], None, None, cols["rec_crit"][j][1]) for j in js]
+            else:
+                units = [(None, None, cols["criterion"][j][0], cols["criterion"][j][1]) for j in js]
+            break
+        if units is None:
+            continue
+        terms, unit_pos, blocks = [], [], {}
+        for r_ref, k_ref, c_ref, ind in units:
+            pos = []
+            for kind, ref in (("R", r_ref), ("K", k_ref), ("C", c_ref)):
+                if ref is None:
+                    continue
+                key, dim = site(*ref)
+                pos.append(len(terms))
+                blocks.setdefault(key, []).append((len(terms), dim))
+                terms.append(dict(key=key, dim=dim, kind=kind, load=ind))
+            unit_pos.append(pos)
+        lvl_idx = np.asarray(idx, dtype=np.int64) - 1
+        n_groups = int(next(rc["n_groups"] for rc in res if rc.get("group") == group))
+        own = np.full(G.shape[0], -1)
+        for t, (_, _, _, ind) in enumerate(units):
+            own[ind[G] != 0] = t
+        kc_fixed = int((st.get("params") or {}).get("know_crit", {}).get("n_coef", 0)) >= 1
+        if np.any(own < 0) and not kc_fixed:
+            continue
+        G_t, band_t, masks, cells, x_t, pos_m, neg_m, pairs = [], [], [], 0, [], [], [], []
+        for t in range(len(units)):
+            sel = own == t
+            G_t.append(G[sel])
+            band_t.append(band[sel])
+            msk = np.zeros(n_groups, bool)
+            msk[np.unique(lvl_idx[G[sel]])] = True
+            masks.append(msk)
+            cells += int(msk.sum())
+            xs = units[t][3][G[sel]]
+            lv = lvl_idx[G[sel]]
+            x_t.append(xs)
+            pm, nm = np.zeros(n_groups, bool), np.zeros(n_groups, bool)
+            pm[np.unique(lv[xs > 0])] = True
+            nm[np.unique(lv[xs < 0])] = True
+            pos_m.append(pm)
+            neg_m.append(nm)
+            pp, qq = [], []
+            for l in np.flatnonzero(pm & nm):
+                P_, N_ = np.flatnonzero((lv == l) & (xs > 0)), np.flatnonzero((lv == l) & (xs < 0))
+                pp.append(np.repeat(P_, N_.size))
+                qq.append(np.tile(N_, P_.size))
+            pairs.append((np.concatenate(pp).astype(np.int64), np.concatenate(qq).astype(np.int64)) if pp else None)
+        if not kc_fixed and any(p is not None for p in pairs):
+            continue
+        free = G[own < 0]
+        score = G.shape[0] / max(cells, 1)
+        mm = len(terms)
+        cand = dict(group=group, terms=terms, unit_pos=unit_pos, blocks=blocks, mm=mm,
+                    WR=np.stack([t_["load"] if t_["kind"] == "R" else np.zeros(Nn) for t_ in terms], 1),
+                    WK=np.stack([t_["load"] if t_["kind"] == "K" else np.zeros(Nn) for t_ in terms], 1),
+                    lvl_idx=lvl_idx, n_groups=n_groups, G_t=G_t, band_t=band_t, masks=masks, score=score,
+                    ind=np.stack([(ind != 0).astype(float) for _, _, _, ind in units], 1),
+                    WC=np.stack([t_["load"] if t_["kind"] == "C" else np.zeros(Nn) for t_ in terms], 1),
+                    sgn=np.asarray([-1.0 if t_["kind"] == "C" else 1.0 for t_ in terms]),
+                    x_t=x_t, pos_m=pos_m, neg_m=neg_m, pairs=pairs, free=free, free_band=band[own < 0])
+        if best is None or score < best["score"]:
+            best = cand
+    return best
+
+
+def _force_last(p, back, D):
+    """The LKJ order p (a permutation of 0..D-1) with the dims `back` moved last, in that order."""
+    rank = np.full(D, -1, dtype=np.int64)
+    rank[np.asarray(back, dtype=np.int64)] = np.arange(len(back))
+    if isinstance(p, np.ndarray):
+        rk = rank[p]
+        key = np.where(rk >= 0, D + rk, np.arange(D))
+        return p[np.argsort(key, kind="stable")]
+    rk = jnp.asarray(rank)[p]
+    key = jnp.where(rk >= 0, D + rk, jnp.arange(D))
+    return jnp.take(p, jnp.argsort(key))
+
+
+def _rkg_back(plan, prefix):
+    """The model dims of the cross-correlated block `prefix` that carry the R/K/G slack, or None."""
+    if plan is None:
+        return None
+    for key, ds in plan["blocks"].items():
+        if key[0] == "x" and prefix == f"cross_{key[1]}_{plan['group']}":
+            return [dm for _, dm in ds]
+    return None
+
+
 def _rkg_knob(config):
     """Static setup for sampling the CDP R/K/G know criterion on its feasible set.
 
@@ -4469,10 +4836,6 @@ def _rkg_knob(config):
     wall. Returns None when no Guess response constrains the model."""
     config = config.get("_static", config)
     if config.get("family") != "cdp" or int(config.get("n_rkg", 2)) != 3:
-        return None
-    # fixed-effects bounds only: with random effects on the thresholds or criteria the bound
-    # couples every effect through a max over trials and sampling collapses
-    if any(rc.get("param") in ("criterion", "rec_crit", "know_crit") for rc in config.get("random_effects") or []):
         return None
     pconf = config.get("params", {}).get("know_crit")
     if pconf is None or pconf.get("n_coef", 0) < 1:
@@ -4495,8 +4858,108 @@ def _rkg_knob(config):
         raise ValueError("know_crit: the fixed-effect design must span the constant (an intercept "
                          "or a full factor coding)")
     d = X.shape[1]
-    B_perp = np.linalg.svd(v[None, :])[2][1:].T if d > 1 else np.zeros((1, 0))
-    return {"X": X, "v": v, "B_perp": B_perp, "G": G, "band": band[G]}
+    plan = _rkg_plan(config)
+    if plan is None and any(rc.get("param") in ("criterion", "rec_crit", "know_crit") for rc in config.get("random_effects") or []):
+        return None
+    V, G_t, band_t = v[:, None], [G], [band[G]]
+    if config.get("_rkg_V") is not None:
+        V = np.asarray(config["_rkg_V"], dtype=float).reshape(d, -1)
+        if V.shape[1] > 1:
+            if plan is None or len(plan["G_t"]) != V.shape[1]:
+                raise RuntimeError("bayesroc: the trimmed configuration lost a unit of the R/K/G slack plan")
+            G_t, band_t = list(plan["G_t"]), list(plan["band_t"])
+    elif plan is not None and plan["ind"].shape[1] > 1 and plan["free"].size == 0:
+        Vp = np.linalg.lstsq(X, plan["ind"], rcond=None)[0]
+        if np.allclose(X @ Vp, plan["ind"], atol=1e-9) and np.linalg.matrix_rank(Vp) == Vp.shape[1]:
+            V, G_t, band_t = Vp, list(plan["G_t"]), list(plan["band_t"])
+    B_perp = np.linalg.svd(V.T)[2][V.shape[1]:].T if d > V.shape[1] else np.zeros((d, 0))
+    cover = [[]] if plan is None else ([[j] for j in range(V.shape[1])] if V.shape[1] > 1 else [list(range(len(plan["G_t"])))])
+    hard = [plan is not None and (any(plan["pairs"][u] is not None for u in c) or (V.shape[1] == 1 and plan["free"].size > 0))
+            for c in cover]
+    return {"X": X, "v": v, "V": V, "B_perp": B_perp, "G": G, "band": band[G], "soft": plan is not None,
+            "G_t": G_t, "band_t": band_t, "s_t": [1.0 if h else 1.0 / np.sqrt(g.size) for g, h in zip(G_t, hard)],
+            "cover": cover, "hard": hard}
+
+
+def _rkg_shift(knob, knob_state, plan, thresh, c_R, c_K):
+    """c_K with the know-criterion shift t (one per column of V) added. A soft column puts t near
+    lam, the largest Guess bound of its trials, with the per-level slack absorbing the rest. A hard
+    column, whose units have a level bounded on both sides or Guess trials outside every support,
+    keeps t above lam, the least shift at which every such level's interval is nonempty: for one
+    level, the largest crossing of a positive- and a negative-loading Guess bound."""
+    Vk = jnp.asarray(knob["V"], dtype=_FLOAT)
+    nT = Vk.shape[1]
+    w = numpyro.sample("know_crit_shift", dist.ImproperUniform(dist.constraints.real, (), (nT,)))
+    coefs = jnp.stack(knob_state["level"]["coef"]) if "level" in knob_state else None
+    ts, sj, lams, rs = [], 0.0, [], []
+    floor = knob_state.setdefault("floor", {})
+    for j in range(nT):
+        sc = knob["s_t"][j]
+        if knob["hard"][j]:
+            vals, gs = [], {}
+            for u in knob["cover"][j]:
+                if plan["pairs"][u] is None:
+                    continue
+                Gu = jnp.asarray(plan["G_t"][u])
+                a = thresh[Gu, jnp.asarray(plan["band_t"][u])] - c_R[Gu] - c_K[Gu]
+                p, q = (jnp.asarray(ix) for ix in plan["pairs"][u])
+                xp = jnp.asarray(plan["x_t"][u][plan["pairs"][u][0]], dtype=_FLOAT)
+                xq = -jnp.asarray(plan["x_t"][u][plan["pairs"][u][1]], dtype=_FLOAT)
+                gs[u] = (a[p] * xq + a[q] * xp) / (xp + xq)
+                vals.append(jnp.max(gs[u]))
+            if nT == 1 and plan["free"].size > 0:
+                Gf = jnp.asarray(plan["free"])
+                vals.append(jnp.max(thresh[Gf, jnp.asarray(plan["free_band"])] - c_R[Gf] - c_K[Gf]))
+            lam = jnp.max(jnp.stack(vals))
+            r = jnp.asarray(0.0, dtype=_FLOAT)
+        else:
+            G = jnp.asarray(knob["G_t"][j])
+            lam = jnp.max(thresh[G, jnp.asarray(knob["band_t"][j])] - c_R[G] - c_K[G])
+            cj = 0.0 if coefs is None else (coefs[j] if nT > 1 else jnp.min(coefs))
+            r = cj / jnp.sqrt(cj ** 2 + sc ** 2)
+        x = w[j] - lam
+        if knob["hard"][j]:
+            y = x / sc
+            log_gap = jnp.log(sc) + jnp.where(y < -30.0, y, jnp.log(jax.nn.softplus(jnp.maximum(y, -30.0))))
+            for u, g in gs.items():
+                floor[u] = dict(g=g, lam=lam, log_gap=log_gap)
+        ts.append(lam + r * x + (1.0 - r) * sc * jax.nn.softplus(x / sc))
+        sj = sj + (jax.nn.log_sigmoid(x / sc) if knob["hard"][j] else jnp.log(r + (1.0 - r) * jax.nn.sigmoid(x / sc)))
+        lams.append(lam)
+        rs.append(r)
+    numpyro.factor("know_crit_shift_jac", sj)
+    numpyro.deterministic("kc_shift_lam", jnp.stack(lams))
+    numpyro.deterministic("kc_shift_r", jnp.stack(rs))
+    v = Vk @ jnp.stack(ts)
+    beta_kc = knob_state["beta_perp"] + v
+    prior_strs = knob_state["prior_strs"]
+    numpyro.factor("know_crit_prior", sum(parse_prior(prior_strs[j]).log_prob(beta_kc[j])
+                                          for j in range(knob_state["n_coef"])))
+    if knob_state["n_coef"] == 1:
+        numpyro.deterministic("beta_know_crit[1]", beta_kc[0])
+    elif len(set(prior_strs)) == 1:
+        numpyro.deterministic("beta_know_crit", beta_kc)
+    else:
+        for j in range(knob_state["n_coef"]):
+            numpyro.deterministic(f"beta_know_crit[{j+1}]", beta_kc[j])
+    return c_K + knob_state["X"] @ v
+
+
+def _rkg_lift(config, th, to_dict, off):
+    """Starting points th [C, D] with each hard know-criterion shift coordinate raised to at least
+    lam + max(1, 3 s), so a start is never in the collapsed regime where t sits on its floor."""
+    knob = _rkg_knob(config)
+    if knob is None or not any(knob.get("hard", ())) or "know_crit_shift" not in off:
+        return th
+    from numpyro.infer.util import constrain_fn
+    th = np.array(th, dtype=np.float64)
+    sl = off["know_crit_shift"][0]
+    lift = np.asarray([max(1.0, 3.0 * s) if h else -np.inf for s, h in zip(knob["s_t"], knob["hard"])])
+    for c in range(th.shape[0]):
+        out = constrain_fn(sdt_model, (config,), {}, to_dict(th[c]), return_deterministic=True)
+        lam = np.asarray(out["kc_shift_lam"], dtype=np.float64).reshape(-1)
+        th[c, sl] = np.maximum(th[c, sl], lam + lift)
+    return th
 
 
 def _apply_crit_scalar(config, n_thresh):
@@ -4543,6 +5006,22 @@ def sdt_model(config):
 
     knob = _rkg_knob(config)
     knob_state = {}
+    rkg_plan = _rkg_plan(config)
+    rkg_sites = {} if rkg_plan is None else rkg_plan["blocks"]
+
+    def _rkg_hook(key, A, z, emit):
+        """The slack plan's sampled site `key` with prior factor A (u = A z): z with its components in the
+        subspace that moves only the plan's rows of A removed (orth(A^-1 E_B), an orthonormal basis of
+        z's coordinates), and the removed coordinates, their effect on those rows and `emit` (the site's
+        deterministics from its full effects) kept for the slack."""
+        dims = jnp.asarray([dm for _, dm in rkg_sites[key]])
+        E = jnp.zeros((A.shape[0], dims.shape[0]), dtype=A.dtype).at[dims, jnp.arange(dims.shape[0])].set(1.0)
+        Q, _ = jnp.linalg.qr(jnp.linalg.solve(A, E))
+        zeta = Q.T @ z
+        z0 = z - Q @ zeta
+        knob_state.setdefault("sites", {})[key] = dict(zeta=zeta, M=(A @ Q)[dims], rows=dims, A=A, z0=z0,
+                                                       terms=[tq for tq, _ in rkg_sites[key]], emit=emit)
+        return z0
 
     _batch_scalar_betas = {}
     _batch_skip = set()
@@ -4644,12 +5123,12 @@ def sdt_model(config):
 
         if knob is not None and param_name == "know_crit":
             B_perp = jnp.asarray(knob["B_perp"], dtype=_FLOAT)
-            if n_coef > 1:
+            if B_perp.shape[1] > 0:
                 w = numpyro.sample("know_crit_free",
-                                   dist.ImproperUniform(dist.constraints.real, (), (n_coef - 1,)))
+                                   dist.ImproperUniform(dist.constraints.real, (), (B_perp.shape[1],)))
                 beta_perp = B_perp @ w
             else:
-                beta_perp = jnp.zeros(1, dtype=_FLOAT)
+                beta_perp = jnp.zeros(n_coef, dtype=_FLOAT)
             knob_state.update(beta_perp=beta_perp, X=X, n_coef=n_coef,
                               prior_strs=[priors.get(col_names[j] if j < len(col_names) else f"V{j+1}",
                                                      "normal(0, 2.5)") for j in range(n_coef)])
@@ -4742,8 +5221,14 @@ def sdt_model(config):
                 sd = numpyro.sample(f"sigma_{param}_{group}[1]", sd_prior)
                 z = numpyro.sample(f"z_{param}_{group}[1]",
                                    dist.Normal(0, 1).expand([n_groups]))
+                key = ("r", re_conf["_idx"])
+                if key in rkg_sites:
+                    def _emit1(u_f, nm=f"u_{param}_{group}"):
+                        numpyro.deterministic(nm, u_f[0])
+                    z = _rkg_hook(key, jnp.reshape(sd, (1, 1)), z[None, :], _emit1)[0]
                 u = sd * z
-                numpyro.deterministic(f"u_{param}_{group}", u)
+                if key not in rkg_sites:
+                    numpyro.deterministic(f"u_{param}_{group}", u)
 
                 if re_type == "index":
                     idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
@@ -4758,10 +5243,23 @@ def sdt_model(config):
                     _apply_re_offset(param, Z[:, 0] * u[idx], param_values)
             else:
                 u_all = jnp.zeros((n_terms, n_groups))
+                tkeys = [("t", re_conf["_idx"], t) for t in range(n_terms)]
+                defer = any(k in rkg_sites for k in tkeys)
+                buf = {}
                 for t in range(n_terms):
                     sd_t = numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_priors[t])
                     z_t = numpyro.sample(f"z_{param}_{group}[{t+1}]",
                                          dist.Normal(0, 1).expand([n_groups]))
+                    if tkeys[t] in rkg_sites:
+                        def _emit_t(u_f, t_=t):
+                            buf[t_] = u_f[0]
+                            if sum(k_ != "u0" for k_ in buf) == sum(k in rkg_sites for k in tkeys):
+                                full = buf["u0"]
+                                for k_, v_ in buf.items():
+                                    if k_ != "u0":
+                                        full = full.at[k_].set(v_)
+                                numpyro.deterministic(f"u_{param}_{group}", full.T)
+                        z_t = _rkg_hook(tkeys[t], jnp.reshape(sd_t, (1, 1)), z_t[None, :], _emit_t)[0]
                     u_t = sd_t * z_t
                     u_all = u_all.at[t].set(u_t)
 
@@ -4779,15 +5277,24 @@ def sdt_model(config):
 
                     _apply_re_offset(param, offset, param_values)
 
-                numpyro.deterministic(f"u_{param}_{group}", u_all.T)
+                if defer:
+                    buf["u0"] = u_all
+                else:
+                    numpyro.deterministic(f"u_{param}_{group}", u_all.T)
         elif re_conf.get("whiten") is not None and not re_conf.get("cor_blocks"):
             sd_list = sd_priors if per_coef_varies else [sd_prior] * n_terms
             sds, L_corr, L = _whitened_cov(f"{param}_{group}", re_conf, n_terms, sd_list)
             numpyro.deterministic(f"corr_{param}_{group}", L_corr @ L_corr.T)
             z = numpyro.sample(f"z_{param}_{group}",
                                dist.Normal(0, 1).expand([n_terms, n_groups]))
+            key = ("r", re_conf["_idx"])
+            if key in rkg_sites:
+                def _emitw(u_f, nm=f"u_{param}_{group}"):
+                    numpyro.deterministic(nm, u_f.T)
+                z = _rkg_hook(key, L, z, _emitw)
             u = L @ z
-            numpyro.deterministic(f"u_{param}_{group}", u.T)
+            if key not in rkg_sites:
+                numpyro.deterministic(f"u_{param}_{group}", u.T)
             if re_type == "index":
                 idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
                 if has_term_idx:
@@ -4816,9 +5323,15 @@ def sdt_model(config):
 
             z = numpyro.sample(f"z_{param}_{group}",
                                dist.Normal(0, 1).expand([n_terms, n_groups]))
+            key = ("r", re_conf["_idx"])
+            if key in rkg_sites:
+                def _emitc(u_f, nm=f"u_{param}_{group}"):
+                    numpyro.deterministic(nm, u_f.T)
+                z = _rkg_hook(key, L, z, _emitc)
             u = L @ z
 
-            numpyro.deterministic(f"u_{param}_{group}", u.T)
+            if key not in rkg_sites:
+                numpyro.deterministic(f"u_{param}_{group}", u.T)
 
             if re_type == "index":
                 idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
@@ -4849,7 +5362,7 @@ def sdt_model(config):
 
     for (group, n_groups, prior_sd_str), batch_idxs in _batched_groups.items():
         if len(batch_idxs) == 1:
-            _sample_independent_re(re_configs[batch_idxs[0]], param_values)
+            _sample_independent_re({**re_configs[batch_idxs[0]], "_idx": batch_idxs[0]}, param_values)
             continue
 
         n_batch = len(batch_idxs)
@@ -4861,7 +5374,13 @@ def sdt_model(config):
                               sd_prior.expand([n_batch]))
         z_all = numpyro.sample(f"z_batch_{batch_tag}_{group}",
                                 dist.Normal(0, 1).expand([n_batch, n_groups]))
-        u_all = sds[:, None] * z_all
+        z_used = z_all
+        for b, re_idx in enumerate(batch_idxs):
+            if ("r", re_idx) in rkg_sites:
+                def _emitb(u_f, nm=f"u_{re_configs[re_idx]['param']}_{group}"):
+                    numpyro.deterministic(nm, u_f[0])
+                z_used = z_used.at[b].set(_rkg_hook(("r", re_idx), jnp.reshape(sds[b], (1, 1)), z_all[b][None, :], _emitb)[0])
+        u_all = sds[:, None] * z_used
 
         for b, re_idx in enumerate(batch_idxs):
             rc = re_configs[re_idx]
@@ -4869,12 +5388,13 @@ def sdt_model(config):
             u = u_all[b]
             numpyro.deterministic(f"sigma_{param}_{group}[1]", sds[b])
             numpyro.deterministic(f"z_{param}_{group}[1]", z_all[b])
-            numpyro.deterministic(f"u_{param}_{group}", u)
+            if ("r", re_idx) not in rkg_sites:
+                numpyro.deterministic(f"u_{param}_{group}", u)
             idx = jnp.array(rc["index"], dtype=jnp.int32) - 1
             _apply_re_offset(param, u[idx], param_values)
 
     for re_idx in _unbatched_idxs:
-        _sample_independent_re(re_configs[re_idx], param_values)
+        _sample_independent_re({**re_configs[re_idx], "_idx": re_idx}, param_values)
 
     cross_cor_criterion_contributions = []
     cross_cor_bias_contributions = []
@@ -4915,6 +5435,9 @@ def sdt_model(config):
         # (tmap.TMap.corr): L_corr is then the factor of R[p][:, p], and its rows go back to the
         # model's order here; z follows the sampled order
         cperm = (config.get("_corr_perm") or {}).get(f"cross_{cor_id}_{group}")
+        back_ = _rkg_back(rkg_plan, f"cross_{cor_id}_{group}")
+        if back_ is not None:
+            cperm = _force_last(np.arange(total_dim) if cperm is None else cperm, back_, total_dim)
         if cperm is not None:
             L_corr = jnp.take(L_corr, jnp.argsort(cperm), axis=0)
         numpyro.deterministic(f"corr_cross_{cor_id}_{group}", L_corr @ L_corr.T)
@@ -4924,11 +5447,17 @@ def sdt_model(config):
         z = numpyro.sample(f"z_cross_{cor_id}_{group}",
                            dist.Normal(0, 1).expand([total_dim, n_groups]))
         u = L @ z
-
+        if ("x", cor_id) in rkg_sites:
+            def _emit_cross(u_f, mems=[(param, nt, d_off) for param, nt, d_off, _ in member_dims], grp=group, cid_=cor_id):
+                for param_, nt_, d_off_ in mems:
+                    u_portion = u_f[d_off_:d_off_ + nt_]
+                    numpyro.deterministic(f"u_{param_}_{grp}_from_{cid_}", u_portion[0] if nt_ == 1 else u_portion.T)
+            u = L @ _rkg_hook(("x", cor_id), L, z, _emit_cross)
         for param, nt, d_off, m_conf in member_dims:
             u_portion = u[d_off:d_off + nt]
-            u_det = u_portion[0] if nt == 1 else u_portion.T
-            numpyro.deterministic(f"u_{param}_{group}_from_{cor_id}", u_det)
+            if ("x", cor_id) not in rkg_sites:
+                u_det = u_portion[0] if nt == 1 else u_portion.T
+                numpyro.deterministic(f"u_{param}_{group}_from_{cor_id}", u_det)
 
             if param in ("criterion", "criterion2"):
                 idx_crit = jnp.array(m_conf["index"], dtype=jnp.int32) - 1
@@ -5136,6 +5665,12 @@ def sdt_model(config):
             crit_group = crit_re["group"]
             n_groups_crit = int(crit_re["n_groups"])
             n_dims = int(crit_re["n_terms"])
+            ci = next(i for i, rc in enumerate(re_configs) if rc is crit_re)
+            ckey = ("r", ci)
+
+            def _emit_crit(u_f, nm=f"u_criterion_{crit_group}"):
+                numpyro.deterministic(nm, u_f.T)
+            crit_hooked = ckey in rkg_sites
             crit_correlated = crit_re.get("correlated", True)
             crit_sd_prior = _positive_dist(parse_prior(crit_re.get("prior_sd", "normal(0, 0.5)")))
             per_coef_sd = crit_re.get("prior_sd_per_coef")
@@ -5150,6 +5685,8 @@ def sdt_model(config):
                 numpyro.deterministic(f"corr_criterion_{crit_group}", L_corr_crit @ L_corr_crit.T)
                 z_crit = numpyro.sample(f"z_criterion_{crit_group}",
                                         dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
+                if crit_hooked:
+                    z_crit = _rkg_hook(ckey, L_crit, z_crit, _emit_crit)
                 u_crit = L_crit @ z_crit
             elif crit_correlated and n_dims > 1:
                 if has_per_coef_sd:
@@ -5168,18 +5705,34 @@ def sdt_model(config):
                 L_crit = jnp.diag(crit_sds) @ L_corr_crit
                 z_crit = numpyro.sample(f"z_criterion_{crit_group}",
                                         dist.Normal(0, 1).expand([n_dims, n_groups_crit]))
+                if crit_hooked:
+                    z_crit = _rkg_hook(ckey, L_crit, z_crit, _emit_crit)
                 u_crit = L_crit @ z_crit
             else:
                 u_crit = jnp.zeros((n_dims, n_groups_crit))
+                crit_buf = {"u": None, "n": 0, "need": sum((ckey if n_dims == 1 else ("t", ci, t)) in rkg_sites
+                                                            for t in range(n_dims))}
                 for t in range(n_dims):
                     sd_prior_t = (_positive_dist(parse_prior(per_coef_sd[t]))
                                   if has_per_coef_sd else crit_sd_prior)
                     sd_t = numpyro.sample(f"sigma_criterion_{crit_group}[{t+1}]", sd_prior_t)
                     z_t = numpyro.sample(f"z_criterion_{crit_group}[{t+1}]",
                                          dist.Normal(0, 1).expand([n_groups_crit]))
-                    u_crit = u_crit.at[t].set(sd_t * z_t)
+                    tkey = ckey if n_dims == 1 else ("t", ci, t)
+                    if tkey in rkg_sites:
+                        crit_hooked = True
 
-            numpyro.deterministic(f"u_criterion_{crit_group}", u_crit.T)
+                        def _emit_t(u_f, t_=t, buf=crit_buf, nm=f"u_criterion_{crit_group}"):
+                            buf["u"] = buf["u"].at[t_].set(u_f[0])
+                            buf["n"] += 1
+                            if buf["n"] == buf["need"]:
+                                numpyro.deterministic(nm, buf["u"].T)
+                        z_t = _rkg_hook(tkey, jnp.reshape(sd_t, (1, 1)), z_t[None, :], _emit_t)[0]
+                    u_crit = u_crit.at[t].set(sd_t * z_t)
+                crit_buf["u"] = u_crit
+
+            if not crit_hooked:
+                numpyro.deterministic(f"u_criterion_{crit_group}", u_crit.T)
             idx_crit = jnp.array(crit_re["index"], dtype=jnp.int32) - 1
             crit_re_contributions.append((u_crit, idx_crit, crit_re))
 
@@ -5231,11 +5784,108 @@ def sdt_model(config):
                 rho_t = trial_params.get("rho", jnp.zeros(N))
                 rho_l = trial_params.get("rho_N", rho_t if config.get("cdp_rho_shared") else jnp.zeros(N))
                 cdp_corr = jnp.where(is_old == 1, rho_t, rho_l)
-            if knob is not None:
+            if "sites" in knob_state:
+                pl = rkg_plan
+                lidx = jnp.asarray(pl["lvl_idx"])
+                WR = jnp.asarray(pl["WR"], dtype=_FLOAT)
+                WK = jnp.asarray(pl["WK"], dtype=_FLOAT)
+                has_c = bool(np.any(pl["sgn"] < 0))
+                WC = jnp.asarray(pl["WC"], dtype=_FLOAT)
+                sites = knob_state["sites"]
+                order = list(sites)
+                zeta = jnp.concatenate([sites[k]["zeta"] for k in order], 0)
+                Mbig = jnp.zeros((pl["mm"], zeta.shape[0]), dtype=_FLOAT)
+                o = 0
+                for k in order:
+                    m_k = sites[k]["zeta"].shape[0]
+                    Mbig = Mbig.at[jnp.asarray(sites[k]["terms"]), o:o + m_k].set(sites[k]["M"])
+                    o += m_k
+                if has_c:
+                    Au = jnp.stack([jnp.sum(jnp.asarray(pl["sgn"][pos], dtype=_FLOAT)[:, None] * Mbig[jnp.asarray(pos)], 0)
+                                    for pos in pl["unit_pos"]], 1)
+                else:
+                    Au = jnp.stack([jnp.sum(Mbig[jnp.asarray(pos)], 0) for pos in pl["unit_pos"]], 1)
+                Qu, Ru = jnp.linalg.qr(Au)
+                sg = jnp.where(jnp.diagonal(Ru) < 0, -1.0, 1.0)
+                Du = Qu * sg[None, :]
+                coefs = [jnp.abs(Ru[t, t]) for t in range(len(pl["unit_pos"]))]
+                S = Du.T @ zeta
+                rest = zeta - Du @ S
+                uB = Mbig @ rest
+                c_R = c_R + jnp.sum(WR * uB[:, lidx].T, axis=1)
+                c_K = c_K + jnp.sum(WK * uB[:, lidx].T, axis=1)
+                if has_c:
+                    d_c = jnp.sum(WC * uB[:, lidx].T, axis=1)
+                    thresh = thresh + d_c[:, None]
+                    thresh_mid_vec = thresh_mid_vec + d_c
+                knob_state["level"] = dict(coef=coefs)
+                numpyro.deterministic("kc_slack_coef", jnp.stack(coefs))
+                if knob is not None and knob["soft"]:
+                    c_K = _rkg_shift(knob, knob_state, pl, thresh, c_R, c_K)
+                jac = 0.0
+                gaps = []
+                for t in range(len(pl["unit_pos"])):
+                    Gj = jnp.asarray(pl["G_t"][t])
+                    msk = jnp.asarray(pl["masks"][t])
+                    xs = pl["x_t"][t]
+                    bnd = (thresh[Gj, jnp.asarray(pl["band_t"][t])] - c_R[Gj] - c_K[Gj]) / coefs[t] / jnp.asarray(xs, dtype=_FLOAT)
+                    if not pl["neg_m"][t].any():
+                        low = jax.ops.segment_max(bnd, lidx[Gj], num_segments=pl["n_groups"])
+                        low = jnp.where(msk, low, 0.0)
+                        jac = jac + jnp.sum(jnp.where(msk, jax.scipy.special.log_ndtr(-low), 0.0))
+                        z_eff = jnp.where(msk, _trunc_quantile(low, S[t]), S[t])
+                        gaps.append(jnp.min(jnp.where(msk, z_eff - low, jnp.inf)))
+                    else:
+                        lo = jax.ops.segment_max(jnp.where(xs > 0, bnd, -jnp.inf), lidx[Gj], num_segments=pl["n_groups"])
+                        hi = jax.ops.segment_min(jnp.where(xs < 0, bnd, jnp.inf), lidx[Gj], num_segments=pl["n_groups"])
+                        lo = jnp.where(jnp.asarray(pl["pos_m"][t]), lo, -jnp.inf)
+                        hi = jnp.where(jnp.asarray(pl["neg_m"][t]), hi, jnp.inf)
+                        mixed = jnp.asarray(pl["pos_m"][t] & pl["neg_m"][t])
+                        one = msk & ~mixed
+                        lo_n = jnp.where(one, lo, 0.0)
+                        hi_n = jnp.where(one, hi, jnp.inf)
+                        logw = jnp.zeros(pl["n_groups"], dtype=_FLOAT)
+                        if pl["pairs"][t] is not None:
+                            fl = knob_state["floor"][t]
+                            pp_, qq_ = pl["pairs"][t]
+                            xp = np.asarray(xs[pp_], dtype=float)
+                            xq = -np.asarray(xs[qq_], dtype=float)
+                            d = fl["lam"] - fl["g"]
+                            logd = jnp.where(d > 0, jnp.log(jnp.where(d > 0, d, 1.0)), -jnp.inf)
+                            lk = jnp.asarray(np.log(xp + xq) - np.log(xp) - np.log(xq), dtype=_FLOAT) - jnp.log(coefs[t])
+                            lvp = jnp.asarray(pl["lvl_idx"][pl["G_t"][t][pp_]])
+                            logw = jax.ops.segment_min(lk + jnp.logaddexp(fl["log_gap"], logd), lvp, num_segments=pl["n_groups"])
+                        lo_m = jnp.where(mixed, lo, 0.0)
+                        logw = jnp.where(mixed, logw, 0.0)
+                        jac = jac + jnp.sum(jnp.where(one, _trunc_logw(lo_n, hi_n), 0.0)) + jnp.sum(jnp.where(mixed, _trunc_lm(lo_m, logw), 0.0))
+                        z_eff = jnp.where(one, _trunc2_quantile(lo_n, hi_n, S[t]), jnp.where(mixed, _trunc2w_quantile(lo_m, logw, S[t]), S[t]))
+                        hi_g = jnp.where(mixed, lo_m + jnp.exp(logw), hi_n)
+                        lo_g = jnp.where(mixed, lo_m, lo_n)
+                        gaps.append(jnp.min(jnp.where(msk, jnp.minimum(z_eff - lo_g, hi_g - z_eff), jnp.inf)))
+                    du = (Mbig @ Du[:, t])[:, None] * z_eff[None, :]
+                    uB = uB + du
+                    dut = du[:, lidx].T
+                    c_R = c_R + jnp.sum(WR * dut, axis=1)
+                    c_K = c_K + jnp.sum(WK * dut, axis=1)
+                    if has_c:
+                        d_c = jnp.sum(WC * dut, axis=1)
+                        thresh = thresh + d_c[:, None]
+                        thresh_mid_vec = thresh_mid_vec + d_c
+                numpyro.factor("rkg_level_jac", jac)
+                numpyro.deterministic("kc_level_gap", jnp.min(jnp.stack(gaps)))
+                for k in order:
+                    st_ = sites[k]
+                    st_["emit"]((st_["A"] @ st_["z0"]).at[st_["rows"]].add(uB[jnp.asarray(st_["terms"])]))
+            elif knob is not None and knob["soft"]:
+                c_K = _rkg_shift(knob, knob_state, rkg_plan, thresh, c_R, c_K)
+            if knob is not None and not knob["soft"]:
                 G = jnp.asarray(knob["G"])
                 bound = thresh[G, jnp.asarray(knob["band"])] - c_R[G] - c_K[G]
                 slack = numpyro.sample("know_crit_slack", dist.ImproperUniform(dist.constraints.real, (), ()))
                 t = jnp.max(bound) + jnp.exp(slack)
+                numpyro.deterministic("kc_argmax", jnp.argmax(bound))
+                numpyro.deterministic("kc_maxbound", jnp.max(bound))
+                numpyro.deterministic("kc_gap12", jnp.max(bound) - jnp.sort(bound)[-2])
                 numpyro.factor("know_crit_slack_jac", slack)
                 v = jnp.asarray(knob["v"], dtype=_FLOAT)
                 beta_kc = knob_state["beta_perp"] + t * v
@@ -5651,6 +6301,39 @@ def _knob_init_slack(config, knob, z, beta):
     return jnp.asarray(0.0)
 
 
+def _knob_init_shift(config, knob, z, beta):
+    """Shift coordinates reproducing the user's know-criterion init under the soft wall: each unit's
+    t solves V t = beta - B_perp B_perp' beta, and w = lam + x with x the root of
+    r x + (1 - r) s softplus(x / s) = t - lam (increasing in x). A t at or below the wall when r = 0
+    starts just above it instead."""
+    from numpyro.infer.util import constrain_fn
+    V, B = np.asarray(knob["V"], dtype=float), np.asarray(knob["B_perp"], dtype=float)
+    z0 = dict(z)
+    z0["know_crit_shift"] = jnp.zeros(V.shape[1])
+    out = constrain_fn(sdt_model, (config,), {}, z0, return_deterministic=True)
+    lam, r = np.asarray(out["kc_shift_lam"], dtype=float), np.asarray(out["kc_shift_r"], dtype=float)
+    t = np.linalg.lstsq(V, beta - B @ (B.T @ beta), rcond=None)[0]
+    w = np.zeros(V.shape[1])
+    for j in range(V.shape[1]):
+        sc, g = float(knob["s_t"][j]), float(t[j] - lam[j])
+        f = lambda x: r[j] * x + (1.0 - r[j]) * sc * np.logaddexp(0.0, x / sc) - g
+        if r[j] <= 0 and g <= 0:
+            print("[bayesroc] the know_crit init makes an observed Guess response impossible; it starts "
+                  "just above the boundary instead", file=sys.stderr, flush=True)
+            w[j] = lam[j]
+            continue
+        lo, hi = -1.0, 1.0
+        while f(lo) > 0:
+            lo *= 2.0
+        while f(hi) < 0:
+            hi *= 2.0
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if f(mid) < 0 else (lo, mid)
+        w[j] = lam[j] + 0.5 * (lo + hi)
+    return jnp.asarray(w)
+
+
 def _init_given_else_uniform_site(site=None, values=None, radius=2.0):
     if site["type"] == "sample" and not site["is_observed"] and site["name"] in values:
         return values[site["name"]]
@@ -5666,7 +6349,7 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
     stacked unconstrained NumPyro params. Sites a list leaves out start from
     uniform(-init_radius, init_radius), as Stan does."""
     from numpyro import handlers
-    from numpyro.infer.util import initialize_model
+    from numpyro.infer.util import initialize_model, potential_energy
 
     improper = lambda site: (jnp.zeros(site["fn"].shape())
                              if site.get("type") == "sample" and isinstance(site.get("fn"), dist.ImproperUniform)
@@ -5693,13 +6376,27 @@ def init_values_to_z(config, init_values, seed, init_radius=2.0):
                 used.update(k for k in vals if k == "beta_know_crit" or k.startswith("beta_know_crit["))
                 if knob["B_perp"].shape[1] > 0:
                     fixed["know_crit_free"] = jnp.asarray(knob["B_perp"].T @ kc)
-                fixed["know_crit_slack"] = jnp.asarray(0.0)
-        st = initialize_model(random.fold_in(base, c), sdt_model,
-                              init_strategy=_init_given_else_uniform(fixed, float(init_radius)),
-                              model_args=(config,))
-        z = dict(st.param_info.z)
-        if kc is not None:
-            z["know_crit_slack"] = _knob_init_slack(config, knob, z, kc)
+                if knob["soft"]:
+                    fixed["know_crit_shift"] = jnp.zeros(np.asarray(knob["V"]).shape[1])
+                else:
+                    fixed["know_crit_slack"] = jnp.asarray(0.0)
+        for attempt in range(100):
+            st = initialize_model(random.fold_in(random.fold_in(base, c), attempt), sdt_model,
+                                  init_strategy=_init_given_else_uniform(fixed, float(init_radius)),
+                                  model_args=(config,))
+            z = dict(st.param_info.z)
+            if kc is None:
+                break
+            if knob["soft"]:
+                z["know_crit_shift"] = _knob_init_shift(config, knob, z, kc)
+            else:
+                z["know_crit_slack"] = _knob_init_slack(config, knob, z, kc)
+            pe, g = jax.value_and_grad(lambda q: potential_energy(sdt_model, (config,), {}, q))(z)
+            if np.isfinite(float(pe)) and all(bool(jnp.all(jnp.isfinite(v))) for v in jax.tree.leaves(g)):
+                break
+        else:
+            raise ValueError(f"bayesroc: no starting point with a finite log density and gradient was found for "
+                             f"chain {c + 1} with the given know_crit init in 100 attempts")
         zs.append(z)
     given = set().union(*[set((v or {}).keys()) for v in init_values])
     unused = sorted(given - used)
@@ -5876,6 +6573,8 @@ class NutsCoords:
         self.tm, self.aux, self.aux_flat = None, None, None
         th0 = dr._initial_positions(sdt_model, config, self.keys, self.off, self.D, chains, seed,
                                     init_strategy, init_radius, init_z, self.unflatten.to_sampled)
+        th0 = _rkg_lift(config, th0, lambda r: self.unflatten(jnp.asarray(r)), self.off)
+        self._config = config
         self.start, self._th0, self._init_strategy = th0, th0, init_strategy
         self.source, self.pf, self._split_flags, self.label = None, None, None, label
         self.klog, self.wlog = {}, {}
@@ -5981,6 +6680,10 @@ class NutsCoords:
         for p in range(passes):
             t0 = _t.time()
             base = jnp.asarray(self.start[0]).at[zid].set(0.0)
+            if "know_crit_shift" in self.off:
+                sl = self.off["know_crit_shift"][0]
+                thm = np.asarray(tmv.to_model(tmv.forward(base, self.aux, trim)[0], self.aux))[None]
+                base = base.at[sl].set(jnp.asarray(_rkg_lift(self._config, thm, lambda r: self.unflatten(jnp.asarray(r)), self.off)[0, sl]))
             hstar, it, fval, bar = solve(base, p)
             center = np.asarray(base.at[hid].set(hstar))
             info["h"].append(np.asarray(hstar))
@@ -6175,7 +6878,7 @@ def _anchors_f64(config, chains, seed, parallel, progress_bar, init_strategy, in
                              init_z=None if init_z is None else {k: np.asarray(v) for k, v in init_z.items()}), fh)
         env = dict(os.environ)
         env["BAYESROC_ENABLE_X64"] = "1"
-        env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1}"
+        env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1} --xla_cpu_collective_call_terminate_timeout_seconds=86400"
         code = subprocess.call([sys.executable, os.path.join(here, "autorun.py"), "_nuts_anchors", argfile], env=env)
         if code != 0 or not os.path.exists(out):
             raise RuntimeError(f"bayesroc: the float64 process building the transport map's anchors failed (exit code {code})")
@@ -6198,6 +6901,7 @@ def nuts_init_params(config, chains, seed, init_strategy, init_radius, init_z):
         o += sz
     th = dr._initial_positions(sdt_model, config, keys, off, o, chains, seed, init_strategy,
                                init_radius, init_z)
+    th = _rkg_lift(config, th, lambda r: {k: jnp.asarray(r[off[k][0]].reshape(off[k][1])) for k in keys}, off)
     z = {k: jnp.asarray(th[:, off[k][0]].reshape((chains,) + off[k][1])) for k in keys}
     return z if chains > 1 else {k: v[0] for k, v in z.items()}
 
@@ -6233,11 +6937,13 @@ class _FoldPrograms:
     Laplace stage runs. `tmax`: draw each transition's trajectory length uniformly on (0, tmax]
     (static-trajectory HMC); None for NUTS. Without `parallel` the program loops over the chains."""
 
-    def __init__(self, config, chains, warmup, thinning, rng_key, make_kernel, tmax, sampling=True, parallel=True):
+    def __init__(self, config, chains, warmup, thinning, rng_key, make_kernel, tmax, sampling=True, parallel=True,
+                 max_steps=1024):
         import math
         self.parallel = parallel
         self.config, self.C, self.warmup, self.thin = config, chains, warmup, int(thinning)
         self.rng_key, self.make_kernel, self.tmax, self.sampling = rng_key, make_kernel, tmax, sampling
+        self.max_steps = int(max_steps)
         self.rebuild = _rebuild_point(warmup)
         self.Bw = _divisor(math.gcd(warmup, self.rebuild) if self.rebuild else warmup) if warmup > 0 else _BLOCK
         self.Bs = self.Bw
@@ -6252,7 +6958,7 @@ class _FoldPrograms:
         config, D, sampling = self.config, coords.D, self.sampling
         cfgp = self.cfgp = lambda parts: {**config, "_nuts_parts": parts}
         self.keys = random.split(self.rng_key, C)
-        jitter = self.jitter = _jitter(tmax)
+        jitter = self.jitter = _jitter(tmax, self.max_steps)
         from drghmc import _sd_logq
         sdp_np = self.sdp_np = np.concatenate([np.zeros(0, int)] + [p for p in (coords._sd_pos(sb) for sb in coords._tm.sbs)
                                                                     if p is not None]) if coords._tm is not None else np.zeros(0, int)
@@ -6409,11 +7115,12 @@ def _with_mass(st, imm, pg, D):
                                                mass_matrix_sqrt_inv=wrap(pg.shard(jnp.asarray(np.sqrt(v))))))
 
 
-def _jitter(tmax):
+def _jitter(tmax, nmax=1024):
     """The state with its number of steps drawn as max(1, ceil(tmax u / eps)), u uniform on (0, 1] from the
     state's own key, at the nominal step size eps (Stan, TFP's ChEES and Neal 2011 keep the step and round
     the step count; numpyro's exact-length rescaling to T / ceil(T / eps) hides an oversized step from the
-    adaptation); the identity for NUTS (tmax None)."""
+    adaptation), at most nmax steps (NUTS's 2^max_tree_depth; TFP's ChEES max_leapfrog_steps) and one step
+    for a non-finite step size; the identity for NUTS (tmax None)."""
     if tmax is None:
         return lambda s: s
 
@@ -6421,6 +7128,7 @@ def _jitter(tmax):
         u = 1.0 - random.uniform(random.fold_in(s.rng_key, 7))
         eps = s.adapt_state.step_size
         n = jnp.maximum(1.0, jnp.ceil(tmax * u / eps))
+        n = jnp.where(jnp.isfinite(n), jnp.minimum(n, float(nmax)), 1.0)
         return s._replace(trajectory_length=jnp.asarray((n - 1e-6) * eps, s.trajectory_length.dtype))
 
     return f
@@ -6450,7 +7158,7 @@ def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_t
                         step_size=float(step_size), **kw)
 
     pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
-                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1)
+                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1, max_steps=2 ** int(max_tree_depth))
     coords = NutsCoords(config, chains, seed, parallel and chains > 1, progress_bar, init_strategy, init_radius, init_z,
                         transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build,
                         split=split, split_at=split_at, split_cand=split_cand)
@@ -6470,6 +7178,11 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
     t_w = time.time()
     parts = coords.aux
     st = pg.initf(pg.keys, coords.init_params(C, batched=True), parts)
+    pe0 = np.asarray(st.potential_energy)
+    if not np.all(np.isfinite(pe0)):
+        raise RuntimeError(f"bayesroc: the log density is not finite at the starting point of chain(s) "
+                           f"{', '.join(str(c + 1) for c in np.flatnonzero(~np.isfinite(pe0)))}; supply other "
+                           f"initial values or none")
     imm = nuts_initial_mass(coords)
     if imm is not None:
         st = _with_mass(st, imm, pg, D)

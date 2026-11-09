@@ -40,7 +40,7 @@ def audit(path):
     J = Js[0]
     bnames, bflats = [], []
     for k in keys:
-        if k.startswith("beta_") or k.startswith("dprime_order"):
+        if k.startswith("beta_") or k.startswith("dprime_order") or k == "know_crit_shift":
             sl, shape = off[k]
             for i in range(sl.stop - sl.start):
                 bnames.append(k if sl.stop - sl.start == 1 else f"{k}[{np.unravel_index(i, shape) if shape else i}]")

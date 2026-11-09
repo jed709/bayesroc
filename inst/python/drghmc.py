@@ -116,6 +116,11 @@ def _trim_rows(config, n_keep):
         g = np.where(np.isin(y, olm) & (rk == 3) & live)[0]
         if g.size and int(g[0]) not in rows:
             rows.append(int(g[0]))
+        import numpyro_backend as backend
+        plan = backend._rkg_plan(config)
+        for gt in ([] if plan is None else plan["G_t"]):
+            if gt.size and int(gt[0]) not in rows:
+                rows.append(int(gt[0]))
     return rows
 
 
@@ -146,6 +151,11 @@ def _trim_config(config, n_keep=1):
 
     c = t(config)
     c["N"] = len(rows)
+    if _rkg_structural(config):
+        import numpyro_backend as backend
+        kb = backend._rkg_knob(config)
+        if kb is not None:
+            c["_rkg_V"] = np.asarray(kb["V"], dtype=float).tolist()
     return c
 
 
@@ -1363,7 +1373,7 @@ def _f32_spawn(config, chains, samples, thinning, seed, ctrl, parallel,
     with open(argfile, "w") as fh:
         json.dump(payload, fh)
     env = dict(os.environ)
-    env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1}"
+    env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={chains if parallel else 1} --xla_cpu_collective_call_terminate_timeout_seconds=86400"
     env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     env["BAYESROC_ENABLE_X64"] = "0"
     proc = subprocess.Popen([sys.executable, os.path.abspath(__file__),

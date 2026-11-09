@@ -293,7 +293,7 @@ class _Fold(_InProcess):
         self.coords = coords
         self.max_steps = np.inf if hmc else 2 ** mtd
         self.offset = None
-        jit = nb._jitter(nb._HMC_TMAX if hmc else None)
+        jit = nb._jitter(nb._HMC_TMAX if hmc else None, 2 ** mtd)
         parts = coords.aux
         args = ({**config, "_nuts_parts": parts},)
 
@@ -477,7 +477,7 @@ class _DrF32:
         with open(argfile, "w") as fh:
             json.dump(args, fh)
         env = dict(os.environ)
-        env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={s.chains if s.parallel else 1}"
+        env["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={s.chains if s.parallel else 1} --xla_cpu_collective_call_terminate_timeout_seconds=86400"
         env["BAYESROC_ENABLE_X64"] = "0"
         self.proc = subprocess.Popen([sys.executable, os.path.abspath(__file__),
                                       "_dr_f32_server", argfile], env=env)
