@@ -2818,9 +2818,9 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         det_on = jnp.where((det[0] > 0.0) & ~above_only, p_src, 0.0)
         src_on = jnp.where(src[0] > 0.0, p_det, 0.0)
         above_on = jnp.where((rect[0] > 0.0) & ~below_only, 1.0, 0.0)
-        Ad, Bd = det[1] * det_on, det[2] * det_on
-        As, Bs = src[1] * src_on, src[2] * src_on
-        _, Ar1, Br1, Ar2, Br2, dr = (x * above_on for x in rect)
+        Ad, Bd = (jnp.where(det_on != 0.0, det[j], 0.0) * det_on for j in (1, 2))
+        As, Bs = (jnp.where(src_on != 0.0, src[j], 0.0) * src_on for j in (1, 2))
+        _, Ar1, Br1, Ar2, Br2, dr = (jnp.where(above_on > 0.0, x, 0.0) for x in rect)
 
         dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & det_hi, has1_lo)
         in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
@@ -3705,8 +3705,8 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         det_g = gb * f(q["det_on"]) * q["p_src"]
         ab = gb * f(q["above_on"])
         det, src, rect = q["det"], q["src"], q["rect"]
-        Ad, Bd = det[1] * det_g, det[2] * det_g
-        Ar1, Br1, Ar2, Br2 = rect[1] * ab, rect[2] * ab, rect[3] * ab, rect[4] * ab
+        Ad, Bd = (jnp.where(det_g != 0.0, det[j], 0.0) * det_g for j in (1, 2))
+        Ar1, Br1, Ar2, Br2 = (jnp.where(ab != 0.0, rect[j], 0.0) * ab for j in (1, 2, 3, 4))
         z_cp_eff = q["z_cp_eff"]
         dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & q["det_hi"], has1_lo)
         dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, (z_cp_eff > -0.5 * _OPEN) & has1_hi, z_cp_eff > -0.5 * _OPEN)
@@ -3720,7 +3720,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         As, Bs = src[1] * wsrc, jnp.where(in2, src[2] * wsrc, 0.0)
         gA2 = Ar2 + gm * q["Am2"]
         gB2 = Br2 + gm * q["Bm2"]
-        g_rho_direct = rect[5] * ab + gm * q["dmr"]
+        g_rho_direct = jnp.where(ab != 0.0, rect[5], 0.0) * ab + gm * q["dmr"]
 
         inv_s1, inv_s2, inv_sc = 1.0 / sigma1, 1.0 / sigma2, q["inv_sc"]
         rs2 = q["rho_sigma2"]
