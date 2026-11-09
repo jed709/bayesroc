@@ -1427,23 +1427,34 @@ def _logcosh(x):
     return a + jnp.log1p(jnp.exp(-2.0 * a)) - _LOG2
 
 
+def _log_logit_pdf(x):
+    a = jnp.abs(x)
+    return -a - 2.0 * jnp.log1p(jnp.exp(-a))
+
+
 def _logit_inner(z_lo, w):
     h = z_lo + w
     x = 0.5 * w
     lp = x + jnp.log(-jnp.expm1(-2.0 * x)) - 2.0 * _LOG2 - _logcosh(0.5 * h) - _logcosh(0.5 * z_lo)
     fh, fl = _logit_pdf(h), _logit_pdf(z_lo)
-    m = jnp.clip(z_lo + x, -300.0, 300.0)
-    A = jnp.where(w < 1.0, -4.0 * jnp.sinh(m) * jnp.sinh(jnp.minimum(x, 0.5)) * fh * fl, fh - fl)
+    m = z_lo + x
+    am = jnp.maximum(jnp.abs(m), 1e-300)
+    xs = jnp.minimum(x, 0.5)
+    lA = (2.0 * _LOG2 + am + jnp.log(-jnp.expm1(-2.0 * am)) - _LOG2 + jnp.log(jnp.sinh(xs)) + _log_logit_pdf(h) +
+          _log_logit_pdf(z_lo))
+    A = jnp.where(w < 1.0, -jnp.sign(m) * jnp.exp(lA), fh - fl)
     return lp, A, fh
 
 
 def _cloglog_inner(z_lo, w):
     l = jnp.minimum(z_lo, _CLOGLOG_HI)
     el = jnp.exp(l)
-    em = jnp.expm1(jnp.minimum(w, 700.0))
-    gap = el * em
+    wl = jnp.maximum(w, 1e-300)
+    wc = jnp.minimum(wl, 700.0)
+    gap = jnp.exp(jnp.minimum(l + wl + jnp.log(-jnp.expm1(-wl)), 700.0))
     lp = -el + jnp.log(-jnp.expm1(-gap))
-    return lp, jnp.exp(l - el) * jnp.expm1(jnp.minimum(w, 700.0) - gap), _cloglog_pdf(z_lo + w)
+    fh, fl = _cloglog_pdf(z_lo + w), jnp.exp(l - el)
+    return lp, jnp.where(w < 1.0, fl * jnp.expm1(wc - gap), fh - fl), fh
 
 
 def _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi):
