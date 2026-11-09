@@ -83,9 +83,7 @@ test_that("f32 mode agrees with f64 to single-precision rounding", {
   res <- .run_py_check("f32_check.py", lib)
   expect_true(res$ffi_loaded)
   expect_true(res$f32)
-  native <- setdiff(names(res$rel_err), "probit_diff")
-  for (k in native) expect_lt(res$rel_err[[k]], 2e-7, label = paste(k, "f32 vs f64"))
-  expect_lt(res$rel_err$probit_diff, 1e-4, label = "f32 probit cells vs f64 (single-precision cancellation)")
+  for (k in names(res$rel_err)) expect_lt(res$rel_err[[k]], 2e-7, label = paste(k, "f32 vs f64"))
 })
 
 test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0.9 to 0.99999 and in the far tails, native and JAX paths agree", {

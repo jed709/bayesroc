@@ -349,6 +349,14 @@ ffi::Error ProbitCellImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::
   return ffi::Error::Success();
 }
 
+void probit_cell_k(int64_t n, const double* const* i, double* const* o) {
+  bvn::probit_cell_range(0, n, i[0], i[1], o[0], o[1], o[2]);
+}
+
+void probit_diff_k(int64_t n, const double* const* i, double* const* o) {
+  bvn::probit_diff_range(0, n, i[0], i[1], o[0], o[1], o[2]);
+}
+
 void rect_k(int64_t n, const double* const* i, double* const* o) {
   bvn::rect_array(n, i[0], i[1], i[2], i[3], i[4], o[0], o[1], o[2], o[3], o[4], o[5]);
 }
@@ -459,6 +467,8 @@ BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf4F32, 11, 36, (bvn::cdf_multi_array<4, 2>));
 BAYESROC_F32(BayesrocCdpCellF32, 11, 10, cdp_k);
 BAYESROC_F32(BayesrocMetadCellF32, 5, 5, bvn::metad_array);
+BAYESROC_F32(BayesrocProbitCellF32, 2, 3, probit_cell_k);
+BAYESROC_F32(BayesrocProbitDiffF32, 2, 3, probit_diff_k);
 
 #define BAYESROC_F64(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F64Impl<NI, NO, K>),                           \

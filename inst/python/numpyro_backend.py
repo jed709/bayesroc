@@ -668,7 +668,7 @@ def _phi_diff(z_lo, z_hi):
     """(Phi(z_hi) - Phi(z_lo), -phi(z_lo), phi(z_hi)), differenced on the side of zero the
     interval lies on; the native kernel (~1e-9 relative in both tails) when it is loaded."""
     z_lo, z_hi = jnp.broadcast_arrays(jnp.asarray(z_lo), jnp.asarray(z_hi))
-    if _BVN_FFI and z_lo.dtype == jnp.float64:
+    if _native_ok(z_lo):
         D, pdf_lo, pdf_hi = _native_call("probit_diff", 3, [z_lo, z_hi])
         return D, -pdf_lo, pdf_hi
     Ph, dh, Qh = _probit_triple(z_hi)
@@ -743,6 +743,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
+                         ("probit_cell", "ProbitCell"), ("probit_diff", "ProbitDiff"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
@@ -778,7 +779,7 @@ def _probit_cell_native(z_lo, z_hi):
 
 
 def _use_probit_native(link_name, x):
-    return link_name == "probit" and _BVN_FFI and x.dtype == jnp.float64
+    return link_name == "probit" and _native_ok(x)
 
 
 _GL32_X, _GL32_W = np.polynomial.legendre.leggauss(32)
