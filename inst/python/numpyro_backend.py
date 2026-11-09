@@ -1253,11 +1253,22 @@ def _rect_lw(z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, rho):
     return jax.lax.cond(jnp.any(n1), along1, lambda o: o, out)
 
 
-def _lw_chain(gA, gB, z_a, w, inner, inv_s):
-    """d/d(mu, sigma, criterion mid) of a cell entering with gA = d/d anchor and gB = d/d width, the anchor
-    (c_a - mu) / sigma and the width gap / sigma; the gap gradients follow from gA, gB with _lw_gap_grads."""
+def _lw_scale(gA, gB, z_a, w, inner, z_b):
+    """gA z_a + gB w, a cell's derivative in log sigma less its sign (gA = d/d anchor, gB = d/d width, z_a the
+    anchor, w the width, z_b the far edge): for a cell at least half as wide as its anchor is far out taken as
+    (gA - gB) z_a + gB z_b, equal since z_b = z_a + w, which does not cancel there (the width form keeps
+    narrow cells, where the edge form would)."""
     gB = jnp.where(inner, gB, 0.0)
-    return -gA * inv_s, -(gA * z_a + gB * jnp.where(inner, w, 0.0)) * inv_s, gA * inv_s
+    wi = jnp.where(inner, w, 0.0)
+    wide = inner & (wi > 0.5 * jnp.maximum(1.0, jnp.abs(z_a)))
+    return jnp.where(wide, (gA - gB) * z_a + gB * jnp.where(wide, z_b, 0.0), gA * z_a + gB * wi)
+
+
+def _lw_chain(gA, gB, z_a, w, inner, inv_s, z_b):
+    """d/d(mu, sigma, criterion mid) of a cell entering with gA = d/d anchor and gB = d/d width, the anchor
+    (c_a - mu) / sigma, the width gap / sigma and the far edge z_b; the gap gradients follow from gA, gB with
+    _lw_gap_grads."""
+    return -gA * inv_s, -_lw_scale(gA, gB, z_a, w, inner, z_b) * inv_s, gA * inv_s
 
 
 def _lw_gap_grads(gA, gB, k_a, own, inner, gap_mask, gap_derivs):
@@ -1455,7 +1466,7 @@ def _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi):
 
 def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma):
     """The cells of responses y_idx (0-based) under N(mu, sigma) and the [N, K - 1] criteria built
-    from [N, n_gaps] gap values: (P, A, B, z_a, w, k_a, inner), k_a the criterion of z_a."""
+    from [N, n_gaps] gap values: (P, A, B, z_a, w, k_a, inner, z_hi), k_a the criterion of z_a."""
     n_thresh = K - 1
     obs = jnp.arange(y_idx.shape[0])
     k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
@@ -1468,18 +1479,17 @@ def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma
     else:
         w = jnp.ones_like(z_lo)
     D, A, B, z_a = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
-    return D, A, B, z_a, w, jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi
+    return D, A, B, z_a, w, jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi, z_hi
 
 
 def _cell_lw_grads(c, cell, sigma, gap_mask, own):
     """d log-lik / d (mu, sigma, criterion mid, [n_gaps, N] gap values) of a cell entering the
     log-likelihood with weight c = d log-lik / dP."""
-    _, A, B, z_a, w, k_a, inner = cell
+    _, A, B, z_a, w, k_a, inner, z_b = cell
     gA = c * A
     gB = jnp.where(inner, c * B, 0.0)
     d_gap_val = jnp.asarray(gap_mask)[:, k_a] * gA[None, :] + own * gB[None, :]
-    return (-gA / sigma, -(gA * z_a + gB * jnp.where(inner, w, 0.0)) / sigma, gA / sigma,
-            d_gap_val / sigma)
+    return (-gA / sigma, -_lw_scale(gA, gB, z_a, w, inner, z_b) / sigma, gA / sigma, d_gap_val / sigma)
 
 
 def _gap_vals_and_derivs(gaps, softplus):
@@ -1513,7 +1523,7 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
              else jnp.ones_like(z_lo))
         inner = has_lo & has_hi
         lp, gA, gB = _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi)
-        cell = (None, gA, gB, jnp.where(has_lo, z_lo, z_hi), w, jnp.where(has_lo, k_lo, k_hi), inner)
+        cell = (None, gA, gB, jnp.where(has_lo, z_lo, z_hi), w, jnp.where(has_lo, k_lo, k_hi), inner, z_hi)
         return lp, cell
 
     @custom_jvp
@@ -2341,7 +2351,7 @@ def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
         z1_hi = jnp.where(old, _OPEN, z_c)
         out = _rect_lw(z1_lo, z1_hi, jnp.ones_like(z_c), z_lo, z_hi, w, inv_tau)
         k_a = jnp.where(open_lo, k_hi, k_lo)
-        return out, (inner, jnp.where(open_lo, z_hi, z_lo), w, inv_tau, k_a, gap_vals)
+        return out, (inner, jnp.where(open_lo, z_hi, z_lo), w, inv_tau, k_a, gap_vals, z_hi)
 
     @custom_jvp
     def _gnoise(y, mu, sm, thresh_mid, gaps):
@@ -2352,14 +2362,14 @@ def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
     def _gnoise_jvp(primals, tangents):
         y, mu, sm, thresh_mid, gaps = primals
         _, t_mu, t_sm, t_mid, t_gaps = tangents
-        (p, A1, _, A2, B2, drho), (inner, z_a, w, inv_tau, k_a, gap_vals) = _pieces(*primals)
+        (p, A1, _, A2, B2, drho), (inner, z_a, w, inv_tau, k_a, gap_vals, z_hi) = _pieces(*primals)
         prob = jnp.clip(p, _pfloor())
         inv_p = jnp.where(p > _pfloor(), 1.0 / prob, 0.0)
         g_c = A1 * inv_p
         gA = A2 * inv_p
         gB = jnp.where(inner, B2 * inv_p, 0.0)
         d_mu = -g_c - gA * inv_tau
-        d_tau = -(gA * z_a + gB * jnp.where(inner, w, 0.0)) * inv_tau - drho * inv_p * inv_tau * inv_tau
+        d_tau = -_lw_scale(gA, gB, z_a, w, inner, z_hi) * inv_tau - drho * inv_p * inv_tau * inv_tau
         d_sm = d_tau * sm * inv_tau
         gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
         d_gaps = _lw_gap_grads(gA * inv_tau, gB * inv_tau, k_a, jnp.asarray(own_mask, dtype=gaps.dtype)[:, y - 1],
@@ -2619,8 +2629,8 @@ def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
         val = jnp.log(prob)
         inv_P = jnp.where(p_raw > _pfloor(), 1.0 / prob, 0.0)
         inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
-        g1 = _lw_chain(A1 * inv_P, B1 * inv_P, e1[3], e1[2], e1[5], inv_s1)
-        g2 = _lw_chain(A2 * inv_P, B2 * inv_P, e2[3], e2[2], e2[5], inv_s2)
+        g1 = _lw_chain(A1 * inv_P, B1 * inv_P, e1[3], e1[2], e1[5], inv_s1, e1[1])
+        g2 = _lw_chain(A2 * inv_P, B2 * inv_P, e2[3], e2[2], e2[5], inv_s2, e2[1])
         dg1 = _lw_gap_grads(A1 * inv_P * inv_s1, B1 * inv_P * inv_s1, e1[4], jnp.asarray(own_mask1)[:, y1 - 1],
                             e1[5], gap_mask1_np, gd1)
         dg2 = _lw_gap_grads(A2 * inv_P * inv_s2, B2 * inv_P * inv_s2, e2[4], jnp.asarray(own_mask2)[:, y2 - 1],
@@ -2882,13 +2892,13 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         d_zcp = jnp.where(cont, 0.0, jnp.where(split, dd_hi + dr_lo, 0.0))
 
         inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
-        g1 = _lw_chain(gA1 * inv_P, gB1 * inv_P, z1_a, w1, in1, inv_s1)
+        g1 = _lw_chain(gA1 * inv_P, gB1 * inv_P, z1_a, w1, in1, inv_s1, z1_hi)
         dg1 = _lw_gap_grads(gA1 * inv_P * inv_s1, gB1 * inv_P * inv_s1, k1_a, jnp.asarray(own_mask1)[:, y1 - 1], in1,
                             gap_mask1_np, gd1)
 
         zs_a = jnp.where(has2_lo, zs_lo, zs_hi)
         Bs_in = jnp.where(in2, Bs, 0.0)
-        g2 = _lw_chain(Ar2 * inv_P, Br2 * inv_P, z2_a, w2, in2, inv_s2)
+        g2 = _lw_chain(Ar2 * inv_P, Br2 * inv_P, z2_a, w2, in2, inv_s2, z2_hi)
         src_scale = -(As * zs_a + Bs_in * jnp.where(in2, ws, 0.0)) * inv_P
         dg2 = _lw_gap_grads((Ar2 * inv_s2 + As * inv_sc) * inv_P, (Br2 * inv_s2 + Bs * inv_sc) * inv_P, k2_a,
                             jnp.asarray(own_mask2)[:, y2 - 1], in2, gap_mask2_np, gd2)
@@ -2973,9 +2983,9 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
         cn2 = jnp.where(D2n > fl, (1.0 - lambda_val) * p1f * inv_P, 0.0)
         cr2 = jnp.where(D2r > fl, lambda_val * p1r * inv_P, 0.0)
         inv_si, inv_sS = 1.0 / sigma_item, 1.0 / sigma_S
-        gf, gr = _lw_chain(cf1 * A1f, cf1 * B1f, f1[3], f1[2], f1[5], inv_si), \
-            _lw_chain(cr1 * A1r, cr1 * B1r, r1[3], r1[2], r1[5], inv_si)
-        gs = _lw_chain(cr2 * A2r, cr2 * B2r, r2[3], r2[2], r2[5], inv_sS)
+        gf, gr = _lw_chain(cf1 * A1f, cf1 * B1f, f1[3], f1[2], f1[5], inv_si, f1[1]), \
+            _lw_chain(cr1 * A1r, cr1 * B1r, r1[3], r1[2], r1[5], inv_si, r1[1])
+        gs = _lw_chain(cr2 * A2r, cr2 * B2r, r2[3], r2[2], r2[5], inv_sS, r2[1])
         T1A = gf[2] + gr[2]
         T1B = jnp.where(f1[5], (cf1 * B1f + cr1 * B1r) * inv_si, 0.0)
         T2A = cn2 * A2n + gs[2]
@@ -3827,8 +3837,8 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
         inv_s1, inv_s2, inv_sc = 1.0 / sigma1, 1.0 / sigma2, q["inv_sc"]
         rs2 = q["rho_sigma2"]
-        g1 = _lw_chain(gA1, gB1, z1_a, w1, in1, inv_s1)
-        g2 = _lw_chain(gA2, gB2, z2_a, w2, in2, inv_s2)
+        g1 = _lw_chain(gA1, gB1, z1_a, w1, in1, inv_s1, z1_hi)
+        g2 = _lw_chain(gA2, gB2, z2_a, w2, in2, inv_s2, z2_hi)
         zs_a = jnp.where(has2_lo, q["zs_lo"], q["zs_hi"])
         zs_term = As * zs_a + Bs * jnp.where(in2, q["ws"], 0.0)
         not_floor = f(~q["sc_floor"] & (1.0 - rho_val**2 > 1e-20))
