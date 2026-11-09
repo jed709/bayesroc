@@ -2702,6 +2702,107 @@ def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
 # Batch-vectorized bounded bivariate_sdt loglik (no vmap)
 # =============================================================================
 
+def _two_sum(a, b):
+    s = a + b
+    bb = s - a
+    return s, (a - (s - bb)) + (b - bb)
+
+
+def _veltkamp(a):
+    c = 134217729.0 * a
+    hi = c - (c - a)
+    return hi, a - hi
+
+
+def _two_prod(a, b):
+    p = a * b
+    ah, al = _veltkamp(a)
+    bh, bl = _veltkamp(b)
+    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
+
+
+def _dd_sum(terms):
+    """sum(terms) as a double-double (hi, lo), each addition error-free (TwoSum)."""
+    hi, lo = terms[0], jnp.zeros_like(terms[0])
+    for t in terms[1:]:
+        hi, e = _two_sum(hi, t)
+        lo = lo + e
+    return hi, lo
+
+
+def _dd_div(a_hi, a_lo, b_hi, b_lo):
+    q = a_hi / b_hi
+    p, pe = _two_prod(q, b_hi)
+    return q, (((a_hi - p) - pe) + a_lo - q * b_lo) / b_hi
+
+
+_DD_LN2 = (0.6931471805599453, 2.3190468138462996e-17)
+_DD_LOG1P = ((1.0, 0.0), (-0.5, 0.0), (0.3333333333333333, 1.850371707708594e-17), (-0.25, 0.0), (0.2, -1.1102230246251566e-17), (-0.16666666666666666, -9.25185853854297e-18), (0.14285714285714285, 7.93016446160826e-18), (-0.125, 0.0))
+_DD_INVFACT = ((1.0, 0.0), (1.0, 0.0), (0.5, 0.0), (0.16666666666666666, 9.25185853854297e-18), (0.041666666666666664, 2.3129646346357427e-18), (0.008333333333333333, 1.1564823173178714e-19), (0.001388888888888889, -5.300543954373577e-20), (0.0001984126984126984, 1.7209558293420705e-22), (2.48015873015873e-05, 2.1511947866775882e-23), (2.7557319223985893e-06, -1.858393274046472e-22), (2.755731922398589e-07, 2.3767714622250297e-23), (2.505210838544172e-08, -1.448814070935912e-24), (2.08767569878681e-09, -1.20734505911326e-25), (1.6059043836821613e-10, 1.2585294588752098e-26), (1.1470745597729725e-11, 2.0655512752830745e-28), (7.647163731819816e-13, 7.03872877733453e-30), (4.779477332387385e-14, 4.399205485834081e-31), (2.8114572543455206e-15, 1.6508842730861433e-31), (1.5619206968586225e-16, 1.1910679660273754e-32), (8.22063524662433e-18, 2.2141894119604265e-34), (4.110317623312165e-19, 1.4412973378659527e-36), (1.9572941063391263e-20, -1.3643503830087908e-36), (8.896791392450574e-22, -7.911402614872376e-38), (3.868170170630684e-23, -8.843177655482344e-40))
+
+
+def _dd_add(a, b):
+    hi, e = _two_sum(a[0], b[0])
+    return _two_sum(hi, e + a[1] + b[1])
+
+
+def _dd_mul(a, b):
+    p, e = _two_prod(a[0], b[0])
+    return _two_sum(p, e + a[0] * b[1] + a[1] * b[0])
+
+
+def _dd_exp(x):
+    """exp(x) as a double-double: x = k ln 2 + r with ln 2 in double-double, exp(r / 256) by its Taylor series and
+    eight squarings, scaled by 2^k."""
+    k = jnp.round(x / _DD_LN2[0])
+    p, pe = _two_prod(k, _DD_LN2[0])
+    r = _dd_add(_dd_add((x, jnp.zeros_like(x)), (-p, -pe)), (-k * _DD_LN2[1], jnp.zeros_like(x)))
+    r = (r[0] / 256.0, r[1] / 256.0)
+    e = tuple(jnp.full_like(x, v) for v in _DD_INVFACT[12])
+    for n in range(11, -1, -1):
+        e = _dd_add(_dd_mul(e, r), tuple(jnp.full_like(x, v) for v in _DD_INVFACT[n]))
+    for _ in range(8):
+        e = _dd_mul(e, e)
+    ki = k.astype(jnp.int32)
+    return jnp.ldexp(e[0], ki), jnp.ldexp(e[1], ki)
+
+
+def _dd_gap(g, softplus):
+    """A gap value, exp(g) or softplus(g) = log(1 + exp(g)), as a double-double (softplus by one Newton step of
+    exp(y) = 1 + exp(g) from the double result)."""
+    if not softplus:
+        return _dd_exp(g)
+    y = jax.nn.softplus(g)
+    ey = _dd_exp(y)
+    rhs = _dd_add((jnp.ones_like(g), jnp.zeros_like(g)), _dd_exp(g))
+    num = _dd_add(ey, (-rhs[0], -rhs[1]))
+    newton = _two_sum(y, -(num[0] + num[1]) / ey[0])
+    v = _dd_exp(jnp.minimum(g, -10.0))
+    c = tuple(jnp.full_like(g, t) for t in _DD_LOG1P[-1])
+    for t in _DD_LOG1P[-2::-1]:
+        c = _dd_add(_dd_mul(c, v), tuple(jnp.full_like(g, u) for u in t))
+    series = _dd_mul(c, v)
+    small = g < -10.0
+    return jnp.where(small, series[0], newton[0]), jnp.where(small, series[1], newton[1])
+
+
+def _dd_criterion(mid, gaps, softplus, gm, k):
+    """Criterion k of every row ([N]) from the midpoint and the [N, n_gaps] gap parameters as a double-double, gm
+    the [n_gaps, n_thresh] signs with which the gaps build the criteria."""
+    sg = jnp.asarray(gm)[:, k]
+    c = (mid, jnp.zeros_like(mid))
+    for g in range(gaps.shape[1]):
+        v = _dd_gap(gaps[:, g], softplus)
+        c = _dd_add(c, (sg[g] * v[0], sg[g] * v[1]))
+    return c
+
+
+def _dd_offset(a, b):
+    """a - b for double-doubles a and b, rounded once."""
+    hi, lo = _two_sum(a[0], -b[0])
+    return hi + (lo + (a[1] - b[1]))
+
+
 def _band_edge_grads(A, B, inner, has_lo):
     """(dP/d lower edge, dP/d upper edge) of a band given in the anchor-and-width form of _cell_lw."""
     return (jnp.where(inner, A - B, jnp.where(has_lo, A, 0.0)),
@@ -2722,6 +2823,19 @@ def _bivariate_edges(y, K, c, gv, own_idx, mu, sigma):
     w = gv[obs, jnp.asarray(own_idx)[r]] / sigma if gv.shape[1] else jnp.ones_like(z_lo)
     return (z_lo, z_hi, w, jnp.where(has_lo, z_lo, z_hi), jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi,
             has_lo, has_hi)
+
+
+def _cp_offset(thresh1_mid, gaps1, softplus, gm1, y1, n_thresh1, mu1, sigma1, mu2, sigma2, rho):
+    """The crossing point -mu2 / (rho sigma2) less the detection cell's lower edge (c_lo - mu1) / sigma1, both in
+    double-double, rounded once: the width of the cell's part below the crossing point to full precision."""
+    k = jnp.clip(y1 - 2, 0, n_thresh1 - 1)
+    c = _dd_criterion(thresh1_mid, gaps1, softplus, gm1, k)
+    num = _dd_sum([c[0], -mu1, c[1]])
+    z1 = _dd_div(num[0], num[1], sigma1, jnp.zeros_like(sigma1))
+    d = _two_prod(rho, sigma2)
+    d = _dd_sum([d[0], jnp.full_like(d[0], 1e-30), d[1]])
+    zc = _dd_div(-mu2, jnp.zeros_like(mu2), d[0], d[1])
+    return _dd_offset(zc, z1)
 
 
 def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
@@ -2749,7 +2863,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
     own_idx1, own_mask1 = _own_gap(K1)
     own_idx2, own_mask2 = _own_gap(K2)
 
-    def pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2):
+    def pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2, gaps1):
         c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
         c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
         e1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
@@ -2771,10 +2885,12 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         zs_lo = jnp.where(has2_lo, c2[obs, k2_lo] * inv_sc, -_OPEN)
         ws = w2 * sigma2 * inv_sc
         det_hi = z_cp_eff < 0.5 * _OPEN
-        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, z_cp_eff - z1_lo))
+        w_cut = _cp_offset(thresh1_mid, gaps1, gap_link_is_softplus, gap_mask1_np, y1, n_thresh1, mu1, sigma1, mu2,
+                           sigma2, rho_val)
+        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, jnp.where(has1_lo, w_cut, z_cp_eff - z1_lo)))
         det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
         src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
-        w_ab = jnp.where(above_only, w1, z1_hi - z_cp_eff)
+        w_ab = jnp.where(above_only, w1, jnp.where(in1, w1 - w_cut, z1_hi - z_cp_eff))
         rect = _rect_lw(z_cp_eff, z1_hi, w_ab, z2_lo, z2_hi, w2, rho_val)
         geo = (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
                sigma_cond)
@@ -2793,7 +2909,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
         gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
         _, _, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
-                                           thresh2_mid, gv2)
+                                           thresh2_mid, gv2, gaps1)
         return jnp.log(jnp.clip(prob(det, src, rect, geo)[3], _pfloor()))
 
     @_batch_fused.defjvp
@@ -2805,7 +2921,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
         gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
         e1, e2, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
-                                             gv1, thresh2_mid, gv2)
+                                             gv1, thresh2_mid, gv2, gaps1)
         z1_lo, z1_hi, w1, z1_a, k1_a, in1, has1_lo, has1_hi = e1
         z2_lo, z2_hi, w2, z2_a, k2_a, in2, has2_lo, has2_hi = e2
         (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
@@ -2825,9 +2941,10 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & det_hi, has1_lo)
         in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
         dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, in_ab, z_cp_eff > -0.5 * _OPEN)
-        gA1 = jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1))
+        cont = split & has1_lo & in_ab & (item_type != 1) & (sigma2 * jnp.sqrt(one_minus_rho2) > sigma2 * 1e-6)
+        gA1 = jnp.where(cont, Ad + Ar1, jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1)))
         gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
-        d_zcp = jnp.where(split, dd_hi + dr_lo, 0.0)
+        d_zcp = jnp.where(cont, 0.0, jnp.where(split, dd_hi + dr_lo, 0.0))
 
         inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
         g1 = _lw_chain(gA1 * inv_P, gB1 * inv_P, z1_a, w1, in1, inv_s1)
@@ -3005,11 +3122,13 @@ def _cdp_strip_scale(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, 
     return v * u
 
 
-def _cdp_strip(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+def _cdp_strip(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, kap_off=None):
     """A CDP cell whose band on M is narrow, by 4-point Gauss-Legendre over the band [tau_lo, tau_lo + gap]
     with R | M normal: kind 0 the band, 1 Remember (R > c_R), 2 Know of R/K (R <= c_R), 3 Know of R/K/G
     (R < min(c_R, M - c_K)), 4 Guess (M - c_K <= R <= c_R). Returns P and its derivatives in (mu_R, sigma_R,
-    mu_F, sigma_F, c_R, c_K, corr, tau_lo at fixed gap, gap), each the derivative of the quadrature."""
+    mu_F, sigma_F, c_R, c_K, corr, tau_lo at fixed gap, gap), each the derivative of the quadrature. The Guess
+    cell's interval in R, of width (c_R + c_K - M) / sigma_R, enters by its lower edge and that width, from
+    `kap_off` = c_R + c_K - tau_lo, so that it keeps full accuracy where it is narrow."""
     sM, rho, r, s = _cdp_strip_parts(tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
     e = lambda q: q[..., None]
     x = jnp.asarray((_GL4_X + 1.0) / 2.0, dtype=tau_lo.dtype)
@@ -3031,8 +3150,22 @@ def _cdp_strip(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
     Cb = jnp.where(k == 1, -pb, jnp.where(k == 2, pb, jnp.where(k == 3, jnp.where(lt, 0.0, pb),
          jnp.where(k == 4, jnp.where(lt, pb, 0.0), zero))))
     Ca = jnp.where(k == 3, jnp.where(lt, pa, 0.0), jnp.where(k == 4, jnp.where(lt, -pa, 0.0), zero))
+    S1, S2, S3 = Cb + Ca, Cb * b + Ca * a, Cb * e(zcR) + Ca * zs
+    if kap_off is None:
+        kap_off = c_R + c_K - tau_lo
+    wR = (e(kap_off) - e(gap) * x) / e(sigma_R * s)
+    guess = (k == 4) & (wR > 0.0)
+    wg = jnp.where(guess, wR, 1.0)
+    one = jnp.ones_like(wg, dtype=bool)
+    Dg, Ag, Bg = _probit_band_lw(a, a + wg, wg, one, one)
+    C = jnp.where(k == 4, jnp.where(guess, Dg, 0.0), C)
+    Cb = jnp.where(k == 4, jnp.where(guess, Bg, 0.0), Cb)
+    Ca = jnp.where(k == 4, jnp.where(guess, Ag - Bg, 0.0), Ca)
+    S1 = jnp.where(k == 4, jnp.where(guess, Ag, 0.0), S1)
+    S2 = jnp.where(k == 4, jnp.where(guess, Ag * a + Bg * wg, 0.0), S2)
+    S3 = jnp.where(k == 4, jnp.where(guess, Ag * zs + Bg * wg * e(s), 0.0), S3)
     P = jnp.sum(om * C, -1)
-    Kt = om * (-C * t - e(r / s) * (Cb + Ca))
+    Kt = om * (-C * t - e(r / s) * S1)
     cM = Kt / e(sM) + om * Ca / e(s * sigma_R)
     d_tau = jnp.sum(cM, -1)
     d_gap = jnp.sum(cM * x, -1) + P / gap
@@ -3040,18 +3173,36 @@ def _cdp_strip(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
     d_sM = -jnp.sum(Kt * t + om * C, -1) / sM
     d_zcR = jnp.sum(om * Cb, -1) / s
     S_a = jnp.sum(om * Ca, -1) / s
-    d_r = jnp.sum(om * (Cb * (-t + b * e(r / s)) + Ca * (-t + a * e(r / s))), -1) / s
+    d_r = jnp.sum(om * (-t * S1 + S2 * e(r / s)), -1) / s
     d_r = jnp.where(jnp.abs(rho) < _RHO_MAX, d_r, 0.0)
     sM3 = sM ** 3
     drho_dsR = sigma_F ** 2 * (1.0 - corr * corr) / sM3
     drho_dsF = corr / sM - (sigma_R + corr * sigma_F) * (sigma_F + corr * sigma_R) / sM3
     drho_dc = sigma_F / sM - (sigma_R + corr * sigma_F) * sigma_R * sigma_F / sM3
-    d_muR = d_muM - (d_zcR + S_a) / sigma_R
-    d_sR = (d_sM * (sigma_R + corr * sigma_F) / sM - d_zcR * zcR / sigma_R
-            - jnp.sum(om * Ca * zs, -1) / (s * sigma_R) + d_r * drho_dsR)
+    d_muR = d_muM - jnp.sum(om * S1, -1) / (s * sigma_R)
+    d_sR = (d_sM * (sigma_R + corr * sigma_F) / sM - jnp.sum(om * S3, -1) / (s * sigma_R) + d_r * drho_dsR)
     d_sF = d_sM * (sigma_F + corr * sigma_R) / sM + d_r * drho_dsF
     d_corr = d_sM * sigma_R * sigma_F / sM + d_r * drho_dc
     return P, (d_muR, d_sR, d_muM, d_sF, d_zcR / sigma_R, -S_a / sigma_R, d_corr, d_tau, d_gap)
+
+
+def _cdp_strip_split(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, g1=None):
+    """_cdp_strip with a band that holds the Guess boundary M = c_R + c_K (Know and Guess cells, where the
+    integrand has a corner) taken as two strips meeting there; same outputs. `g1`: the boundary's offset in the
+    band, c_R + c_K - tau_lo, when it is known more precisely than that difference."""
+    if g1 is None:
+        g1 = c_R + c_K - tau_lo
+    kap = tau_lo + g1
+    split = (kind > 2) & (g1 > 0.0) & (g1 < gap)
+    P1, d1 = _cdp_strip(kind, tau_lo, jnp.where(split, g1, gap), mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, g1)
+    P2, d2 = _cdp_strip(kind, jnp.where(split, kap, tau_lo), jnp.where(split, gap - g1, gap), mu_R, sigma_R, mu_F,
+                        sigma_F, c_R, c_K, corr, jnp.where(split, 0.0, g1))
+    on = lambda x: jnp.where(split, x, 0.0)
+    d_kap = on(d1[8] + d2[7] - d2[8])
+    d = [d1[k] + on(d2[k]) for k in range(7)]
+    d[4] = d[4] + d_kap
+    d[5] = d[5] + d_kap
+    return P1 + on(P2), tuple(d) + (d1[7] + on(d2[8] - d1[8]), jnp.where(split, d2[8], d1[8]))
 
 
 def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=False):
@@ -3071,7 +3222,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
     own_tau = _own_full[np.arange(J) + 1]
     own_tau_mask = np.concatenate([_own_full_mask[:, 1:J], np.zeros((n_gaps, 1))], axis=1)
 
-    def _narrow(rk, has_lo, has_hi, old_idx, gv, tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+    def _narrow(rk, has_lo, has_hi, old_idx, gv, gaps, mid, tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
         inner = has_lo & has_hi
         k = jnp.clip(old_idx, 0, J - 1)
         gap = jnp.where(inner, gv[jnp.arange(rk.shape[0]), jnp.asarray(own_tau)[k]], 1.0) if n_gaps else \
@@ -3081,7 +3232,9 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         lo = jnp.where(inner, tau_lo, 0.0)
         narrow = inner & (_cdp_strip_scale(kind, lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) < _NARROW_U)
         gs = jnp.where(narrow, gap, 1e-3)
-        return narrow, inner, kind, lo, gs, k
+        g1 = (_dd_offset(_dd_sum([c_R, c_K]), _dd_criterion(mid, gaps, gap_link_is_softplus, gap_mask_np, k))
+              if n_gaps else c_R + c_K - lo)
+        return narrow, inner, kind, lo, gs, k, g1
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):
         """Remember/Know strips as direct rectangles in (R, M) for the cells flagged
@@ -3179,10 +3332,10 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
         prob = jnp.where(judged, p_rk, p_band)
         val = jnp.log(jnp.clip(prob, _pfloor()))
-        narrow, _, kind, lo, gs, _ = _narrow(rk, has_lo, has_hi, old_idx, gv, tau_lo, mu_R, sigma_R, mu_F, sigma_F,
-                                             c_R, c_K, corr)
+        narrow, _, kind, lo, gs, _, g1 = _narrow(rk, has_lo, has_hi, old_idx, gv, gaps, thresh_mid, tau_lo, mu_R, sigma_R,
+                                                 mu_F, sigma_F, c_R, c_K, corr)
         val = jax.lax.cond(jnp.any(narrow), lambda v: jnp.where(narrow, jnp.log(jnp.clip(
-            _cdp_strip(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)[0], _pfloor())), v),
+            _cdp_strip_split(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, g1)[0], _pfloor())), v),
             lambda v: v, val)
         if n_rkg == 3:
             empty = judged & (rk == 3) & has_lo & (c_R + c_K <= tau_lo)
@@ -3292,6 +3445,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
             d_val_dtau_hi = dlp_dzhi * inv_sM
             d_val_dtau_lo = dlp_dzlo * inv_sM
+            live = prob_raw > _pfloor()
+            (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
+             d_val_dtau_hi) = (jnp.where(live, d, 0.0) for d in (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF,
+                                                              d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
+                                                              d_val_dtau_hi))
 
         else:
             z_cK_F = (c_K - mu_F) * inv_sF
@@ -3450,6 +3608,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             d_val_dtau_hi = d_val_dtau_hi + td[7]
             d_val_dcorr = d_val_dcorr + td[8]
 
+            live = prob > _pfloor()
+            (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
+             d_val_dtau_hi) = (jnp.where(live, d, 0.0) for d in (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF,
+                                                              d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
+                                                              d_val_dtau_hi))
             empty = judged & (rk == 3) & has_tau_lo & (c_R + c_K <= tau_lo)
             val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
             d_val_dmuR = jnp.where(empty, 0.0, d_val_dmuR)
@@ -3464,15 +3627,15 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
         d_t_k_lo = jnp.where(has_tau_lo, d_val_dtau_lo, 0.0)
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)
-        narrow, inner, kind, lo, gs, k_own = _narrow(rk, has_tau_lo, has_tau_hi, old_idx, gv, tau_lo, mu_R, sigma_R,
-                                                     mu_F, sigma_F, c_R, c_K, corr)
+        narrow, inner, kind, lo, gs, k_own, g1 = _narrow(rk, has_tau_lo, has_tau_hi, old_idx, gv, gaps_v, thresh_mid_v, tau_lo,
+                                                         mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
         if n_rkg == 3:
             narrow = narrow & ~empty
         base = (val, d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr,
                 d_t_k_lo + d_t_k_hi, jnp.where(inner, d_t_k_hi, 0.0))
 
         def strip(o):
-            P, d = _cdp_strip(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
+            P, d = _cdp_strip_split(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr, g1)
             Pc = jnp.clip(P, _pfloor())
             ip = jnp.where(P > _pfloor(), 1.0 / Pc, 0.0)
             return tuple(jnp.where(narrow, a, b) for a, b in zip((jnp.log(Pc),) + tuple(x * ip for x in d), o))
@@ -3606,7 +3769,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
     INF = _OPEN
 
     def _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
-              R_I, R_S, R_I_B, R_S_B, thresh1_mid, gv1, thresh2_mid, gv2, midx):
+              R_I, R_S, R_I_B, R_S_B, thresh1_mid, gv1, thresh2_mid, gv2, midx, gaps1):
         c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
         c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
         N = y1.shape[0]
@@ -3633,14 +3796,17 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         ws = w2 * sigma2 * inv_sc
 
         det_hi = z_cp_eff < 0.5 * INF
-        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, z_cp_eff - z1_lo))
+        w_cut = _cp_offset(thresh1_mid, gaps1, gap_link_is_softplus, gap_mask1_np, y1, n_thresh1, mu1, sigma1, mu2,
+                           sigma2, rho_val)
+        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, jnp.where(has1_lo, w_cut, z_cp_eff - z1_lo)))
         det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
         src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
         det_on = (det[0] > 0.0) & ~above_only
         src_on = src[0] > 0.0
         p_det = jnp.where(det_on, det[0], 0.0)
         p_src = jnp.where(src_on, src[0], 0.0)
-        rect = _rect_lw(z_cp_eff, z1_hi, jnp.where(above_only, w1, z1_hi - z_cp_eff), z2_lo, z2_hi, w2, rho_val)
+        rect = _rect_lw(z_cp_eff, z1_hi, jnp.where(above_only, w1, jnp.where(in1, w1 - w_cut, z1_hi - z_cp_eff)),
+                        z2_lo, z2_hi, w2, rho_val)
         above_on = (rect[0] > 0.0) & ~below_only
         biv_raw = p_det * p_src + jnp.where(above_on, rect[0], 0.0)
         biv_on = biv_raw > _pfloor()
@@ -3681,7 +3847,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
                      R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx):
         gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
         return _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
-                     thresh1_mid, gap_fn(gaps1), thresh2_mid, gap_fn(gaps2), midx)[0]
+                     thresh1_mid, gap_fn(gaps1), thresh2_mid, gap_fn(gaps2), midx, gaps1)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -3692,7 +3858,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
         gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
         val, prob, q = _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
-                             thresh1_mid, gv1, thresh2_mid, gv2, midx)
+                             thresh1_mid, gv1, thresh2_mid, gv2, midx, gaps1)
         inv_P = jnp.where(q["prob_raw"] > _pfloor(), 1.0 / prob, 0.0)
         z1_lo, z1_hi, w1, z1_a, k1_a, in1, has1_lo, has1_hi = q["e1"]
         z2_lo, z2_hi, w2, z2_a, k2_a, in2, has2_lo, has2_hi = q["e2"]
@@ -3711,9 +3877,11 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & q["det_hi"], has1_lo)
         dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, (z_cp_eff > -0.5 * _OPEN) & has1_hi, z_cp_eff > -0.5 * _OPEN)
         split, below_only = q["split"], q["below_only"]
-        gA1 = jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1))
+        in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
+        cont = split & has1_lo & in_ab & ~q["is_new"] & ~q["sc_floor"]
+        gA1 = jnp.where(cont, Ad + Ar1, jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1)))
         gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
-        g_zcp = jnp.where(split, dd_hi + dr_lo, 0.0) + gm * (q["dPcp"] * src[0] + q["Am1"])
+        g_zcp = jnp.where(cont, 0.0, jnp.where(split, dd_hi + dr_lo, 0.0)) + gm * (q["dPcp"] * src[0] + q["Am1"])
         g_zcp = jnp.where(q["is_new"], 0.0, g_zcp)
 
         wsrc = gb * f(q["src_on"]) * q["p_det"] + gm * q["Pcp"]
