@@ -1186,6 +1186,106 @@ def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
     return _with_rect_tail(_dw_rect_grads_jax(*args), *args)
 
 
+_GL4_X, _GL4_W = np.polynomial.legendre.leggauss(4)
+
+
+def _probit_band_lw(z_lo, z_hi, w, has_lo, has_hi):
+    """Pure-JAX probit (P, A, B) of _cell_lw, for cells evaluated at quadrature nodes."""
+    inner = has_lo & has_hi
+    Ph, dh, Qh = _probit_triple(z_hi)
+    Pl, dl, Ql = _probit_triple(z_lo)
+    D = _probit_band(z_lo, z_hi, Pl, Ph, Ql, Qh)
+    dl, dh = _band_pdfs(z_lo, z_hi, dl, dh)
+    narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
+    Dn = jnp.exp(lpn)
+    D = jnp.where(narrow, Dn, D)
+    A = jnp.where(inner, jnp.where(narrow, rA * Dn, dh - dl), jnp.where(has_lo, -dl, dh))
+    B = jnp.where(inner, jnp.where(narrow, rB * Dn, dh), 0.0)
+    return D, A, B
+
+
+def _strip_scale(t_lo, v, a_lo, a_hi, has_alo, has_ahi, rho):
+    """How far a strip of width v in t varies the integrand phi(t) P(a_lo < A < a_hi | t), in units of v."""
+    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
+    s = jnp.sqrt((1.0 - r) * (1.0 + r))
+    m = t_lo + 0.5 * v
+    big = jnp.asarray(1e300, dtype=m.dtype)
+    zl = jnp.where(has_alo, jnp.abs(a_lo - r * m) / s, big)
+    zh = jnp.where(has_ahi, jnp.abs(a_hi - r * m) / s, big)
+    zmin = jnp.where(has_alo | has_ahi, jnp.minimum(zl, zh), 0.0)
+    return v * (jnp.maximum(1.0, jnp.abs(m)) + jnp.abs(r) / s * jnp.maximum(1.0, zmin))
+
+
+def _rect_strip(t_lo, v, a_lo, a_hi, wa, has_alo, has_ahi, rho):
+    """P(t_lo < T < t_lo + v, a_lo < A < a_hi; rho) for a narrow strip in t, by 4-point Gauss-Legendre in t
+    with the cell in A by its anchor edge and width wa: (P, dP/dt_lo at fixed v, dP/dv, dP/da_anchor at fixed
+    wa, dP/dwa, dP/drho), each the derivative of the quadrature itself."""
+    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
+    s = jnp.sqrt((1.0 - r) * (1.0 + r))
+    x = jnp.asarray((_GL4_X + 1.0) / 2.0, dtype=t_lo.dtype)
+    W = jnp.asarray(_GL4_W / 2.0, dtype=t_lo.dtype)
+    e = lambda q: q[..., None]
+    t = e(t_lo) + e(v) * x
+    pt = jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI)
+    hlo, hhi = jnp.broadcast_to(e(has_alo), t.shape), jnp.broadcast_to(e(has_ahi), t.shape)
+    zlo = jnp.where(hlo, (e(a_lo) - e(r) * t) / e(s), -_OPEN)
+    zhi = jnp.where(hhi, (e(a_hi) - e(r) * t) / e(s), _OPEN)
+    om = e(wa / s)
+    C, Ac, Bc = _probit_band_lw(zlo, zhi, jnp.broadcast_to(om, t.shape), hlo, hhi)
+    za = jnp.where(hlo, zlo, zhi)
+    g = pt * C
+    gp = pt * (-t * C - e(r / s) * Ac)
+    Sg = jnp.sum(W * g, -1)
+    dza = (-t + za * e(r / s)) / e(s)
+    dom = om * e(r / (s * s))
+    drho = v * jnp.sum(W * pt * (Ac * dza + Bc * dom), -1)
+    return (v * Sg, v * jnp.sum(W * gp, -1), Sg + v * jnp.sum(W * x * gp, -1),
+            v * jnp.sum(W * pt * Ac, -1) / s, v * jnp.sum(W * pt * Bc, -1) / s,
+            jnp.where(jnp.abs(rho) < _RHO_MAX, drho, 0.0))
+
+
+def _rect_lw(z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, rho):
+    """_bvn_rect with each dimension's cell by its anchor edge (the lower one when finite) and its width w,
+    the criterion gap over the SD, so that a narrow rating band keeps full accuracy:
+    (P, A1, B1, A2, B2, dP/drho), A = dP/d anchor at fixed width and B = dP/dw (0 for an open cell)."""
+    z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, rho = jnp.broadcast_arrays(z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, rho)
+    h1l, h1h = z1_lo > -0.5 * _OPEN, z1_hi < 0.5 * _OPEN
+    h2l, h2h = z2_lo > -0.5 * _OPEN, z2_hi < 0.5 * _OPEN
+    in1, in2 = h1l & h1h, h2l & h2h
+    p, d1l, d1h, d2l, d2h, dr = _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho)
+    out = (p, d1l + d1h, jnp.where(in1, d1h, 0.0), d2l + d2h, jnp.where(in2, d2h, 0.0), dr)
+    v1, v2 = jnp.where(in1, w1, 1e-3), jnp.where(in2, w2, 1e-3)
+    l1, l2 = jnp.where(in1, z1_lo, 0.0), jnp.where(in2, z2_lo, 0.0)
+    n2 = in2 & (_strip_scale(l2, v2, z1_lo, z1_hi, h1l, h1h, rho) < _NARROW_U)
+    n1 = in1 & ~n2 & (_strip_scale(l1, v1, z2_lo, z2_hi, h2l, h2h, rho) < _NARROW_U)
+
+    def along2(o):
+        P, At, Bt, Aa, Ba, R = _rect_strip(l2, jnp.where(n2, v2, 1e-3), z1_lo, z1_hi, jnp.where(in1, w1, 1.0),
+                                           h1l, h1h, rho)
+        return tuple(jnp.where(n2, a, b) for a, b in zip((P, Aa, Ba, At, Bt, R), o))
+
+    def along1(o):
+        P, At, Bt, Aa, Ba, R = _rect_strip(l1, jnp.where(n1, v1, 1e-3), z2_lo, z2_hi, jnp.where(in2, w2, 1.0),
+                                           h2l, h2h, rho)
+        return tuple(jnp.where(n1, a, b) for a, b in zip((P, At, Bt, Aa, Ba, R), o))
+    out = jax.lax.cond(jnp.any(n2), along2, lambda o: o, out)
+    return jax.lax.cond(jnp.any(n1), along1, lambda o: o, out)
+
+
+def _lw_chain(gA, gB, z_a, w, inner, inv_s):
+    """d/d(mu, sigma, criterion mid) of a cell entering with gA = d/d anchor and gB = d/d width, the anchor
+    (c_a - mu) / sigma and the width gap / sigma; the gap gradients follow from gA, gB with _lw_gap_grads."""
+    gB = jnp.where(inner, gB, 0.0)
+    return -gA * inv_s, -(gA * z_a + gB * jnp.where(inner, w, 0.0)) * inv_s, gA * inv_s
+
+
+def _lw_gap_grads(gA, gB, k_a, own, inner, gap_mask, gap_derivs):
+    """[N, n_gaps] gap gradients of a cell: the anchor criterion's mask times gA plus the cell's own gap
+    times gB, gA and gB already over the SD."""
+    gB = jnp.where(inner, gB, 0.0)
+    return (jnp.asarray(gap_mask)[:, k_a].T * gA[:, None] + own.T * gB[:, None]) * gap_derivs
+
+
 def _bvn_cdf_multi(pairs, extras, rho):
     """_bvn_cdf for (h, k) pairs sharing rho, plus accurate marginals. Returns, per pair,
     (P, dP/dh, dP/dk, dP/drho, Q(h), Phi'(h), Q(k), Phi'(k)) and, per extra x, (Q(x), Phi'(x)),
@@ -1257,140 +1357,6 @@ def _phi(x):
 # Fully-vectorized batch loglik (no vmap)
 # =============================================================================
 
-def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
-    """Fully-vectorized batch log-likelihood with custom JVP.
-
-    Operates on entire [N]-shaped arrays directly (no per-observation vmap).
-    Thresholds are built via cumsum, and
-    gap gradients use a precomputed contribution mask.
-    """
-    n_thresh = K - 1
-    n_gaps = n_thresh - 1
-    mid_idx = (n_thresh - 1) // 2
-    n_upper = n_thresh - mid_idx - 1
-
-    _CELL = _link_cell_fn(link_name)
-
-    # --- Precompute static structures (Python-time, not trace-time) ---
-
-
-    _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
-    for g in range(n_gaps):
-        if g < n_upper:
-            for t in range(mid_idx + 1 + g, n_thresh):
-                _gap_mask[g, t] = 1.0
-        else:
-            thresh_max = mid_idx - 1 - (g - n_upper)
-            for t in range(0, thresh_max + 1):
-                _gap_mask[g, t] = -1.0
-    gap_mask = _gap_mask
-
-
-    def _build_thresh(thresh_mid, gap_vals):
-        """Build [N, n_thresh] thresholds from [N] mid and [N, n_gaps] gap values."""
-        if n_gaps == 0:
-            return thresh_mid[:, None]
-
-        parts = []
-        if mid_idx > 0:
-            lower_gaps = gap_vals[:, n_upper:]
-            lower_cumsum = jnp.cumsum(lower_gaps, axis=1)
-            parts.append(thresh_mid[:, None] - lower_cumsum[:, ::-1])
-        parts.append(thresh_mid[:, None])
-        if n_upper > 0:
-            upper_gaps = gap_vals[:, :n_upper]
-            upper_cumsum = jnp.cumsum(upper_gaps, axis=1)
-            parts.append(thresh_mid[:, None] + upper_cumsum)
-        return jnp.concatenate(parts, axis=1)
-
-    @custom_jvp
-    def _batch_fused(y, mu, sigma_val, thresh_mid, gaps):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-        gap_vals = gap_fn(gaps)
-
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
-        z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
-
-        if _use_probit_native(link_name, z_lo):
-            return _probit_cell_native(z_lo, z_hi)[0]
-        p = jnp.clip(_CELL(z_lo, z_hi)[0], _pfloor())
-        return jnp.log(p)
-
-    @_batch_fused.defjvp
-    def _batch_fused_jvp(primals, tangents):
-        y, mu, sigma_val, thresh_mid, gaps = primals
-        _, d_mu, d_sigma_val, d_thresh_mid, d_gaps = tangents
-
-        if gap_link_is_softplus:
-            gap_vals = jax.nn.softplus(gaps)
-            gap_derivs = jax.nn.sigmoid(gaps)
-        else:
-            gap_vals = jnp.exp(gaps)
-            gap_derivs = gap_vals
-
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
-        z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
-
-        if _use_probit_native(link_name, z_lo):
-            val, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
-            d_z_hi = jnp.where(y_idx < K - 1, g_hi, 0.0)
-            d_z_lo = jnp.where(y_idx > 0, g_lo, 0.0)
-        else:
-            D, pdf_lo, pdf_hi = _CELL(z_lo, z_hi)
-            p = jnp.clip(D, _pfloor())
-            val = jnp.log(p)
-            d_z_hi = jnp.where(y_idx < K - 1, pdf_hi / p, 0.0)
-            d_z_lo = jnp.where(y_idx > 0, -pdf_lo / p, 0.0)
-
-        d_lp_d_mu = -(d_z_lo + d_z_hi) / sigma_val
-        d_lp_d_sigma = -(d_z_lo * z_lo + d_z_hi * z_hi) / sigma_val
-
-        has_hi = (y_idx < K - 1)
-        has_lo = (y_idx > 0)
-        d_thresh_k_hi = jnp.where(has_hi, d_z_hi / sigma_val, 0.0)
-        d_thresh_k_lo = jnp.where(has_lo, d_z_lo / sigma_val, 0.0)
-
-        d_lp_d_thresh_mid = d_thresh_k_hi + d_thresh_k_lo
-
-        _gm = jnp.asarray(gap_mask)
-        mask_hi = _gm[:, k_hi]
-        mask_lo = _gm[:, k_lo]
-
-        d_lp_d_gap_val = mask_hi * d_thresh_k_hi[None, :] + mask_lo * d_thresh_k_lo[None, :]
-        d_lp_d_gaps = (d_lp_d_gap_val * gap_derivs.T).T
-
-        tangent_out = (d_lp_d_mu * d_mu +
-                       d_lp_d_sigma * d_sigma_val +
-                       d_lp_d_thresh_mid * d_thresh_mid +
-                       jnp.sum(d_lp_d_gaps * d_gaps, axis=1))
-
-        return val, tangent_out
-
-    return _batch_fused
-
-
 def _thresh_layout(K):
     """The mid-anchor + gaps threshold layout for K categories: (n_thresh, mid_idx, gap_mask,
     build), gap_mask[g, t] the sign with which gap g enters threshold t, build(mid, gap_vals) the
@@ -1416,6 +1382,188 @@ def _thresh_layout(K):
         return jnp.concatenate(parts, axis=1)
 
     return n_thresh, mid_idx, gap_mask, build
+
+
+_NARROW_U = 0.05
+_LOG2 = 0.6931471805599453
+
+
+def _own_gap(K):
+    """For K categories, own_idx[y] the gap that is cell y's width (0 for the two open cells) and
+    own_mask[g, y] its indicator."""
+    n_thresh = K - 1
+    n_gaps = n_thresh - 1
+    mid_idx = (n_thresh - 1) // 2
+    n_upper = n_thresh - mid_idx - 1
+    own_idx = np.zeros(K, dtype=np.int32)
+    own_mask = np.zeros((max(n_gaps, 0), K), dtype=np.float64)
+    for y in range(1, K - 1):
+        g = y - 1 - mid_idx if y - 1 >= mid_idx else n_upper + mid_idx - y
+        own_idx[y] = g
+        own_mask[g, y] = 1.0
+    return own_idx, own_mask
+
+
+def _probit_narrow(z_lo, w, inner):
+    """For cells narrow against the scale of the density (w max(1, |m|) < _NARROW_U, m the midpoint):
+    the mask, log P by the midpoint series, and dP/dz_lo / P and dP/dw / P, all from (z_lo, w) so that
+    no edge difference cancels."""
+    m0 = z_lo + 0.5 * w
+    narrow = inner & (w * jnp.maximum(1.0, jnp.abs(m0)) < _NARROW_U)
+    ws = jnp.where(narrow, w, 1e-3)
+    m = jnp.where(narrow, m0, 0.0)
+    m2, w2 = m * m, ws * ws
+    he2 = m2 - 1.0
+    he4 = m2 * (m2 - 6.0) + 3.0
+    he6 = m2 * (m2 * (m2 - 15.0) + 45.0) - 15.0
+    s = w2 * (he2 / 24.0 + w2 * (he4 / 1920.0 + w2 * he6 / 322560.0))
+    lp = jnp.log(ws) - 0.5 * m2 - _LOG_SQRT_2PI + jnp.log1p(s)
+    k = jnp.exp(-0.125 * w2) / (ws * (1.0 + s))
+    return narrow, lp, -2.0 * k * jnp.sinh(0.5 * m * ws), k * jnp.exp(-0.5 * m * ws)
+
+
+def _logcosh(x):
+    a = jnp.abs(x)
+    return a + jnp.log1p(jnp.exp(-2.0 * a)) - _LOG2
+
+
+def _logit_inner(z_lo, w):
+    h = z_lo + w
+    x = 0.5 * w
+    lp = x + jnp.log(-jnp.expm1(-2.0 * x)) - 2.0 * _LOG2 - _logcosh(0.5 * h) - _logcosh(0.5 * z_lo)
+    fh, fl = _logit_pdf(h), _logit_pdf(z_lo)
+    m = jnp.clip(z_lo + x, -300.0, 300.0)
+    A = jnp.where(w < 1.0, -4.0 * jnp.sinh(m) * jnp.sinh(jnp.minimum(x, 0.5)) * fh * fl, fh - fl)
+    return lp, A, fh
+
+
+def _cloglog_inner(z_lo, w):
+    l = jnp.minimum(z_lo, _CLOGLOG_HI)
+    el = jnp.exp(l)
+    em = jnp.expm1(jnp.minimum(w, 700.0))
+    gap = el * em
+    lp = -el + jnp.log(-jnp.expm1(-gap))
+    return lp, jnp.exp(l - el) * jnp.expm1(jnp.minimum(w, 700.0) - gap), _cloglog_pdf(z_lo + w)
+
+
+def _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi):
+    """(P, A, B, z_a) for one cell: an interior cell is (z_lo, z_lo + w), w the criterion gap over the SD,
+    with A = dP/dz_lo at fixed w and B = dP/dw; an open cell has A = dP/dz_a in its one finite edge z_a
+    and B = 0."""
+    inner = has_lo & has_hi
+    ws = jnp.where(inner, w, 1.0)
+    ls = jnp.where(inner, z_lo, 0.0)
+    if link_name == "probit":
+        D, neg_pdf_lo, pdf_hi = _phi_diff(z_lo, z_hi)
+        pdf_lo = -neg_pdf_lo
+        narrow, lpn, rA, rB = _probit_narrow(ls, ws, inner)
+        Dn = jnp.exp(lpn)
+        D = jnp.where(narrow, Dn, D)
+        A_in = jnp.where(narrow, rA * Dn, pdf_hi - pdf_lo)
+        B_in = jnp.where(narrow, rB * Dn, pdf_hi)
+    else:
+        pdf = _link_fns(link_name)[1]
+        pdf_lo, pdf_hi = pdf(z_lo), pdf(z_hi)
+        lpi, A_in, B_in = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, ws)
+        D = jnp.where(inner, jnp.exp(lpi), _link_diff_fn(link_name)(z_lo, z_hi))
+    A = jnp.where(inner, A_in, jnp.where(has_lo, -pdf_lo, pdf_hi))
+    B = jnp.where(inner, B_in, 0.0)
+    return D, A, B, jnp.where(has_lo, z_lo, z_hi)
+
+
+def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma):
+    """The cells of responses y_idx (0-based) under N(mu, sigma) and the [N, K - 1] criteria built
+    from [N, n_gaps] gap values: (P, A, B, z_a, w, k_a, inner), k_a the criterion of z_a."""
+    n_thresh = K - 1
+    obs = jnp.arange(y_idx.shape[0])
+    k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
+    k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
+    has_hi, has_lo = y_idx < K - 1, y_idx > 0
+    z_hi = jnp.where(has_hi, (thresh[obs, k_hi] - mu) / sigma, _OPEN)
+    z_lo = jnp.where(has_lo, (thresh[obs, k_lo] - mu) / sigma, -_OPEN)
+    if gap_vals.shape[1]:
+        w = gap_vals[obs, jnp.asarray(own_idx)[y_idx]] / sigma
+    else:
+        w = jnp.ones_like(z_lo)
+    D, A, B, z_a = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
+    return D, A, B, z_a, w, jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi
+
+
+def _cell_lw_grads(c, cell, sigma, gap_mask, own):
+    """d log-lik / d (mu, sigma, criterion mid, [n_gaps, N] gap values) of a cell entering the
+    log-likelihood with weight c = d log-lik / dP."""
+    _, A, B, z_a, w, k_a, inner = cell
+    gA = c * A
+    gB = jnp.where(inner, c * B, 0.0)
+    d_gap_val = jnp.asarray(gap_mask)[:, k_a] * gA[None, :] + own * gB[None, :]
+    return (-gA / sigma, -(gA * z_a + gB * jnp.where(inner, w, 0.0)) / sigma, gA / sigma,
+            d_gap_val / sigma)
+
+
+def _gap_vals_and_derivs(gaps, softplus):
+    if softplus:
+        return jax.nn.softplus(gaps), jax.nn.sigmoid(gaps)
+    g = jnp.exp(gaps)
+    return g, g
+
+
+def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
+    """Fully-vectorized batch log-likelihood with custom JVP: cells from the mid-anchor + gaps
+    criteria, each interior cell by its lower edge and its width (the gap over the SD) so that
+    narrow cells keep full accuracy."""
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
+
+    def cells(y, mu, sigma_val, thresh_mid, gap_vals):
+        return _cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx, mu,
+                                  sigma_val)
+
+    def native(y, mu, sigma_val, thresh_mid, gap_vals):
+        y_idx = y - 1
+        obs = jnp.arange(y.shape[0])
+        thresh = build(thresh_mid, gap_vals)
+        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
+        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
+        has_hi, has_lo = y_idx < K - 1, y_idx > 0
+        z_hi = jnp.where(has_hi, (thresh[obs, k_hi] - mu) / sigma_val, _OPEN)
+        z_lo = jnp.where(has_lo, (thresh[obs, k_lo] - mu) / sigma_val, -_OPEN)
+        w = (gap_vals[obs, jnp.asarray(own_idx)[y_idx]] / sigma_val if gap_vals.shape[1]
+             else jnp.ones_like(z_lo))
+        inner = has_lo & has_hi
+        lp, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
+        narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
+        lp = jnp.where(narrow, lpn, lp)
+        gA = jnp.where(narrow, rA, jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
+        gB = jnp.where(narrow, rB, jnp.where(inner, g_hi, 0.0))
+        cell = (None, gA, gB, jnp.where(has_lo, z_lo, z_hi), w, jnp.where(has_lo, k_lo, k_hi), inner)
+        return lp, cell
+
+    @custom_jvp
+    def _batch_fused(y, mu, sigma_val, thresh_mid, gaps):
+        gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
+        if _use_probit_native(link_name, mu):
+            return native(y, mu, sigma_val, thresh_mid, gap_vals)[0]
+        return jnp.log(jnp.clip(cells(y, mu, sigma_val, thresh_mid, gap_vals)[0], _pfloor()))
+
+    @_batch_fused.defjvp
+    def _batch_fused_jvp(primals, tangents):
+        y, mu, sigma_val, thresh_mid, gaps = primals
+        _, d_mu, d_sigma_val, d_thresh_mid, d_gaps = tangents
+        gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
+        if _use_probit_native(link_name, mu):
+            val, cell = native(y, mu, sigma_val, thresh_mid, gap_vals)
+            c = jnp.ones_like(val)
+        else:
+            cell = cells(y, mu, sigma_val, thresh_mid, gap_vals)
+            p = jnp.clip(cell[0], _pfloor())
+            val = jnp.log(p)
+            c = jnp.where(cell[0] > _pfloor(), 1.0 / p, 0.0)
+        g_mu, g_sigma, g_mid, g_gap_val = _cell_lw_grads(c, cell, sigma_val, gap_mask, jnp.asarray(own_mask)[:, y - 1])
+        tangent_out = (g_mu * d_mu + g_sigma * d_sigma_val + g_mid * d_thresh_mid +
+                       jnp.sum((g_gap_val * gap_derivs.T).T * d_gaps, axis=1))
+        return val, tangent_out
+
+    return _batch_fused
 
 
 def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
@@ -1457,7 +1605,7 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
     zh = jnp.where(hi_open, 0.0, z_hi)
     Pa = jnp.where(old, ccdf(z_a), cdf(z_a))
     Pc = jnp.where(old, ccdf(z_c), cdf(z_c))
-    D = jnp.where(lo_open, cdf(zh), jnp.where(hi_open, ccdf(zl), diff(zl, zh)))
+    D = jnp.where(lo_open & hi_open, 1.0, jnp.where(lo_open, cdf(zh), jnp.where(hi_open, ccdf(zl), diff(zl, zh))))
     ia = jnp.where(Pa > fl, 1.0 / jnp.maximum(Pa, fl), 0.0)
     ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
     ic = jnp.where(Pc > fl, 1.0 / jnp.maximum(Pc, fl), 0.0)
@@ -2008,6 +2156,7 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
     meta-level rating truncated at the meta criterion, the confidence criteria shifted by
     (M - 1)(c - q d) under the relative anchor."""
     n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
     half = K // 2
 
     def _pieces(y, d, m_old, m_new, a, thresh_mid, gaps):
@@ -2025,8 +2174,26 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
         rows = jnp.arange(y.shape[0])
         z_lo = jnp.where(y > 1, thresh[rows, k_lo] + off, -_OPEN)
         z_hi = jnp.where(y < K, thresh[rows, k_hi] + off, _OPEN)
-        out = _metad_cell(c - a * d, z_lo, z_hi, c + off, old, link_name)
-        return out, (old, M, a_c, c_mid, k_lo, k_hi, gap_vals)
+        inner = (y > 1) & (y < K)
+        w = jnp.where(inner, gap_vals[rows, jnp.asarray(own_idx)[y - 1]], 1.0) if n_thresh > 1 else jnp.ones_like(d)
+        ls = jnp.where(inner, z_lo, 0.0)
+        if link_name == "probit":
+            sel, lb, rA, rB = _probit_narrow(ls, w, inner)
+        else:
+            lb, A, B = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, w)
+            sel = inner
+            Db = jnp.exp(lb)
+            ib = jnp.where(Db > _pfloor(), 1.0 / jnp.maximum(Db, _pfloor()), 0.0)
+            rA, rB = A * ib, B * ib
+            lb = jnp.log(jnp.maximum(Db, _pfloor()))
+        lp, g_a, g_lo, g_hi, g_c = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo), jnp.where(sel, _OPEN, z_hi),
+                                               c + off, old, link_name)
+        g_lo = jnp.where(y > 1, g_lo, 0.0)
+        g_hi = jnp.where(y < K, g_hi, 0.0)
+        gA = jnp.where(sel, rA, g_lo + g_hi)
+        gB = jnp.where(sel, rB, jnp.where(inner, g_hi, 0.0))
+        out = (jnp.where(sel, lp + lb, lp), g_a, gA, gB, g_c)
+        return out, (old, M, a_c, c_mid, jnp.where(y > 1, k_lo, k_hi), gap_vals)
 
     @custom_jvp
     def _metad(y, d, m_old, m_new, a, thresh_mid, gaps):
@@ -2036,10 +2203,8 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
     def _metad_jvp(primals, tangents):
         y, d, m_old, m_new, a, thresh_mid, gaps = primals
         _, t_d, t_mo, t_mn, _, t_mid, t_gaps = tangents
-        (lp, g_a, g_lo, g_hi, g_c), (old, M, a_c, c_mid, k_lo, k_hi, gap_vals) = _pieces(*primals)
-        g_lo = jnp.where(y > 1, g_lo, 0.0)
-        g_hi = jnp.where(y < K, g_hi, 0.0)
-        G = g_lo + g_hi + g_c
+        (lp, g_a, gA, gB, g_c), (old, M, a_c, c_mid, k_a, gap_vals) = _pieces(*primals)
+        G = gA + g_c
         if relative:
             d_mid = g_a + g_c + (M - 1.0) * G
             d_d = -a * g_a - G * M * a
@@ -2050,9 +2215,10 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
             d_M = -G * d * a_c
         gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
         gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
-        d_gaps = (gm[:, k_lo].T * g_lo[:, None] + gm[:, k_hi].T * g_hi[:, None]) * gap_d
+        own = jnp.asarray(own_mask, dtype=gaps.dtype)[:, y - 1]
+        d_gaps = (gm[:, k_a].T * gA[:, None] + own.T * gB[:, None]) * gap_d
         tan = (d_d * t_d + jnp.where(old, d_M, 0.0) * t_mo + jnp.where(old, 0.0, d_M) * t_mn +
-               (d_mid + g_lo + g_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+               (d_mid + gA) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
         return lp, tan
 
     return _metad
@@ -2062,8 +2228,9 @@ def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
     """Gaussian meta-noise (evsd with sigma_meta) log-likelihood with custom JVP: the decision on
     x ~ N(mu, 1) against the middle threshold, the rating on y = x + e, e ~ N(0, s^2), a bivariate
     normal rectangle with correlation 1 / sqrt(1 + s^2); y on the other side of the decision
-    criterion gives the lowest confidence."""
+    criterion gives the lowest confidence. The rating cell enters by its lower edge and width."""
     n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
     half = K // 2
 
     def _pieces(y, mu, sm, thresh_mid, gaps):
@@ -2079,11 +2246,15 @@ def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
         rows = jnp.arange(y.shape[0])
         z_lo = jnp.where(open_lo, -_OPEN, (thresh[rows, k_lo] - mu) * inv_tau)
         z_hi = jnp.where(open_hi, _OPEN, (thresh[rows, k_hi] - mu) * inv_tau)
+        inner = ~open_lo & ~open_hi
+        w = (jnp.where(inner, gap_vals[rows, jnp.asarray(own_idx)[y - 1]], 1.0) * inv_tau if n_thresh > 1
+             else jnp.ones_like(mu))
         z_c = thresh_mid - mu
         z1_lo = jnp.where(old, z_c, -_OPEN)
         z1_hi = jnp.where(old, _OPEN, z_c)
-        out = _bvn_rect(z1_lo, z1_hi, z_lo, z_hi, inv_tau)
-        return out, (old, open_lo, open_hi, z_lo, z_hi, inv_tau, k_lo, k_hi, gap_vals)
+        out = _rect_lw(z1_lo, z1_hi, jnp.ones_like(z_c), z_lo, z_hi, w, inv_tau)
+        k_a = jnp.where(open_lo, k_hi, k_lo)
+        return out, (inner, jnp.where(open_lo, z_hi, z_lo), w, inv_tau, k_a, gap_vals)
 
     @custom_jvp
     def _gnoise(y, mu, sm, thresh_mid, gaps):
@@ -2094,23 +2265,19 @@ def _make_fused_gnoise_loglik(K, gap_link_is_softplus):
     def _gnoise_jvp(primals, tangents):
         y, mu, sm, thresh_mid, gaps = primals
         _, t_mu, t_sm, t_mid, t_gaps = tangents
-        (p, d1l, d1h, d2l, d2h, drho), (old, open_lo, open_hi, z_lo, z_hi, inv_tau, k_lo, k_hi, gap_vals) = \
-            _pieces(*primals)
+        (p, A1, _, A2, B2, drho), (inner, z_a, w, inv_tau, k_a, gap_vals) = _pieces(*primals)
         prob = jnp.clip(p, _pfloor())
         inv_p = jnp.where(p > _pfloor(), 1.0 / prob, 0.0)
-        g_c = jnp.where(old, d1l, d1h) * inv_p
-        g_lo = jnp.where(open_lo, 0.0, d2l * inv_p)
-        g_hi = jnp.where(open_hi, 0.0, d2h * inv_p)
-        zl = jnp.where(open_lo, 0.0, z_lo)
-        zh = jnp.where(open_hi, 0.0, z_hi)
-        d_mu = -g_c - (g_lo + g_hi) * inv_tau
-        d_tau = -(g_lo * zl + g_hi * zh) * inv_tau - drho * inv_p * inv_tau * inv_tau
+        g_c = A1 * inv_p
+        gA = A2 * inv_p
+        gB = jnp.where(inner, B2 * inv_p, 0.0)
+        d_mu = -g_c - gA * inv_tau
+        d_tau = -(gA * z_a + gB * jnp.where(inner, w, 0.0)) * inv_tau - drho * inv_p * inv_tau * inv_tau
         d_sm = d_tau * sm * inv_tau
         gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
-        gm = jnp.asarray(gap_mask, dtype=gaps.dtype)
-        a_lo, a_hi = g_lo * inv_tau, g_hi * inv_tau
-        d_gaps = (gm[:, k_lo].T * a_lo[:, None] + gm[:, k_hi].T * a_hi[:, None]) * gap_d
-        tan = (d_mu * t_mu + d_sm * t_sm + (g_c + a_lo + a_hi) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+        d_gaps = _lw_gap_grads(gA * inv_tau, gB * inv_tau, k_a, jnp.asarray(own_mask, dtype=gaps.dtype)[:, y - 1],
+                               inner, gap_mask, gap_d)
+        tan = (d_mu * t_mu + d_sm * t_sm + (g_c + gA * inv_tau) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
         return jnp.log(prob), tan
 
     return _gnoise
@@ -2147,132 +2314,36 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit", 
     Operates on entire [N]-shaped arrays directly.
     """
     edge = K if edge is None else int(edge)
-    n_thresh = K - 1
-    n_gaps = n_thresh - 1
-    mid_idx = (n_thresh - 1) // 2
-    n_upper = n_thresh - mid_idx - 1
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
 
-    _CELL = _link_cell_fn(link_name)
-    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
-
-    _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
-    for g in range(n_gaps):
-        if g < n_upper:
-            for t in range(mid_idx + 1 + g, n_thresh):
-                _gap_mask[g, t] = 1.0
-        else:
-            thresh_max = mid_idx - 1 - (g - n_upper)
-            for t in range(0, thresh_max + 1):
-                _gap_mask[g, t] = -1.0
-    gap_mask = _gap_mask
-
-    def _build_thresh(thresh_mid, gap_vals):
-        if n_gaps == 0:
-            return thresh_mid[:, None]
-        parts = []
-        if mid_idx > 0:
-            lower_gaps = gap_vals[:, n_upper:]
-            lower_cumsum = jnp.cumsum(lower_gaps, axis=1)
-            parts.append(thresh_mid[:, None] - lower_cumsum[:, ::-1])
-        parts.append(thresh_mid[:, None])
-        if n_upper > 0:
-            upper_gaps = gap_vals[:, :n_upper]
-            upper_cumsum = jnp.cumsum(upper_gaps, axis=1)
-            parts.append(thresh_mid[:, None] + upper_cumsum)
-        return jnp.concatenate(parts, axis=1)
+    def parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals):
+        cell = _cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx, mu,
+                                  sigma_val)
+        cell_p = jnp.clip(cell[0], _pfloor())
+        is_top = (y == edge).astype(_FLOAT)
+        p_raw = lambda_val * is_top + (1.0 - lambda_val) * cell_p
+        return cell, cell_p, is_top, p_raw
 
     @custom_jvp
     def _batch_fused(y, mu, sigma_val, lambda_val, thresh_mid, gaps):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-        gap_vals = gap_fn(gaps)
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
-        z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
-        cell_p = jnp.clip(_DIFF(z_lo, z_hi), _pfloor())
-
-        is_top = (y == edge).astype(_FLOAT)
-        p = jnp.clip(lambda_val * is_top + (1.0 - lambda_val) * cell_p, _pfloor())
-        return jnp.log(p)
+        gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
+        return jnp.log(jnp.clip(parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)[3], _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, mu, sigma_val, lambda_val, thresh_mid, gaps = primals
         _, d_mu, d_sigma_val, d_lambda, d_thresh_mid, d_gaps = tangents
-
-        if gap_link_is_softplus:
-            gap_vals = jax.nn.softplus(gaps)
-            gap_derivs = jax.nn.sigmoid(gaps)
-        else:
-            gap_vals = jnp.exp(gaps)
-            gap_derivs = gap_vals
-
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu) / sigma_val, INF)
-        z_lo = jnp.where(y_idx > 0, (thresh_lo - mu) / sigma_val, -INF)
-        _D_cell_p, _pl_cell_p, _ph_cell_p = _CELL(z_lo, z_hi)
-        cell_p = jnp.clip(_D_cell_p, _pfloor())
-
-        is_top = (y == edge).astype(_FLOAT)
-        p_raw = lambda_val * is_top + (1.0 - lambda_val) * cell_p
+        gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
+        cell, cell_p, is_top, p_raw = parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)
         p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
         inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-
         d_lp_d_lambda = (is_top - cell_p) * inv_p
-
-        d_lp_d_cell = jnp.where(_D_cell_p > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
-
-        pdf_hi = _ph_cell_p
-        pdf_lo = _pl_cell_p
-        d_cell_d_z_hi = jnp.where(y_idx < K - 1, pdf_hi, 0.0)
-        d_cell_d_z_lo = jnp.where(y_idx > 0, -pdf_lo, 0.0)
-
-        d_z_hi_eff = d_lp_d_cell * d_cell_d_z_hi
-        d_z_lo_eff = d_lp_d_cell * d_cell_d_z_lo
-
-        d_lp_d_mu = -(d_z_lo_eff + d_z_hi_eff) / sigma_val
-        d_lp_d_sigma = -(d_z_lo_eff * z_lo + d_z_hi_eff * z_hi) / sigma_val
-
-        has_hi = (y_idx < K - 1)
-        has_lo = (y_idx > 0)
-        d_thresh_k_hi = jnp.where(has_hi, d_z_hi_eff / sigma_val, 0.0)
-        d_thresh_k_lo = jnp.where(has_lo, d_z_lo_eff / sigma_val, 0.0)
-
-        d_lp_d_thresh_mid = d_thresh_k_hi + d_thresh_k_lo
-
-        _gm = jnp.asarray(gap_mask)
-        mask_hi = _gm[:, k_hi]
-        mask_lo = _gm[:, k_lo]
-
-        d_lp_d_gap_val = mask_hi * d_thresh_k_hi[None, :] + mask_lo * d_thresh_k_lo[None, :]
-        d_lp_d_gaps = (d_lp_d_gap_val * gap_derivs.T).T
-
-        tangent_out = (d_lp_d_mu * d_mu +
-                       d_lp_d_sigma * d_sigma_val +
-                       d_lp_d_lambda * d_lambda +
-                       d_lp_d_thresh_mid * d_thresh_mid +
-                       jnp.sum(d_lp_d_gaps * d_gaps, axis=1))
-
+        c = jnp.where(cell[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
+        g_mu, g_sigma, g_mid, g_gap_val = _cell_lw_grads(c, cell, sigma_val, gap_mask, jnp.asarray(own_mask)[:, y - 1])
+        tangent_out = (g_mu * d_mu + g_sigma * d_sigma_val + d_lp_d_lambda * d_lambda + g_mid * d_thresh_mid +
+                       jnp.sum((g_gap_val * gap_derivs.T).T * d_gaps, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -2284,154 +2355,39 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
     Mixture: P = lambda * p1(mu1,sig1) + (1-lambda) * p2(mu2,sig2).
     Operates on entire [N]-shaped arrays directly.
     """
-    n_thresh = K - 1
-    n_gaps = n_thresh - 1
-    mid_idx = (n_thresh - 1) // 2
-    n_upper = n_thresh - mid_idx - 1
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
 
-    _CELL = _link_cell_fn(link_name)
-    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
-
-    _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
-    for g in range(n_gaps):
-        if g < n_upper:
-            for t in range(mid_idx + 1 + g, n_thresh):
-                _gap_mask[g, t] = 1.0
-        else:
-            thresh_max = mid_idx - 1 - (g - n_upper)
-            for t in range(0, thresh_max + 1):
-                _gap_mask[g, t] = -1.0
-    gap_mask = _gap_mask
-
-    def _build_thresh(thresh_mid, gap_vals):
-        if n_gaps == 0:
-            return thresh_mid[:, None]
-        parts = []
-        if mid_idx > 0:
-            lower_gaps = gap_vals[:, n_upper:]
-            lower_cumsum = jnp.cumsum(lower_gaps, axis=1)
-            parts.append(thresh_mid[:, None] - lower_cumsum[:, ::-1])
-        parts.append(thresh_mid[:, None])
-        if n_upper > 0:
-            upper_gaps = gap_vals[:, :n_upper]
-            upper_cumsum = jnp.cumsum(upper_gaps, axis=1)
-            parts.append(thresh_mid[:, None] + upper_cumsum)
-        return jnp.concatenate(parts, axis=1)
+    def parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals):
+        thresh = build(thresh_mid, gap_vals)
+        c1 = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu1, sigma1_val)
+        c2 = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu2, sigma2_val)
+        p1, p2 = jnp.clip(c1[0], _pfloor()), jnp.clip(c2[0], _pfloor())
+        return c1, c2, p1, p2, lambda_val * p1 + (1.0 - lambda_val) * p2
 
     @custom_jvp
     def _batch_fused(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gaps):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-        gap_vals = gap_fn(gaps)
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z1_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu1) / sigma1_val, INF)
-        z1_lo = jnp.where(y_idx > 0, (thresh_lo - mu1) / sigma1_val, -INF)
-        p1 = jnp.clip(_DIFF(z1_lo, z1_hi), _pfloor())
-        z2_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu2) / sigma2_val, INF)
-        z2_lo = jnp.where(y_idx > 0, (thresh_lo - mu2) / sigma2_val, -INF)
-        p2 = jnp.clip(_DIFF(z2_lo, z2_hi), _pfloor())
-
-        p = jnp.clip(lambda_val * p1 + (1.0 - lambda_val) * p2, _pfloor())
-        return jnp.log(p)
+        gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
+        p_raw = parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals)[4]
+        return jnp.log(jnp.clip(p_raw, _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gaps = primals
         _, d_mu1, d_sigma1, d_mu2, d_sigma2, d_lambda, d_thresh_mid, d_gaps = tangents
-
-        if gap_link_is_softplus:
-            gap_vals = jax.nn.softplus(gaps)
-            gap_derivs = jax.nn.sigmoid(gaps)
-        else:
-            gap_vals = jnp.exp(gaps)
-            gap_derivs = gap_vals
-
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-
-        z1_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu1) / sigma1_val, INF)
-        z1_lo = jnp.where(y_idx > 0, (thresh_lo - mu1) / sigma1_val, -INF)
-        _D_p1, _pl_p1, _ph_p1 = _CELL(z1_lo, z1_hi)
-        p1 = jnp.clip(_D_p1, _pfloor())
-
-        z2_hi = jnp.where(y_idx < K - 1, (thresh_hi - mu2) / sigma2_val, INF)
-        z2_lo = jnp.where(y_idx > 0, (thresh_lo - mu2) / sigma2_val, -INF)
-        _D_p2, _pl_p2, _ph_p2 = _CELL(z2_lo, z2_hi)
-        p2 = jnp.clip(_D_p2, _pfloor())
-
-        p_raw = lambda_val * p1 + (1.0 - lambda_val) * p2
+        gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
+        c1, c2, p1, p2, p_raw = parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals)
         p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
         inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-
         d_lp_d_lambda = (p1 - p2) * inv_p
-
-        d_lp_d_p1 = jnp.where(_D_p1 > _pfloor(), lambda_val * inv_p, 0.0)
-        d_lp_d_p2 = jnp.where(_D_p2 > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
-
-        pdf1_hi = _ph_p1
-        pdf1_lo = _pl_p1
-        dp1_dz1_hi = jnp.where(y_idx < K - 1, pdf1_hi, 0.0)
-        dp1_dz1_lo = jnp.where(y_idx > 0, -pdf1_lo, 0.0)
-
-        pdf2_hi = _ph_p2
-        pdf2_lo = _pl_p2
-        dp2_dz2_hi = jnp.where(y_idx < K - 1, pdf2_hi, 0.0)
-        dp2_dz2_lo = jnp.where(y_idx > 0, -pdf2_lo, 0.0)
-
-        dz1_hi_eff = d_lp_d_p1 * dp1_dz1_hi
-        dz1_lo_eff = d_lp_d_p1 * dp1_dz1_lo
-        d_lp_d_mu1 = -(dz1_lo_eff + dz1_hi_eff) / sigma1_val
-        d_lp_d_sigma1 = -(dz1_lo_eff * z1_lo + dz1_hi_eff * z1_hi) / sigma1_val
-
-        dz2_hi_eff = d_lp_d_p2 * dp2_dz2_hi
-        dz2_lo_eff = d_lp_d_p2 * dp2_dz2_lo
-        d_lp_d_mu2 = -(dz2_lo_eff + dz2_hi_eff) / sigma2_val
-        d_lp_d_sigma2 = -(dz2_lo_eff * z2_lo + dz2_hi_eff * z2_hi) / sigma2_val
-
-        has_hi = (y_idx < K - 1)
-        has_lo = (y_idx > 0)
-
-        d_thresh_k_hi = (jnp.where(has_hi, dz1_hi_eff / sigma1_val, 0.0) +
-                         jnp.where(has_hi, dz2_hi_eff / sigma2_val, 0.0))
-        d_thresh_k_lo = (jnp.where(has_lo, dz1_lo_eff / sigma1_val, 0.0) +
-                         jnp.where(has_lo, dz2_lo_eff / sigma2_val, 0.0))
-
-        d_lp_d_thresh_mid = d_thresh_k_hi + d_thresh_k_lo
-
-        _gm = jnp.asarray(gap_mask)
-        mask_hi = _gm[:, k_hi]
-        mask_lo = _gm[:, k_lo]
-
-        d_lp_d_gap_val = mask_hi * d_thresh_k_hi[None, :] + mask_lo * d_thresh_k_lo[None, :]
-        d_lp_d_gaps = (d_lp_d_gap_val * gap_derivs.T).T
-
-        tangent_out = (d_lp_d_mu1 * d_mu1 +
-                       d_lp_d_sigma1 * d_sigma1 +
-                       d_lp_d_mu2 * d_mu2 +
-                       d_lp_d_sigma2 * d_sigma2 +
-                       d_lp_d_lambda * d_lambda +
-                       d_lp_d_thresh_mid * d_thresh_mid +
-                       jnp.sum(d_lp_d_gaps * d_gaps, axis=1))
-
+        own = jnp.asarray(own_mask)[:, y - 1]
+        g1 = _cell_lw_grads(jnp.where(c1[0] > _pfloor(), lambda_val * inv_p, 0.0), c1, sigma1_val, gap_mask, own)
+        g2 = _cell_lw_grads(jnp.where(c2[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), c2, sigma2_val,
+                            gap_mask, own)
+        tangent_out = (g1[0] * d_mu1 + g1[1] * d_sigma1 + g2[0] * d_mu2 + g2[1] * d_sigma2 +
+                       d_lp_d_lambda * d_lambda + (g1[2] + g2[2]) * d_thresh_mid +
+                       jnp.sum(((g1[3] + g2[3]) * gap_derivs.T).T * d_gaps, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -2443,146 +2399,39 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
     Source mixture: P = lambda * p_att(d_attended) + (1-lambda) * p_noise(mu=0).
     Both states use sigma=1. Operates on entire [N]-shaped arrays directly.
     """
-    n_thresh = K - 1
-    n_gaps = n_thresh - 1
-    mid_idx = (n_thresh - 1) // 2
-    n_upper = n_thresh - mid_idx - 1
+    n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
+    own_idx, own_mask = _own_gap(K)
 
-    _CELL = _link_cell_fn(link_name)
-    _DIFF = lambda lo, hi: _CELL(lo, hi)[0]
-
-    _gap_mask = np.zeros((n_gaps, n_thresh), dtype=np.float64)
-    for g in range(n_gaps):
-        if g < n_upper:
-            for t in range(mid_idx + 1 + g, n_thresh):
-                _gap_mask[g, t] = 1.0
-        else:
-            thresh_max = mid_idx - 1 - (g - n_upper)
-            for t in range(0, thresh_max + 1):
-                _gap_mask[g, t] = -1.0
-    gap_mask = _gap_mask
-
-    def _build_thresh(thresh_mid, gap_vals):
-        if n_gaps == 0:
-            return thresh_mid[:, None]
-        parts = []
-        if mid_idx > 0:
-            lower_gaps = gap_vals[:, n_upper:]
-            lower_cumsum = jnp.cumsum(lower_gaps, axis=1)
-            parts.append(thresh_mid[:, None] - lower_cumsum[:, ::-1])
-        parts.append(thresh_mid[:, None])
-        if n_upper > 0:
-            upper_gaps = gap_vals[:, :n_upper]
-            upper_cumsum = jnp.cumsum(upper_gaps, axis=1)
-            parts.append(thresh_mid[:, None] + upper_cumsum)
-        return jnp.concatenate(parts, axis=1)
+    def parts(y, d_attended, lambda_val, thresh_mid, gap_vals):
+        thresh = build(thresh_mid, gap_vals)
+        one = jnp.ones_like(d_attended)
+        ca = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, d_attended, one)
+        cn = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, jnp.zeros_like(d_attended), one)
+        pa, pn = jnp.clip(ca[0], _pfloor()), jnp.clip(cn[0], _pfloor())
+        return ca, cn, pa, pn, lambda_val * pa + (1.0 - lambda_val) * pn
 
     @custom_jvp
     def _batch_fused(y, d_attended, lambda_val, thresh_mid, gaps):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-        gap_vals = gap_fn(gaps)
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-        z_att_hi = jnp.where(y_idx < K - 1, thresh_hi - d_attended, INF)
-        z_att_lo = jnp.where(y_idx > 0, thresh_lo - d_attended, -INF)
-        p_att = jnp.clip(_DIFF(z_att_lo, z_att_hi), _pfloor())
-
-        z_noise_hi = jnp.where(y_idx < K - 1, thresh_hi, INF)
-        z_noise_lo = jnp.where(y_idx > 0, thresh_lo, -INF)
-        p_noise = jnp.clip(_DIFF(z_noise_lo, z_noise_hi), _pfloor())
-
-        p = jnp.clip(lambda_val * p_att + (1.0 - lambda_val) * p_noise, _pfloor())
-        return jnp.log(p)
+        gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
+        return jnp.log(jnp.clip(parts(y, d_attended, lambda_val, thresh_mid, gap_vals)[4], _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, d_attended, lambda_val, thresh_mid, gaps = primals
         _, d_d_attended, d_lambda, d_thresh_mid, d_gaps = tangents
-
-        if gap_link_is_softplus:
-            gap_vals = jax.nn.softplus(gaps)
-            gap_derivs = jax.nn.sigmoid(gaps)
-        else:
-            gap_vals = jnp.exp(gaps)
-            gap_derivs = gap_vals
-
-        thresh = _build_thresh(thresh_mid, gap_vals)
-
-        y_idx = y - 1
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-
-        obs_idx = jnp.arange(y.shape[0])
-        thresh_hi = thresh[obs_idx, k_hi]
-        thresh_lo = thresh[obs_idx, k_lo]
-
-        INF = _OPEN
-
-        z_att_hi = jnp.where(y_idx < K - 1, thresh_hi - d_attended, INF)
-        z_att_lo = jnp.where(y_idx > 0, thresh_lo - d_attended, -INF)
-        _D_p_att, _pl_p_att, _ph_p_att = _CELL(z_att_lo, z_att_hi)
-        p_att = jnp.clip(_D_p_att, _pfloor())
-
-        z_noise_hi = jnp.where(y_idx < K - 1, thresh_hi, INF)
-        z_noise_lo = jnp.where(y_idx > 0, thresh_lo, -INF)
-        _D_p_noise, _pl_p_noise, _ph_p_noise = _CELL(z_noise_lo, z_noise_hi)
-        p_noise = jnp.clip(_D_p_noise, _pfloor())
-
-        p_raw = lambda_val * p_att + (1.0 - lambda_val) * p_noise
+        gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
+        ca, cn, pa, pn, p_raw = parts(y, d_attended, lambda_val, thresh_mid, gap_vals)
         p = jnp.clip(p_raw, _pfloor())
         val = jnp.log(p)
         inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-
-        d_lp_d_lambda = (p_att - p_noise) * inv_p
-
-        d_lp_d_patt = jnp.where(_D_p_att > _pfloor(), lambda_val * inv_p, 0.0)
-        d_lp_d_pnoise = jnp.where(_D_p_noise > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
-
-        pdf_att_hi = _ph_p_att
-        pdf_att_lo = _pl_p_att
-        dpatt_dz_hi = jnp.where(y_idx < K - 1, pdf_att_hi, 0.0)
-        dpatt_dz_lo = jnp.where(y_idx > 0, -pdf_att_lo, 0.0)
-
-        pdf_noise_hi = _ph_p_noise
-        pdf_noise_lo = _pl_p_noise
-        dpnoise_dz_hi = jnp.where(y_idx < K - 1, pdf_noise_hi, 0.0)
-        dpnoise_dz_lo = jnp.where(y_idx > 0, -pdf_noise_lo, 0.0)
-
-        dz_att_hi_eff = d_lp_d_patt * dpatt_dz_hi
-        dz_att_lo_eff = d_lp_d_patt * dpatt_dz_lo
-        d_lp_d_datt = -(dz_att_lo_eff + dz_att_hi_eff)
-
-        has_hi = (y_idx < K - 1)
-        has_lo = (y_idx > 0)
-
-        d_thresh_k_hi = (jnp.where(has_hi, dz_att_hi_eff, 0.0) +
-                         jnp.where(has_hi, d_lp_d_pnoise * dpnoise_dz_hi, 0.0))
-        d_thresh_k_lo = (jnp.where(has_lo, dz_att_lo_eff, 0.0) +
-                         jnp.where(has_lo, d_lp_d_pnoise * dpnoise_dz_lo, 0.0))
-
-        d_lp_d_thresh_mid = d_thresh_k_hi + d_thresh_k_lo
-
-        _gm = jnp.asarray(gap_mask)
-        mask_hi = _gm[:, k_hi]
-        mask_lo = _gm[:, k_lo]
-
-        d_lp_d_gap_val = mask_hi * d_thresh_k_hi[None, :] + mask_lo * d_thresh_k_lo[None, :]
-        d_lp_d_gaps = (d_lp_d_gap_val * gap_derivs.T).T
-
-        tangent_out = (d_lp_d_datt * d_d_attended +
-                       d_lp_d_lambda * d_lambda +
-                       d_lp_d_thresh_mid * d_thresh_mid +
-                       jnp.sum(d_lp_d_gaps * d_gaps, axis=1))
-
+        d_lp_d_lambda = (pa - pn) * inv_p
+        own = jnp.asarray(own_mask)[:, y - 1]
+        one = jnp.ones_like(d_attended)
+        ga = _cell_lw_grads(jnp.where(ca[0] > _pfloor(), lambda_val * inv_p, 0.0), ca, one, gap_mask, own)
+        gn = _cell_lw_grads(jnp.where(cn[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), cn, one, gap_mask,
+                            own)
+        tangent_out = (ga[0] * d_d_attended + d_lp_d_lambda * d_lambda + (ga[2] + gn[2]) * d_thresh_mid +
+                       jnp.sum(((ga[3] + gn[3]) * gap_derivs.T).T * d_gaps, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -2658,13 +2507,8 @@ def _batch_gap_grads(d_thresh_k_hi, d_thresh_k_lo, k_hi, k_lo,
 
 
 def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
-    """Fully-vectorized batch log-likelihood for bivariate_sdt.
-
-    Batch operations over all observations:
-    - Threshold construction via cumsum for both dimensions
-    - GL10 rectangle quadrature vectorized over [N, 10]
-    - Analytic JVP with gap_mask for both dimensions
-    """
+    """Fully-vectorized batch log-likelihood for bivariate_sdt: one bivariate normal rectangle per
+    trial, each dimension's cell by its lower edge and width (_rect_lw), with an analytic JVP."""
     n_thresh1 = K1 - 1
     n_gaps1 = n_thresh1 - 1
     mid_idx1 = (n_thresh1 - 1) // 2
@@ -2677,34 +2521,35 @@ def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
 
     gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
     gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
+    own_idx1, own_mask1 = _own_gap(K1)
+    own_idx2, own_mask2 = _own_gap(K2)
+
+    def edges(y, K, c, gv, own_idx, mu, sigma):
+        r = y - 1
+        n_thresh = K - 1
+        obs = jnp.arange(y.shape[0])
+        k_hi = jnp.clip(r, 0, n_thresh - 1)
+        k_lo = jnp.clip(r - 1, 0, n_thresh - 1)
+        has_hi, has_lo = r < K - 1, r > 0
+        z_hi = jnp.where(has_hi, (c[obs, k_hi] - mu) / sigma, _OPEN)
+        z_lo = jnp.where(has_lo, (c[obs, k_lo] - mu) / sigma, -_OPEN)
+        w = gv[obs, jnp.asarray(own_idx)[r]] / sigma if gv.shape[1] else jnp.ones_like(z_lo)
+        return z_lo, z_hi, w, jnp.where(has_lo, z_lo, z_hi), jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi
+
+    def pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2):
+        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
+        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
+        e1 = edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
+        e2 = edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
+        return e1, e2, _rect_lw(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], rho_val)
 
     @custom_jvp
     def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
                      thresh1_mid, gaps1, thresh2_mid, gaps2):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-
-        gv1 = gap_fn(gaps1)
-        gv2 = gap_fn(gaps2)
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        r1 = y1 - 1
-        r2 = y2 - 1
-        obs_idx = jnp.arange(y1.shape[0])
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-
-        INF = _OPEN
-        z1_hi = jnp.where(r1 < K1 - 1, (c1[obs_idx, k1_hi] - mu1) / sigma1, INF)
-        z1_lo = jnp.where(r1 > 0, (c1[obs_idx, k1_lo] - mu1) / sigma1, -INF)
-        z2_hi = jnp.where(r2 < K2 - 1, (c2[obs_idx, k2_hi] - mu2) / sigma2, INF)
-        z2_lo = jnp.where(r2 > 0, (c2[obs_idx, k2_lo] - mu2) / sigma2, -INF)
-
-        prob = jnp.clip(_bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho_val)[0], _pfloor())
-
-        return jnp.log(prob)
+        gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
+        gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
+        P = pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2)[2][0]
+        return jnp.log(jnp.clip(P, _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -2712,77 +2557,23 @@ def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
          thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
         (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho,
          d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
-
-        if gap_link_is_softplus:
-            gv1 = jax.nn.softplus(gaps1); gd1 = jax.nn.sigmoid(gaps1)
-            gv2 = jax.nn.softplus(gaps2); gd2 = jax.nn.sigmoid(gaps2)
-        else:
-            gv1 = jnp.exp(gaps1); gd1 = gv1
-            gv2 = jnp.exp(gaps2); gd2 = gv2
-
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        r1 = y1 - 1; r2 = y2 - 1
-        obs_idx = jnp.arange(y1.shape[0])
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-        has1_hi = (r1 < K1 - 1); has1_lo = (r1 > 0)
-        has2_hi = (r2 < K2 - 1); has2_lo = (r2 > 0)
-
-        INF = _OPEN
-        z1_hi = jnp.where(has1_hi, (c1[obs_idx, k1_hi] - mu1) / sigma1, INF)
-        z1_lo = jnp.where(has1_lo, (c1[obs_idx, k1_lo] - mu1) / sigma1, -INF)
-        z2_hi = jnp.where(has2_hi, (c2[obs_idx, k2_hi] - mu2) / sigma2, INF)
-        z2_lo = jnp.where(has2_lo, (c2[obs_idx, k2_lo] - mu2) / sigma2, -INF)
-
-        p_raw, dp_dz1_lo, dp_dz1_hi, dp_dz2_lo, dp_dz2_hi, dp_drho = _bvn_rect(
-            z1_lo, z1_hi, z2_lo, z2_hi, rho_val)
+        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
+        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
+        e1, e2, (p_raw, A1, B1, A2, B2, dr) = pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
+                                                     thresh2_mid, gv2)
         prob = jnp.clip(p_raw, _pfloor())
         val = jnp.log(prob)
-
         inv_P = jnp.where(p_raw > _pfloor(), 1.0 / prob, 0.0)
-
-        d_lp_dz1_hi = dp_dz1_hi * inv_P
-        d_lp_dz1_lo = dp_dz1_lo * inv_P
-        d_lp_dz2_hi = dp_dz2_hi * inv_P
-        d_lp_dz2_lo = dp_dz2_lo * inv_P
-        d_lp_drho = dp_drho * inv_P
-
-        inv_s1 = 1.0 / sigma1
-        inv_s2 = 1.0 / sigma2
-        d_lp_d_mu1 = -(d_lp_dz1_hi + d_lp_dz1_lo) * inv_s1
-        d_lp_d_mu2 = -(d_lp_dz2_hi + d_lp_dz2_lo) * inv_s2
-        d_lp_d_sigma1 = -(d_lp_dz1_hi * z1_hi + d_lp_dz1_lo * z1_lo) * inv_s1
-        d_lp_d_sigma2 = -(d_lp_dz2_hi * z2_hi + d_lp_dz2_lo * z2_lo) * inv_s2
-
-        d_t1_k_hi = jnp.where(has1_hi, d_lp_dz1_hi * inv_s1, 0.0)
-        d_t1_k_lo = jnp.where(has1_lo, d_lp_dz1_lo * inv_s1, 0.0)
-        d_t2_k_hi = jnp.where(has2_hi, d_lp_dz2_hi * inv_s2, 0.0)
-        d_t2_k_lo = jnp.where(has2_lo, d_lp_dz2_lo * inv_s2, 0.0)
-
-        d_lp_d_thresh1_mid = d_t1_k_hi + d_t1_k_lo
-        d_lp_d_thresh2_mid = d_t2_k_hi + d_t2_k_lo
-
-        d_lp_d_gaps1 = _batch_gap_grads(d_t1_k_hi, d_t1_k_lo, k1_hi, k1_lo,
-                                         has1_hi, has1_lo, gd1, gap_mask1_np)
-        d_lp_d_gaps2 = _batch_gap_grads(d_t2_k_hi, d_t2_k_lo, k2_hi, k2_lo,
-                                         has2_hi, has2_lo, gd2, gap_mask2_np)
-
-        tangent_out = (
-            d_lp_d_mu1 * d_mu1 +
-            d_lp_d_mu2 * d_mu2 +
-            d_lp_d_sigma1 * d_sigma1 +
-            d_lp_d_sigma2 * d_sigma2 +
-            d_lp_drho * d_rho +
-            d_lp_d_thresh1_mid * d_thresh1_mid +
-            jnp.sum(d_lp_d_gaps1 * d_gaps1, axis=1) +
-            d_lp_d_thresh2_mid * d_thresh2_mid +
-            jnp.sum(d_lp_d_gaps2 * d_gaps2, axis=1)
-        )
-
+        inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
+        g1 = _lw_chain(A1 * inv_P, B1 * inv_P, e1[3], e1[2], e1[5], inv_s1)
+        g2 = _lw_chain(A2 * inv_P, B2 * inv_P, e2[3], e2[2], e2[5], inv_s2)
+        dg1 = _lw_gap_grads(A1 * inv_P * inv_s1, B1 * inv_P * inv_s1, e1[4], jnp.asarray(own_mask1)[:, y1 - 1],
+                            e1[5], gap_mask1_np, gd1)
+        dg2 = _lw_gap_grads(A2 * inv_P * inv_s2, B2 * inv_P * inv_s2, e2[4], jnp.asarray(own_mask2)[:, y2 - 1],
+                            e2[5], gap_mask2_np, gd2)
+        tangent_out = (g1[0] * d_mu1 + g2[0] * d_mu2 + g1[1] * d_sigma1 + g2[1] * d_sigma2 + dr * inv_P * d_rho +
+                       g1[2] * d_thresh1_mid + jnp.sum(dg1 * d_gaps1, axis=1) +
+                       g2[2] * d_thresh2_mid + jnp.sum(dg2 * d_gaps2, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -2792,6 +2583,28 @@ def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
 # Batch-vectorized bounded bivariate_sdt loglik (no vmap)
 # =============================================================================
 
+def _band_edge_grads(A, B, inner, has_lo):
+    """(dP/d lower edge, dP/d upper edge) of a band given in the anchor-and-width form of _cell_lw."""
+    return (jnp.where(inner, A - B, jnp.where(has_lo, A, 0.0)),
+            jnp.where(inner, B, jnp.where(has_lo, 0.0, A)))
+
+
+def _bivariate_edges(y, K, c, gv, own_idx, mu, sigma):
+    """A rating dimension's cell under N(mu, sigma): (z_lo, z_hi, w, z_a, k_a, inner, has_lo, has_hi), the width w
+    the cell's own gap over sigma and z_a, k_a its anchor edge and criterion."""
+    r = y - 1
+    n_thresh = K - 1
+    obs = jnp.arange(y.shape[0])
+    k_hi = jnp.clip(r, 0, n_thresh - 1)
+    k_lo = jnp.clip(r - 1, 0, n_thresh - 1)
+    has_hi, has_lo = r < K - 1, r > 0
+    z_hi = jnp.where(has_hi, (c[obs, k_hi] - mu) / sigma, _OPEN)
+    z_lo = jnp.where(has_lo, (c[obs, k_lo] - mu) / sigma, -_OPEN)
+    w = gv[obs, jnp.asarray(own_idx)[r]] / sigma if gv.shape[1] else jnp.ones_like(z_lo)
+    return (z_lo, z_hi, w, jnp.where(has_lo, z_lo, z_hi), jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi,
+            has_lo, has_hi)
+
+
 def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
     """Fully-vectorized batch log-likelihood for bounded bivariate_sdt.
 
@@ -2799,8 +2612,8 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
     independent with mean=0 and conditional SD. Above cp, standard bivariate
     normal applies. For new items, z_cp=-20 so everything is above-cp.
 
-    Uses GL10 quadrature for the above-cp region and analytic product for
-    the below-cp region, with fully analytic JVP gradients.
+    Each rating cell enters by its lower edge and width (_cell_lw, _rect_lw) wherever the crossing point
+    does not split it, with fully analytic JVP gradients.
     """
     n_thresh1 = K1 - 1
     n_gaps1 = n_thresh1 - 1
@@ -2814,53 +2627,55 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
 
     gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
     gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
+    own_idx1, own_mask1 = _own_gap(K1)
+    own_idx2, own_mask2 = _own_gap(K2)
+
+    def pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2):
+        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
+        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
+        e1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
+        e2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
+        z1_lo, z1_hi, w1, _, _, in1, has1_lo, has1_hi = e1
+        z2_lo, z2_hi, w2, _, _, in2, has2_lo, has2_hi = e2
+        one_minus_rho2 = jnp.clip(1.0 - rho_val ** 2, 1e-20)
+        sigma_cond = jnp.maximum(sigma2 * jnp.sqrt(one_minus_rho2), sigma2 * 1e-6)
+        inv_sc = 1.0 / sigma_cond
+        z_cp = jnp.where(item_type == 1, -1e6, -mu2 / (rho_val * sigma2 + 1e-30))
+        z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
+        split = (z_cp > z1_lo) & (z_cp < z1_hi)
+        above_only = z_cp <= z1_lo
+        below_only = z_cp >= z1_hi
+        obs = jnp.arange(y2.shape[0])
+        k2_hi = jnp.clip(y2 - 1, 0, n_thresh2 - 1)
+        k2_lo = jnp.clip(y2 - 2, 0, n_thresh2 - 1)
+        zs_hi = jnp.where(has2_hi, c2[obs, k2_hi] * inv_sc, _OPEN)
+        zs_lo = jnp.where(has2_lo, c2[obs, k2_lo] * inv_sc, -_OPEN)
+        ws = w2 * sigma2 * inv_sc
+        det_hi = z_cp_eff < 0.5 * _OPEN
+        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, z_cp_eff - z1_lo))
+        det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
+        src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
+        w_ab = jnp.where(above_only, w1, z1_hi - z_cp_eff)
+        rect = _rect_lw(z_cp_eff, z1_hi, w_ab, z2_lo, z2_hi, w2, rho_val)
+        geo = (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
+               sigma_cond)
+        return e1, e2, det, src, rect, geo
+
+    def prob(det, src, rect, geo):
+        above_only, below_only = geo[3], geo[4]
+        p_det = jnp.where(above_only, 0.0, jnp.clip(det[0], 0.0))
+        p_src = jnp.clip(src[0], 0.0)
+        p_above = jnp.where(below_only, 0.0, jnp.clip(rect[0], 0.0))
+        return p_det, p_src, p_above, p_det * p_src + p_above
 
     @custom_jvp
     def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
                      thresh1_mid, gaps1, thresh2_mid, gaps2):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-
-        gv1 = gap_fn(gaps1)
-        gv2 = gap_fn(gaps2)
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        r1 = y1 - 1
-        r2 = y2 - 1
-        obs_idx = jnp.arange(y1.shape[0])
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-
-        INF = _OPEN
-        inv_s1 = 1.0 / sigma1
-        inv_s2 = 1.0 / sigma2
-
-        z1_hi = jnp.where(r1 < K1 - 1, (c1[obs_idx, k1_hi] - mu1) * inv_s1, INF)
-        z1_lo = jnp.where(r1 > 0, (c1[obs_idx, k1_lo] - mu1) * inv_s1, -INF)
-
-        z2_hi = jnp.where(r2 < K2 - 1, (c2[obs_idx, k2_hi] - mu2) * inv_s2, INF)
-        z2_lo = jnp.where(r2 > 0, (c2[obs_idx, k2_lo] - mu2) * inv_s2, -INF)
-
-        sigma_cond = sigma2 * jnp.sqrt(jnp.clip(1.0 - rho_val**2, 1e-20))
-        sigma_cond = jnp.maximum(sigma_cond, sigma2 * 1e-6)
-        inv_sc = 1.0 / sigma_cond
-
-        z_cp_raw = -mu2 / (rho_val * sigma2 + 1e-30)
-        z_cp = jnp.where(item_type == 1, -1e6, z_cp_raw)
-
-        z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
-
-        zs_hi = jnp.where(r2 < K2 - 1, c2[obs_idx, k2_hi] * inv_sc, INF)
-        zs_lo = jnp.where(r2 > 0, c2[obs_idx, k2_lo] * inv_sc, -INF)
-
-        p_det_below = jnp.clip(_phi_diff(z1_lo, z_cp_eff)[0], 0.0)
-        p_src_below = jnp.clip(_phi_diff(zs_lo, zs_hi)[0], 0.0)
-        p_below = p_det_below * p_src_below
-        p_above = jnp.clip(_bvn_rect(z_cp_eff, z1_hi, z2_lo, z2_hi, rho_val)[0], 0.0)
-        P = jnp.clip(p_below + p_above, _pfloor())
-        return jnp.log(P)
+        gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
+        gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
+        _, _, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
+                                           thresh2_mid, gv2)
+        return jnp.log(jnp.clip(prob(det, src, rect, geo)[3], _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -2868,168 +2683,62 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
          thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
         (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho,
          d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
-
-        if gap_link_is_softplus:
-            gv1 = jax.nn.softplus(gaps1); gd1 = jax.nn.sigmoid(gaps1)
-            gv2 = jax.nn.softplus(gaps2); gd2 = jax.nn.sigmoid(gaps2)
-        else:
-            gv1 = jnp.exp(gaps1); gd1 = gv1
-            gv2 = jnp.exp(gaps2); gd2 = gv2
-
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        r1 = y1 - 1; r2 = y2 - 1
-        obs_idx = jnp.arange(y1.shape[0])
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-        has1_hi = (r1 < K1 - 1); has1_lo = (r1 > 0)
-        has2_hi = (r2 < K2 - 1); has2_lo = (r2 > 0)
-
-        inv_s1 = 1.0 / sigma1
-        inv_s2 = 1.0 / sigma2
-        INF = _OPEN
-
-        z1_hi = jnp.where(has1_hi, (c1[obs_idx, k1_hi] - mu1) * inv_s1, INF)
-        z1_lo = jnp.where(has1_lo, (c1[obs_idx, k1_lo] - mu1) * inv_s1, -INF)
-        z2_hi = jnp.where(has2_hi, (c2[obs_idx, k2_hi] - mu2) * inv_s2, INF)
-        z2_lo = jnp.where(has2_lo, (c2[obs_idx, k2_lo] - mu2) * inv_s2, -INF)
-
-        one_minus_rho2 = jnp.clip(1.0 - rho_val**2, 1e-20)
-        sqrt_1mrr = jnp.sqrt(one_minus_rho2)
-        sigma_cond = sigma2 * sqrt_1mrr
-        sigma_cond = jnp.maximum(sigma_cond, sigma2 * 1e-6)
-        inv_sc = 1.0 / sigma_cond
-
-        rho_sigma2 = rho_val * sigma2 + 1e-30
-        z_cp_raw = -mu2 / rho_sigma2
-        z_cp = jnp.where(item_type == 1, -1e6, z_cp_raw)
-        z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
-
-        is_split = (z_cp > z1_lo) & (z_cp < z1_hi)
-        is_above_only = (z_cp <= z1_lo)
-        is_below_only = (z_cp >= z1_hi)
-        is_split_f = is_split.astype(_FLOAT)
-        is_above_only_f = is_above_only.astype(_FLOAT)
-        is_below_only_f = is_below_only.astype(_FLOAT)
-
-        zs_hi = jnp.where(has2_hi, c2[obs_idx, k2_hi] * inv_sc, INF)
-        zs_lo = jnp.where(has2_lo, c2[obs_idx, k2_lo] * inv_sc, -INF)
-
-        D_det, dDdet_lo, dDdet_hi = _phi_diff(z1_lo, z_cp_eff)
-        D_src, dDsrc_lo, dDsrc_hi = _phi_diff(zs_lo, zs_hi)
-        det_on = (D_det > 0.0).astype(_FLOAT)
-        src_on = (D_src > 0.0).astype(_FLOAT)
-        p_det_below = jnp.clip(D_det, 0.0)
-        p_src_below = jnp.clip(D_src, 0.0)
-        p_below = p_det_below * p_src_below
-        pa_raw, dpa_da, dpa_db, dpa_dc, dpa_dd, dpa_drho = _bvn_rect(z_cp_eff, z1_hi, z2_lo, z2_hi, rho_val)
-        above_on = (pa_raw > 0.0).astype(_FLOAT)
-        p_above = jnp.clip(pa_raw, 0.0)
-        P_raw = p_below + p_above
+        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
+        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
+        e1, e2, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
+                                             gv1, thresh2_mid, gv2)
+        z1_lo, z1_hi, w1, z1_a, k1_a, in1, has1_lo, has1_hi = e1
+        z2_lo, z2_hi, w2, z2_a, k2_a, in2, has2_lo, has2_hi = e2
+        (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
+         sigma_cond) = geo
+        p_det, p_src, p_above, P_raw = prob(det, src, rect, geo)
         P = jnp.clip(P_raw, _pfloor())
         val = jnp.log(P)
         inv_P = jnp.where(P_raw > _pfloor(), 1.0 / P, 0.0)
 
-        dp_below_dzcp_eff = det_on * dDdet_hi * p_src_below
-        dp_below_dz1_lo = jnp.where(has1_lo, det_on * dDdet_lo * p_src_below, 0.0)
-        dp_below_dzs_hi = jnp.where(has2_hi, src_on * p_det_below * dDsrc_hi, 0.0)
-        dp_below_dzs_lo = jnp.where(has2_lo, src_on * p_det_below * dDsrc_lo, 0.0)
-        dp_above_dzcp_eff = above_on * dpa_da
-        dp_above_dz1_hi = above_on * dpa_db
-        dp_above_dz2_hi = above_on * dpa_dd
-        dp_above_dz2_lo = above_on * dpa_dc
-        dp_above_drho_direct = above_on * dpa_drho
+        det_on = jnp.where((det[0] > 0.0) & ~above_only, p_src, 0.0)
+        src_on = jnp.where(src[0] > 0.0, p_det, 0.0)
+        above_on = jnp.where((rect[0] > 0.0) & ~below_only, 1.0, 0.0)
+        Ad, Bd = det[1] * det_on, det[2] * det_on
+        As, Bs = src[1] * src_on, src[2] * src_on
+        _, Ar1, Br1, Ar2, Br2, dr = (x * above_on for x in rect)
 
-        # --- Combined z_cp_eff gradient (flows to both below and above) ---
-        d_total_dzcp_eff = dp_below_dzcp_eff + dp_above_dzcp_eff
+        dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & det_hi, has1_lo)
+        in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
+        dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, in_ab, z_cp_eff > -0.5 * _OPEN)
+        gA1 = jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1))
+        gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
+        d_zcp = jnp.where(split, dd_hi + dr_lo, 0.0)
 
-        # ===============================================================
-        # Chain rules to SDT parameters
-        # ===============================================================
+        inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
+        g1 = _lw_chain(gA1 * inv_P, gB1 * inv_P, z1_a, w1, in1, inv_s1)
+        dg1 = _lw_gap_grads(gA1 * inv_P * inv_s1, gB1 * inv_P * inv_s1, k1_a, jnp.asarray(own_mask1)[:, y1 - 1], in1,
+                            gap_mask1_np, gd1)
 
-        rho_sigma2_safe = jnp.where(jnp.abs(rho_sigma2) > 1e-20, rho_sigma2, 1.0)
+        zs_a = jnp.where(has2_lo, zs_lo, zs_hi)
+        Bs_in = jnp.where(in2, Bs, 0.0)
+        g2 = _lw_chain(Ar2 * inv_P, Br2 * inv_P, z2_a, w2, in2, inv_s2)
+        src_scale = -(As * zs_a + Bs_in * jnp.where(in2, ws, 0.0)) * inv_P
+        dg2 = _lw_gap_grads((Ar2 * inv_s2 + As * inv_sc) * inv_P, (Br2 * inv_s2 + Bs * inv_sc) * inv_P, k2_a,
+                            jnp.asarray(own_mask2)[:, y2 - 1], in2, gap_mask2_np, gd2)
+
+        rho_sigma2_safe = jnp.where(jnp.abs(rho_val * sigma2 + 1e-30) > 1e-20, rho_val * sigma2 + 1e-30, 1.0)
         rho_safe = jnp.where(jnp.abs(rho_val) > 1e-20, rho_val, 1.0)
         dz_cp_dmu2 = -1.0 / rho_sigma2_safe
         dz_cp_ds2 = mu2 / (rho_sigma2_safe * sigma2)
         dz_cp_drho = mu2 / (rho_safe * rho_sigma2_safe)
-
-        d_zcp = d_total_dzcp_eff * is_split_f
-        d_zcp_to_z1_lo = d_total_dzcp_eff * is_above_only_f
-        d_zcp_to_z1_hi = d_total_dzcp_eff * is_below_only_f
-
-        # --- d_logP / d_mu1 ---
-        dP_dmu1 = (dp_below_dz1_lo * (-inv_s1) +
-                   dp_above_dz1_hi * (-inv_s1) +
-                   d_zcp_to_z1_lo * (-inv_s1) +
-                   d_zcp_to_z1_hi * (-inv_s1))
-        d_lp_dmu1 = dP_dmu1 * inv_P
-
-        # --- d_logP / d_mu2 ---
-        dP_dmu2 = (d_zcp * dz_cp_dmu2 +
-                   dp_above_dz2_hi * (-inv_s2) +
-                   dp_above_dz2_lo * (-inv_s2))
-        d_lp_dmu2 = dP_dmu2 * inv_P
-
-        # --- d_logP / d_sigma1 ---
-        dP_ds1 = (dp_below_dz1_lo * (-z1_lo * inv_s1) +
-                  dp_above_dz1_hi * (-z1_hi * inv_s1) +
-                  d_zcp_to_z1_lo * (-z1_lo * inv_s1) +
-                  d_zcp_to_z1_hi * (-z1_hi * inv_s1))
-        d_lp_dsigma1 = dP_ds1 * inv_P
-
-        # --- d_logP / d_sigma2 ---
-        dP_ds2 = (d_zcp * dz_cp_ds2 +
-                  dp_above_dz2_hi * (-z2_hi * inv_s2) +
-                  dp_above_dz2_lo * (-z2_lo * inv_s2) +
-                  dp_below_dzs_hi * (-zs_hi * inv_s2) +
-                  dp_below_dzs_lo * (-zs_lo * inv_s2))
-        d_lp_dsigma2 = dP_ds2 * inv_P
-
-        # --- d_logP / d_rho ---
-        rho_factor = jnp.where((sigma2 * sqrt_1mrr > sigma2 * 1e-6) & (1.0 - rho_val**2 > 1e-20),
+        rho_factor = jnp.where((sigma2 * jnp.sqrt(one_minus_rho2) > sigma2 * 1e-6) & (1.0 - rho_val ** 2 > 1e-20),
                                rho_val / one_minus_rho2, 0.0)
-        dP_drho = (d_zcp * dz_cp_drho +
-                   dp_above_drho_direct +
-                   dp_below_dzs_hi * (zs_hi * rho_factor) +
-                   dp_below_dzs_lo * (zs_lo * rho_factor))
-        d_lp_drho = dP_drho * inv_P
+        d_zcp = d_zcp * inv_P
 
-        # ===============================================================
-        # ===============================================================
-        d_t1_k_hi = jnp.where(has1_hi, (dp_above_dz1_hi + d_zcp_to_z1_hi) * inv_s1 * inv_P, 0.0)
-        d_t1_k_lo = jnp.where(has1_lo, (dp_below_dz1_lo + d_zcp_to_z1_lo) * inv_s1 * inv_P, 0.0)
+        d_lp_dmu2 = g2[0] + d_zcp * dz_cp_dmu2
+        d_lp_dsigma2 = g2[1] + src_scale * inv_s2 + d_zcp * dz_cp_ds2
+        d_lp_drho = dr * inv_P + d_zcp * dz_cp_drho - src_scale * rho_factor
+        d_lp_d_thresh2_mid = g2[2] + As * inv_sc * inv_P
 
-        d_t2_k_hi_above = jnp.where(has2_hi, dp_above_dz2_hi * inv_s2, 0.0)
-        d_t2_k_hi_below = jnp.where(has2_hi, dp_below_dzs_hi * inv_sc, 0.0)
-        d_t2_k_hi = (d_t2_k_hi_above + d_t2_k_hi_below) * inv_P
-
-        d_t2_k_lo_above = jnp.where(has2_lo, dp_above_dz2_lo * inv_s2, 0.0)
-        d_t2_k_lo_below = jnp.where(has2_lo, dp_below_dzs_lo * inv_sc, 0.0)
-        d_t2_k_lo = (d_t2_k_lo_above + d_t2_k_lo_below) * inv_P
-
-        d_lp_d_thresh1_mid = d_t1_k_hi + d_t1_k_lo
-        d_lp_d_thresh2_mid = d_t2_k_hi + d_t2_k_lo
-
-        d_lp_d_gaps1 = _batch_gap_grads(d_t1_k_hi, d_t1_k_lo, k1_hi, k1_lo,
-                                         has1_hi, has1_lo, gd1, gap_mask1_np)
-        d_lp_d_gaps2 = _batch_gap_grads(d_t2_k_hi, d_t2_k_lo, k2_hi, k2_lo,
-                                         has2_hi, has2_lo, gd2, gap_mask2_np)
-
-        tangent_out = (
-            d_lp_dmu1 * d_mu1 +
-            d_lp_dmu2 * d_mu2 +
-            d_lp_dsigma1 * d_sigma1 +
-            d_lp_dsigma2 * d_sigma2 +
-            d_lp_drho * d_rho +
-            d_lp_d_thresh1_mid * d_thresh1_mid +
-            jnp.sum(d_lp_d_gaps1 * d_gaps1, axis=1) +
-            d_lp_d_thresh2_mid * d_thresh2_mid +
-            jnp.sum(d_lp_d_gaps2 * d_gaps2, axis=1)
-        )
-
+        tangent_out = (g1[0] * d_mu1 + d_lp_dmu2 * d_mu2 + g1[1] * d_sigma1 + d_lp_dsigma2 * d_sigma2 +
+                       d_lp_drho * d_rho + g1[2] * d_thresh1_mid + jnp.sum(dg1 * d_gaps1, axis=1) +
+                       d_lp_d_thresh2_mid * d_thresh2_mid + jnp.sum(dg2 * d_gaps2, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -3043,7 +2752,8 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
     """Fully-vectorized batch log-likelihood for VRDP2D.
 
     P = (1-lambda)*p1_fam*p2_noise + lambda*p1_rec*p2_rec
-    All univariate — no bivariate CDF needed.
+    All univariate — no bivariate CDF needed. Each cell enters by its lower edge and width; with the
+    native kernel loaded, rows holding a narrow cell take the width-form JAX path.
     """
     n_thresh1 = K1 - 1
     n_gaps1 = n_thresh1 - 1
@@ -3057,56 +2767,77 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
 
     gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
     gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
+    own_idx1, own_mask1 = _own_gap(K1)
+    own_idx2, own_mask2 = _own_gap(K2)
+
+    def setup(y1, y2, dprime_F, dprime_R, source_d, sigma_item, sigma_S, thresh1_mid, gv1, thresh2_mid, gv2):
+        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
+        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
+        one = jnp.ones_like(dprime_F)
+        f1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, dprime_F, sigma_item)
+        r1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, dprime_F + dprime_R, sigma_item)
+        n2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, jnp.zeros_like(dprime_F), one)
+        r2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, source_d, sigma_S)
+        obs = jnp.arange(y1.shape[0])
+        cut = lambda c, y, n: (c[obs, jnp.clip(y - 1, 0, n - 1)], c[obs, jnp.clip(y - 2, 0, n - 1)])
+        return f1, r1, n2, r2, cut(c1, y1, n_thresh1), cut(c2, y2, n_thresh2)
+
+    def narrow_rows(bands):
+        out = jnp.zeros(bands[0][0].shape, dtype=bool)
+        for e in bands:
+            out = out | _probit_narrow(jnp.where(e[5], e[0], 0.0), jnp.where(e[5], e[2], 1.0), e[5])[0]
+        return out
+
+    def jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S):
+        cells = [_cell_lw("probit", e[0], e[1], e[2], e[6], e[7]) for e in (f1, r1, n2, r2)]
+        (D1f, A1f, B1f, _), (D1r, A1r, B1r, _), (D2n, A2n, B2n, _), (D2r, A2r, B2r, _) = cells
+        fl = _pfloor()
+        p1f, p1r, p2n, p2r = (jnp.clip(D, fl) for D in (D1f, D1r, D2n, D2r))
+        p_fam, p_rec = p1f * p2n, p1r * p2r
+        prob_raw = (1.0 - lambda_val) * p_fam + lambda_val * p_rec
+        prob = jnp.clip(prob_raw, fl)
+        inv_P = jnp.where(prob_raw > fl, 1.0 / prob, 0.0)
+        cf1 = jnp.where(D1f > fl, (1.0 - lambda_val) * p2n * inv_P, 0.0)
+        cr1 = jnp.where(D1r > fl, lambda_val * p2r * inv_P, 0.0)
+        cn2 = jnp.where(D2n > fl, (1.0 - lambda_val) * p1f * inv_P, 0.0)
+        cr2 = jnp.where(D2r > fl, lambda_val * p1r * inv_P, 0.0)
+        inv_si, inv_sS = 1.0 / sigma_item, 1.0 / sigma_S
+        gf, gr = _lw_chain(cf1 * A1f, cf1 * B1f, f1[3], f1[2], f1[5], inv_si), \
+            _lw_chain(cr1 * A1r, cr1 * B1r, r1[3], r1[2], r1[5], inv_si)
+        gs = _lw_chain(cr2 * A2r, cr2 * B2r, r2[3], r2[2], r2[5], inv_sS)
+        T1A = gf[2] + gr[2]
+        T1B = jnp.where(f1[5], (cf1 * B1f + cr1 * B1r) * inv_si, 0.0)
+        T2A = cn2 * A2n + gs[2]
+        T2B = jnp.where(n2[5], cn2 * B2n + cr2 * B2r * inv_sS, 0.0)
+        return (jnp.log(prob), gf[0] + gr[0], gr[0], gs[0], (p_rec - p_fam) * inv_P, gf[1] + gr[1], gs[1],
+                T1A, T1B, T2A, T2B)
+
+    def evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gv1,
+                 thresh2_mid, gv2):
+        f1, r1, n2, r2, (c1_hi, c1_lo), (c2_hi, c2_lo) = setup(y1, y2, dprime_F, dprime_R, source_d, sigma_item,
+                                                               sigma_S, thresh1_mid, gv1, thresh2_mid, gv2)
+        has1_lo, has1_hi, has2_lo, has2_hi = f1[6], f1[7], n2[6], n2[7]
+        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
+                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
+        if nat is None:
+            out = jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S)
+        else:
+            out = nat[:7] + (nat[7] + nat[8], jnp.where(f1[5], nat[7], 0.0), nat[9] + nat[10],
+                             jnp.where(n2[5], nat[9], 0.0))
+            narrow = narrow_rows((f1, r1, n2, r2))
+            out = jax.lax.cond(jnp.any(narrow),
+                               lambda o: tuple(jnp.where(narrow, a, b) for a, b in
+                                               zip(jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S), o)),
+                               lambda o: o, out)
+        return out, f1, n2
 
     @custom_jvp
     def _batch_fused(y1, y2, item_type, dprime_F, dprime_R, source_d, lambda_val,
                      sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid, gaps2):
-        gap_fn = jax.nn.softplus if gap_link_is_softplus else jnp.exp
-
-        gv1 = gap_fn(gaps1)
-        gv2 = gap_fn(gaps2)
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        N = y1.shape[0]
-        r1 = y1 - 1; r2 = y2 - 1
-        obs_idx = jnp.arange(N)
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-
-        INF = _OPEN
-        inv_si = 1.0 / sigma_item
-        inv_sS = 1.0 / sigma_S
-        mu_rec1 = dprime_F + dprime_R
-
-        c1_hi = c1[obs_idx, k1_hi]; c1_lo = c1[obs_idx, k1_lo]
-        c2_hi = c2[obs_idx, k2_hi]; c2_lo = c2[obs_idx, k2_lo]
-        has1_hi = (r1 < K1 - 1); has1_lo = (r1 > 0)
-        has2_hi = (r2 < K2 - 1); has2_lo = (r2 > 0)
-
-        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
-                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
-        if nat is not None:
-            return nat[0]
-        z1_fam_hi = jnp.where(has1_hi, (c1_hi - dprime_F) * inv_si, INF)
-        z1_fam_lo = jnp.where(has1_lo, (c1_lo - dprime_F) * inv_si, -INF)
-        z2_hi     = jnp.where(has2_hi,  c2_hi,                       INF)
-        z2_lo     = jnp.where(has2_lo,  c2_lo,                      -INF)
-        z1_rec_hi = jnp.where(has1_hi, (c1_hi - mu_rec1) * inv_si,   INF)
-        z1_rec_lo = jnp.where(has1_lo, (c1_lo - mu_rec1) * inv_si,  -INF)
-        z2_rec_hi = jnp.where(has2_hi, (c2_hi - source_d) * inv_sS,  INF)
-        z2_rec_lo = jnp.where(has2_lo, (c2_lo - source_d) * inv_sS, -INF)
-
-        p1_fam   = jnp.clip(_phi_diff(z1_fam_lo, z1_fam_hi)[0], _pfloor())
-        p2_noise = jnp.clip(_phi_diff(z2_lo, z2_hi)[0], _pfloor())
-        p1_rec   = jnp.clip(_phi_diff(z1_rec_lo, z1_rec_hi)[0], _pfloor())
-        p2_rec   = jnp.clip(_phi_diff(z2_rec_lo, z2_rec_hi)[0], _pfloor())
-
-        prob = jnp.clip((1.0 - lambda_val) * p1_fam * p2_noise +
-                         lambda_val * p1_rec * p2_rec, _pfloor())
-        return jnp.log(prob)
+        gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
+        gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
+        return evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gv1,
+                        thresh2_mid, gv2)[0][0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -3114,141 +2845,17 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
          sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
         (_, _, _, d_dprime_F, d_dprime_R, d_source_d, d_lambda,
          d_sigma_item, d_sigma_S, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
-
-        if gap_link_is_softplus:
-            gv1 = jax.nn.softplus(gaps1); gd1 = jax.nn.sigmoid(gaps1)
-            gv2 = jax.nn.softplus(gaps2); gd2 = jax.nn.sigmoid(gaps2)
-        else:
-            gv1 = jnp.exp(gaps1); gd1 = gv1
-            gv2 = jnp.exp(gaps2); gd2 = gv2
-
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-
-        N = y1.shape[0]
-        r1 = y1 - 1; r2 = y2 - 1
-        obs_idx = jnp.arange(N)
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-        has1_hi = (r1 < K1 - 1); has1_lo = (r1 > 0)
-        has2_hi = (r2 < K2 - 1); has2_lo = (r2 > 0)
-
-        INF = _OPEN
-        inv_si = 1.0 / sigma_item
-        inv_sS = 1.0 / sigma_S
-        mu_rec1 = dprime_F + dprime_R
-
-        c1_hi = c1[obs_idx, k1_hi]; c1_lo = c1[obs_idx, k1_lo]
-        c2_hi = c2[obs_idx, k2_hi]; c2_lo = c2[obs_idx, k2_lo]
-
-        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
-                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
-        if nat is not None:
-            (val, d_lp_d_dpF, d_lp_d_dpR, d_lp_d_sd, d_lp_d_lambda, d_lp_d_si, d_lp_d_sS,
-             d_t1_k_hi, d_t1_k_lo, d_t2_k_hi, d_t2_k_lo) = nat
-            d_lp_d_gaps1 = _batch_gap_grads(d_t1_k_hi, d_t1_k_lo, k1_hi, k1_lo,
-                                            has1_hi, has1_lo, gd1, gap_mask1_np)
-            d_lp_d_gaps2 = _batch_gap_grads(d_t2_k_hi, d_t2_k_lo, k2_hi, k2_lo,
-                                            has2_hi, has2_lo, gd2, gap_mask2_np)
-            tangent_out = (
-                d_lp_d_dpF * d_dprime_F + d_lp_d_dpR * d_dprime_R + d_lp_d_sd * d_source_d +
-                d_lp_d_lambda * d_lambda + d_lp_d_si * d_sigma_item + d_lp_d_sS * d_sigma_S +
-                (d_t1_k_hi + d_t1_k_lo) * d_thresh1_mid + jnp.sum(d_lp_d_gaps1 * d_gaps1, axis=1) +
-                (d_t2_k_hi + d_t2_k_lo) * d_thresh2_mid + jnp.sum(d_lp_d_gaps2 * d_gaps2, axis=1))
-            return val, tangent_out
-        z1_fam_hi = jnp.where(has1_hi, (c1_hi - dprime_F) * inv_si,  INF)
-        z1_fam_lo = jnp.where(has1_lo, (c1_lo - dprime_F) * inv_si, -INF)
-        z2_hi     = jnp.where(has2_hi,  c2_hi,                       INF)
-        z2_lo     = jnp.where(has2_lo,  c2_lo,                      -INF)
-        z1_rec_hi = jnp.where(has1_hi, (c1_hi - mu_rec1) * inv_si,   INF)
-        z1_rec_lo = jnp.where(has1_lo, (c1_lo - mu_rec1) * inv_si,  -INF)
-        z2_rec_hi = jnp.where(has2_hi, (c2_hi - source_d) * inv_sS,  INF)
-        z2_rec_lo = jnp.where(has2_lo, (c2_lo - source_d) * inv_sS, -INF)
-
-        P1fh, d1fh, q1fh = _probit_triple(z1_fam_hi)
-        P1fl, d1fl, q1fl = _probit_triple(z1_fam_lo)
-        P2nh, d2nh, q2nh = _probit_triple(z2_hi)
-        P2nl, d2nl, q2nl = _probit_triple(z2_lo)
-        P1rh, d1rh, q1rh = _probit_triple(z1_rec_hi)
-        P1rl, d1rl, q1rl = _probit_triple(z1_rec_lo)
-        P2rh, d2rh, q2rh = _probit_triple(z2_rec_hi)
-        P2rl, d2rl, q2rl = _probit_triple(z2_rec_lo)
-        D1f = _probit_band(z1_fam_lo, z1_fam_hi, P1fl, P1fh, q1fl, q1fh)
-        D2n = _probit_band(z2_lo, z2_hi, P2nl, P2nh, q2nl, q2nh)
-        D1r = _probit_band(z1_rec_lo, z1_rec_hi, P1rl, P1rh, q1rl, q1rh)
-        D2r = _probit_band(z2_rec_lo, z2_rec_hi, P2rl, P2rh, q2rl, q2rh)
-        d1fl, d1fh = _band_pdfs(z1_fam_lo, z1_fam_hi, d1fl, d1fh)
-        d2nl, d2nh = _band_pdfs(z2_lo, z2_hi, d2nl, d2nh)
-        d1rl, d1rh = _band_pdfs(z1_rec_lo, z1_rec_hi, d1rl, d1rh)
-        d2rl, d2rh = _band_pdfs(z2_rec_lo, z2_rec_hi, d2rl, d2rh)
-        p1_fam   = jnp.clip(D1f, _pfloor())
-        p2_noise = jnp.clip(D2n, _pfloor())
-        p1_rec   = jnp.clip(D1r, _pfloor())
-        p2_rec   = jnp.clip(D2r, _pfloor())
-        p_fam = p1_fam * p2_noise
-        p_rec = p1_rec * p2_rec
-        one_m_lam = 1.0 - lambda_val
-        prob_raw = one_m_lam * p_fam + lambda_val * p_rec
-        prob = jnp.clip(prob_raw, _pfloor())
-        val = jnp.log(prob)
-        inv_P = jnp.where(prob_raw > _pfloor(), 1.0 / prob, 0.0)
-
-        w_fam1 = jnp.where(D1f > _pfloor(), one_m_lam * p2_noise * inv_si * inv_P, 0.0)
-        w_rec1 = jnp.where(D1r > _pfloor(), lambda_val * p2_rec * inv_si * inv_P, 0.0)
-
-        phi1f_hi = jnp.where(has1_hi, d1fh, 0.0)
-        phi1f_lo = jnp.where(has1_lo, d1fl, 0.0)
-        phi2n_hi = jnp.where(has2_hi, d2nh, 0.0)
-        phi2n_lo = jnp.where(has2_lo, d2nl, 0.0)
-        phi1r_hi = jnp.where(has1_hi, d1rh, 0.0)
-        phi1r_lo = jnp.where(has1_lo, d1rl, 0.0)
-        phi2r_hi = jnp.where(has2_hi, d2rh, 0.0)
-        phi2r_lo = jnp.where(has2_lo, d2rl, 0.0)
-
-        d_t1_k_hi = w_fam1 * phi1f_hi + w_rec1 * phi1r_hi
-        d_t1_k_lo = -(w_fam1 * phi1f_lo + w_rec1 * phi1r_lo)
-
-        sum_fam1 = phi1f_hi - phi1f_lo
-        sum_rec1 = phi1r_hi - phi1r_lo
-        d_lp_d_dpF = -(w_fam1 * sum_fam1 + w_rec1 * sum_rec1)
-        d_lp_d_dpR = -w_rec1 * sum_rec1
-        d_lp_d_si = -(w_fam1 * (phi1f_hi * z1_fam_hi - phi1f_lo * z1_fam_lo) +
-                       w_rec1 * (phi1r_hi * z1_rec_hi - phi1r_lo * z1_rec_lo))
-
-        w_fam2 = jnp.where(D2n > _pfloor(), one_m_lam * p1_fam * inv_P, 0.0)
-        w_rec2 = jnp.where(D2r > _pfloor(), lambda_val * p1_rec * inv_sS * inv_P, 0.0)
-
-        d_t2_k_hi = w_fam2 * phi2n_hi + w_rec2 * phi2r_hi
-        d_t2_k_lo = -(w_fam2 * phi2n_lo + w_rec2 * phi2r_lo)
-
-        d_lp_d_sd = -w_rec2 * (phi2r_hi - phi2r_lo)
-        d_lp_d_sS = -w_rec2 * (phi2r_hi * z2_rec_hi - phi2r_lo * z2_rec_lo)
-
-        d_lp_d_lambda = (p_rec - p_fam) * inv_P
-
-        d_lp_d_thresh1_mid = d_t1_k_hi + d_t1_k_lo
-        d_lp_d_thresh2_mid = d_t2_k_hi + d_t2_k_lo
-
-        d_lp_d_gaps1 = _batch_gap_grads(d_t1_k_hi, d_t1_k_lo, k1_hi, k1_lo,
-                                         has1_hi, has1_lo, gd1, gap_mask1_np)
-        d_lp_d_gaps2 = _batch_gap_grads(d_t2_k_hi, d_t2_k_lo, k2_hi, k2_lo,
-                                         has2_hi, has2_lo, gd2, gap_mask2_np)
-
-        tangent_out = (
-            d_lp_d_dpF * d_dprime_F +
-            d_lp_d_dpR * d_dprime_R +
-            d_lp_d_sd * d_source_d +
-            d_lp_d_lambda * d_lambda +
-            d_lp_d_si * d_sigma_item +
-            d_lp_d_sS * d_sigma_S +
-            d_lp_d_thresh1_mid * d_thresh1_mid +
-            jnp.sum(d_lp_d_gaps1 * d_gaps1, axis=1) +
-            d_lp_d_thresh2_mid * d_thresh2_mid +
-            jnp.sum(d_lp_d_gaps2 * d_gaps2, axis=1)
-        )
-
+        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
+        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
+        out, f1, n2 = evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
+                               gv1, thresh2_mid, gv2)
+        val, d_dpF, d_dpR, d_sd, d_lam, d_si, d_sS, T1A, T1B, T2A, T2B = out
+        dg1 = _lw_gap_grads(T1A, T1B, f1[4], jnp.asarray(own_mask1)[:, y1 - 1], f1[5], gap_mask1_np, gd1)
+        dg2 = _lw_gap_grads(T2A, T2B, n2[4], jnp.asarray(own_mask2)[:, y2 - 1], n2[5], gap_mask2_np, gd2)
+        tangent_out = (d_dpF * d_dprime_F + d_dpR * d_dprime_R + d_sd * d_source_d + d_lam * d_lambda +
+                       d_si * d_sigma_item + d_sS * d_sigma_S +
+                       T1A * d_thresh1_mid + jnp.sum(dg1 * d_gaps1, axis=1) +
+                       T2A * d_thresh2_mid + jnp.sum(dg2 * d_gaps2, axis=1))
         return val, tangent_out
 
     return _batch_fused
@@ -3257,6 +2864,76 @@ def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
 # =============================================================================
 # Batch-vectorized CDP loglik (no vmap)
 # =============================================================================
+
+def _cdp_strip_parts(tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+    sM = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 + 2.0 * corr * sigma_R * sigma_F)
+    rho = (sigma_R + corr * sigma_F) / sM
+    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
+    s = jnp.sqrt((1.0 - r) * (1.0 + r))
+    return sM, rho, r, s
+
+
+def _cdp_strip_scale(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+    """How far a CDP cell's integrand varies across its band on M, in units of the band's width."""
+    sM, _, r, s = _cdp_strip_parts(tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
+    v = gap / sM
+    m = (tau_lo + 0.5 * gap - mu_R - mu_F) / sM
+    b = ((c_R - mu_R) / sigma_R - r * m) / s
+    a = ((tau_lo + 0.5 * gap - c_K - mu_R) / sigma_R - r * m) / s
+    u = jnp.maximum(1.0, jnp.abs(m))
+    u = u + jnp.where(kind > 0, jnp.abs(r) / s * jnp.maximum(1.0, jnp.abs(b)), 0.0)
+    u = u + jnp.where(kind > 2, jnp.abs(sM / sigma_R - r) / s * jnp.maximum(1.0, jnp.abs(a)), 0.0)
+    return v * u
+
+
+def _cdp_strip(kind, tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+    """A CDP cell whose band on M is narrow, by 4-point Gauss-Legendre over the band [tau_lo, tau_lo + gap]
+    with R | M normal: kind 0 the band, 1 Remember (R > c_R), 2 Know of R/K (R <= c_R), 3 Know of R/K/G
+    (R < min(c_R, M - c_K)), 4 Guess (M - c_K <= R <= c_R). Returns P and its derivatives in (mu_R, sigma_R,
+    mu_F, sigma_F, c_R, c_K, corr, tau_lo at fixed gap, gap), each the derivative of the quadrature."""
+    sM, rho, r, s = _cdp_strip_parts(tau_lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
+    e = lambda q: q[..., None]
+    x = jnp.asarray((_GL4_X + 1.0) / 2.0, dtype=tau_lo.dtype)
+    W = jnp.asarray(_GL4_W / 2.0, dtype=tau_lo.dtype)
+    M = e(tau_lo) + e(gap) * x
+    t = (M - e(mu_R + mu_F)) / e(sM)
+    om = e(gap) * W * jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI) / e(sM)
+    zcR = (c_R - mu_R) / sigma_R
+    zs = (M - e(c_K + mu_R)) / e(sigma_R)
+    b = (e(zcR) - e(r) * t) / e(s)
+    a = (zs - e(r) * t) / e(s)
+    Pb, pb, qb = _probit_triple(b)
+    Pa, pa, qa = _probit_triple(a)
+    k = e(kind)
+    lt = a < b
+    zero = jnp.zeros_like(t)
+    C = jnp.where(k == 0, 1.0, jnp.where(k == 1, jnp.where(b >= 0, qb, 1.0 - qb), jnp.where(k == 2, Pb,
+        jnp.where(k == 3, jnp.where(lt, Pa, Pb), jnp.where(lt, jnp.where(a >= 0, qa - qb, Pb - Pa), 0.0)))))
+    Cb = jnp.where(k == 1, -pb, jnp.where(k == 2, pb, jnp.where(k == 3, jnp.where(lt, 0.0, pb),
+         jnp.where(k == 4, jnp.where(lt, pb, 0.0), zero))))
+    Ca = jnp.where(k == 3, jnp.where(lt, pa, 0.0), jnp.where(k == 4, jnp.where(lt, -pa, 0.0), zero))
+    P = jnp.sum(om * C, -1)
+    Kt = om * (-C * t - e(r / s) * (Cb + Ca))
+    cM = Kt / e(sM) + om * Ca / e(s * sigma_R)
+    d_tau = jnp.sum(cM, -1)
+    d_gap = jnp.sum(cM * x, -1) + P / gap
+    d_muM = -jnp.sum(Kt, -1) / sM
+    d_sM = -jnp.sum(Kt * t + om * C, -1) / sM
+    d_zcR = jnp.sum(om * Cb, -1) / s
+    S_a = jnp.sum(om * Ca, -1) / s
+    d_r = jnp.sum(om * (Cb * (-t + b * e(r / s)) + Ca * (-t + a * e(r / s))), -1) / s
+    d_r = jnp.where(jnp.abs(rho) < _RHO_MAX, d_r, 0.0)
+    sM3 = sM ** 3
+    drho_dsR = sigma_F ** 2 * (1.0 - corr * corr) / sM3
+    drho_dsF = corr / sM - (sigma_R + corr * sigma_F) * (sigma_F + corr * sigma_R) / sM3
+    drho_dc = sigma_F / sM - (sigma_R + corr * sigma_F) * sigma_R * sigma_F / sM3
+    d_muR = d_muM - (d_zcR + S_a) / sigma_R
+    d_sR = (d_sM * (sigma_R + corr * sigma_F) / sM - d_zcR * zcR / sigma_R
+            - jnp.sum(om * Ca * zs, -1) / (s * sigma_R) + d_r * drho_dsR)
+    d_sF = d_sM * (sigma_F + corr * sigma_R) / sM + d_r * drho_dsF
+    d_corr = d_sM * sigma_R * sigma_F / sM + d_r * drho_dc
+    return P, (d_muR, d_sR, d_muM, d_sF, d_zcR / sigma_R, -S_a / sigma_R, d_corr, d_tau, d_gap)
+
 
 def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=False):
     """Fully-vectorized batch log-likelihood for CDP.
@@ -3271,8 +2948,21 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
     mid_idx = (n_thresh - 1) // 2
     n_upper = n_thresh - mid_idx - 1
     gap_mask_np = _make_batch_gap_mask_np(n_gaps, n_thresh, mid_idx, n_upper)
+    _own_full, _own_full_mask = _own_gap(J + 1)
+    own_tau = _own_full[np.arange(J) + 1]
+    own_tau_mask = np.concatenate([_own_full_mask[:, 1:J], np.zeros((n_gaps, 1))], axis=1)
 
-
+    def _narrow(rk, has_lo, has_hi, old_idx, gv, tau_lo, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr):
+        inner = has_lo & has_hi
+        k = jnp.clip(old_idx, 0, J - 1)
+        gap = jnp.where(inner, gv[jnp.arange(rk.shape[0]), jnp.asarray(own_tau)[k]], 1.0) if n_gaps else \
+            jnp.ones_like(mu_R)
+        judged = rk > 0
+        kind = jnp.where(~judged, 0, jnp.where(rk == 1, 1, jnp.where(rk == 2, 2 if n_rkg == 2 else 3, 4)))
+        lo = jnp.where(inner, tau_lo, 0.0)
+        narrow = inner & (_cdp_strip_scale(kind, lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) < _NARROW_U)
+        gs = jnp.where(narrow, gap, 1e-3)
+        return narrow, inner, kind, lo, gs, k
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):
         """Remember/Know strips as direct rectangles in (R, M) for the cells flagged
@@ -3370,6 +3060,11 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
         prob = jnp.where(judged, p_rk, p_band)
         val = jnp.log(jnp.clip(prob, _pfloor()))
+        narrow, _, kind, lo, gs, _ = _narrow(rk, has_lo, has_hi, old_idx, gv, tau_lo, mu_R, sigma_R, mu_F, sigma_F,
+                                             c_R, c_K, corr)
+        val = jax.lax.cond(jnp.any(narrow), lambda v: jnp.where(narrow, jnp.log(jnp.clip(
+            _cdp_strip(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)[0], _pfloor())), v),
+            lambda v: v, val)
         if n_rkg == 3:
             empty = judged & (rk == 3) & has_lo & (c_R + c_K <= tau_lo)
             val = jnp.where(empty, _empty_cell_lp(tau_lo - c_R - c_K), val)
@@ -3650,16 +3345,25 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
 
         d_t_k_lo = jnp.where(has_tau_lo, d_val_dtau_lo, 0.0)
         d_t_k_hi = jnp.where(has_tau_hi, d_val_dtau_hi, 0.0)
+        narrow, inner, kind, lo, gs, k_own = _narrow(rk, has_tau_lo, has_tau_hi, old_idx, gv, tau_lo, mu_R, sigma_R,
+                                                     mu_F, sigma_F, c_R, c_K, corr)
+        if n_rkg == 3:
+            narrow = narrow & ~empty
+        base = (val, d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr,
+                d_t_k_lo + d_t_k_hi, jnp.where(inner, d_t_k_hi, 0.0))
 
-        d_lp_d_thresh_mid = d_t_k_lo + d_t_k_hi
+        def strip(o):
+            P, d = _cdp_strip(kind, lo, gs, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr)
+            Pc = jnp.clip(P, _pfloor())
+            ip = jnp.where(P > _pfloor(), 1.0 / Pc, 0.0)
+            return tuple(jnp.where(narrow, a, b) for a, b in zip((jnp.log(Pc),) + tuple(x * ip for x in d), o))
+        (val, d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr,
+         gA_tau, gB_tau) = jax.lax.cond(jnp.any(narrow), strip, lambda o: o, base)
 
-        gm = jnp.asarray(gap_mask_np)
-        mask_tau_lo = gm[:, k_tau_lo]
-        mask_tau_hi = gm[:, k_tau_hi]
-
-        d_lp_d_gap_val = (mask_tau_lo * d_t_k_lo[None, :] +
-                          mask_tau_hi * d_t_k_hi[None, :])
-        d_lp_d_gaps = (d_lp_d_gap_val * gd.T).T
+        d_lp_d_thresh_mid = gA_tau
+        k_anchor = jnp.where(has_tau_lo, k_tau_lo, k_tau_hi)
+        d_lp_d_gaps = _lw_gap_grads(gA_tau, gB_tau, k_anchor, jnp.asarray(own_tau_mask)[:, k_own], inner,
+                                    gap_mask_np, gd)
 
         tangent_out = (
             d_val_dmuR * d_mu_R +
@@ -3766,6 +3470,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
     P = (1-R_I) * bounded_biv_prob + R_I*(1-R_S) * bounded_marg_source + R_I*R_S * corner
     bounded_biv_prob: Phi-product below the crossing point cp + bivariate rectangle above it.
     bounded_marg_source: Phi(z_cp) * indep_source + P(Z1 > z_cp, z2_lo < Z2 < z2_hi).
+    Each rating cell enters by its lower edge and width wherever the crossing point does not split it.
     """
     n_thresh1 = K1 - 1
     n_gaps1 = n_thresh1 - 1
@@ -3777,6 +3482,8 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
     n_upper2 = n_thresh2 - mid_idx2 - 1
     gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
     gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
+    own_idx1, own_mask1 = _own_gap(K1)
+    own_idx2, own_mask2 = _own_gap(K2)
     INF = _OPEN
 
     def _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
@@ -3784,25 +3491,13 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
         c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
         N = y1.shape[0]
-        r1 = y1 - 1
-        r2 = y2 - 1
         obs_idx = jnp.arange(N)
-        k1_hi = jnp.clip(r1, 0, n_thresh1 - 1)
-        k1_lo = jnp.clip(r1 - 1, 0, n_thresh1 - 1)
-        k2_hi = jnp.clip(r2, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(r2 - 1, 0, n_thresh2 - 1)
-        has1_hi = r1 < K1 - 1
-        has1_lo = r1 > 0
-        has2_hi = r2 < K2 - 1
-        has2_lo = r2 > 0
-        inv_s1 = 1.0 / sigma1
-        inv_s2 = 1.0 / sigma2
-        c2_hi = c2[obs_idx, k2_hi]
-        c2_lo = c2[obs_idx, k2_lo]
-        z1_hi = jnp.where(has1_hi, (c1[obs_idx, k1_hi] - mu1) * inv_s1, INF)
-        z1_lo = jnp.where(has1_lo, (c1[obs_idx, k1_lo] - mu1) * inv_s1, -INF)
-        z2_hi = jnp.where(has2_hi, (c2_hi - mu2) * inv_s2, INF)
-        z2_lo = jnp.where(has2_lo, (c2_lo - mu2) * inv_s2, -INF)
+        e1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
+        e2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
+        z1_lo, z1_hi, w1, _, _, in1, has1_lo, has1_hi = e1
+        z2_lo, z2_hi, w2, _, _, in2, has2_lo, has2_hi = e2
+        k2_hi = jnp.clip(y2 - 1, 0, n_thresh2 - 1)
+        k2_lo = jnp.clip(y2 - 2, 0, n_thresh2 - 1)
         sqrt_1mrr = jnp.sqrt(jnp.clip(1.0 - rho_val**2, 1e-20))
         sc_floor = sigma2 * sqrt_1mrr <= sigma2 * 1e-6
         sigma_cond = jnp.maximum(sigma2 * sqrt_1mrr, sigma2 * 1e-6)
@@ -3811,29 +3506,36 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         is_new = item_type == 1
         z_cp = jnp.where(is_new, -1e6, -mu2 / rho_sigma2)
         z_cp_eff = jnp.clip(z_cp, z1_lo, z1_hi)
-        zs_hi = jnp.where(has2_hi, c2_hi * inv_sc, INF)
-        zs_lo = jnp.where(has2_lo, c2_lo * inv_sc, -INF)
+        split = (z_cp > z1_lo) & (z_cp < z1_hi)
+        above_only = z_cp <= z1_lo
+        below_only = z_cp >= z1_hi
+        zs_hi = jnp.where(has2_hi, c2[obs_idx, k2_hi] * inv_sc, INF)
+        zs_lo = jnp.where(has2_lo, c2[obs_idx, k2_lo] * inv_sc, -INF)
+        ws = w2 * sigma2 * inv_sc
 
-        D_det, dDdet_lo, dDdet_hi = _phi_diff(z1_lo, z_cp_eff)
-        D_src, dDsrc_lo, dDsrc_hi = _phi_diff(zs_lo, zs_hi)
-        det_on = D_det > 0.0
-        src_on = D_src > 0.0
-        p_det = jnp.where(det_on, D_det, 0.0)
-        p_src = jnp.where(src_on, D_src, 0.0)
-        pa, dpa_a, dpa_b, dpa_c, dpa_d, dpa_r = _bvn_rect(z_cp_eff, z1_hi, z2_lo, z2_hi, rho_val)
-        above_on = pa > 0.0
-        biv_raw = p_det * p_src + jnp.where(above_on, pa, 0.0)
+        det_hi = z_cp_eff < 0.5 * INF
+        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, z_cp_eff - z1_lo))
+        det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
+        src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
+        det_on = (det[0] > 0.0) & ~above_only
+        src_on = src[0] > 0.0
+        p_det = jnp.where(det_on, det[0], 0.0)
+        p_src = jnp.where(src_on, src[0], 0.0)
+        rect = _rect_lw(z_cp_eff, z1_hi, jnp.where(above_only, w1, z1_hi - z_cp_eff), z2_lo, z2_hi, w2, rho_val)
+        above_on = (rect[0] > 0.0) & ~below_only
+        biv_raw = p_det * p_src + jnp.where(above_on, rect[0], 0.0)
         biv_on = biv_raw > _pfloor()
         bounded_biv = jnp.where(biv_on, biv_raw, _pfloor())
 
         mg = jnp.minimum(midx, N - 1)
         z_cp_g = z_cp[mg]
         Pcp_g, _, dPcp_g = _phi_diff(jnp.full_like(z_cp_g, -INF), z_cp_g)
-        pm_g, dpm_a_g, _, dpm_c_g, dpm_d_g, dpm_r_g = _bvn_rect(z_cp_g, jnp.full_like(z_cp_g, INF), z2_lo[mg],
-                                                               z2_hi[mg], rho_val[mg])
+        marg_g = _rect_lw(z_cp_g, jnp.full_like(z_cp_g, INF), jnp.ones_like(z_cp_g), z2_lo[mg], z2_hi[mg], w2[mg],
+                          rho_val[mg])
         put = lambda v: jnp.zeros(N, dtype=v.dtype).at[midx].set(v, mode="drop")
-        Pcp, dPcp, pm, dpm_a, dpm_c, dpm_d, dpm_r = (put(v) for v in (Pcp_g, dPcp_g, pm_g, dpm_a_g, dpm_c_g, dpm_d_g, dpm_r_g))
-        marg_raw = Pcp * D_src + pm
+        Pcp, dPcp = put(Pcp_g), put(dPcp_g)
+        pm, Am1, _, Am2, Bm2, dmr = (put(v) for v in marg_g)
+        marg_raw = Pcp * src[0] + pm
         marg_on = marg_raw > _pfloor()
         bounded_marg = jnp.where(marg_on, marg_raw, _pfloor())
 
@@ -3842,23 +3544,17 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         R_S_eff = jnp.where(is_A, R_S, R_S_B)
         is_y1_top = (y1 == K1) & ~is_new
         is_corner = (is_A & (y1 == K1) & (y2 == 1)) | ((item_type == 3) & (y1 == K1) & (y2 == K2))
-        w1 = 1.0 - R_I_eff
-        w2 = jnp.where(is_y1_top, R_I_eff * (1.0 - R_S_eff), 0.0)
-        prob_raw = w1 * bounded_biv + w2 * bounded_marg + jnp.where(is_corner, R_I_eff * R_S_eff, 0.0)
+        wt1 = 1.0 - R_I_eff
+        wt2 = jnp.where(is_y1_top, R_I_eff * (1.0 - R_S_eff), 0.0)
+        prob_raw = wt1 * bounded_biv + wt2 * bounded_marg + jnp.where(is_corner, R_I_eff * R_S_eff, 0.0)
         prob = jnp.clip(prob_raw, _pfloor())
-        parts = dict(has1_hi=has1_hi, has1_lo=has1_lo, has2_hi=has2_hi, has2_lo=has2_lo,
-                     k1_hi=k1_hi, k1_lo=k1_lo, k2_hi=k2_hi, k2_lo=k2_lo,
-                     inv_s1=inv_s1, inv_s2=inv_s2, inv_sc=inv_sc, sc_floor=sc_floor,
-                     sqrt_1mrr=sqrt_1mrr, rho_sigma2=rho_sigma2, is_new=is_new,
-                     z1_hi=z1_hi, z1_lo=z1_lo, z2_hi=z2_hi, z2_lo=z2_lo, zs_hi=zs_hi, zs_lo=zs_lo,
-                     z_cp=z_cp, det_on=det_on, src_on=src_on, above_on=above_on,
-                     biv_on=biv_on, marg_on=marg_on, p_det=p_det, p_src=p_src, D_src=D_src,
-                     dDdet_lo=dDdet_lo, dDdet_hi=dDdet_hi, dDsrc_lo=dDsrc_lo, dDsrc_hi=dDsrc_hi,
-                     dpa_a=dpa_a, dpa_b=dpa_b, dpa_c=dpa_c, dpa_d=dpa_d, dpa_r=dpa_r,
-                     Pcp=Pcp, dPcp=dPcp, dpm_a=dpm_a, dpm_c=dpm_c, dpm_d=dpm_d, dpm_r=dpm_r,
-                     R_I_eff=R_I_eff, R_S_eff=R_S_eff, is_A=is_A, is_y1_top=is_y1_top,
-                     is_corner=is_corner, w1=w1, w2=w2, bounded_biv=bounded_biv,
-                     bounded_marg=bounded_marg, prob_raw=prob_raw)
+        parts = dict(e1=e1, e2=e2, det=det, src=src, rect=rect, det_on=det_on, src_on=src_on, above_on=above_on,
+                     p_det=p_det, p_src=p_src, biv_on=biv_on, marg_on=marg_on, Pcp=Pcp, dPcp=dPcp, Am1=Am1,
+                     Am2=Am2, Bm2=Bm2, dmr=dmr, z_cp=z_cp, z_cp_eff=z_cp_eff, split=split, above_only=above_only,
+                     below_only=below_only, det_hi=det_hi, zs_lo=zs_lo, zs_hi=zs_hi, ws=ws, inv_sc=inv_sc,
+                     sc_floor=sc_floor, sqrt_1mrr=sqrt_1mrr, rho_sigma2=rho_sigma2, is_new=is_new,
+                     R_I_eff=R_I_eff, R_S_eff=R_S_eff, is_A=is_A, is_y1_top=is_y1_top, is_corner=is_corner,
+                     w1=wt1, w2=wt2, bounded_biv=bounded_biv, bounded_marg=bounded_marg, prob_raw=prob_raw)
         return jnp.log(prob), prob, parts
 
     @custom_jvp
@@ -3874,74 +3570,53 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
          R_I, R_S, R_I_B, R_S_B, thresh1_mid, gaps1, thresh2_mid, gaps2, midx) = primals
         (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho, d_rho_N,
          d_R_I, d_R_S, d_R_I_B, d_R_S_B, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2, _) = tangents
-        if gap_link_is_softplus:
-            gv1 = jax.nn.softplus(gaps1)
-            gd1 = jax.nn.sigmoid(gaps1)
-            gv2 = jax.nn.softplus(gaps2)
-            gd2 = jax.nn.sigmoid(gaps2)
-        else:
-            gv1 = jnp.exp(gaps1)
-            gd1 = gv1
-            gv2 = jnp.exp(gaps2)
-            gd2 = gv2
+        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
+        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
         val, prob, q = _core(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, R_I, R_S, R_I_B, R_S_B,
                              thresh1_mid, gv1, thresh2_mid, gv2, midx)
         inv_P = jnp.where(q["prob_raw"] > _pfloor(), 1.0 / prob, 0.0)
+        z1_lo, z1_hi, w1, z1_a, k1_a, in1, has1_lo, has1_hi = q["e1"]
+        z2_lo, z2_hi, w2, z2_a, k2_a, in2, has2_lo, has2_hi = q["e2"]
 
         def f(m):
             return m.astype(prob.dtype)
 
         gb = q["w1"] * f(q["biv_on"]) * inv_P
         gm = q["w2"] * f(q["marg_on"]) * inv_P
-        det_g = f(q["det_on"]) * q["p_src"]
-        src_g = f(q["src_on"]) * q["p_det"]
-        ab = f(q["above_on"])
-        g_zcpeff = gb * (det_g * q["dDdet_hi"] + ab * q["dpa_a"])
-        g_z1_lo = gb * det_g * q["dDdet_lo"]
-        g_z1_hi = gb * ab * q["dpa_b"]
-        g_z2_lo = gb * ab * q["dpa_c"] + gm * q["dpm_c"]
-        g_z2_hi = gb * ab * q["dpa_d"] + gm * q["dpm_d"]
-        g_zs_lo = (gb * src_g + gm * q["Pcp"]) * q["dDsrc_lo"]
-        g_zs_hi = (gb * src_g + gm * q["Pcp"]) * q["dDsrc_hi"]
-        g_zcp = gm * (q["dPcp"] * q["D_src"] + q["dpm_a"])
-        g_rho_direct = gb * ab * q["dpa_r"] + gm * q["dpm_r"]
-
-        z_cp = q["z_cp"]
-        split = (z_cp > q["z1_lo"]) & (z_cp < q["z1_hi"])
-        g_zcp = g_zcp + jnp.where(split, g_zcpeff, 0.0)
-        g_z1_lo = g_z1_lo + jnp.where(z_cp <= q["z1_lo"], g_zcpeff, 0.0)
-        g_z1_hi = g_z1_hi + jnp.where(z_cp >= q["z1_hi"], g_zcpeff, 0.0)
+        det_g = gb * f(q["det_on"]) * q["p_src"]
+        ab = gb * f(q["above_on"])
+        det, src, rect = q["det"], q["src"], q["rect"]
+        Ad, Bd = det[1] * det_g, det[2] * det_g
+        Ar1, Br1, Ar2, Br2 = rect[1] * ab, rect[2] * ab, rect[3] * ab, rect[4] * ab
+        z_cp_eff = q["z_cp_eff"]
+        dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & q["det_hi"], has1_lo)
+        dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, (z_cp_eff > -0.5 * _OPEN) & has1_hi, z_cp_eff > -0.5 * _OPEN)
+        split, below_only = q["split"], q["below_only"]
+        gA1 = jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1))
+        gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
+        g_zcp = jnp.where(split, dd_hi + dr_lo, 0.0) + gm * (q["dPcp"] * src[0] + q["Am1"])
         g_zcp = jnp.where(q["is_new"], 0.0, g_zcp)
 
-        g_z1_hi = jnp.where(q["has1_hi"], g_z1_hi, 0.0)
-        g_z1_lo = jnp.where(q["has1_lo"], g_z1_lo, 0.0)
-        g_z2_hi = jnp.where(q["has2_hi"], g_z2_hi, 0.0)
-        g_z2_lo = jnp.where(q["has2_lo"], g_z2_lo, 0.0)
-        g_zs_hi = jnp.where(q["has2_hi"], g_zs_hi, 0.0)
-        g_zs_lo = jnp.where(q["has2_lo"], g_zs_lo, 0.0)
+        wsrc = gb * f(q["src_on"]) * q["p_det"] + gm * q["Pcp"]
+        As, Bs = src[1] * wsrc, jnp.where(in2, src[2] * wsrc, 0.0)
+        gA2 = Ar2 + gm * q["Am2"]
+        gB2 = Br2 + gm * q["Bm2"]
+        g_rho_direct = rect[5] * ab + gm * q["dmr"]
 
-        inv_s1 = q["inv_s1"]
-        inv_s2 = q["inv_s2"]
-        inv_sc = q["inv_sc"]
+        inv_s1, inv_s2, inv_sc = 1.0 / sigma1, 1.0 / sigma2, q["inv_sc"]
         rs2 = q["rho_sigma2"]
-        d_mu1_c = -(g_z1_hi + g_z1_lo) * inv_s1
-        d_s1_c = -(g_z1_hi * q["z1_hi"] + g_z1_lo * q["z1_lo"]) * inv_s1
-        d_mu2_c = -(g_z2_hi + g_z2_lo) * inv_s2 - g_zcp / rs2
-        zs_term = g_zs_hi * q["zs_hi"] + g_zs_lo * q["zs_lo"]
+        g1 = _lw_chain(gA1, gB1, z1_a, w1, in1, inv_s1)
+        g2 = _lw_chain(gA2, gB2, z2_a, w2, in2, inv_s2)
+        zs_a = jnp.where(has2_lo, q["zs_lo"], q["zs_hi"])
+        zs_term = As * zs_a + Bs * jnp.where(in2, q["ws"], 0.0)
         not_floor = f(~q["sc_floor"] & (1.0 - rho_val**2 > 1e-20))
-        d_s2_c = (-(g_z2_hi * q["z2_hi"] + g_z2_lo * q["z2_lo"]) * inv_s2
-                  - zs_term * inv_s2 + g_zcp * mu2 * rho_val / (rs2 * rs2))
-        d_rho_c = (g_rho_direct + g_zcp * mu2 * sigma2 / (rs2 * rs2)
-                   + zs_term * not_floor * rho_val / (q["sqrt_1mrr"] ** 2))
-
-        d_t1_hi = g_z1_hi * inv_s1
-        d_t1_lo = g_z1_lo * inv_s1
-        d_t2_hi = g_z2_hi * inv_s2 + g_zs_hi * inv_sc
-        d_t2_lo = g_z2_lo * inv_s2 + g_zs_lo * inv_sc
-        d_gaps1_c = _batch_gap_grads(d_t1_hi, d_t1_lo, q["k1_hi"], q["k1_lo"], q["has1_hi"], q["has1_lo"],
-                                     gd1, gap_mask1_np)
-        d_gaps2_c = _batch_gap_grads(d_t2_hi, d_t2_lo, q["k2_hi"], q["k2_lo"], q["has2_hi"], q["has2_lo"],
-                                     gd2, gap_mask2_np)
+        d_mu2_c = g2[0] - g_zcp / rs2
+        d_s2_c = g2[1] - zs_term * inv_s2 + g_zcp * mu2 * rho_val / (rs2 * rs2)
+        d_rho_c = g_rho_direct + g_zcp * mu2 * sigma2 / (rs2 * rs2) + zs_term * not_floor * rho_val / (q["sqrt_1mrr"] ** 2)
+        d_gaps1_c = _lw_gap_grads(gA1 * inv_s1, gB1 * inv_s1, k1_a, jnp.asarray(own_mask1)[:, y1 - 1], in1,
+                                  gap_mask1_np, gd1)
+        d_gaps2_c = _lw_gap_grads(gA2 * inv_s2 + As * inv_sc, gB2 * inv_s2 + Bs * inv_sc, k2_a,
+                                  jnp.asarray(own_mask2)[:, y2 - 1], in2, gap_mask2_np, gd2)
 
         R_I_eff = q["R_I_eff"]
         R_S_eff = q["R_S_eff"]
@@ -3952,10 +3627,10 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         d_RI_in = jnp.where(q["is_A"], d_R_I, d_R_I_B)
         d_RS_in = jnp.where(q["is_A"], d_R_S, d_R_S_B)
 
-        tangent_out = (d_mu1_c * d_mu1 + d_mu2_c * d_mu2 + d_s1_c * d_sigma1 + d_s2_c * d_sigma2
+        tangent_out = (g1[0] * d_mu1 + d_mu2_c * d_mu2 + g1[1] * d_sigma1 + d_s2_c * d_sigma2
                        + d_rho_c * d_rho + d_RI_c * d_RI_in + d_RS_c * d_RS_in
-                       + (d_t1_hi + d_t1_lo) * d_thresh1_mid + jnp.sum(d_gaps1_c * d_gaps1, axis=1)
-                       + (d_t2_hi + d_t2_lo) * d_thresh2_mid + jnp.sum(d_gaps2_c * d_gaps2, axis=1))
+                       + g1[2] * d_thresh1_mid + jnp.sum(d_gaps1_c * d_gaps1, axis=1)
+                       + (g2[2] + As * inv_sc) * d_thresh2_mid + jnp.sum(d_gaps2_c * d_gaps2, axis=1))
         return val, tangent_out
 
     return _batch_fused
