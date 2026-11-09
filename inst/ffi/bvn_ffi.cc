@@ -353,10 +353,6 @@ void rect_k(int64_t n, const double* const* i, double* const* o) {
   bvn::rect_array(n, i[0], i[1], i[2], i[3], i[4], o[0], o[1], o[2], o[3], o[4], o[5]);
 }
 
-void cdf_k(int64_t n, const double* const* i, double* const* o) {
-  bvn::cdf_array(n, i[0], i[1], i[2], o[0], o[1], o[2], o[3]);
-}
-
 ffi::Error ProbitDiffImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::Buffer<ffi::F64> zhi,
                           ffi::ResultBuffer<ffi::F64> D, ffi::ResultBuffer<ffi::F64> pl,
                           ffi::ResultBuffer<ffi::F64> ph) {
@@ -458,7 +454,6 @@ ffi::Error F32Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
                                 ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
 
 BAYESROC_F32(BayesrocBvnRectF32, 5, 6, rect_k);
-BAYESROC_F32(BayesrocBvnCdfF32, 3, 4, cdf_k);
 BAYESROC_F32(BayesrocVrdp2dF32, 14, 11, bvn::vrdp_array);
 BAYESROC_F32(BayesrocBvnCdf2F32, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F32(BayesrocBvnCdf3F32, 7, 24, (bvn::cdf_multi_array<3, 0>));
@@ -473,7 +468,6 @@ BAYESROC_F32(BayesrocMetadCellF32, 5, 5, bvn::metad_array);
 BAYESROC_F64(BayesrocCdpCell, 11, 10, cdp_k);
 BAYESROC_F64(BayesrocMetadCell, 5, 5, bvn::metad_array);
 BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
-BAYESROC_F64(BayesrocBvnCdf, 3, 4, cdf_k);
 BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);
 BAYESROC_F64(BayesrocBvnCdf2, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F64(BayesrocBvnCdf3, 7, 24, (bvn::cdf_multi_array<3, 0>));

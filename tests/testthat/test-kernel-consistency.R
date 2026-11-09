@@ -14,8 +14,8 @@
   "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr",
   "cdp_rk_tail", "cdp_rk_tail_corr",
   "metad_abs", "metad_rel", "metad_abs_k4", "metad_rel_k8_centred", "metad_abs_tail", "metad_rel_tail",
-  "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail", "pcq_m2", "pcq_m4", "pcq_m8_slopes", "pcq_m21",
-  "lnoise", "lnoise_k4_small_noise", "lnoise_k8_large_noise", "lnoise_tail", "pcq_m4_steep",
+  "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail", "mafc_m4", "mafc_m8_uv", "mafc_m21",
+  "lnoise", "lnoise_k4_small_noise", "lnoise_k8_large_noise", "lnoise_tail", "mafc_m4_steep",
   "mafc_m2", "mafc_m3", "mafc_m5_uv", "mafc_mixed_m"
 )
 
@@ -52,8 +52,8 @@ test_that("with the native kernels loaded, every probit and bivariate JVP matche
           "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr",
           "cdp_rk_tail", "cdp_rk_tail_corr",
           "metad_abs", "metad_rel", "metad_abs_k4", "metad_rel_k8_centred", "metad_abs_tail", "metad_rel_tail",
-          "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail", "pcq_m2", "pcq_m4", "pcq_m8_slopes", "pcq_m21",
-          "lnoise", "lnoise_k4_small_noise", "lnoise_k8_large_noise", "lnoise_tail", "pcq_m4_steep",
+          "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail", "mafc_m4", "mafc_m8_uv", "mafc_m21",
+          "lnoise", "lnoise_k4_small_noise", "lnoise_k8_large_noise", "lnoise_tail", "mafc_m4_steep",
           "mafc_m2", "mafc_m3", "mafc_m5_uv", "mafc_mixed_m")
   res <- .run_py_check("native_jvp_check.py", c(lib, paste(ks, collapse = ",")))
   expect_true(res$ffi_loaded)

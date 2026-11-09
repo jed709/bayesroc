@@ -31,7 +31,6 @@ z1l, z1h, z2l, z2h, rho, lo, hi = (jnp.asarray(v, dtype=dt) for v in inputs)
 
 res = {
     "rect": nb._bvn_rect(z1l, z1h, z2l, z2h, rho),
-    "cdf": nb._bvn_cdf(z1h, z2h, rho),
     "cdf2": nb._bvn_cdf_multi([(z1h, z2h), (z1l, z2l)], [z1l], rho)[0][0],
     "cdf4": nb._bvn_cdf_multi([(z1h, z2h), (z1l, z2l), (z1h, z2l), (z1l, z2h)], [z1l, z2h], rho)[0][3],
     "probit_diff": nb._phi_diff(lo, hi),

@@ -45,7 +45,7 @@ tail_rel = np.abs(np.expm1(np.log(np.asarray(tail[0])) - fx[:, 5]))
 tail_fb = nb._with_rect_tail(nb._dw_rect_grads_jax(*[jnp.asarray(fx[:, j]) for j in range(5)]),
                              *[jnp.asarray(fx[:, j]) for j in range(5)])
 tail_fb_rel = np.abs(np.expm1(np.log(np.asarray(tail_fb[0])) - fx[:, 5]))
-cdf = nb._bvn_cdf(A[1], A[3], A[4])
+cdf = nb._bvn_cdf_multi([(A[1], A[3]), (A[1], A[3])], [A[1]], A[4])[0][0]
 ref_cdf = np.array([bvn(z1h[i], z2h[i], rho[i]) for i in range(n)])
 xs = np.linspace(-37.0, 37.0, 2001)
 P, _, Q = nb._acc_phi_and_deriv(jnp.asarray(xs))
@@ -63,7 +63,7 @@ for rr in (0.9, -0.9, 0.99, -0.99, 0.997, -0.997, 0.9988, -0.9988, 0.999, -0.999
     want = np.array([bvn(b1[i], b2[i], rr) - bvn(a1[i], b2[i], rr) - bvn(b1[i], a2[i], rr) + bvn(a1[i], a2[i], rr) for i in range(m)])
     keep = want > 1e-6
     hi_rect.append(np.max(np.abs(got[keep] / want[keep] - 1)))
-    cg = np.asarray(nb._bvn_cdf(args[1], args[3], args[4])[0])
+    cg = np.asarray(nb._bvn_cdf_multi([(args[1], args[3]), (args[1], args[3])], [args[1]], args[4])[0][0][0])
     cw = np.array([bvn(b1[i], b2[i], rr) for i in range(m)])
     hi_cdf.append(np.max(np.abs(cg - cw)))
     hx = hfx[np.isclose(hfx[:, 4], rr)]
@@ -71,7 +71,7 @@ for rr in (0.9, -0.9, 0.99, -0.99, 0.997, -0.997, 0.9988, -0.9988, 0.999, -0.999
         tg = np.asarray(nb._bvn_rect(*[jnp.asarray(hx[:, j]) for j in range(5)])[0])
         (hi_tail999 if abs(rr) > 0.995 else hi_tail).append(np.max(np.abs(np.expm1(np.log(tg) - hx[:, 5]))))
     hh = rng.uniform(-6, 6, m); kk = rng.uniform(-6, 6, m)
-    pg = np.asarray(nb._bvn_cdf(jnp.asarray(hh), jnp.asarray(kk), jnp.asarray(rv))[0])
+    pg = np.asarray(nb._bvn_cdf_multi([(jnp.asarray(hh), jnp.asarray(kk)), (jnp.asarray(hh), jnp.asarray(kk))], [jnp.asarray(hh)], jnp.asarray(rv))[0][0][0])
     hi_point.append(np.max(np.abs(pg - np.array([bvn(hh[i], kk[i], rr) for i in range(m)]))))
     if nb._BVN_FFI:
         nb._BVN_FFI = False
@@ -98,7 +98,7 @@ out = {
 if nb._BVN_FFI:
     nb._BVN_FFI = False
     jr = nb._bvn_rect(*A)
-    jc = nb._bvn_cdf(A[1], A[3], A[4])
+    jc = nb._bvn_cdf_multi([(A[1], A[3]), (A[1], A[3])], [A[1]], A[4])[0][0]
     nb._BVN_FFI = True
     out["ffi_vs_jax_rect"] = float(np.max(np.abs(np.asarray(rect[0]) / np.asarray(jr[0]) - 1)))
     out["ffi_vs_jax_cdf"] = float(np.max(np.abs(np.asarray(cdf[0]) - np.asarray(jc[0]))))

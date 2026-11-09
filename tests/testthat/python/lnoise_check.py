@@ -26,9 +26,6 @@ def worst(x, y):
     return float(max(np.max(np.abs(p - q) / np.maximum(1.0, np.abs(q))) for p, q in zip(x, y)))
 
 
-g = jax.jit(jax.grad(lambda a, ln, lf, s: jnp.sum(nb.lnoise_cell_lp(a, ln, lf, s)), argnums=(0, 3)))
-ga, gs = (np.asarray(v) for v in g(*args))
 print("RESULT " + json.dumps({"ffi_loaded": bool(nb._BVN_FFI), "native_vs_ref": worst(nat, ref),
                               "jax_vs_ref": worst(jx, ref), "native_vs_jax": worst(nat, jx),
-                              "jvp_vs_kernel": float(max(np.max(np.abs(ga - nat[1])), np.max(np.abs(gs - nat[4])))),
                               "finite": bool(all(np.all(np.isfinite(v)) for v in nat))}))

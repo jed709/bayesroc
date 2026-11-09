@@ -732,7 +732,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
     import ctypes
     try:
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
-        for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
+        for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
@@ -741,7 +741,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
-        for _t, _sym in (("bvn_rect", "BvnRect"), ("bvn_cdf", "BvnCdf"), ("vrdp2d", "Vrdp2d"),
+        for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf3", "BvnCdf3"), ("bvn_cdf4", "BvnCdf4"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
@@ -1267,8 +1267,8 @@ def _lw_gap_grads(gA, gB, k_a, own, inner, gap_mask, gap_derivs):
 
 
 def _bvn_cdf_multi(pairs, extras, rho):
-    """_bvn_cdf for (h, k) pairs sharing rho, plus accurate marginals. Returns, per pair,
-    (P, dP/dh, dP/dk, dP/drho, Q(h), Phi'(h), Q(k), Phi'(k)) and, per extra x, (Q(x), Phi'(x)),
+    """P(Z1 < h, Z2 < k; rho) and its derivatives for (h, k) pairs sharing rho, plus accurate marginals.
+    Returns, per pair, (P, dP/dh, dP/dk, dP/drho, Q(h), Phi'(h), Q(k), Phi'(k)) and, per extra x, (Q(x), Phi'(x)),
     where Q is the tail mass min(Phi, 1 - Phi). One native call when available."""
     n, m = len(pairs), len(extras)
     arrs = jnp.broadcast_arrays(*[jnp.asarray(a) for pair in pairs for a in pair],
@@ -1313,20 +1313,6 @@ def _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_l
     args = [f(c1_hi), f(c1_lo), f(c2_hi), f(c2_lo), f(has1_hi), f(has1_lo), f(has2_hi), f(has2_lo),
             f(dprime_F), f(dprime_R), f(source_d), f(lambda_val), f(sigma_item), f(sigma_S)]
     return _native_call("vrdp2d", 11, jnp.broadcast_arrays(*args))
-
-
-def _bvn_cdf(h, k, rho):
-    """P(Z1 < h, Z2 < k; rho) and its exact derivatives in (h, k, rho): Drezner-Wesolowsky with
-    the Gauss-Legendre order tiered on |rho|, and the log-space tail path below 1e-6."""
-    args = jnp.broadcast_arrays(*[jnp.asarray(a) for a in (h, k, rho)])
-    if _native_ok(args[0]):
-        return _native_call("bvn_cdf", 4, args)
-    h, k, r = args
-    out = _dw_cdf_grads_jax(h, k, r)
-    ninf = jnp.full_like(h, -_OPEN)
-    t = _with_rect_tail((out[0], jnp.zeros_like(h), out[1], jnp.zeros_like(h), out[2], out[3]),
-                        ninf, h, ninf, k, r)
-    return t[0], t[2], t[4], t[5]
 
 
 def _thresh_layout(K):
@@ -1682,20 +1668,6 @@ def _pcq_raw(a, c):
     return _pcq_jax(a, c)
 
 
-@custom_jvp
-def pcq_logint(a, c):
-    """log int phi(z) prod_j Phi(a_j z + c_j) dz over the trailing axis of [N, n] slopes a and shifts c."""
-    return _pcq_raw(a, c)[0]
-
-
-@pcq_logint.defjvp
-def _pcq_logint_jvp(primals, tangents):
-    a, c = primals
-    ta, tc = tangents
-    lp, dc, da = _pcq_raw(a, c)
-    return lp, jnp.sum(dc * tc + da * ta, -1)
-
-
 _LN_R = 8.5
 _LN_GL_X, _LN_GL_W = np.polynomial.legendre.leggauss(56)
 _LN_GH_X, _LN_GH_W = np.polynomial.hermite_e.hermegauss(24)
@@ -1930,40 +1902,12 @@ def _lnoise_cell_jax(a, ln, lf, s):
     return lp, da, n[4] * iP, -f[4] * iP, (n[5] - f[5]) * iP
 
 
-def _lnoise_raw(a, ln, lf, s, narrow_cells=True):
-    """(lp, d/da, d/dln, d/dlf, d/ds) of a lognormal meta-noise cell; a cell with lf - ln < _LN_NARROW min(1, s)
-    is the band integral of _ln_narrow."""
+def _lnoise_raw(a, ln, lf, s):
+    """(lp, d/da, d/dln, d/dlf, d/ds) of a lognormal meta-noise cell."""
     a, ln, lf, s = jnp.broadcast_arrays(*(jnp.asarray(v) for v in (a, ln, lf, s)))
     if _native_ok(a):
-        out = _native_call("lnoise_cell", 5, (a, ln, lf, s))
-    else:
-        out = _lnoise_cell_jax(a, ln, lf, s)
-    if not narrow_cells:
-        return out
-    dl = lf - ln
-    narrow = jnp.isfinite(ln) & jnp.isfinite(lf) & (dl < _LN_NARROW * jnp.minimum(1.0, s))
-
-    def over(o):
-        P, dPa, dPl, dPd, dPs = _ln_narrow(a, jnp.where(narrow, ln, 0.0), jnp.where(narrow, dl, 1e-4), s)
-        Pc = jnp.maximum(P, _pfloor())
-        ip = jnp.where(P > _pfloor(), 1.0 / Pc, 0.0)
-        new = (jnp.log(Pc), dPa * ip, (dPl - dPd) * ip, dPd * ip, dPs * ip)
-        return tuple(jnp.where(narrow, u, w) for u, w in zip(new, o))
-    return jax.lax.cond(jnp.any(narrow), over, lambda o: tuple(o), tuple(out))
-
-
-@custom_jvp
-def lnoise_cell_lp(a, ln, lf, s):
-    """log P of a lognormal meta-noise cell (Shekhar & Rahnev 2021); see _lnoise_cell_jax."""
-    return _lnoise_raw(a, ln, lf, s)[0]
-
-
-@lnoise_cell_lp.defjvp
-def _lnoise_cell_lp_jvp(primals, tangents):
-    lp, da, dln, dlf, ds = _lnoise_raw(*primals)
-    ta, tln, tlf, ts = tangents
-    return lp, da * ta + jnp.where(jnp.isneginf(primals[1]), 0.0, dln * tln) + \
-        jnp.where(jnp.isposinf(primals[2]), 0.0, dlf * tlf) + ds * ts
+        return _native_call("lnoise_cell", 5, (a, ln, lf, s))
+    return _lnoise_cell_jax(a, ln, lf, s)
 
 
 def _mafc_terms(y0, t0, m, d, sg, b):
@@ -2193,7 +2137,7 @@ def _make_fused_lnoise_loglik(K, gap_link_is_softplus):
         lf = jnp.where(open_far, jnp.inf, jnp.log(D_far))
         a = sgn * (mu - thresh_mid)
         dl = jnp.log1p(gap / D_near)
-        out = _lnoise_raw(a, ln, lf, sm, narrow_cells=False)
+        out = _lnoise_raw(a, ln, lf, sm)
         narrow = inner & (dl < _LN_NARROW * jnp.minimum(1.0, sm))
 
         def over(o):

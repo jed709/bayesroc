@@ -165,22 +165,11 @@ def gnoise_case(K=6, sm=(0.3, 1.6), mid=(0.6, 0.3), N=300, seed=6):
     return f, args, [1, 2, 3, 4]
 
 
-def pcq_case(n, slopes=False, N=200, seed=8, steep=False):
-    rng = np.random.default_rng(seed)
-    a = _u(rng, 3.0, 6.0, (N, n)) if steep else _u(rng, 0.6, 1.6, (N, n)) if slopes else jnp.ones((N, n))
-    d = rng.uniform(0, 6, N)
-    b = rng.normal(0, 1, (N, n + 1))
-    c = np.where((rng.uniform(size=N) < .5)[:, None], d[:, None] + b[:, :1] - b[:, 1:],
-                 b[:, 1:2] - b[:, 1:] - np.eye(1, n)[0] * (d[:, None] + b[:, :1] - b[:, 1:2]))
-    return nb.pcq_logint, [a, jnp.asarray(c)], [0, 1]
-
-
 CASES = {
-    "pcq_m2": lambda: pcq_case(1),
-    "pcq_m4": lambda: pcq_case(3),
-    "pcq_m8_slopes": lambda: pcq_case(7, slopes=True),
-    "pcq_m21": lambda: pcq_case(20),
-    "pcq_m4_steep": lambda: pcq_case(3, steep=True),
+    "mafc_m4": lambda: mafc_case(M=4),
+    "mafc_m8_uv": lambda: mafc_case(M=8, sig=(0.6, 1.6)),
+    "mafc_m21": lambda: mafc_case(M=21),
+    "mafc_m4_steep": lambda: mafc_case(M=4, sig=(3.0, 6.0)),
     "mafc_m2": lambda: mafc_case(M=2),
     "mafc_m3": lambda: mafc_case(),
     "mafc_m5_uv": lambda: mafc_case(M=5, sig=(0.4, 2.5)),

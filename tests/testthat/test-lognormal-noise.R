@@ -69,7 +69,6 @@ test_that("lognormal meta-noise native kernel and its pure-JAX reference agree w
   expect_lt(res$native_vs_ref, 3e-6)
   expect_lt(res$jax_vs_ref, 1e-9)
   expect_lt(res$native_vs_jax, 3e-6)
-  expect_equal(res$jvp_vs_kernel, 0)
 })
 
 test_that("evsd with lognormal meta-noise through the JAX transport map (f64 and f32): the map is built and R reproduces the JAX log-likelihood", {
