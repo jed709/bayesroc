@@ -13,16 +13,16 @@
       d$sub <- factor(d$sub)
       m <- suppressMessages(broc(brf(item_resp | is_old ~ condition - 1 + (1 | sub), sigma ~ condition - 1,
                                      criterion ~ 1 + (1 | sub), family = uvsd()), d, encoding_vars = "condition"))
-      cache <<- list(d = d, fit = suppressMessages(fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
+      cache <<- list(d = d, fit = suppressMessages(fit_broc(m, chains = 2, parallel_chains = 2,
                                                             iter_warmup = 100, iter_sampling = 50, seed = 1,
-                                                            refresh = 50, show_messages = FALSE)))
+                                                            show_messages = FALSE)))
     }
     cache
   }
 })
 
 test_that("estimates() reproduces identity-link coefficients and reports diagnostics", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .est_fit()$fit
   e <- estimates(f)
   expect_true(all(c("parameter", "name", "condition", "estimate", "sd", "lower", "upper", "rhat",
@@ -42,7 +42,7 @@ test_that("estimates() reproduces identity-link coefficients and reports diagnos
 })
 
 test_that("compare_estimates() gives draw-wise differences between cells", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .est_fit()$fit
   ce <- compare_estimates(f, pars = "dprime", ref = "read")
   expect_identical(ce$contrast, "aloud - read")
@@ -54,7 +54,7 @@ test_that("compare_estimates() gives draw-wise differences between cells", {
 })
 
 test_that("predict() summaries carry the data columns", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   x <- .est_fit()
   p <- predict(x$fit, ndraws = 20, seed = 1)
   expect_true(all(c("trial", "condition", "sub", "category", "mean", "lower", "upper") %in% names(p)))
@@ -64,7 +64,7 @@ test_that("predict() summaries carry the data columns", {
 })
 
 test_that("summary() is structured and prints readable sections", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .est_fit()$fit
   s <- summary(f)
   expect_s3_class(s, "broc_summary")
@@ -104,14 +104,14 @@ test_that("correlation tables list every pair", {
 })
 
 test_that("numeric predictors get natural-scale slope rows per standard deviation", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   set.seed(32)
   d <- .fixture_univariate(sigma = 1.3, n_per = 60)
   d$x <- rnorm(nrow(d), 2, 3)
   d$cond <- factor(sample(c("a", "b"), nrow(d), TRUE))
   m <- suppressMessages(broc(brf(item_resp | is_old ~ cond * x, sigma ~ x, criterion ~ x, family = uvsd()), d))
-  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 50, seed = 1,
-                                 refresh = 50, show_messages = FALSE))
+  f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 50, seed = 1,
+                                 show_messages = FALSE))
   e <- estimates(f)
   s <- sqrt(mean((d$x - mean(d$x))^2))
   expect_equal(unname(attr(e, "predictor_sd")), s, tolerance = 1e-12)

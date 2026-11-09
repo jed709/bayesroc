@@ -37,9 +37,9 @@ test_that(".pack_array rejects non-finite draws", {
 })
 
 test_that("packing a draws_array removes and restores RE variables", {
-  skip_if_no_cmdstan()
-  f <- .fx_fit("evsd_crossed", "stan")
-  da <- posterior::as_draws_array(f$.backend_fit$draws())
+  skip_if_no_jax()
+  f <- .fx_fit("evsd_crossed")
+  da <- posterior::as_draws_array(f$draws())
   re_vars <- grep("^(z_|u_)", posterior::variables(da), value = TRUE)
   skip_if(length(re_vars) == 0, "no per-level RE variables in this fit")
 

@@ -3,7 +3,7 @@
 .bridge_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 2
 
 .fit_bridge <- function(m) {
-  fit_broc(m, backend = "stan", refresh = 50, parallel_chains = .bridge_chains,
+  fit_broc(m, parallel_chains = .bridge_chains,
            chains = .bridge_chains, iter_warmup = .bridge_iter,
            iter_sampling = .bridge_iter)
 }
@@ -56,7 +56,7 @@
 }
 
 test_that("bridge: uvsd + RE, incl. epred and allow_new_levels", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_uvsd()
   m <- broc(brf(resp | cond ~ 1 + (1 | sub), criterion ~ 1, sigma ~ 1,
                 family = uvsd()), d)
@@ -70,21 +70,21 @@ test_that("bridge: uvsd + RE, incl. epred and allow_new_levels", {
 })
 
 test_that("bridge: bivariate_gaussian (bounded) -- guards bounded sign flip", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_sdt()
   m <- broc(.biv_f(family = bivariate_gaussian(bounded = TRUE)), d)
   .expect_predict_ok(.fit_bridge(m))
 })
 
 test_that("bridge: bivariate_dp -- guards bounded p1/p2, sign flip and corner cells", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_sdt()
   m <- broc(.biv_f(lambda ~ 1, lambda2 ~ 1, family = bivariate_dp()), d)
   .expect_predict_ok(.fit_bridge(m))
 })
 
 test_that("bridge: cdp joint (rating x R/K reconstructed from conditionals)", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_cdp()
   m <- broc(brf(resp(rating, rk) | is_old ~ condition - 1,
                 fam ~ condition - 1, criterion ~ condition - 1,

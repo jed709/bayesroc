@@ -8,7 +8,7 @@ test_that("prior_init draws each element from its own prior", {
                 criterion ~ 1 + (1|p|participant),
                 family = uvsd()), d,
             priors = broc_prior("normal(0, 0.05)", class = "sd", dpar = "log_gaps", group = "participant"))
-  L <- strsplit(m$stan_code, "\n")[[1]]
+  L <- strsplit(.with_stan_code(m)$stan_code, "\n")[[1]]
   st <- regmatches(L, regexec("sigma_cross_p_participant\\[([0-9]+)\\] ~ normal\\(0, ([0-9.]+)\\)", L))
   st <- st[lengths(st) == 3]
   want <- as.numeric(vapply(st, `[`, "", 3))[order(as.integer(vapply(st, `[`, "", 2)))]

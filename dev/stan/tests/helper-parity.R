@@ -52,18 +52,10 @@
        lp_values = a[, 1])
 }
 
-.plain_stan_dev_env <- function() {
-  src <- testthat::test_path("..", "..", "dev", "plain_stan.R")
-  if (!file.exists(src)) testthat::skip("dev/plain_stan.R not available (development-only path)")
-  env <- new.env(parent = asNamespace("bayesroc"))
-  sys.source(src, envir = env)
-  env
-}
-
 .broc_plain <- function(...) {
-  old <- options(bayesroc.dev_plain_stan = .plain_stan_dev_env())
-  on.exit(options(old), add = TRUE)
-  broc(...)
+  m <- broc(...)
+  m$.plain_stan <- TRUE
+  m
 }
 
 .broc_with <- function(batch, ...) if (isTRUE(batch)) broc(...) else .broc_plain(...)

@@ -35,11 +35,10 @@ Invisibly returns the path to the installed venv's Python.
 \description{
 Creates an isolated Python virtual environment under \code{jax_backend_dir()}
 and installs \code{jax} and \code{numpyro} at known-compatible pinned versions. This
-never touches the user's system or global Python install. The cmdstanr
-analogue is \code{\link[cmdstanr:install_cmdstan]{cmdstanr::install_cmdstan()}}.
+never touches the user's system or global Python install.
 }
 \details{
-Subsequent JAX-backend fits via \code{fit_broc(backend = "jax")} will prefer
+Subsequent fits via \code{\link[=fit_broc]{fit_broc()}} will prefer
 this managed venv automatically; no further configuration is needed.
 }
 \seealso{

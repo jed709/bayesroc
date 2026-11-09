@@ -3,24 +3,13 @@
   mean(posterior::as_draws_matrix(f$draws(variables = "beta_dprime[1]"))[, 1])
 }
 
-test_that("Stan: seed makes fits reproducible and thin keeps every k-th draw", {
-  skip_if_no_cmdstan()
-  m <- .fx_model("uvsd")
-  a <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 50, iter_sampling = 40, thin = 2, refresh = 50)
-  b <- fit_broc(m, backend = "stan", seed = 42, chains = 2, parallel_chains = 2,
-                iter_warmup = 50, iter_sampling = 40, thin = 2, refresh = 50)
-  expect_identical(.bd1(a), .bd1(b))
-  expect_equal(nrow(posterior::as_draws_matrix(a$draws(variables = "beta_dprime[1]"))), 40)
-})
-
-test_that("JAX: thin, parallel_chains = 1 and the cmdstanr-only `...` warning", {
+test_that("JAX: thin, parallel_chains = 1 and the warning for unused `...` arguments", {
   skip_if_no_jax()
   m <- .fx_model("uvsd")
   expect_warning(
     fp <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L, parallel_chains = 2L, iter_warmup = 30L,
                    iter_sampling = 40L, thin = 2L, seed = 1, progress_bar = FALSE, sig_figs = 5),
-    "forwarded to cmdstanr"
+    "ignored: sig_figs"
   )
   expect_equal(fp$.iter_sampling, 20L)
   fs <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2L, parallel_chains = 1L, iter_warmup = 30L,

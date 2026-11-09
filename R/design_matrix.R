@@ -623,3 +623,20 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
   }
   invisible()
 }
+
+.re_full_block <- function(re) {
+  length(re$cor_blocks) == 1L && length(re$cor_blocks[[1]]) == re$dim
+}
+
+#' Generate parameter linear predictor (standard version for non-encoding params)
+#' @noRd
+.ls_normalised <- function(model_data, which = 1L) {
+  pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
+  isTRUE(model_data[[paste0("has_", pn)]]) && isTRUE(model_data[[paste0(pn, "_fixed")]]$normalised_shape)
+}
+
+.sum_zero_basis <- function(n) {
+  if (n < 2L) return(matrix(0, n, 0))
+  H <- stats::contr.helmert(n)
+  unname(sweep(H, 2L, sqrt(colSums(H^2)), "/"))
+}

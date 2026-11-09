@@ -24,10 +24,10 @@
 #' of the new level as in brms' `sample_new_levels = "gaussian"`. Smooth and
 #' per-bin random effects are handled the same way.
 #'
-#' Folds are fitted one after another. Each refit uses the fit's backend,
+#' Folds are fitted one after another. Each refit uses the fit's
 #' sampler, number of chains and draws per chain; arguments in `...` are passed
-#' to [fit_broc()] and override them (e.g. `iter_warmup`, `control`, `seed`,
-#' `refresh`). A `seed` is offset by the fold number for each refit. Refits
+#' to [fit_broc()] and override them (e.g. `iter_warmup`, `control`, `seed`).
+#' A `seed` is offset by the fold number for each refit. Refits
 #' that would leave out the same trials (as with `folds = "loo"` on aggregated
 #' data) are run once.
 #'
@@ -218,7 +218,7 @@ print.broc_kfold_list <- function(x, ...) {
   keys <- unique(vapply(sets, `[[`, "", "key"))
   units <- .kfold_units(sets, unit_row, counts, lay$trial, joint, gvar)
 
-  fit_args <- list(backend = x$.backend, sampler = x$.sampler, chains = x$.num_chains,
+  fit_args <- list(sampler = x$.sampler, chains = x$.num_chains,
                    iter_sampling = x$.iter_sampling)
   fit_args[names(dots)] <- dots
   fit_args$save_loglik <- TRUE
@@ -425,10 +425,7 @@ kfold_predict <- function(x, response = NULL, ...) {
   md$rows_live <- TRUE
   md$stan_data$counts <- as.integer(w)
   if (regen) {
-    code <- .generate_model_code(md, model$family, .model_kind(model))
-    model$stan_code <- code$stan_code
-    model$stan_data <- code$stan_data
-    model$batch_cpp <- code$batch_cpp
+    model$stan_data <- .model_stan_data(md, .model_kind(model))
   } else {
     model$stan_data$counts <- as.integer(w)
   }

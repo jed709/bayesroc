@@ -12,7 +12,7 @@
 }
 
 .ls_stan <- function(m, ...) {
-  fit_broc(m, backend = "stan", refresh = 50, seed = 1, chains = 2,
+  fit_broc(m, seed = 1, chains = 2,
            parallel_chains = 2, iter_warmup = 50, iter_sampling = 100, ...)
 }
 
@@ -24,25 +24,8 @@
                                   loo = TRUE, save_loglik = FALSE, progress_bar = FALSE))
 }
 
-test_that("Stan fits write a log_lik sidecar and keep it out of the draws array", {
-  skip_if_no_cmdstan()
-  fx <- .agg_fixture()
-  f <- .ls_stan(.ls_model())
-
-  expect_true(!is.null(f$.loglik_path))
-  expect_true(file.exists(f$.loglik_path))
-  meta <- .loglik_meta(f$.loglik_path)
-  expect_equal(meta$C, 2L)
-  expect_equal(meta$D, 100L)
-  expect_equal(meta$N, nrow(fx$agg))
-  expect_equal(meta$isz, 4L)
-
-  ll <- as.matrix(f$draws(variables = "log_lik", format = "matrix"))
-  expect_equal(dim(ll), c(200L, nrow(fx$agg)))
-})
-
 test_that("streamed loo matches the brute-force trial-level oracle", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   fx <- .agg_fixture()
   expect_lt(nrow(fx$agg), nrow(fx$trial))
   m <- .ls_model()
@@ -80,7 +63,7 @@ test_that("streamed loo matches the brute-force trial-level oracle", {
 })
 
 test_that("chunking does not change the streamed result", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .ls_stan_f64()
   wide <- loo(f, cores = 1)
   narrow <- loo(f, cores = 2, chunk_mb = 0.001)
@@ -89,7 +72,7 @@ test_that("chunking does not change the streamed result", {
 })
 
 test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   fx <- .agg_fixture()
   f <- .ls_stan(.ls_model(), loo = TRUE, save_loglik = FALSE)
 
@@ -100,7 +83,7 @@ test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
 })
 
 test_that("drop_loglik frees a temp sidecar and disables loo", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .ls_stan(.ls_model())
   p <- f$.loglik_path
   expect_true(file.exists(p))
@@ -128,7 +111,7 @@ test_that("loo() errors actionably once log_lik is gone", {
 })
 
 test_that("save_broc_fit persists the sidecar only when asked", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   f <- .ls_stan(.ls_model(), loglik_precision = "f64")
   ref <- loo(f, cores = 1)$estimates
 
@@ -155,7 +138,7 @@ test_that("save_broc_fit persists the sidecar only when asked", {
 })
 
 test_that("a fit-time loo result survives save and load", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   fx <- .agg_fixture()
   m <- .ls_model()
   f <- .ls_stan(m, loo = TRUE, save_loglik = FALSE)
@@ -194,28 +177,4 @@ test_that("JAX honours loo = TRUE and reclaims the sidecar", {
   expect_s3_class(f$.loo, "loo")
   expect_equal(dim(f$.loo)[2], nrow(fx$trial))
   expect_null(f$.loglik_path)
-})
-
-test_that("Stan and JAX sidecars agree on the same model", {
-  skip_if_no_cmdstan()
-  skip_if_no_jax()
-  m <- .ls_model(120)
-  fs <- fit_broc(m, backend = "stan", refresh = 50, seed = 2,
-                 parallel_chains = 2, chains = 2,
-                 iter_warmup = 100, iter_sampling = 150)
-  fj <- fit_broc(m, backend = "jax", sampler = "nuts", seed = 2, chains = 2, parallel_chains = 2,
-                 iter_warmup = 100, iter_sampling = 150, progress_bar = FALSE)
-
-  ms <- .loglik_meta(fs$.loglik_path)
-  mj <- .loglik_meta(fj$.loglik_path)
-  expect_equal(ms$N, mj$N)
-  expect_equal(ms$C, mj$C)
-  expect_equal(ms$D, mj$D)
-
-  ls <- loo(fs, cores = 1)
-  lj <- loo(fj, cores = 1)
-  expect_equal(dim(ls)[2], dim(lj)[2])
-  expect_equal(ls$estimates["elpd_loo", "Estimate"],
-               lj$estimates["elpd_loo", "Estimate"],
-               tolerance = 3 * ls$estimates["elpd_loo", "SE"])
 })

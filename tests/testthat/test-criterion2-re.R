@@ -40,20 +40,6 @@ test_that("JAX applies every criterion2 random-effect grouping factor in the lik
   expect_lt(.ll_vs_r(m, f), 1e-5, label = "JAX vs R log_lik")
 })
 
-test_that("batch Stan applies every criterion2 random-effect grouping factor in the likelihood", {
-  skip_if_no_cmdstan()
-  d <- .sim_crit2_crossed(seed = 22)
-  m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
-                criterion2 ~ 1 + (1 | sub) + (1 | item),
-                family = bivariate_gaussian()), d)
-  f <- suppressMessages(fit_broc(m, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5,
-                                 seed = 4, refresh = 50, show_messages = FALSE))
-  vars <- posterior::variables(f$draws())
-  expect_true(any(grepl("^u_criterion2_sub\\[", vars)))
-  expect_true(any(grepl("^u_criterion2_item\\[", vars)))
-  expect_lt(.ll_vs_r(m, f), 1e-5, label = "Stan vs R log_lik")
-})
-
 test_that("cross-correlated criterion2 effects enter the JAX likelihood as R computes them", {
   skip_if_no_jax()
   d <- .sim_crit2_crossed(seed = 23, n_item = 30, sd_item = 0)
@@ -81,23 +67,6 @@ test_that("JAX applies every criterion2 random-effect grouping factor", {
   vars <- posterior::variables(f$.draws_array)
   expect_true(any(grepl("^u_criterion2_sub\\[", vars)))
   expect_true(any(grepl("^u_criterion2_item\\[", vars)))
-})
-
-test_that("JAX and Stan agree on crossed criterion2 random effects", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  skip_if_no_cmdstan()
-  d <- .sim_crit2_crossed(seed = 22)
-  m <- broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1,
-                criterion2 ~ 1 + (1 | sub) + (1 | item),
-                family = bivariate_gaussian()), d)
-  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
-                 iter_warmup = 500, iter_sampling = 500, seed = 4, progress_bar = FALSE)
-  fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, refresh = 50,
-                 iter_warmup = 500, iter_sampling = 500, seed = 4)
-  for (g in c("sub", "item")) {
-    expect_equal(.mid_sd(fj, g), .mid_sd(fs, g), tolerance = 0.2)
-  }
 })
 
 test_that("cross-correlated criterion2 effects move source, not detection, thresholds", {

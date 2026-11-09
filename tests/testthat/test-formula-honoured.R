@@ -61,7 +61,7 @@ test_that("~ NULL drops a parameter's formula for every parameter", {
   d <- .honour_data()
   m0 <- suppressMessages(broc(brf(conf | old ~ 1, criterion ~ 1, family = evsd()), d))
   m1 <- suppressMessages(broc(brf(conf | old ~ 1, criterion ~ 1, criterion_scale ~ NULL, family = evsd()), d))
-  expect_identical(m1$stan_code, m0$stan_code)
+  expect_identical(build_numpyro_config(m1), build_numpyro_config(m0))
 })
 
 test_that("an SD prior with coef but no dpar reaches only that coefficient", {
@@ -72,10 +72,10 @@ test_that("an SD prior with coef but no dpar reaches only that coefficient", {
   p <- p[p$class == "sd" & p$group == "subj", ]
   expect_identical(p$prior[p$coef == "x"], rep("normal(0, 0.05)", 2))
   expect_false(any(p$prior[p$coef == "(Intercept)"] == "normal(0, 0.05)"))
-  expect_match(m$stan_code, "sigma_dprime_subj[2] ~ normal(0, 0.05);", fixed = TRUE)
   default <- p$prior[p$dpar == "dprime" & p$coef == "(Intercept)"]
   expect_identical(p$source[p$dpar == "dprime" & p$coef == "(Intercept)"], "default")
-  expect_match(m$stan_code, paste0("sigma_dprime_subj[1] ~ ", default, ";"), fixed = TRUE)
+  rc <- Filter(function(r) r$param == "dprime" && r$group == "subj", build_numpyro_config(m)$random_effects)[[1]]
+  expect_equal(unlist(rc$prior_sd_per_coef), c(default, "normal(0, 0.05)"))
 })
 
 test_that("varying criterion2_scale: a factor keeps its reference level in every set, separate terms stay separate", {
@@ -101,21 +101,13 @@ test_that("a smooth in lambda2_B is kept", {
   expect_false(is.null(m$model_data$smooth_data$lambda2_B))
 })
 
-.l2_smooth_model <- function(batch = TRUE) {
+.l2_smooth_model <- function() {
   bv <- .fixture_bivariate_sdt()
   set.seed(10); bv$x <- rnorm(nrow(bv))
-  .broc_with(batch, brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
+  broc(brf(resp(y1, y2) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, criterion2 ~ 1,
                         lambda ~ 1, lambda2 ~ 1 + s(x, k = 5), lambda2_B ~ 1 + s(x, k = 5),
                         family = bivariate_dp()), bv)
 }
-
-test_that("lambda2 and lambda2_B smooths: batch and plain Stan agree", {
-  skip_if_no_cmdstan()
-  r <- .stan_parity(suppressMessages(.l2_smooth_model(FALSE)), suppressMessages(.l2_smooth_model(TRUE)))
-  expect_equal(r$dim[1], r$dim[2])
-  expect_lt(r$lp, 1e-8)
-  expect_lt(r$grad, 1e-8)
-})
 
 test_that("lambda2 and lambda2_B smooths: R reproduces the JAX log-likelihood", {
   skip_if_no_jax()

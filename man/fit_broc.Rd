@@ -14,10 +14,8 @@ fit_broc(
   sampler = c("hmc", "nuts", "drghmc"),
   control = list(),
   init = NULL,
-  refresh = 100,
-  threads_per_chain = NULL,
   total_cores = NULL,
-  backend = c("jax", "stan"),
+  backend = "jax",
   python = NULL,
   progress_bar = TRUE,
   seed = NULL,
@@ -39,8 +37,8 @@ fit_broc(
 
 \item{chains}{Number of MCMC chains (default 4).}
 
-\item{parallel_chains}{Number of chains to run in parallel (default 4). For
-the JAX backend this is all-or-nothing: chains run in parallel across
+\item{parallel_chains}{Number of chains to run in parallel (default 4). This is
+all-or-nothing: chains run in parallel across
 devices when \code{parallel_chains >= chains}, and sequentially on one device
 when \code{parallel_chains < chains}.}
 
@@ -49,23 +47,22 @@ when \code{parallel_chains < chains}.}
 
 \item{iter_sampling}{Number of post-warmup draws per chain (default 1000 for
 \code{sampler = "hmc"}, 2000 for \code{"nuts"}, 10000 for \code{"drghmc"}), or \code{"auto"} to sample until every
-monitored parameter reaches the ESS and R-hat targets in \code{control} (JAX backend;
-see \emph{Adaptive-length sampling} below).}
+monitored parameter reaches the ESS and R-hat targets in \code{control} (see \emph{Adaptive-length sampling} below).}
 
 \item{thin}{Period for saving samples (default 1). \code{thin = k} keeps every
 \code{k}-th post-warmup draw. With \code{iter_sampling = "auto"} the draws are thinned
 as they are sampled and \code{control$max_kept} is ignored.}
 
-\item{sampler}{Sampling algorithm: \code{"hmc"} (the default on the JAX backend),
+\item{sampler}{Sampling algorithm: \code{"hmc"} (the default),
 static-trajectory HMC whose number of steps at every transition is drawn so the
 trajectory length is uniform up to pi at a fixed step size, with Stan's windowed
 diagonal mass adaptation on all chains' draws together (the cross-chain
 preconditioner of MEADS, Hoffman and Sountsov 2022) and one step size shared by the
 chains, adapted by dual averaging on the mean of their acceptance (TFP's cross-chain
 reduction, as in ChEES-HMC, Hoffman, Radul and Sountsov 2021); two-stage BCSS
-integrator (Blanes, Casas and Sanz-Serna 2014); JAX backend only; \code{"nuts"} (the default on the Stan backend); or \code{"drghmc"},
-an experimental delayed-rejection generalized HMC sampler (JAX backend only).
-On the JAX backend \code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
+integrator (Blanes, Casas and Sanz-Serna 2014); \code{"nuts"}; or \code{"drghmc"},
+an experimental delayed-rejection generalized HMC sampler.
+\code{"hmc"} and \code{"nuts"} start from the mode of the Laplace
 marginal of the hyperparameters, which also anchors the transport map.}
 
 \item{control}{Named list of sampler tuning parameters (defaults in
@@ -111,14 +108,7 @@ uses Stan's U(-2, 2) on the unconstrained scale (can be unstable for log-linked
 parameters); a single number \code{x} sets a U(-x, x) initialization radius; or a
 function or list of per-chain init lists.}
 
-\item{refresh}{How often the Stan backend prints progress, in iterations
-(default 100). Stan only; the JAX progress bar has no refresh-rate control.}
-
-\item{threads_per_chain}{Number of threads per chain for within-chain parallelism
-via \code{reduce_sum} (Stan backend). When greater than 1 the model is compiled with
-a \code{reduce_sum} likelihood; \code{NULL} (default) or 1 runs each chain on one thread.}
-
-\item{total_cores}{JAX backend: the number of logical CPUs the whole fit may use,
+\item{total_cores}{The number of logical CPUs the whole fit may use,
 shared by all its chains. \code{NULL} (default) uses every CPU. The fit is restricted to
 the most performant CPUs first (P-cores before E-cores on hybrid processors, one
 logical CPU per physical core before a second hyperthread). JAX gives no control
@@ -127,13 +117,9 @@ process's CPU affinity; the draws are the same whatever the limit. Supported on
 Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
 fit uses every CPU, with a warning.}
 
-\item{backend}{Inference backend: \code{"jax"} (default, via NumPyro) or \code{"stan"}
-(via cmdstanr). The JAX backend requires a configured Python environment
-(see \code{\link[=install_jax_backend]{install_jax_backend()}}). When \code{backend} is not given and no Python with
-JAX and NumPyro is found, the fit falls back to Stan with NUTS and says so once
-per session; it does not fall back when \code{sampler = "drghmc"} or
-\code{iter_sampling = "auto"} is requested. Compiled XLA programs are not kept between
-fits unless \code{options(bayesroc.xla_cache = TRUE)} (a cache under
+\item{backend}{Inference backend: \code{"jax"} (the only one; fits run in JAX/NumPyro and
+need a configured Python environment, see \code{\link[=install_jax_backend]{install_jax_backend()}}). Compiled XLA
+programs are not kept between fits unless \code{options(bayesroc.xla_cache = TRUE)} (a cache under
 \code{tools::R_user_dir("bayesroc", "cache")}) or a path is set; see
 \code{\link[=bayesroc_clear_cache]{bayesroc_clear_cache()}}.}
 
@@ -169,14 +155,12 @@ stores the result on the fit.}
 \item{loo_cores}{Number of worker processes used when \code{loo = TRUE} (default 4).}
 
 \item{loglik_precision}{Storage precision for the log-likelihood sidecar,
-\code{"f32"} (default) or \code{"f64"}. With the Stan backend the values are read from
-CmdStan's CSV output, so their precision is also limited by \code{sig_figs}.}
+\code{"f32"} (default) or \code{"f64"}.}
 
 \item{keep_re}{If \code{TRUE}, the raw standardized random-effect draws
 (\verb{u_*_raw}, the sampler's own coordinates) are kept in the fit and in saved
 fits. Default \code{FALSE}. The per-level random effects themselves (\verb{u_*}) are
-always kept. Applies to both backends (Stan writes the raw draws to its output
-files regardless; they are left out of \verb{$draws()}, summaries and saved fits).}
+always kept.}
 
 \item{re_store}{Codec for random-effect draws when the fit is saved: \code{"f64"}
 (default, lossless), \code{"f32"}, \code{"int16"} or \code{"int8"}. \code{\link[=save_broc_fit]{save_broc_fit()}} uses it unless
@@ -197,8 +181,7 @@ the data kept, so \code{\link[=predict]{predict()}} and \code{\link[=pp_check]{p
 distribution of the design. The log-likelihood is not kept unless \code{save_loglik = TRUE}
 is given, and \code{loo = TRUE} is an error.}
 
-\item{...}{Additional arguments forwarded to cmdstanr's \verb{$sample()} (Stan
-backend only; a warning is issued if any are passed with \code{backend = "jax"}).}
+\item{...}{Not used; a warning names any arguments given here.}
 }
 \value{
 A \code{broc_fit} object. It carries low-level accessors \verb{$draws()},
@@ -210,8 +193,8 @@ A \code{broc_fit} object. It carries low-level accessors \verb{$draws()},
 }
 \description{
 Takes a \code{broc_model} object (from \code{\link[=broc]{broc()}}) and runs MCMC sampling via
-JAX (NumPyro; the default) or Stan (cmdstanr). Returns a \code{broc_fit} object that wraps
-the backend-specific result and provides a uniform interface for downstream
+JAX (NumPyro). Returns a \code{broc_fit} object that wraps
+the sampler's result and provides a uniform interface for downstream
 analysis (\code{summary(fit)}, \code{predict(fit)}, \code{pp_check(fit)}, etc.).
 }
 \section{Adaptive-length sampling}{
@@ -219,7 +202,7 @@ analysis (\code{summary(fit)}, \code{predict(fit)}, \code{pp_check(fit)}, etc.).
 With \code{iter_sampling = "auto"} one set of chains is warmed up once and then
 extended in rounds of \code{check_every} draws per chain. After each round the
 rank-normalised bulk and tail ESS and R-hat (Vehtari et al., 2021, the estimators
-\code{\link[cmdstanr:fit-method-summary]{cmdstanr::summary()}} reports) are computed for every monitored parameter: population-level
+\code{\link[=summary]{summary()}} reports) are computed for every monitored parameter: population-level
 (\code{pop}: fixed effects, thresholds and other family parameters), random-effect and
 smooth SDs (\code{sd}) and random-effect correlations (\code{cor}). Sampling stops once
 every class meets its ESS target and every R-hat is at most \code{rhat_target} (either

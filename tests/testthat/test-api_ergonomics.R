@@ -47,9 +47,9 @@ test_that("get_numpyro_config exposes the JAX config as list and JSON", {
 })
 
 test_that("plot() default dpar and summary() diagnostics banner work", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
-  fit <- .fx_fit("uvsd", "stan")
+  fit <- .fx_fit("uvsd")
 
   p <- plot(fit)
   expect_s3_class(p, "ggplot")

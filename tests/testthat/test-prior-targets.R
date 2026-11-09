@@ -24,7 +24,7 @@ test_that("priors for parameters the model lacks are reported, not fatal, so one
                                             broc_prior("normal(0, 1)", class = "b", dpar = "lambda"),
                                             broc_prior("lkj_corr_cholesky(2)", class = "cor"))),
                  "not used.*dpar = \"lambda\".*class = \"cor\"")
-  expect_true("beta_dprime[2] ~ normal(0, 0.2);" %in% trimws(strsplit(m$stan_code, "\n")[[1]]))
+  expect_identical(build_numpyro_config(m)$params$dprime$priors[["condb"]], "normal(0, 0.2)")
   expect_message(broc(f, d, priors = broc_prior("normal(0, 1)", class = "b", dpar = "criterion")), "thresh_mid")
 })
 
@@ -32,9 +32,7 @@ test_that("coef = \"gapK\" sets one gap's prior", {
   d <- .prior_target_data()
   m <- broc(brf(conf | old ~ 1, criterion ~ 1, sigma ~ 1, family = uvsd()), d,
             priors = broc_prior("normal(-0.5, 0.4)", class = "b", dpar = "log_gaps", coef = "gap2"))
-  L <- trimws(strsplit(m$stan_code, "\n")[[1]])
-  expect_true("beta_log_gaps[2, 1] ~ normal(-0.5, 0.4);" %in% L)
-  expect_true("beta_log_gaps[1, 1] ~ normal(-0.5, 0.5);" %in% L)
+  expect_identical(unlist(build_numpyro_config(m)$prior_log_gaps_grid)[1:2], c("normal(-0.5, 0.5)", "normal(-0.5, 0.4)"))
   tab <- get_broc_prior(m)
   expect_equal(tab$source[tab$dpar == "log_gaps"], c("default", "user", "default", "default"))
 })
@@ -67,9 +65,6 @@ test_that("location priors go to intercepts and cell means, zero-centred priors 
   p <- pr(brf(conf | old ~ 0 + cond:g, criterion ~ 1, family = evsd()))
   expect_true(all(p[grepl("^dprime", names(p))] == "normal(1.5, 0.75)"))
   m <- broc(brf(conf | old ~ cond, criterion ~ 1, family = evsd()), d)
-  expect_true(all(c("beta_dprime[1] ~ normal(1.5, 0.75);", "beta_dprime[2] ~ normal(0, 0.75);") %in%
-                    trimws(strsplit(m$stan_code, "
-")[[1]])))
   cfg <- build_numpyro_config(m)
   expect_equal(unlist(cfg$params$dprime$priors), c(`(Intercept)` = "normal(1.5, 0.75)", condb = "normal(0, 0.75)"))
 })
@@ -89,8 +84,6 @@ test_that("the threshold location default follows the old/new coding and the fam
   dc <- d; dc$old <- dc$old - 0.5
   m <- broc(brf(conf | old ~ 1, criterion ~ 1, family = evsd()), dc)
   expect_equal(mid(m), "normal(0, 0.5)")
-  expect_true("beta_thresh_mid ~ normal(0, 0.5);" %in% trimws(strsplit(m$stan_code, "
-")[[1]]))
   expect_equal(unlist(build_numpyro_config(m)$prior_thresh_mid_grid), "normal(0, 0.5)")
   expect_equal(mid(broc(brf(conf | old ~ 1, criterion ~ 1, family = evsd()), dc,
                         priors = broc_prior("normal(1, 1)", class = "b", dpar = "thresh_mid"))), "normal(1, 1)")

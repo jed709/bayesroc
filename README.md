@@ -1,9 +1,8 @@
 # bayesroc
 
 Bayesian signal detection models in R, with a formula-based API. Fits models with
-[`NumPyro`](https://github.com/pyro-ppl/numpyro) (the default) or Stan (via [`cmdstanr`](https://mc-stan.org/cmdstanr/))
-and supports multiple univariate and bivariate model families with fixed and
-random effects on any model parameter.
+[`NumPyro`](https://github.com/pyro-ppl/numpyro) on JAX and supports multiple univariate
+and bivariate model families with fixed and random effects on any model parameter.
 
 Docs and the getting-started vignette: <https://jed709.github.io/bayesroc/>
 
@@ -16,15 +15,7 @@ bayesroc is not yet on CRAN. Install from GitHub:
 remotes::install_github("jed709/bayesroc")
 ```
 
-The Stan backend requires `cmdstanr` and a working CmdStan installation:
-
-```r
-install.packages("cmdstanr",
-  repos = c("https://stan-dev.r-universe.dev", getOption("repos")))
-cmdstanr::install_cmdstan()
-```
-
-The default JAX backend runs in a managed Python virtual environment. bayesroc
+The JAX backend runs in a managed Python virtual environment. bayesroc
 creates the environment but does not install Python, so Python 3.10 or later must
 already be installed. On macOS/Linux a `python.org`,
 Homebrew (`brew install python`), pyenv, or conda interpreter all work and are
@@ -37,9 +28,7 @@ bayesroc::install_jax_backend()   # creates a managed venv with jax + numpyro
 bayesroc::check_jax_backend()     # confirms the backend is ready ("ok")
 ```
 
-Once it is installed, `fit_broc()` uses it by default. Without it, `fit_broc()` falls
-back to Stan with NUTS and says so; `fit_broc(model, backend = "stan")` chooses Stan
-explicitly.
+Once it is installed, `fit_broc()` uses it with no further configuration.
 
 If `install_jax_backend()` cannot find Python, point it at one explicitly with
 `install_jax_backend(python = "/path/to/python")`, or set the interpreter used
@@ -97,19 +86,14 @@ fit <- fit_broc(m)
 
 See the [vignette](https://jed709.github.io/bayesroc/articles/univariate-recognition.html) for an in-depth example.
 
-### Backends and speed
+### Sampling
 
-The Stan backend uses a fused C++ likelihood with analytic gradients and needs
-no extra toolchain beyond `cmdstanr`. The Stan backend is single-threaded
-by default; `fit_broc(threads_per_chain = N)` with N > 1 compiles a `reduce_sum`
-version of the model and runs each chain on N threads.
-
-The NumPyro backend (the default) is generally faster than Stan and uses analytic
-custom JVPs. It samples with a delayed-rejection generalized HMC sampler
-(`sampler = "drghmc"`) and draws random effects through a per-group transport map;
+Every likelihood has analytic gradients (custom JVPs, with native kernels for the
+bivariate normal and quadrature cells). The default sampler is static-trajectory HMC
+(`sampler = "hmc"`) with random effects drawn through a per-group transport map;
 `sampler = "nuts"` selects NUTS. Each chain runs on several threads; the number depends on
 the model family, the fixed- and random-effects structure and the dataset size, and
-cannot be set directly. The NumPyro backend currently runs on CPU only.
+cannot be set directly. Fits currently run on CPU only.
 
 ## Supported families
 
@@ -153,7 +137,7 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 
 - `?broc`: main entry point
 - `?brf`: formula composition
-- `?fit_broc`: fitting (Stan or JAX)
+- `?fit_broc`: fitting
 - `summary(fit)`, `plot(fit)`, `predict(fit)`, `pp_check(fit)`, `loo(fit)`, `kfold(fit)`,
   `posterior_epred(fit)`, `posterior_linpred(fit)`: S3 methods on the fitted model
 - `?estimates`, `?compare_estimates`: parameters on their natural scale per design
@@ -173,9 +157,7 @@ See the corresponding help pages (e.g. `?yonelinas_1999`, `?hilford_2002`) for c
 ## Log-likelihood and LOO
 
 `log_lik` is written to an `.npy` sidecar rather than held in the draws array,
-and `loo()` streams it in column chunks sized to available RAM. Both backends
-write the same sidecar format and `loo()` treats them the same way. Stan's values
-come from its CSV output, so they carry CmdStan's output precision (`sig_figs`).
+and `loo()` streams it in column chunks sized to available RAM.
 
 ```r
 fit <- fit_broc(model, loo = TRUE, save_loglik = FALSE)  # LOO at fit time, sidecar reclaimed
@@ -240,9 +222,7 @@ runs. Every draw is kept by default; `thin = k` keeps every `k`-th draw as it is
 sampled, and `control$max_kept` instead caps the draws kept per chain by thinning
 evenly once the run passes it. The stopping rule is computed on exactly the draws
 the fit keeps. `resume = fit` also extends any JAX fit by a fixed number of draws
-(`iter_sampling = 1000`), exactly as if the run had been that long. Adaptive-length
-sampling and `resume` are JAX-only (exact continuation needs sampler state that
-cmdstanr cannot return).
+(`iter_sampling = 1000`), exactly as if the run had been that long.
 
 ## License
 

@@ -78,7 +78,7 @@
          ".
 ", fix, call. = FALSE)
   }
-  toolchain <- paste0("Install a C++17 toolchain (the one cmdstanr uses): Rtools on Windows, ",
+  toolchain <- paste0("Install a C++17 toolchain: Rtools on Windows, ",
                       "the Xcode command-line tools on macOS, g++ on Linux.")
   src <- .bvn_ffi_source_dir()
   if (is.null(src)) return(fail("sources not found", "Reinstall bayesroc."))

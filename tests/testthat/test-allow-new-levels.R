@@ -1,6 +1,6 @@
 
 test_that("criterion RE: new subject samples from prior under allow_new_levels", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   set.seed(1); ns <- 6; nps <- 60; thr <- c(-1, -0.3, 0.4, 1.1)
   sc <- rnorm(ns, 0, 0.6)
   d <- do.call(rbind, lapply(seq_len(ns), function(s) {
@@ -10,8 +10,8 @@ test_that("criterion RE: new subject samples from prior under allow_new_levels",
                sub = factor(s, levels = seq_len(ns)))
   }))
   m <- broc(brf(item_resp | is_old ~ 1, criterion ~ 1 + (1 | sub), family = evsd()), d)
-  f <- fit_broc(m, backend = "stan", chains = 1,
-                iter_warmup = 100, iter_sampling = 100, refresh = 50, seed = 1)
+  f <- fit_broc(m, chains = 1,
+                iter_warmup = 100, iter_sampling = 100, seed = 1)
   nd <- data.frame(item_resp = 1L, is_old = c(0L, 1L), sub = "99")
 
   expect_error(predict(f, newdata = nd, summary = FALSE, ndraws = 100),
@@ -23,15 +23,15 @@ test_that("criterion RE: new subject samples from prior under allow_new_levels",
 })
 
 test_that("cumulative cutpoints RE supports new levels", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   set.seed(3); ns <- 6; nps <- 60
   d <- do.call(rbind, lapply(seq_len(ns), function(s)
     data.frame(rating = as.integer(cut(rnorm(nps, 0.3 * s / ns, 1),
                                         c(-Inf, -1, -0.3, 0.3, 1, Inf))),
                sub = factor(s, levels = seq_len(ns)))))
   m <- broc(brf(rating ~ 1, cutpoints ~ 1 + (1 | sub), family = cumulative()), d)
-  f <- fit_broc(m, backend = "stan", chains = 1,
-                iter_warmup = 100, iter_sampling = 100, refresh = 50, seed = 1)
+  f <- fit_broc(m, chains = 1,
+                iter_warmup = 100, iter_sampling = 100, seed = 1)
   nd <- data.frame(rating = 1L, sub = "99")
   p <- predict(f, newdata = nd, allow_new_levels = TRUE, summary = FALSE,
                ndraws = 100, seed = 2)
@@ -39,7 +39,7 @@ test_that("cumulative cutpoints RE supports new levels", {
 })
 
 test_that("smooth by-factor: new by-level is prior-sampled, adds variance", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   set.seed(7); n <- 500
   x <- runif(n, -2, 2); g <- factor(sample(c("p", "q"), n, TRUE))
   lat <- 0.8 + ifelse(g == "q", 0.6 * sin(x * 1.5), 0.4 * x)
@@ -47,8 +47,8 @@ test_that("smooth by-factor: new by-level is prior-sampled, adds variance", {
                                              c(-Inf, -1, -0.3, 0.3, 1, Inf))),
                   is_old = rep(0:1, length.out = n), x = x, g = g)
   m <- broc(brf(item_resp | is_old ~ s(x, by = g), criterion ~ 1, family = evsd()), d)
-  f <- fit_broc(m, backend = "stan", chains = 1,
-                iter_warmup = 100, iter_sampling = 250, refresh = 50, seed = 1)
+  f <- fit_broc(m, chains = 1,
+                iter_warmup = 100, iter_sampling = 250, seed = 1)
   nd <- data.frame(item_resp = 1L, is_old = 1L, x = c(-1.5, 1.5),
                    g = factor("r", levels = c("p", "q", "r")))
   pT <- predict(f, newdata = nd, allow_new_levels = TRUE,  summary = FALSE, ndraws = 250, seed = 2)

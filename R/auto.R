@@ -96,7 +96,7 @@
   tf <- tempfile()
   on.exit(unlink(tf))
   con <- file(tf, "wb")
-  writeLines(c(model$family$family, model$stan_code, model$batch_cpp$cpp_code %||% ""), con)
+  writeLines(model$family$family, con)
   # the JAX sampler's coordinates (centred designs) are part of what a saved state means
   writeLines(c("centred-1", utils::capture.output(utils::str(.centre_all(model)))), con)
   for (k in sort(names(sd))) {
@@ -138,7 +138,7 @@
 
 .resume_info <- function(resume, model, sampler, chains) {
   if (!inherits(resume, "broc_fit") || !identical(resume$.backend, "jax")) {
-    stop("`resume` must be a fit from fit_broc(backend = \"jax\").", call. = FALSE)
+    stop("`resume` must be a fit from fit_broc().", call. = FALSE)
   }
   if (is.null(resume$.state_path) || !file.exists(resume$.state_path)) {
     stop("The fit passed to `resume` no longer has its sampler state file. A fit saved with ",

@@ -203,48 +203,6 @@
 }
 
 # =============================================================================
-# Stan CSV -> Sidecar
-# =============================================================================
-
-.stan_loglik_sidecar <- function(stan_fit, path, precision = "f32") {
-  files <- stan_fit$output_files()
-  files <- files[file.exists(files)]
-  if (!length(files)) return(NULL)
-  dt <- .npy_dtype(precision); sz <- dt$size; descr <- dt$descr
-
-  con <- NULL
-  N <- NULL
-  D <- NULL
-  ok <- FALSE
-  on.exit({
-    if (!is.null(con)) close(con)
-    if (!ok) unlink(path)
-  }, add = TRUE)
-
-  for (i in seq_along(files)) {
-    ch <- cmdstanr::read_cmdstan_csv(files[i], variables = "log_lik",
-                                     sampler_diagnostics = "")
-    dr <- ch$post_warmup_draws
-    if (is.null(dr)) return(NULL)
-    d <- dim(dr)
-    if (is.null(N)) {
-      N <- d[3]; D <- d[1]
-      con <- file(path, "wb")
-      .npy_write_prefix(con, c(length(files), D, N), descr)
-    } else if (d[1] != D || d[3] != N) {
-      stop(".stan_loglik_sidecar: ragged chains (", d[1], "x", d[3],
-           " vs ", D, "x", N, ").", call. = FALSE)
-    }
-    for (it in seq_len(D)) {
-      writeBin(as.double(dr[it, 1, ]), con, size = sz, endian = "little")
-    }
-    rm(ch, dr)
-  }
-  ok <- TRUE
-  invisible(path)
-}
-
-# =============================================================================
 # Resource Probes
 # =============================================================================
 

@@ -8,17 +8,13 @@ broc_prior(prior, class, dpar = NULL, coef = NULL, group = NULL)
 }
 \arguments{
 \item{prior}{The prior as a distribution call, e.g. \code{"normal(0, 1)"},
-\code{"student_t(3, 0, 2.5)"}, or \code{"lkj(2)"}. Supported on both backends:
+\code{"student_t(3, 0, 2.5)"}, or \code{"lkj(2)"}. Supported:
 \code{normal}, \code{std_normal}, \code{student_t}, \code{cauchy}, \code{logistic}, \code{gumbel},
 \code{double_exponential} (= \code{laplace}), \code{uniform}, \code{beta}, \code{exponential},
 \code{gamma}, \code{inv_gamma}, \code{weibull}, \code{lognormal}, the half forms \code{half_normal},
 \code{half_cauchy}, \code{half_student_t}, and \code{lkj} (\code{class = "cor"} only). For SD
 priors (\code{class = "sd"}/\code{"sds"}) a symmetric distribution is automatically
-restricted to positive values; the half forms are for SD priors only. The
-Stan backend also accepts \code{skew_normal}, \code{exp_mod_normal},
-\code{skew_double_exponential}, \code{chi_square}, \code{inv_chi_square},
-\code{scaled_inv_chi_square}, \code{frechet}, \code{rayleigh}, \code{loglogistic}, \code{pareto},
-\code{pareto_type_2}, \code{beta_proportion} and \code{von_mises}.
+restricted to positive values; the half forms are for SD priors only.
 
 The string is checked and rewritten in a standard form when the prior is
 created: surrounding spaces, quotes and a trailing \verb{;} are dropped, the

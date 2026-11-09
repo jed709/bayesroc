@@ -12,8 +12,8 @@
   d
 }
 
-.mixture_model <- function(d, batch = TRUE) {
-  .broc_with(batch, brf(y | is_old ~ a, dprime2 ~ b + (1 | sub), lambda ~ 1, family = mixture()), d)
+.mixture_model <- function(d) {
+  broc(brf(y | is_old ~ a, dprime2 ~ b + (1 | sub), lambda ~ 1, family = mixture()), d)
 }
 
 test_that("mixture: dprime and dprime2 keep their own formulas, ordered once on the old items' average", {
@@ -26,24 +26,6 @@ test_that("mixture: dprime and dprime2 keep their own formulas, ordered once on 
   expect_equal(as.numeric(sd$dprime_xbar), unname(colMeans(sd$X_dprime[old, ])))
   expect_equal(as.numeric(sd$dprime2_xbar), unname(colMeans(sd$X_dprime2[old, ])))
   expect_equal(sd$dprime_pivot, 1L)
-  expect_match(m$stan_code, "vector[P_dprime - 1] beta_dprime_free;", fixed = TRUE)
-  expect_match(m$stan_code, "real<lower=0> dprime_order_gap;", fixed = TRUE)
-  expect_false(grepl("ordered[2]", m$stan_code, fixed = TRUE))
-})
-
-test_that("mixture ordering: batch and plain Stan agree", {
-  skip_if_no_cmdstan()
-  d <- .sim_mixture()
-  mp <- suppressMessages(.mixture_model(d, batch = FALSE))
-  mb <- suppressMessages(.mixture_model(d, batch = TRUE))
-  modp <- .compile_broc_stan(mp)
-  modb <- .compile_broc_stan(mb)
-  fp <- modb$sample(data = mb$stan_data, chains = 1, iter_warmup = 20, iter_sampling = 5,
-                    init = 0.5, sig_figs = 18, refresh = 50, seed = 1, max_treedepth = 6, show_messages = FALSE)
-  a <- .cmdstan_log_prob(modp, mp$stan_data, fp$output_files()[1])
-  b <- .cmdstan_log_prob(modb, mb$stan_data, fp$output_files()[1])
-  expect_lt(max(abs(a[, 1] - b[, 1])), 1e-8)
-  expect_lt(max(abs(a[, -1] - b[, -1]) / pmax(1, abs(a[, -1]))), 1e-8)
 })
 
 test_that("mixture ordering: JAX keeps the average order in every draw and R reproduces its log-likelihood", {
@@ -59,19 +41,4 @@ test_that("mixture ordering: JAX keeps the average order in every draw and R rep
   expect_true(all(gap > 0))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), dr, re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)
-})
-
-test_that("lure-only mixture: batch and plain Stan agree, and R reproduces the JAX log-likelihood", {
-  d <- .sim_mixture()
-  f <- brf(y | is_old ~ 1 + (1 | sub), lambda_L ~ 1, dprime_L ~ 1, family = mixture())
-  if (!isTRUE(tryCatch(nzchar(cmdstanr::cmdstan_path()), error = function(e) FALSE))) skip("CmdStan not installed.")
-  r <- .stan_parity(suppressMessages(.broc_plain(f, d)), suppressMessages(broc(f, d)))
-  expect_lt(r$lp, 1e-8)
-  expect_lt(r$grad, 1e-8)
-  skip_if_no_jax()
-  m <- suppressMessages(broc(f, d))
-  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
-                                  iter_sampling = 5, seed = 1, progress_bar = FALSE))
-  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fj$draws(format = "matrix"), re_formula = NULL)
-  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fj), 1L, m$model_data$N))), 1e-5)
 })

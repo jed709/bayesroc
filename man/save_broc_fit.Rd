@@ -37,7 +37,7 @@ Invisibly returns \code{file}.
 Writes a portable .rds containing the draws, the broc_model, and the metadata
 needed to reconstruct the fit. Pass \code{file} to \code{\link[=fit_broc]{fit_broc()}} to save
 automatically, or call this on an existing fit. Always save with this (or
-\verb{file =} in \code{\link[=fit_broc]{fit_broc()}}), not \code{saveRDS()}, which can lose Stan draws.
+\verb{file =} in \code{\link[=fit_broc]{fit_broc()}}), not \code{saveRDS()}, which does not keep the fit's side files.
 }
 \examples{
 \dontrun{

@@ -32,7 +32,6 @@ test_that("lambda_new is a dpsd parameter for new items only, named lambda_new i
   expect_error(broc(brf(conf | old ~ 1, lambda ~ 1, lambda_L ~ 1, family = dpsd()), d), "lambda_new")
   m0 <- broc(brf(conf | old ~ 1, lambda ~ 1, family = dpsd()), d)
   expect_false(isTRUE(m0$model_data$has_lambda_L))
-  expect_false(grepl("lambda_L", get_stan_code(m0)))
 })
 
 test_that("recollected new items give rating 1, and equal familiarity gives a linear ROC", {
@@ -57,48 +56,12 @@ test_that("new-item recollection: JAX matches R", {
   for (nm in names(cs <- .dpsd_rr_cases(.dpsd_rr_data()))) {
     m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
     f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 100, iter_sampling = 20,
-                                   seed = 1, refresh = 100))
+                                   seed = 1))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     ll_j <- .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N)
     new <- m$stan_data$is_old <= 0
     expect_lt(max(abs(ll_j[, new] - ll_r[, new])), 1e-5, label = paste(nm, "new rows"))
     expect_lt(max(abs(ll_j[, !new] - ll_r[, !new])), 1e-5, label = paste(nm, "old rows"))
-  }
-})
-
-test_that("new-item recollection: batch Stan matches R, and its gradient matches finite differences", {
-  skip_if_no_cmdstan()
-  lp_at <- function(mod, data, u) {
-    js <- tempfile(fileext = ".json"); cmdstanr::write_stan_json(data, js)
-    up <- tempfile(fileext = ".json")
-    writeLines(paste0('{"params_r": [', paste(sprintf("%.17g", u), collapse = ","), "]}"), up)
-    out <- tempfile(fileext = ".csv")
-    old <- Sys.getenv("PATH"); on.exit(Sys.setenv(PATH = old), add = TRUE)
-    tool <- if (.Platform$OS.type == "windows") cmdstanr:::toolchain_PATH_env_var() else NULL
-    Sys.setenv(PATH = paste(c(file.path(cmdstanr::cmdstan_path(), "stan/lib/stan_math/lib/tbb"), tool, old),
-                            collapse = .Platform$path.sep))
-    system2(mod$exe_file(), c("log_prob", paste0("unconstrained_params=", up), "data", paste0("file=", js),
-                              "output", paste0("file=", out), "sig_figs=18"), stdout = FALSE, stderr = FALSE)
-    as.numeric(as.matrix(utils::read.csv(out, comment.char = "#"))[1, ])
-  }
-  for (nm in names(cs <- .dpsd_rr_cases(.dpsd_rr_data()))) {
-    m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "stan", sampler = "nuts", chains = 1, iter_warmup = 100,
-                                   iter_sampling = 10, seed = 1, refresh = 100))
-    ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
-    ll_s <- .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N)
-    expect_lt(max(abs(ll_s - ll_r)), 1e-5, label = paste(nm, "Stan vs R log_lik"))
-    mod <- .compile_broc_stan(m)
-    D <- ncol(.cmdstan_log_prob(mod, m$stan_data, f$.backend_fit$output_files()[1])) - 1L
-    set.seed(7)
-    u <- stats::rnorm(D, 0, 0.3)
-    h <- 1e-5
-    g <- lp_at(mod, m$stan_data, u)[-1]
-    fd <- vapply(seq_len(D), function(i) {
-      e <- replace(numeric(D), i, h)
-      (lp_at(mod, m$stan_data, u + e)[1] - lp_at(mod, m$stan_data, u - e)[1]) / (2 * h)
-    }, numeric(1))
-    expect_lt(max(abs(g - fd) / pmax(1, abs(g))), 1e-5, label = paste(nm, "gradient vs finite differences"))
   }
 })
 
@@ -108,7 +71,7 @@ test_that("the ROC survival carries the new items' recollected mass below every 
   m <- suppressMessages(broc(brf(conf | old ~ 1, criterion ~ 1, lambda ~ 1, lambda_new ~ 1, sigma ~ 1,
                                  family = dpsd()), d))
   f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 150, iter_sampling = 40,
-                                 seed = 3, refresh = 100))
+                                 seed = 3))
   setup <- bayesroc:::.plot_setup(f, m, 20, NULL)
   w <- bayesroc:::.row_weights(m)
   grid <- seq(-3, 3, length.out = 13)

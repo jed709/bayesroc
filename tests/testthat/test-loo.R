@@ -1,10 +1,10 @@
 test_that("loo() returns a valid loo object and loo_compare() ranks models", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m_ev <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
-  f_ev <- fit_broc(m_ev, backend = "stan", refresh = 50, seed = 1, chains = 2,
+  f_ev <- fit_broc(m_ev, seed = 1, chains = 2,
                    parallel_chains = 2, iter_warmup = 50, iter_sampling = 50)
-  f_uv <- .fx_fit("uvsd", "stan")
+  f_uv <- .fx_fit("uvsd")
 
   l_ev <- loo(f_ev, cores = 1)
   l_uv <- loo(f_uv, cores = 1)

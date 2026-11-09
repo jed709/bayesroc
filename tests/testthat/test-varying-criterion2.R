@@ -16,37 +16,17 @@
   d
 }
 
-.varying_model <- function(d, f2, fam, batch = TRUE) {
-  .broc_with(batch, brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, f2,
+.varying_model <- function(d, f2, fam) {
+  broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1, criterion ~ 1, f2,
            family = fam), d)
 }
 
-test_that("varying source criteria: batch and plain Stan agree with covariates, smooths and REs", {
-  skip_if_no_cmdstan()
-  d <- .sim_varying_cov()
-  cases <- list(
-    list(criterion2 ~ 1 + x + s(w, k = 5) + (1 | sub),
-         bivariate_gaussian(source_criteria = "varying")),
-    list(criterion2 ~ 1 + x + (1 | sub),
-         bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4))
-  )
-  for (cs in cases) {
-    mp <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = FALSE))
-    mb <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = TRUE))
-    expect_false(is.null(mb$batch_cpp))
-    r <- .stan_parity(mp, mb)
-    expect_equal(r$dim[1], r$dim[2])
-    expect_lt(r$lp, 1e-8)
-    expect_lt(r$grad, 1e-8)
-  }
-})
-
 test_that("varying source criteria: predict() matches log_lik with covariates and smooths", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .sim_varying_cov()
   m <- suppressMessages(.varying_model(d, criterion2 ~ 1 + x + s(w, k = 5) + (1 | sub),
                                        bivariate_gaussian(source_criteria = "varying")))
-  fit <- fit_broc(m, backend = "stan", refresh = 50, chains = 1,
+  fit <- fit_broc(m, chains = 1,
                   iter_warmup = 15, iter_sampling = 5, seed = 3)
   model <- attr(fit, "broc_model")
   sd <- model$stan_data
@@ -57,23 +37,6 @@ test_that("varying source criteria: predict() matches log_lik with covariates an
   nd <- d[1:30, ]
   pn <- predict(fit, newdata = nd, type = "response", summary = FALSE)
   expect_lt(max(abs(pn - pr[, 1:30, , , drop = FALSE])), 1e-8)
-})
-
-test_that("varying source criteria: JAX recovers a criterion2 covariate and matches Stan", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  skip_if_no_cmdstan()
-  d <- .sim_varying_cov(n_sub = 20, n_per = 120, amp = 0)
-  m <- suppressMessages(.varying_model(d, criterion2 ~ 1 + x + (1 | sub),
-                                       bivariate_gaussian(source_criteria = "varying")))
-  fj <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2,
-                 iter_warmup = 500, iter_sampling = 500, seed = 4, progress_bar = FALSE)
-  fs <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2, refresh = 50,
-                 iter_warmup = 500, iter_sampling = 500, seed = 4)
-  mj <- mean(posterior::as_draws_df(fj$draws())[["beta_thresh_mid_2_cov[1]"]])
-  ms <- mean(posterior::as_draws_df(fs$draws())[["beta_thresh_mid_2_cov[1]"]])
-  expect_equal(mj, 0.5, tolerance = 0.1)
-  expect_equal(mj, ms, tolerance = 0.05)
 })
 
 test_that("shared new-response criteria: one set with its own random effects for the new bins, one per old bin", {
@@ -129,7 +92,6 @@ test_that("varying source criteria: a cell-means criterion2 formula gives each c
   expect_identical(cm$model_data$criterion2$cov_names, "x")
   expect_equal(as.integer(sd$vcell), as.integer(d$g))
   expect_identical(.vset_labels(cm$model_data)[c(1, 5, 8)], c("1:gE1", "1:gE2", "4:gE2"))
-  expect_match(cm$stan_code, "vector[n_vset] beta_thresh_mid_2_varying", fixed = TRUE)
   expect_length(build_numpyro_config(cm)$prior_vary2$mid, 8L)
   tr <- suppressMessages(.varying_model(d, criterion2 ~ 1 + g + x, bivariate_gaussian(source_criteria = "varying")))
   expect_equal(c(tr$stan_data$n_vcell, tr$stan_data$n_vset), c(1L, 4L))
@@ -137,36 +99,6 @@ test_that("varying source criteria: a cell-means criterion2 formula gives each c
   sn <- suppressMessages(.varying_model(d, criterion2 ~ 0 + g,
                                         bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)))
   expect_equal(c(sn$stan_data$n_vbin, sn$stan_data$n_vset), c(3L, 6L))
-})
-
-test_that("varying source criteria with cell means: batch and plain Stan agree", {
-  skip_if_no_cmdstan()
-  d <- .sim_varying_cells()
-  cases <- list(
-    list(criterion2 ~ 0 + g, bivariate_gaussian(source_criteria = "varying")),
-    list(criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")),
-    list(criterion2 ~ 0 + g + (1 | sub), bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4))
-  )
-  for (cs in cases) {
-    mp <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = FALSE))
-    mb <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]], batch = TRUE))
-    r <- .stan_parity(mp, mb)
-    expect_equal(r$dim[1], r$dim[2])
-    expect_lt(r$lp, 1e-8)
-    expect_lt(r$grad, 1e-8)
-  }
-})
-
-test_that("varying source criteria with cell means: predict() matches the Stan log_lik", {
-  skip_if_no_cmdstan()
-  d <- .sim_varying_cells()
-  m <- suppressMessages(.varying_model(d, criterion2 ~ 0 + g + x + (1 | sub), bivariate_gaussian(source_criteria = "varying")))
-  fit <- fit_broc(m, backend = "stan", refresh = 50, chains = 1, iter_warmup = 15, iter_sampling = 5, seed = 3)
-  sd <- attr(fit, "broc_model")$stan_data
-  ll <- as.matrix(fit$draws(variables = "log_lik", format = "matrix"))
-  pr <- predict(fit, type = "response", summary = FALSE)
-  obs <- vapply(seq_len(ncol(ll)), function(n) pr[, n, sd$y[n], sd$y2[n]], numeric(nrow(ll)))
-  expect_lt(max(abs(obs - exp(ll))), 1e-4)
 })
 
 test_that("varying source criteria with cell means: R reproduces the JAX log-likelihood", {

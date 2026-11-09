@@ -5,6 +5,7 @@ prior_init <- function(model, chains = 4, seed = NULL) {
   }
   restore_seed <- .seed_scope(seed)
   on.exit(restore_seed(), add = TRUE)
+  if (is.null(model$stan_code)) model <- .with_stan_code(model)
 
   parsed <- .parse_stan_param_block(model$stan_code, model$stan_data)
 

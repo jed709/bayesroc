@@ -47,10 +47,9 @@ abs_keep_symlink <- function(p) {
 #'
 #' Creates an isolated Python virtual environment under `jax_backend_dir()`
 #' and installs `jax` and `numpyro` at known-compatible pinned versions. This
-#' never touches the user's system or global Python install. The cmdstanr
-#' analogue is [cmdstanr::install_cmdstan()].
+#' never touches the user's system or global Python install.
 #'
-#' Subsequent JAX-backend fits via `fit_broc(backend = "jax")` will prefer
+#' Subsequent fits via [fit_broc()] will prefer
 #' this managed venv automatically; no further configuration is needed.
 #'
 #' @param dir Directory to install into. Default: `jax_backend_dir()`.

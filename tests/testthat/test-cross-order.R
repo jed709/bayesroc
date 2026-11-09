@@ -6,7 +6,7 @@
   d
 }
 
-test_that("JAX cross-parameter blocks follow the R and Stan member order", {
+test_that("JAX cross-parameter blocks follow the R member order", {
   d <- .cross_order_data(function(n) sample(1:6, n, TRUE))
   m <- broc(brf(conf | old ~ 1 + (1|p|participant) + (1|i|item),
                 sigma ~ 1 + (1|p|participant) + (1|i|item),
@@ -19,8 +19,6 @@ test_that("JAX cross-parameter blocks follow the R and Stan member order", {
     expect_equal(got, want)
   }
   expect_equal(vapply(m$model_data$cross_cor$p$members, `[[`, "", "param"), c("dprime", "sigma", "criterion"))
-  L <- strsplit(m$stan_code, "\n")[[1]]
-  expect_true(any(grepl("u_sigma_participant_from_p = u_cross[, 2];", L, fixed = TRUE)))
 })
 
 test_that("an ordered response keeps its declared scale when a category is unused", {

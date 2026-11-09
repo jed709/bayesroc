@@ -36,9 +36,9 @@
                         control = ctrl, progress_bar = FALSE))
 }
 
-test_that("iter_sampling = 'auto' and resume need the JAX backend", {
+test_that("fit_broc refuses any backend but JAX", {
   m <- .auto_model()
-  expect_error(fit_broc(m, backend = "stan", iter_sampling = "auto"), "needs backend = \"jax\"")
+  expect_error(fit_broc(m, backend = "stan", iter_sampling = "auto"), "`backend` must be \"jax\"")
 })
 
 test_that("auto settings are validated and only accepted with iter_sampling = 'auto'", {

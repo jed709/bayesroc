@@ -6,7 +6,7 @@
 \alias{bayesroc-package}
 \title{bayesroc: Bayesian ROC-Based Signal Detection Theory Models}
 \description{
-Generates Stan or NumPyro code from R formula syntax for Bayesian ordinal signal detection models. Fits models via 'cmdstanr' or JAX/NumPyro backends.
+Bayesian ordinal signal detection models from R formula syntax, fitted with JAX/NumPyro.
 }
 \author{
 \strong{Maintainer}: Jedidiah Whitridge \email{jww828@mun.ca}

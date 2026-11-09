@@ -55,36 +55,6 @@
   )
 }
 
-test_that("slope-only random effects agree across plain Stan, batch Stan and R, and touch only their rows", {
-  skip_if_no_cmdstan()
-  for (nm in names(cs <- .gap_cases())) {
-    c1 <- cs[[nm]]
-    mb <- suppressMessages(broc(c1[[1]], c1[[2]]))
-    mp <- suppressMessages(.broc_plain(c1[[1]], c1[[2]]))
-    r <- .stan_parity(mp, mb)
-    expect_lt(r$lp, 1e-8, label = paste(nm, "plain vs batch log density"))
-    expect_lt(r$grad, 1e-8, label = paste(nm, "plain vs batch gradient"))
-
-    f <- suppressMessages(fit_broc(mb, backend = "stan", chains = 1, iter_warmup = 20, iter_sampling = 3,
-                                   seed = 1, refresh = 50, show_messages = FALSE))
-    dm <- posterior::as_draws_matrix(f$draws())
-    src <- build_data_source_from_model(mb)
-    ll_stan <- as.matrix(dm[, grep("^log_lik\\[", colnames(dm)), drop = FALSE])
-    ll_r <- .obs_loglik_r(mb, src, dm, re_formula = NULL)
-    expect_lt(max(abs(ll_stan - ll_r)), 1e-5, label = paste(nm, "Stan vs R log_lik"))
-
-    if (!is.null(c1[[3]])) {
-      cols <- grep(paste0("^", c1[[3]], "\\["), colnames(dm), value = TRUE)
-      p <- dm[1, , drop = FALSE]; p[1, cols] <- p[1, cols] + 0.3
-      ch <- abs(.obs_loglik_r(mb, src, p, NULL) - .obs_loglik_r(mb, src, dm[1, , drop = FALSE], NULL))[1, ]
-      expect_true(all(ch[c1[[4]]] < 1e-12), label = paste(nm, "reference rows untouched"))
-      expect_true(any(ch[!c1[[4]]] > 1e-6), label = paste(nm, "slope rows respond"))
-    }
-    expect_equal(predict(f, summary = FALSE), predict(f, newdata = c1[[2]], summary = FALSE),
-                 label = paste(nm, "newdata rebuild"))
-  }
-})
-
 test_that("slope-only random effects: JAX log_lik matches R", {
   skip_if_no_jax()
   cs <- .gap_cases()[c("cumulative_mu_slope", "criterion_indicator", "criterion2_indicator_per_bin")]
@@ -99,7 +69,7 @@ test_that("slope-only random effects: JAX log_lik matches R", {
   }
 })
 
-test_that("every listed prior can be set, is echoed back, and reaches Stan and the JAX config", {
+test_that("every listed prior can be set, is echoed back, and reaches the JAX config", {
   du <- .gap_univariate(); db <- .gap_bivariate(); dc <- .gap_cdp()
   specs <- list(
     biv_crit2_slope = list(brf(resp(y1, y2) | item_type ~ 1 + (1 | sub), discrim ~ 1, criterion ~ 1 + (1 | sub),
@@ -136,8 +106,6 @@ test_that("every listed prior can be set, is echoed back, and reaches Stan and t
     pt2 <- get_broc_prior(m)
     expect_identical(norm(pt2$prior), norm(want), label = paste(nm, "listing echo"))
     expect_true(all(pt2$source == "user"), label = paste(nm, "listing source"))
-    code <- norm(m$stan_code)
-    expect_true(all(vapply(norm(want), grepl, logical(1), x = code, fixed = TRUE)), label = paste(nm, "Stan"))
     cfg <- norm(strings(build_numpyro_config(m)))
     expect_true(all(vapply(norm(want), function(w) any(grepl(w, cfg, fixed = TRUE)), logical(1))),
                 label = paste(nm, "JAX config"))

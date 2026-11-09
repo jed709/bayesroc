@@ -27,22 +27,20 @@
 }
 
 test_that("evsd: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
 })
 
 test_that("metad: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .sim_metad(m_old = 0.7)
   m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), mratio_old ~ cond,
                                  mratio_new ~ 1, family = metad()), d))
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
   est <- estimates(fit)
@@ -51,12 +49,11 @@ test_that("metad: smoke", {
 })
 
 test_that("evsd with Gaussian meta-noise: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .sim_gnoise()
   m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
                                  family = evsd()), d))
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
   est <- estimates(fit)
@@ -64,12 +61,11 @@ test_that("evsd with Gaussian meta-noise: smoke", {
 })
 
 test_that("evsd with lognormal meta-noise: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .sim_lnoise()
   m <- suppressMessages(broc(brf(conf | old ~ 1 + (1 | sub), criterion ~ 1 + (1 | sub), sigma_meta ~ 1,
                                  family = evsd(meta_noise = "lognormal")), d))
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
   est <- estimates(fit)
@@ -77,11 +73,10 @@ test_that("evsd with lognormal meta-noise: smoke", {
 })
 
 test_that("mafc: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .sim_mafc()
   m <- suppressMessages(broc(brf(choice | target ~ 1 + (1 | sub), bias ~ 1 + (1 | sub), family = mafc()), d))
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit, has_roc = FALSE)
   expect_error(plot_roc(fit), "not defined for mafc")
@@ -90,43 +85,39 @@ test_that("mafc: smoke", {
 })
 
 test_that("uvsd: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
 })
 
 test_that("dpsd: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, lambda ~ 1, family = dpsd()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
 })
 
 test_that("mixture: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1,
                 dprime2 ~ 1, lambda ~ 1, family = mixture()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit)
 })
 
 test_that("source_mixture: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_source_mixture()
   m <- broc(brf(item_resp | source ~ 1, lambda ~ 1, family = source_mixture()),
             d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
@@ -134,50 +125,46 @@ test_that("source_mixture: smoke", {
 })
 
 test_that("bivariate_gaussian: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_sdt()
   m <- broc(brf(resp(y1, y2) | item_type ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_gaussian()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit, pp_check_types = "bars")
 })
 
 test_that("bivariate_dp: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_sdt()
   m <- broc(brf(resp(y1, y2) | item_type ~ 1,
                 discrim ~ 1, lambda ~ 1, lambda2 ~ 1,
                 criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_dp()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit, pp_check_types = "bars")
 })
 
 test_that("vrdp2d: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_sdt()
   m <- broc(brf(resp(y1, y2) | item_type ~ 1,
                 dprime2 ~ 1, discrim ~ 1, lambda ~ 1,
                 criterion ~ 1, criterion2 ~ 1,
                 family = vrdp2d()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   .assert_post_fit_works(fit, pp_check_types = "bars")
 })
 
 test_that("cumulative: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp ~ 1, cutpoints_shift ~ cond, family = cumulative()),
             d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
@@ -189,13 +176,12 @@ test_that("cumulative: smoke", {
 })
 
 test_that("bivariate_cumulative: smoke", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_bivariate_cumulative()
   m <- broc(brf(resp(y1, y2) ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_cumulative()), d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)
@@ -208,15 +194,14 @@ test_that("bivariate_cumulative: smoke", {
 })
 
 test_that("cdp: smoke (rotello_2005)", {
-  skip_if_no_cmdstan()
+  skip_if_no_jax()
   d <- .fixture_cdp()
   m <- broc(brf(resp(rating, rk) | is_old ~ condition - 1,
                 fam ~ condition - 1, criterion ~ condition - 1,
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
                 family = cdp(old_levels = 2:6), counts = "count"),
             d)
-  fit <- fit_broc(m, backend = "stan", refresh = 50,
-                  chains = .fast_chains, parallel_chains = .fast_chains,
+  fit <- fit_broc(m, chains = .fast_chains, parallel_chains = .fast_chains,
                   iter_warmup = .fast_warmup, iter_sampling = .fast_sampling)
   s <- summary(fit); expect_s3_class(s, "broc_summary")
   p <- predict(fit, summary = FALSE, ndraws = 50, seed = 1)

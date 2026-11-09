@@ -1,5 +1,5 @@
 .batch_grad_err <- function(m, seed = 1, init = NULL) {
-  expect_false(is.null(m$batch_cpp), label = "model has a batch C++ likelihood")
+  expect_false(is.null(.with_stan_code(m)$batch_cpp), label = "model has a batch C++ likelihood")
   mod <- .compile_broc_stan(m)
   g <- mod$diagnose(data = m$stan_data, seed = seed, init = init, epsilon = 1e-6, error = 1e6)$gradients()
   max(abs(g$error) / pmax(1, abs(g$finite_diff)))

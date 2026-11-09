@@ -18,7 +18,7 @@ test_that("evsdt: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd()), d)
-  fs <- fit_broc(m, backend = "stan", refresh = 50,
+  fs <- stan_fit_broc(m, refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
@@ -30,7 +30,7 @@ test_that("uvsdt: Stan and JAX posterior means agree", {
   skip_if_no_cmdstan(); skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fs <- fit_broc(m, backend = "stan", refresh = 50,
+  fs <- stan_fit_broc(m, refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
@@ -46,7 +46,7 @@ test_that("cdp (rotello_2005): Stan and JAX agree on rec/fam/sigma_R/rec_crit", 
                 rec_crit ~ condition - 1, sigma_R ~ condition - 1,
                 family = cdp(old_levels = 2:6), counts = "count"),
             d)
-  fs <- fit_broc(m, backend = "stan", refresh = 50,
+  fs <- stan_fit_broc(m, refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
@@ -63,7 +63,7 @@ test_that("cumulative: Stan and JAX agree", {
   d <- .fixture_univariate()
   m <- broc(brf(item_resp ~ 1, cutpoints_shift ~ cond, family = cumulative()),
             d)
-  fs <- fit_broc(m, backend = "stan", refresh = 50,
+  fs <- stan_fit_broc(m, refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
@@ -78,7 +78,7 @@ test_that("bivariate_cumulative: Stan and JAX posterior means agree", {
   m <- broc(brf(resp(y1, y2) ~ 1,
                 discrim ~ 1, criterion ~ 1, criterion2 ~ 1, rho ~ 1,
                 family = bivariate_cumulative()), d)
-  fs <- fit_broc(m, backend = "stan", refresh = 50,
+  fs <- stan_fit_broc(m, refresh = 50,
                  parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
   fj <- fit_broc(m, backend = "jax", sampler = "nuts",
                  iter_warmup = 400, iter_sampling = 400, chains = 4, refresh = 50)
@@ -97,7 +97,7 @@ test_that("crossed REs: predict + plot_roc work on both backends", {
 
   for (backend in c("stan", "jax")) {
     fit <- .fx_memo(paste0("fit:uvsd_crossed_cross:", backend), if (backend == "stan") {
-      fit_broc(m, backend = "stan", refresh = 50, seed = 1, chains = 2,
+      stan_fit_broc(m, refresh = 50, seed = 1, chains = 2,
                parallel_chains = 2, iter_warmup = 30, iter_sampling = 20)
     } else {
       fit_broc(m, backend = "jax", sampler = "nuts", seed = 1, progress_bar = FALSE,
@@ -133,7 +133,7 @@ test_that("JAX NUTS through the transport map and on the SD quantile scale recov
     s <- posterior::summarise_draws(posterior::subset_draws(da, variable = v), "mean", "sd", "mcse_mean")
     s[order(s$variable), ]
   }
-  rs <- sm(fit_broc(m, backend = "stan", chains = 4, parallel_chains = 4, iter_warmup = 1000,
+  rs <- sm(stan_fit_broc(m, chains = 4, parallel_chains = 4, iter_warmup = 1000,
                     iter_sampling = 5000, seed = 1, progress_bar = FALSE))
   for (run in list(list(TRUE, "f64"), list(FALSE, "f64"), list(TRUE, "f32"))) {
     tr <- run[[1]]

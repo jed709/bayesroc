@@ -33,5 +33,4 @@ test_that("hmc: control keys", {
   f <- fit_broc(m, backend = "jax", seed = 4, iter_warmup = 150, iter_sampling = 20, chains = 2, parallel_chains = 2,
                 control = list(adapt_gamma = 0.05), progress_bar = FALSE)
   expect_equal(dim(f$draws())[1:2], c(20L, 2L))
-  expect_error(fit_broc(m, backend = "stan", sampler = "hmc"), "requires backend = 'jax'")
 })

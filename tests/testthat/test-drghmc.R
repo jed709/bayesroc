@@ -61,13 +61,6 @@ test_that("drghmc: f32 control converges on a small model", {
   expect_lt(sm$rhat[1], 1.05)
 })
 
-test_that("drghmc requires the jax backend", {
-  d <- .fixture_univariate()
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  expect_error(fit_broc(m, backend = "stan", sampler = "drghmc"),
-               "requires backend = 'jax'")
-})
-
 test_that("drghmc accepts sample counts that are not a multiple of the chunk length", {
   skip_if_no_jax()
   m <- .fx_model("evsd")

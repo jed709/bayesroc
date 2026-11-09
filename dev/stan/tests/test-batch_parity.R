@@ -2,8 +2,8 @@
 .assert_batch_plain_agree <- function(formula, data) {
   mb <- suppressMessages(broc(formula, data = data))
   mp <- suppressMessages(.broc_plain(formula, data = data))
-  expect_true(isTRUE(mb$batch_likelihood))
-  expect_false(isTRUE(mp$batch_likelihood))
+  expect_true(isTRUE(.with_stan_code(mb)$batch_likelihood))
+  expect_false(isTRUE(.with_stan_code(mp)$batch_likelihood))
   r <- .stan_parity(mp, mb)
   expect_lt(r$lp, 1e-8, label = "plain vs batch log density")
   expect_lt(r$grad, 1e-8, label = "plain vs batch gradient")
@@ -24,7 +24,7 @@ test_that("cumulative: batch path engages and agrees with plain Stan", {
 .tol_batch <- 0.03
 
 .fit_stan_short <- function(m) {
-  fit_broc(m, backend = "stan", refresh = 50, seed = 1,
+  stan_fit_broc(m, refresh = 50, seed = 1,
            parallel_chains = 4, iter_warmup = 400, iter_sampling = 400)
 }
 

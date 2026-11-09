@@ -550,7 +550,7 @@ build_numpyro_config <- function(model) {
   bad <- unique(nm[nm %in% names(.stan_only_dists)])
   if (length(bad)) {
     stop("The prior distribution", if (length(bad) > 1) "s", " ", paste0(bad, "()", collapse = ", "),
-         if (length(bad) > 1) " are" else " is", " only available with backend = \"stan\".", call. = FALSE)
+         if (length(bad) > 1) " are" else " is", " not supported.", call. = FALSE)
   }
   invisible(NULL)
 }

@@ -64,22 +64,3 @@ test_that("JAX random-effect draws use Stan's names and satisfy Stan's identitie
   err <- max(vapply(seq_len(nrow(r$dm)), function(s) max(abs(as.numeric(us[s, ]) - raw[[s]][, 1] * sg[s])), numeric(1)))
   expect_lt(err, 1e-10)
 })
-
-test_that("JAX output names match the Stan program's declared variables", {
-  skip_if_no_jax()
-  d <- .np_data()
-  specs <- list(
-    brf(item_resp | is_old ~ 1 + (1 + x | sub), criterion ~ 1 + (1 | sub), sigma ~ 1 + (1 | sub), family = uvsd()),
-    brf(item_resp ~ 1, cutpoints ~ 1 + (1 | sub), family = cumulative())
-  )
-  for (f in specs) {
-    r <- .np_jax(f, d)
-    mp <- suppressMessages(.broc_plain(f, d))
-    sf <- tempfile(fileext = ".stan"); writeLines(mp$stan_code, sf)
-    sv <- cmdstanr::cmdstan_model(sf, compile = FALSE)$variables()
-    stan <- unique(c(names(sv$parameters), names(sv$transformed_parameters), names(sv$generated_quantities)))
-    jax <- unique(sub("\\[.*$", "", colnames(r$dm)))
-    stan <- setdiff(stan, "log_lik"); jax <- setdiff(jax, "log_lik")
-    expect_setequal(jax, stan)
-  }
-})

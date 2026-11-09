@@ -1,8 +1,7 @@
 #' SDT Fit Wrapper Class
 #'
-#' Backend-agnostic S3 wrapper around CmdStanMCMC (Stan) or NumPyro fit objects.
-#' Uses environment-based S3 class so $draws(), $summary(), etc. work like
-#' CmdStanMCMC's R6 interface.
+#' S3 wrapper around a fit's draws and sampler output. Uses an environment-based S3
+#' class so $draws(), $summary(), etc. work like CmdStanMCMC's R6 interface.
 
 # =============================================================================
 # Constructor
@@ -10,13 +9,13 @@
 
 #' Create an broc_fit object
 #'
-#' @param backend_fit Raw backend object (CmdStanMCMC for Stan, list for JAX)
+#' @param backend_fit Raw backend object (the JAX result list)
 #' @param model broc_model object
-#' @param backend "stan" or "jax"
+#' @param backend The backend's name ("jax")
 #' @param num_chains Number of chains used
 #' @param iter_sampling Number of post-warmup iterations per chain
 #' @param elapsed Elapsed time in seconds (numeric)
-#' @param draws_array For JAX: pre-converted posterior::draws_array (NULL for Stan)
+#' @param draws_array The draws as a posterior::draws_array
 #' @param max_treedepth Maximum NUTS tree depth used in the fit (default 10).
 #' @param loglik_path Path to the `.npy` log_lik sidecar, or `NULL`
 #' @return An broc_fit object (environment with S3 class)
@@ -34,7 +33,7 @@
   draws
 }
 
-new_broc_fit <- function(backend_fit, model, backend = "stan",
+new_broc_fit <- function(backend_fit, model, backend = "jax",
                         num_chains = 4L, iter_sampling = 1000L,
                         elapsed = NULL, draws_array = NULL,
                         max_treedepth = 10L, sampler = "nuts",
@@ -63,12 +62,6 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
     if (.owned_sidecar(e)) unlink(e$.loglik_path)
   })
 
-  use_cmdstan <- backend == "stan" && !is.null(backend_fit)
-  stan_vars <- function() {
-    v <- backend_fit$metadata()$stan_variables
-    if (isTRUE(self$.keep_re)) v else v[!grepl("^u_.*_raw$", v)]
-  }
-
   # ---- draws() ----
   self$draws <- function(variables = NULL, format = "array") {
     if (identical(variables, "log_lik") && !is.null(self$.loglik_path)) {
@@ -87,13 +80,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
                     data.frame = posterior::as_draws_df(da),
                     da))
     }
-    if (use_cmdstan) {
-      if (is.null(variables)) {
-        backend_fit$draws(variables = stan_vars(), format = format)
-      } else {
-        backend_fit$draws(variables = variables, format = format)
-      }
-    } else {
+    {
       da <- self$.draws_array
       if (!is.null(variables)) {
         all_vars <- posterior::variables(da)
@@ -127,13 +114,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 
   # ---- summary() ----
   self$summary <- function(variables = NULL, ...) {
-    if (use_cmdstan) {
-      if (is.null(variables)) {
-        do.call(backend_fit$summary, c(list(variables = setdiff(stan_vars(), "log_lik")), .summary_measures(...)))
-      } else {
-        do.call(backend_fit$summary, c(list(variables = variables), .summary_measures(...)))
-      }
-    } else {
+    {
       da <- self$.draws_array
       if (!is.null(variables)) {
         all_vars <- posterior::variables(da)
@@ -155,9 +136,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 
   # ---- diagnostics() ----
   self$diagnostic_summary <- function(...) {
-    if (use_cmdstan) {
-      backend_fit$diagnostic_summary(...)
-    } else if (!is.null(self$.diagnostics)) {
+    if (!is.null(self$.diagnostics)) {
       self$.diagnostics
     } else {
       ef <- backend_fit$extra_fields
@@ -196,7 +175,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
     if (!requireNamespace("loo", quietly = TRUE)) {
       stop("Package 'loo' is required for LOO-CV.")
     }
-    if (identical(variables, "log_lik") && !use_cmdstan &&
+    if (identical(variables, "log_lik") &&
         !isTRUE(self$.save_loglik) &&
         !any(grepl("^log_lik(\\[|$)", posterior::variables(self$.draws_array)))) {
       stop("This fit was saved with save_loglik = FALSE, so the ",
@@ -219,9 +198,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 
   # ---- metadata() ----
   self$metadata <- function() {
-    if (use_cmdstan) {
-      backend_fit$metadata()
-    } else {
+    {
       list(iter_sampling = self$.iter_sampling,
            variables = if (!is.null(self$.draws_array))
              posterior::variables(self$.draws_array) else NULL)
@@ -248,7 +225,7 @@ new_broc_fit <- function(backend_fit, model, backend = "stan",
 #' Writes a portable .rds containing the draws, the broc_model, and the metadata
 #' needed to reconstruct the fit. Pass `file` to [fit_broc()] to save
 #' automatically, or call this on an existing fit. Always save with this (or
-#' `file =` in [fit_broc()]), not `saveRDS()`, which can lose Stan draws.
+#' `file =` in [fit_broc()]), not `saveRDS()`, which does not keep the fit's side files.
 #'
 #' @param fit A `broc_fit` object from [fit_broc()].
 #' @param file Path to write to (use `.rds` extension by convention).
@@ -281,7 +258,7 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
     stop("`fit` must be a broc_fit object.", call. = FALSE)
   }
   re_store <- if (missing(re_store) && !is.null(fit$.re_store)) fit$.re_store else match.arg(re_store)
-  backend <- fit$.backend %||% "stan"
+  backend <- fit$.backend %||% "jax"
   keep_ll <- if (!is.null(include_loglik)) isTRUE(include_loglik)
              else isTRUE(fit$.save_loglik %||% TRUE)
   persist_side <- keep_ll
@@ -318,9 +295,7 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
   fit_attrs <- fit_attrs[setdiff(names(fit_attrs), c("class", "names", "broc_model"))]
 
   if (!keep_ll) {
-    da <- if (backend == "stan")
-            posterior::as_draws_array(fit$.backend_fit$draws())
-          else fit$.draws_array
+    da <- fit$.draws_array
     vars  <- posterior::variables(da)
     da    <- posterior::subset_draws(da, variable = vars[!grepl("^log_lik(\\[|$)", vars)])
     bundle <- list(
@@ -339,36 +314,9 @@ save_broc_fit <- function(fit, file, compress = FALSE, verbose = TRUE,
       diagnostics      = fit$diagnostic_summary(),
       loo              = fit$.loo
     )
-  } else if (backend == "stan" && !isTRUE(fit$.keep_re)) {
-    vars <- setdiff(fit$.backend_fit$metadata()$stan_variables, "log_lik")
-    vars <- vars[!grepl("^u_.*_raw$", vars)]
-    bundle <- list(
-      .bayesroc_save_format = 1L,
-      backend          = backend,
-      backend_fit      = NULL,
-      model            = attr(fit, "broc_model"),
-      num_chains       = fit$.num_chains,
-      iter_sampling    = fit$.iter_sampling,
-      elapsed          = fit$.elapsed,
-      max_treedepth    = fit$.max_treedepth %||% 10L,
-      sampler          = fit$.sampler %||% "nuts",
-      draws_array      = posterior::as_draws_array(fit$.backend_fit$draws(variables = vars)),
-      save_loglik      = TRUE,
-      loglik_sidecar   = if (is.null(side)) NULL else basename(side),
-      diagnostics      = fit$diagnostic_summary(),
-      loo              = fit$.loo
-    )
   } else {
-    bundle_backend_fit <- if (backend == "stan") {
-      tmp <- tempfile(fileext = ".rds")
-      on.exit(unlink(tmp), add = TRUE)
-      fit$.backend_fit$save_object(file = tmp)
-      readRDS(tmp)
-    } else {
-      bf <- fit$.backend_fit
-      bf$samples <- NULL
-      bf
-    }
+    bundle_backend_fit <- fit$.backend_fit
+    bundle_backend_fit$samples <- NULL
 
     bundle <- list(
       .bayesroc_save_format = 1L,

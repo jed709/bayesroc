@@ -36,7 +36,6 @@ test_that("criterion_shift and criterion_scale give one location component, a sc
   expect_true(cfg$crit_ls)
   expect_null(cfg$crit_ls_norm)
   expect_true(isTRUE(cfg$random_effects[[which(vapply(cfg$random_effects, `[[`, "", "param") == "criterion")]]$location_only))
-  expect_match(m$stan_code, "u_ls_rows", fixed = TRUE)
   tab <- get_broc_prior(m)
   expect_setequal(tab$coef[tab$dpar == "criterion_shift" & tab$class == "b"], c("(Intercept)", "condb"))
   expect_setequal(tab$coef[tab$dpar == "log_gaps" & tab$class == "b"], paste0("gap", 1:4))
@@ -74,7 +73,6 @@ test_that("criterion_scale ~ 0 + cond gives each level its own spread and a shap
   expect_equal(dim(B), c(4L, 3L))
   expect_equal(unname(crossprod(B)), diag(3), tolerance = 1e-12)
   expect_equal(colSums(B), rep(0, 3), tolerance = 1e-12)
-  expect_match(m$stan_code, "beta_log_gaps_z", fixed = TRUE)
   expect_true(build_numpyro_config(m)$crit_ls_norm)
   tab <- get_broc_prior(m)
   expect_identical(unique(tab$prior[tab$dpar == "criterion_scale" & tab$class == "b"]), "normal(-0.5, 0.5)")
@@ -114,36 +112,6 @@ test_that("location-scale thresholds: R reproduces the sampler's log-likelihood 
   }
 })
 
-test_that("location-scale criteria agree across plain Stan, batch Stan and R", {
-  skip_if_no_cmdstan()
-  d <- .ls_data()
-  cases <- list(
-    log = list(.ls_formula(), d, NULL),
-    softplus = list(.ls_formula(), d, "softplus"),
-    cellmeans = list(.ls_cm_formula(), d, NULL),
-    cellmeans_softplus = list(.ls_cm_formula(), d, "softplus"),
-    both_cellmeans = list(brf(item_resp | is_old ~ 1, criterion_shift ~ 0 + cond, criterion_scale ~ 0 + cond,
-                              family = evsd()), d, NULL),
-    cumulative = list(brf(item_resp ~ 1, cutpoints_shift ~ cond + (1 | sub), cutpoints_scale ~ x, family = cumulative()), d, NULL),
-    cumulative_cellmeans = list(brf(item_resp ~ 1, cutpoints_scale ~ 0 + cond, family = cumulative()), d, NULL)
-  )
-  for (nm in names(cases)) {
-    c1 <- cases[[nm]]
-    mb <- suppressMessages(broc(c1[[1]], c1[[2]], gap_link = c1[[3]]))
-    mp <- suppressMessages(.broc_plain(c1[[1]], c1[[2]], gap_link = c1[[3]]))
-    r <- .stan_parity(mp, mb)
-    expect_lt(r$lp, 1e-8, label = paste(nm, "plain vs batch log density"))
-    expect_lt(r$grad, 1e-8, label = paste(nm, "plain vs batch gradient"))
-    f <- suppressMessages(fit_broc(mb, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 3,
-                                   seed = 1, refresh = 50, show_messages = FALSE))
-    dm <- posterior::as_draws_matrix(f$draws())
-    ll_stan <- as.matrix(dm[, grep("^log_lik\\[", colnames(dm)), drop = FALSE])
-    if (!ncol(ll_stan)) ll_stan <- .read_loglik_SN_cols(.loglik_path(f), 1L, mb$model_data$N)
-    ll_r <- .obs_loglik_r(mb, build_data_source_from_model(mb), dm, re_formula = NULL)
-    expect_lt(max(abs(ll_stan - ll_r)), 1e-5, label = paste(nm, "Stan vs R log_lik"))
-  }
-})
-
 .ls2_cases <- function() {
   set.seed(4)
   bv <- .fixture_bivariate_sdt(n_per = 150)
@@ -173,7 +141,6 @@ test_that("criterion2_scale: one scale per response bin, location-only source cr
   mv <- suppressMessages(broc(cs$varying_cellmeans[[1]], cs$varying_cellmeans[[2]]))
   expect_true(mv$model_data$criterion2_scale_fixed$normalised_shape)
   expect_length(mv$model_data$criterion2_scale_fixed$coef_names, 8L)
-  expect_match(mv$stan_code, "beta_log_gaps_2_varying_z", fixed = TRUE)
   ms <- suppressMessages(broc(cs$shared_cellmeans[[1]], cs$shared_cellmeans[[2]]))
   expect_true(ms$model_data$criterion2_scale_fixed$normalised_shape)
   expect_equal(dim(ms$stan_data$ls_gap_basis2), c(2L, 1L))
@@ -187,21 +154,6 @@ test_that("criterion2_scale: R reproduces the JAX log-likelihood", {
                                    iter_sampling = 10, seed = 1, progress_bar = FALSE))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5, label = nm)
-  }
-})
-
-test_that("criterion2_scale: plain and batch Stan agree and match R", {
-  skip_if_no_cmdstan()
-  for (nm in names(cs <- .ls2_cases())) {
-    mb <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    mp <- suppressMessages(.broc_plain(cs[[nm]][[1]], cs[[nm]][[2]]))
-    r <- .stan_parity(mp, mb)
-    expect_lt(r$lp, 1e-8, label = paste(nm, "plain vs batch log density"))
-    expect_lt(r$grad, 1e-8, label = paste(nm, "plain vs batch gradient"))
-    f <- suppressMessages(fit_broc(mb, backend = "stan", chains = 1, iter_warmup = 100, iter_sampling = 5, seed = 1,
-                                   refresh = 50, show_messages = FALSE))
-    ll_r <- .obs_loglik_r(mb, build_data_source_from_model(mb), f$draws(format = "matrix"), re_formula = NULL)
-    expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, mb$model_data$N))), 1e-5, label = nm)
   }
 })
 

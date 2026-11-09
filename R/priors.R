@@ -28,17 +28,13 @@
 #' override it.
 #'
 #' @param prior The prior as a distribution call, e.g. `"normal(0, 1)"`,
-#'   `"student_t(3, 0, 2.5)"`, or `"lkj(2)"`. Supported on both backends:
+#'   `"student_t(3, 0, 2.5)"`, or `"lkj(2)"`. Supported:
 #'   `normal`, `std_normal`, `student_t`, `cauchy`, `logistic`, `gumbel`,
 #'   `double_exponential` (= `laplace`), `uniform`, `beta`, `exponential`,
 #'   `gamma`, `inv_gamma`, `weibull`, `lognormal`, the half forms `half_normal`,
 #'   `half_cauchy`, `half_student_t`, and `lkj` (`class = "cor"` only). For SD
 #'   priors (`class = "sd"`/`"sds"`) a symmetric distribution is automatically
-#'   restricted to positive values; the half forms are for SD priors only. The
-#'   Stan backend also accepts `skew_normal`, `exp_mod_normal`,
-#'   `skew_double_exponential`, `chi_square`, `inv_chi_square`,
-#'   `scaled_inv_chi_square`, `frechet`, `rayleigh`, `loglogistic`, `pareto`,
-#'   `pareto_type_2`, `beta_proportion` and `von_mises`.
+#'   restricted to positive values; the half forms are for SD priors only.
 #'
 #'   The string is checked and rewritten in a standard form when the prior is
 #'   created: surrounding spaces, quotes and a trailing `;` are dropped, the
@@ -291,9 +287,9 @@ parse_prior_string <- function(prior_str) {
     stop("lkj() is a correlation prior; use it with class = \"cor\".", call. = FALSE)
   }
   if (name %in% names(.stan_only_dists)) {
-    if (length(raw) != .stan_only_dists[[name]] || any(nzchar(names(raw) %||% ""))) {
-      stop("Prior '", prior, "': ", name, "() takes ", .stan_only_dists[[name]], " unnamed argument(s).", call. = FALSE)
-    }
+    stop("Prior '", prior, "': ", name, "() is not supported. Supported: ",
+         paste(names(.prior_dists)[names(.prior_dists) != "lkj_corr_cholesky"], collapse = ", "),
+         ", and lkj for class = \"cor\".", call. = FALSE)
   } else {
     spec <- .prior_dists[[name]]
     n <- length(spec$args)

@@ -12,7 +12,7 @@
 test_that("a chain cmdstanr dropped is read back when its output is complete, else fit_broc stops", {
   skip_if_no_cmdstan()
   m <- .fx_model("evsd")
-  f <- fit_broc(m, backend = "stan", chains = 2, parallel_chains = 2,
+  f <- stan_fit_broc(m, chains = 2, parallel_chains = 2,
                 iter_warmup = 20, iter_sampling = 100, refresh = 50, seed = 3)
   sf <- f$.backend_fit
   files <- sf$output_files()

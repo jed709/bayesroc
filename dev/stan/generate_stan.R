@@ -690,9 +690,6 @@ generate_re_transform_v2 <- function(param_name, group, re) {
   }
 }
 
-.re_full_block <- function(re) {
-  length(re$cor_blocks) == 1L && length(re$cor_blocks[[1]]) == re$dim
-}
 
 .re_corr_decl <- function(prefix, re) {
   if (!isTRUE(re$correlated)) return(character(0))
@@ -1118,12 +1115,6 @@ generate_thresh_code_cdp <- function(model_data) {
   lines
 }
 
-#' Generate parameter linear predictor (standard version for non-encoding params)
-#' @noRd
-.ls_normalised <- function(model_data, which = 1L) {
-  pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
-  isTRUE(model_data[[paste0("has_", pn)]]) && isTRUE(model_data[[paste0(pn, "_fixed")]]$normalised_shape)
-}
 
 .ls_sum_zero_blocks <- function(blocks, model_data) {
   add_data <- character(0)
@@ -1159,11 +1150,6 @@ generate_thresh_code_cdp <- function(model_data) {
   blocks
 }
 
-.sum_zero_basis <- function(n) {
-  if (n < 2L) return(matrix(0, n, 0))
-  H <- stats::contr.helmert(n)
-  unname(sweep(H, 2L, sqrt(colSums(H^2)), "/"))
-}
 
 .ls_scale_coefs <- function(model_data, which = 1L) {
   pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
