@@ -6762,6 +6762,12 @@ class NutsCoords:
         self._tm = tm
         if tm is None:
             return
+        if anchors == "defer":
+            self.source = "defer"
+            self.aux_flat = np.zeros((1, tm.aux_size))
+            self.tm = tm.cheap_of(self.aux_flat)
+            self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
+            return
         if aux is not None:
             self.source = "given"
             if progress_bar and announce:
@@ -6989,6 +6995,13 @@ class NutsCoords:
         """New anchors at the window mean pooled over the chains (model coordinates [chains, D]); the chains
         restart from `last`."""
         mean = np.asarray(mean)
+        child = getattr(self, "_f64", None)
+        if child is not None:
+            aux = child.rebuild(mean)
+            child.close()
+            self._f64 = None
+            self.set_aux(aux, np.asarray(last))
+            return
         ref = np.repeat(mean.mean(0, keepdims=True), mean.shape[0], 0)
         self.set_aux(self._tm.anchors_chains(self.vg, ref, self.vg.OFF0, self._parallel)[:1], np.asarray(last))
         self._klog("reb")
@@ -7104,6 +7117,7 @@ class _FoldPrograms:
         self.Bw = _divisor(math.gcd(warmup, self.rebuild) if self.rebuild else warmup) if warmup > 0 else _BLOCK
         self.Bs = self.Bw
         self.thread, self.err, self.t = None, None, {}
+        self.off = None
 
     def start(self, coords):
         import threading
@@ -7112,7 +7126,8 @@ class _FoldPrograms:
         C, warmup, thin, tmax, B = self.C, self.warmup, self.thin, self.tmax, self.Bw
         kernel = self.kernel = self.make_kernel(coords)
         config, D, sampling = self.config, coords.D, self.sampling
-        cfgp = self.cfgp = lambda parts: {**config, "_nuts_parts": parts}
+        rt = self.off is not None
+        cfgp = self.cfgp = lambda parts, off: {**config, "_nuts_parts": parts, **({"_ll_offset": off} if rt else {})}
         self.keys = random.split(self.rng_key, C)
         jitter = self.jitter = _jitter(tmax, self.max_steps)
         from drghmc import _sd_logq
@@ -7120,11 +7135,11 @@ class _FoldPrograms:
                                                                     if p is not None]) if coords._tm is not None else np.zeros(0, int)
         sdp = jnp.asarray(sdp_np)
 
-        def init(key, z, parts):
-            return kernel.init(key, warmup, z, (cfgp(parts),), {})
+        def init(key, z, parts, off):
+            return kernel.init(key, warmup, z, (cfgp(parts, off),), {})
 
-        def run(st, parts, samp, acc):
-            args = (cfgp(parts),)
+        def run(st, parts, samp, acc, off):
+            args = (cfgp(parts, off),)
             post = kernel.postprocess_fn(args, {})
             shp = jax.eval_shape(post, st.z) if sampling else None
             n = jnp.where(samp, thin, 1)
@@ -7155,8 +7170,8 @@ class _FoldPrograms:
 
         deferred = getattr(kernel, "_cross_chain", None)
 
-        def run_shared(sts, parts, samp, acc):
-            args = (cfgp(parts),)
+        def run_shared(sts, parts, samp, acc, off):
+            args = (cfgp(parts, off),)
             post = kernel.postprocess_fn(args, {})
             shp = jax.eval_shape(post, jax.tree.map(lambda a: a[0], sts.z)) if sampling else None
             n = jnp.where(samp, thin, 1)
@@ -7203,23 +7218,25 @@ class _FoldPrograms:
             return ss, tot, jax.lax.map(lambda z: coords.model_v(z, parts), ss.z), ex
 
         if self.parallel:
-            self.initf = jax.pmap(init, in_axes=(0, {k: 0 for k in coords.keys}, None), axis_name="chain")
-            self.prog = jax.pmap(run, in_axes=(0, None, None, None), axis_name="chain")
+            self._initf = jax.pmap(init, in_axes=(0, {k: 0 for k in coords.keys}, None, None), axis_name="chain")
+            self._prog = jax.pmap(run, in_axes=(0, None, None, None, None), axis_name="chain")
             self.shard = jax.pmap(lambda x: x)
         else:
             loop = lambda f, n: jax.jit(lambda *a: jax.lax.map(lambda x: f(*x, *a[n:]), tuple(a[:n])))
-            self.initf = loop(init, 2)
-            self.prog = jax.jit(run_shared) if hasattr(deferred, "update") else loop(run, 1)
+            self._initf = loop(init, 2)
+            self._prog = jax.jit(run_shared) if hasattr(deferred, "update") else loop(run, 1)
             self.shard = jnp.asarray
         parts0, z0 = coords.aux, coords.init_params(C, batched=True)
+        off0 = self.off if rt else jnp.zeros(())
 
         def work():
             try:
                 one = jax.tree.map(lambda a: a[0], z0)
-                st1 = jax.eval_shape(lambda k, z: kernel.init(k, warmup, z, (cfgp(parts0),), {}), self.keys[0], one)
+                st1 = jax.eval_shape(lambda k, z: kernel.init(k, warmup, z, (cfgp(parts0, off0),), {}), self.keys[0], one)
                 sts = jax.tree.map(lambda a: jax.ShapeDtypeStruct((C,) + tuple(a.shape), a.dtype), st1)
                 f = jnp.asarray(False)
-                low = {"initf": self.initf.lower(self.keys, z0, parts0), "prog": self.prog.lower(sts, parts0, f, f)}
+                low = {"_initf": self._initf.lower(self.keys, z0, parts0, off0),
+                       "_prog": self._prog.lower(sts, parts0, f, f, off0)}
                 self.t["lower"] = time.time() - t0
                 done = {}
 
@@ -7230,9 +7247,9 @@ class _FoldPrograms:
                         done[k] = e
                     self.t[k] = time.time() - t0
 
-                side = threading.Thread(target=comp, args=("initf",), daemon=True)
+                side = threading.Thread(target=comp, args=("_initf",), daemon=True)
                 side.start()
-                comp("prog")
+                comp("_prog")
                 side.join()
                 for k in low:
                     if isinstance(done[k], Exception):
@@ -7244,11 +7261,17 @@ class _FoldPrograms:
         self.thread = threading.Thread(target=work, daemon=True)
         self.thread.start()
 
+    def _off(self):
+        return self.off if self.off is not None else jnp.zeros(())
+
+    def initf(self, keys, z, parts):
+        return self._initf(keys, z, parts, self._off())
+
     def warmf(self, st, parts, acc):
-        return self.prog(st, parts, jnp.asarray(False), jnp.asarray(acc))
+        return self._prog(st, parts, jnp.asarray(False), jnp.asarray(acc), self._off())
 
     def sampf(self, st, parts):
-        s, _, _, ex = self.prog(st, parts, jnp.asarray(True), jnp.asarray(False))
+        s, _, _, ex = self._prog(st, parts, jnp.asarray(True), jnp.asarray(False), self._off())
         return s, ex
 
     def wait(self):
@@ -7313,14 +7336,54 @@ def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_t
         return FastNUTS(sdt_model, coords=c, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth,
                         step_size=float(step_size), **kw)
 
+    par = parallel and chains > 1
+    if not jax.config.jax_enable_x64:
+        return _fold_setup_f32(config, chains, warmup, thinning, seed, max_tree_depth, progress_bar, init_strategy,
+                               init_radius, init_z, transport, hmc, sampling, par, make_kernel, label, split)
     pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
-                       _HMC_TMAX if hmc else None, sampling, parallel and chains > 1, max_steps=2 ** int(max_tree_depth))
-    coords = NutsCoords(config, chains, seed, parallel and chains > 1, progress_bar, init_strategy, init_radius, init_z,
+                       _HMC_TMAX if hmc else None, sampling, par, max_steps=2 ** int(max_tree_depth))
+    coords = NutsCoords(config, chains, seed, par, progress_bar, init_strategy, init_radius, init_z,
                         transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build,
                         split=split, split_at=split_at, split_cand=split_cand)
     if pg.thread is None:
         pg.start(coords)
     pg.wait()
+    return coords, pg, label
+
+
+def _fold_setup_f32(config, chains, warmup, thinning, seed, max_tree_depth, progress_bar, init_strategy, init_radius,
+                    init_z, transport, hmc, sampling, par, make_kernel, label, split):
+    """fold_setup in a float32 process: the Laplace stage and the anchors are built in a float64 child (their
+    curvatures are finite differences of gradients) while this process compiles its programs; the
+    log-likelihood is summed relative to its value at the first chain's start (a runtime argument of the
+    programs), so that the float32 potential keeps its digits; the child stays up to rebuild the anchors at the
+    end of the first mass window."""
+    if split is not None:
+        raise ValueError("bayesroc: transport_split is not available in float32")
+    child = _Fold64Child(chains, par, config=config, seed=seed, progress_bar=progress_bar,
+                         init_strategy=init_strategy, init_radius=init_radius, transport=transport, label=label,
+                         init_z=None if init_z is None else {k: np.asarray(v) for k, v in init_z.items()})
+    try:
+        pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
+                           _HMC_TMAX if hmc else None, sampling, par, max_steps=2 ** int(max_tree_depth))
+        pg.off = jnp.zeros(int(config["N"]), dtype=_FLOAT)
+        coords = NutsCoords(config, chains, seed, par, False, init_strategy, init_radius, init_z,
+                            transport=transport, anchors="defer", announce=False, label=label)
+        pg.start(coords)
+        res = child.setup()
+        pg.off = jnp.asarray(res["offset"], dtype=_FLOAT)
+        if res["aux"] is not None:
+            coords.set_aux(res["aux"], coords._th0)
+        coords.start, coords.pf, coords.source = res["start"], res["pf"], res["source"]
+        coords.offset = np.asarray(res["offset"])
+        coords._f64 = child
+        if pg.rebuild is None or coords.source != "laplace":
+            child.close()
+            coords._f64 = None
+        pg.wait()
+    except BaseException:
+        child.close()
+        raise
     return coords, pg, label
 
 
@@ -7449,7 +7512,13 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
                                    split_cand=str((control or {}).get("transport_split_cand", "nc")))
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
     trace = {"t_coords": time.time() - t0, **{f"prep_{k}": v for k, v in pg.t.items()}} if trace_path else None
-    samples_dict, extra, st = _fold_run(pg, coords, warmup, -(-int(samples) // int(thinning)), trace, progress_bar, label)
+    try:
+        samples_dict, extra, st = _fold_run(pg, coords, warmup, -(-int(samples) // int(thinning)), trace, progress_bar,
+                                            label)
+    finally:
+        if getattr(coords, "_f64", None) is not None:
+            coords._f64.close()
+            coords._f64 = None
     if trace is not None and coords._tm is not None:
         trace["K_blocks"] = np.asarray([sb.name for sb in coords._tm.sbs])
         for k, m in enumerate(coords.split_masks or []):
@@ -7476,8 +7545,8 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
     _restore_centred(samples_np)
     out = {"samples": samples_np, "extra_fields": {k: np.array(v) for k, v in extra.items()}, "elapsed": float(elapsed)}
     if save_state:
-        out["state"] = {"hmc": st, "offset": None, "aux": coords.aux_flat, "split": coords.split_masks,
-                        "split_cand": coords.split_cand}
+        out["state"] = {"hmc": st, "offset": getattr(coords, "offset", None), "aux": coords.aux_flat,
+                        "split": coords.split_masks, "split_cand": coords.split_cand}
     return out
 
 
@@ -7541,78 +7610,79 @@ def fit_model(config, chains=4, warmup=500, samples=1000, seed=0,
               step_size=step_size, thinning=thinning, progress_bar=progress_bar, init_strategy=init_strategy,
               init_radius=init_radius, control=control, save_loglik=save_loglik, keep_re=keep_re,
               save_state=save_state, sampler=sampler)
-    if sampler == "hmc" or jax.config.jax_enable_x64:
+    if sampler in ("hmc", "nuts"):
         return _fit_fold(config, chains, seed=seed, init_z=init_z, parallel=chain_method == "parallel", **kw)
-    return _fit_nuts_f32(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size,
-                         thinning, chain_method, progress_bar, init_strategy, init_radius, init_z, control,
-                         save_loglik, keep_re, save_state)
+    raise ValueError(f"bayesroc: unknown sampler {sampler!r}")
 
 
-def _fit_nuts_f32(config, chains, warmup, samples, seed, target_accept_prob, max_tree_depth, step_size, thinning,
-                  chain_method, progress_bar, init_strategy, init_radius, init_z, control, save_loglik, keep_re,
-                  save_state):
-    """NUTS in a float32 process: the map's anchors from the Laplace-marginal mode in a float64 child, the
-    log-likelihood recentred on the warmed-up chains so that float32 keeps its digits."""
-    rng_key = random.PRNGKey(seed)
-    t0 = time.time()
-    par = chain_method == "parallel" and chains > 1
-    coords = NutsCoords(config, chains, seed, par, progress_bar, init_strategy, init_radius, init_z,
-                        transport=bool((control or {}).get("transport", True)), anchors="dr")
-    kernel = FastNUTS(sdt_model, coords=coords, target_accept_prob=target_accept_prob,
-                      max_tree_depth=max_tree_depth, step_size=float(step_size))
-    mcmc = MCMC(kernel, num_warmup=warmup, num_samples=samples, num_chains=chains, thinning=int(thinning),
-                chain_method=chain_method, progress_bar=bool(progress_bar))
-    init_params = coords.init_params(chains)
-    with progress.nuts(chains, par, desc="NUTS warmup"):
-        mcmc.warmup(rng_key, config, init_params=init_params, collect_warmup=False)
-    rng_key = mcmc.post_warmup_state.rng_key
-    offset = _nuts_ll_offset(config, mcmc.post_warmup_state, coords)
-    config = {**config, "_ll_offset": jnp.asarray(offset)}
-    mcmc.post_warmup_state = _refresh_potential(config, mcmc.post_warmup_state, coords)
-    with progress.nuts(chains, par, desc="NUTS sampling"):
-        mcmc.run(rng_key, config, init_params=None, extra_fields=("num_steps", "energy", "accept_prob", "diverging"))
-    jax.block_until_ready(mcmc.last_state.z)
-    elapsed = time.time() - t0
-    samples_dict = mcmc.get_samples(group_by_chain=True)
-    extra = mcmc.get_extra_fields(group_by_chain=True)
-    extra_fields = {f: np.array(extra[f]) for f in ("num_steps", "energy", "accept_prob", "diverging") if f in extra}
-    samples_np = {}
-    for k, v in samples_dict.items():
-        if k.startswith("z_") and not keep_re:
-            continue
-        if k == "log_lik" and not save_loglik:
-            continue
-        samples_np[k] = np.array(v)
-    _restore_centred(samples_np)
-    out = {"samples": samples_np, "extra_fields": extra_fields, "elapsed": float(elapsed)}
-    if save_state:
-        out["state"] = {"hmc": mcmc.last_state, "offset": np.asarray(offset), "aux": coords.aux_flat}
-    return out
-
-
-def _chain0(state):
-    batched = jnp.ndim(state.potential_energy) > 0
-    return jax.tree_util.tree_map(lambda x: x[0], state.z) if batched else state.z
-
-
-def _nuts_ll_offset(config, state, coords):
-    """Per-observation weighted log-likelihood at chain 0's warmed-up position (see
-    drghmc.ll_offset): in float32 the potential is summed relative to it."""
+def _ll_at(config, coords, z):
+    """Per-observation weighted log-likelihood at the NUTS position z (no chain axis)."""
     from numpyro.infer.util import constrain_fn
-    ll = constrain_fn(sdt_model, (config,), {}, coords.model_z(_chain0(state)), return_deterministic=True)["log_lik"]
+    ll = constrain_fn(sdt_model, (config,), {}, coords.model_z(z), return_deterministic=True)["log_lik"]
     counts = config.get("counts")
     return ll if counts is None else ll * jnp.asarray(counts, dtype=ll.dtype)
 
 
-def _refresh_potential(config, state, coords):
-    """The warmed-up state caches a potential computed without the offset; recompute it
-    so the first transition compares like with like."""
-    pe_fn = jax.jit(lambda z: coords.potential(config, z))
-    if jnp.ndim(state.potential_energy) > 0:
-        pe = jax.lax.map(pe_fn, state.z)
-    else:
-        pe = pe_fn(state.z)
-    old = state.potential_energy
-    pe = jnp.asarray(pe, dtype=old.dtype)
-    sharding = getattr(old, "sharding", None)
-    return state._replace(potential_energy=pe if sharding is None else jax.device_put(pe, sharding))
+class _Fold64Child:
+    """The float64 process of a float32 fold fit (autorun's _fold_f64): started on the setup payload, it
+    writes the setup results and then rebuilds the anchors on request. Its output lines are passed through."""
+
+    def __init__(self, chains, parallel, **payload):
+        import pickle, queue, subprocess, sys, tempfile, threading
+        self.tmp = tempfile.mkdtemp(prefix="bayesroc_fold_f64_")
+        here = os.path.dirname(os.path.abspath(__file__))
+        argfile, self.out = os.path.join(self.tmp, "args.pkl"), os.path.join(self.tmp, "setup.pkl")
+        with open(argfile, "wb") as fh:
+            pickle.dump(dict(chains=chains, parallel=parallel, backend_dir=here, out=self.out, **payload), fh)
+        env = dict(os.environ)
+        env["BAYESROC_ENABLE_X64"] = "1"
+        env["XLA_FLAGS"] = (f"--xla_force_host_platform_device_count={chains if parallel else 1} "
+                            "--xla_cpu_collective_call_terminate_timeout_seconds=86400")
+        self.proc = subprocess.Popen([sys.executable, os.path.join(here, "autorun.py"), "_fold_f64", argfile],
+                                     env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.marks = queue.Queue()
+
+        def relay():
+            for line in self.proc.stdout:
+                if line.strip() in ("@@READY", "@@DONE"):
+                    self.marks.put(line.strip())
+                else:
+                    print(line, end="", flush=True)
+            self.marks.put(None)
+        threading.Thread(target=relay, daemon=True).start()
+        self.n = 0
+
+    def _wait(self, what):
+        mark = self.marks.get()
+        if mark is None:
+            raise RuntimeError(f"bayesroc: the float64 process of a float32 fit ended during {what} "
+                               f"(exit code {self.proc.wait()})")
+
+    def setup(self):
+        import pickle
+        self._wait("setup")
+        with open(self.out, "rb") as fh:
+            return pickle.load(fh)
+
+    def rebuild(self, mean):
+        import pickle
+        self.n += 1
+        req, out = os.path.join(self.tmp, f"rebuild{self.n}.pkl"), os.path.join(self.tmp, f"aux{self.n}.pkl")
+        with open(req, "wb") as fh:
+            pickle.dump(dict(mean=np.asarray(mean), out=out), fh)
+        self.proc.stdin.write(req + "\n")
+        self.proc.stdin.flush()
+        self._wait("the anchors' rebuild")
+        with open(out, "rb") as fh:
+            return pickle.load(fh)["aux"]
+
+    def close(self):
+        import shutil, subprocess
+        try:
+            if self.proc.poll() is None:
+                self.proc.stdin.write("exit\n")
+                self.proc.stdin.close()
+                self.proc.wait(timeout=60)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            self.proc.kill()
+        shutil.rmtree(self.tmp, ignore_errors=True)

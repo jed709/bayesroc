@@ -191,74 +191,14 @@ class _InProcess:
             tm.fix_draws(out, self.aux)
 
 
-class _Nuts(_InProcess):
-    def __init__(self, s, model, config, a, resume):
-        from numpyro.infer import MCMC
-        import numpyro_backend as nb
-        C = s.chains
-        st = None
-        if resume is not None:
-            st = resume["hmc"] if isinstance(resume, dict) and "hmc" in resume else resume
-        aux = resume.get("aux") if isinstance(resume, dict) else None
-        transport = aux is not None if resume is not None else bool((a.get("control") or {}).get("transport", True))
-        self.coords = coords = nb.NutsCoords(config, C, int(a["seed"]), s.parallel, s.progress,
-                                             a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)),
-                                             s.init_z, transport=transport, aux=aux,
-                                             build=(s.vg, s.unflatten, s.keys, s.off, s.D, s.pp))
-        imm0 = nb.nuts_initial_mass(coords) if resume is None else None
-        kernel = nb.FastNUTS(model, coords=coords, target_accept_prob=float(a.get("target_accept_prob", 0.8)),
-                             max_tree_depth=int(a.get("max_tree_depth", 10)),
-                             step_size=float(a.get("step_size", 1.0)),
-                             **({} if imm0 is None else {"inverse_mass_matrix": jnp.asarray(imm0)}))
-        if s.progress and imm0 is not None:
-            print("[NUTS] initial hyperparameter mass from the Laplace variances", flush=True)
-        self.max_steps = 2 ** int(a.get("max_tree_depth", 10))
-        offset = None
-        if resume is not None:
-            offset = resume.get("offset") if isinstance(resume, dict) else None
-            state = _batched(st, C)
-            z0 = jax.tree.map(lambda x: x[0], state.z)
-            kernel.init(jax.random.PRNGKey(0), 0, z0, (config,), {})
-        else:
-            mcmc = MCMC(kernel, num_warmup=int(a["warmup"]), num_samples=1, num_chains=C,
-                        chain_method="parallel" if s.parallel else "sequential",
-                        progress_bar=s.progress)
-            with progress.nuts(C, s.parallel and C > 1, desc="NUTS warmup"):
-                mcmc.warmup(jax.random.PRNGKey(int(a["seed"])), config, init_params=coords.init_params(C),
-                            collect_warmup=False)
-            state = _batched(mcmc.post_warmup_state, C)
-        cfg = config
-        if not jax.config.jax_enable_x64:
-            if offset is None:
-                offset = nb._nuts_ll_offset(config, state, coords)
-            cfg = {**config, "_ll_offset": jnp.asarray(offset)}
-            state = nb._refresh_potential(cfg, state, coords)
-        state = jax.tree.map(np.asarray, state)
-        self.offset = offset
-
-        def body(st, _):
-            st = kernel.sample(st, (cfg,), {})
-            return st, (coords.model_v(st.z), st.num_steps, st.energy, st.accept_prob, st.diverging)
-
-        run = lambda st: jax.lax.scan(body, st, None, length=s.b)
-        self.fn = jax.pmap(run, axis_name="chain") if s.parallel else jax.jit(lambda st: jax.lax.map(run, st))
-        self.carry0 = state
-        self.positions = coords.positions(state.z)
-
-    def block(self, carry, t, keep=None):
-        carry, (z, ns, en, ap, dv) = self.fn(carry)
-        return carry, z, dict(num_steps=ns, energy=en, accept_prob=ap, diverging=dv)
-
-    def state(self, carry, T):
-        return {"hmc": jax.tree.map(np.asarray, carry),
-                "offset": None if self.offset is None else np.asarray(self.offset),
-                "aux": self.coords.aux_flat}
+def _with_offset(cfg, offset):
+    return cfg if offset is None else {**cfg, "_ll_offset": jnp.asarray(offset)}
 
 
 class _Fold(_InProcess):
-    """sampler "hmc", and "nuts" in float64: fold_setup's coordinates and warmup, then blocks of the same
-    transitions (HMC's trajectory length jittered each one). A resumed fit keeps its anchors and its
-    adapted state."""
+    """samplers "hmc" and "nuts": fold_setup's coordinates and warmup, then blocks of the same transitions
+    (HMC's trajectory length jittered each one). A resumed fit keeps its anchors, its adapted state and, in
+    float32, the log-likelihood offset its potential is summed relative to."""
 
     def __init__(self, s, model, config, a, resume):
         import numpyro_backend as nb
@@ -278,8 +218,9 @@ class _Fold(_InProcess):
                                  step_size=ss, trajectory_length=nb._HMC_TMAX) if hmc else
                       nb.FastNUTS(model, coords=coords, target_accept_prob=tad, max_tree_depth=mtd, step_size=ss))
             state = _batched(resume["hmc"], C)
+            offset = resume.get("offset")
             kernel.init(jax.random.PRNGKey(0), 0, jax.tree.map(lambda x: x[0], state.z),
-                        ({**config, "_nuts_parts": coords.aux},), {})
+                        (_with_offset({**config, "_nuts_parts": coords.aux}, offset),), {})
         else:
             coords, pg, label = nb.fold_setup(config, C, int(a["warmup"]), 1, int(a["seed"]), tad, mtd, ss, s.progress,
                                               a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)),
@@ -290,12 +231,13 @@ class _Fold(_InProcess):
                                               split=nb._split_threshold(a.get("control")))
             kernel = pg.kernel
             state = nb.fold_warmup(pg, coords, int(a["warmup"]), None, s.progress, label)
+            offset = getattr(coords, "offset", None)
         self.coords = coords
         self.max_steps = np.inf if hmc else 2 ** mtd
-        self.offset = None
+        self.offset = offset
         jit = nb._jitter(nb._HMC_TMAX if hmc else None, 2 ** mtd)
         parts = coords.aux
-        args = ({**config, "_nuts_parts": parts},)
+        args = (_with_offset({**config, "_nuts_parts": parts}, offset),)
 
         def body(st, _):
             st = kernel.sample(jit(st), args, {})
@@ -312,8 +254,8 @@ class _Fold(_InProcess):
         return carry, z, dict(num_steps=ns, energy=en, accept_prob=ap, diverging=dv)
 
     def state(self, carry, T):
-        return {"hmc": jax.tree.map(np.asarray, carry), "offset": None, "aux": self.coords.aux_flat,
-                "split": self.coords.split_masks, "split_cand": self.coords.split_cand}
+        return {"hmc": jax.tree.map(np.asarray, carry), "offset": None if self.offset is None else np.asarray(self.offset),
+                "aux": self.coords.aux_flat, "split": self.coords.split_masks, "split_cand": self.coords.split_cand}
 
 
 def _dr_store(s, model, config, a, ctrl, seed, tm=None):
@@ -555,6 +497,38 @@ def _nuts_anchors_server(argfile):
     np.savez(p["out"], aux=c.aux_flat, start=np.asarray(c.start))
 
 
+def _fold_f64_server(argfile):
+    """The float64 parts of a float32 fold fit, in a float64 process kept for the fit's warmup: it builds the
+    coordinates with Laplace anchors (as a float64 fit does) and writes the anchors, the starting positions, the
+    Laplace stage's results and the per-observation log-likelihood at the first start; then, for each path read
+    from stdin, rebuilds the anchors at the window mean it names, until "exit" or the end of stdin."""
+    with open(argfile, "rb") as fh:
+        p = pickle.load(fh)
+    sys.path.insert(0, p["backend_dir"])
+    import numpyro_backend as nb
+    c = nb.NutsCoords(p["config"], p["chains"], p["seed"], p["parallel"], p["progress_bar"], p["init_strategy"],
+                      p["init_radius"], p["init_z"], transport=p["transport"], anchors="laplace", label=p["label"])
+    z0 = {k: v[0] for k, v in c.init_params(p["chains"], batched=True).items()}
+    off = np.asarray(jax.jit(lambda z: nb._ll_at(p["config"], c, z))(z0))
+    out = dict(aux=None if c.aux_flat is None else np.asarray(c.aux_flat), start=np.asarray(c.start),
+               source=c.source, pf=c.pf, offset=off)
+    with open(p["out"], "wb") as fh:
+        pickle.dump(out, fh)
+    print("@@READY", flush=True)
+    for line in sys.stdin:
+        line = line.strip()
+        if not line or line == "exit":
+            break
+        with open(line, "rb") as fh:
+            req = pickle.load(fh)
+        mean = np.asarray(req["mean"])
+        ref = np.repeat(mean.mean(0, keepdims=True), mean.shape[0], 0)
+        aux = np.asarray(c._tm.anchors_chains(c.vg, ref, c.vg.OFF0, c._parallel)[:1])
+        with open(req["out"], "wb") as fh:
+            pickle.dump(dict(aux=aux), fh)
+        print("@@DONE", flush=True)
+
+
 def _dr_f32_server(argfile):
     with open(argfile) as fh:
         p = json.load(fh)
@@ -676,8 +650,8 @@ class AutoSession:
                                               float(a.get("init_radius", 2.0)))
         f32_dr = (self.sampler == "drghmc"
                   and dr._merge_control(a.get("control"))["precision"] == "f32")
-        fold = self.sampler == "hmc" or (self.sampler == "nuts" and jax.config.jax_enable_x64)
-        cls = _Fold if fold else _Nuts if self.sampler == "nuts" else (_DrF32 if f32_dr else _Dr)
+        fold = self.sampler in ("hmc", "nuts")
+        cls = _Fold if fold else (_DrF32 if f32_dr else _Dr)
         self.ad = cls(self, model, config, a, resume)
         self.max_steps = getattr(self.ad, "max_steps", 0)
         self.carry = self.ad.carry0
@@ -1034,3 +1008,5 @@ if __name__ == "__main__":
         _dr_f32_server(sys.argv[2])
     elif len(sys.argv) >= 3 and sys.argv[1] == "_nuts_anchors":
         _nuts_anchors_server(sys.argv[2])
+    elif len(sys.argv) >= 3 and sys.argv[1] == "_fold_f64":
+        _fold_f64_server(sys.argv[2])

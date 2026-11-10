@@ -2386,8 +2386,8 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   parentheses; an unknown key is an error):
 #'   * `"hmc"`: `adapt_delta` (0.8), `adapt_gamma` (0.05; the gain of the step size's
 #'     dual averaging, Stan's `adapt gamma`: larger values move the step size less per
-#'     warmup iteration), `step_size` (1.0), `transport` (`TRUE`; see *Group transport
-#'     map*).
+#'     warmup iteration), `step_size` (1.0), `precision` ("f64" or "f32"), `transport`
+#'     (`TRUE`; see *Group transport map*).
 #'   * `"nuts"`: `adapt_delta` (0.8), `max_treedepth` (10), `step_size` (1.0),
 #'     `precision` ("f64" or "f32"; JAX backend only), `transport` (`TRUE`; JAX backend
 #'     only; see *Group transport map*).
@@ -2659,7 +2659,7 @@ fit_broc <- function(model,
   .auto <- if (auto) .auto_settings(.ctrl, sampler, chains, as.integer(thin)) else NULL
   .ctrl <- .ctrl[setdiff(names(.ctrl), .auto_keys)]
   .nuts_keys <- c("adapt_delta", "max_treedepth", "step_size", "precision", "transport")
-  .hmc_keys <- c("adapt_delta", "adapt_gamma", "step_size", "transport")
+  .hmc_keys <- c("adapt_delta", "adapt_gamma", "step_size", "precision", "transport")
   .drghmc_keys <- c("acc_target", "gamma", "integrator", "dr_k", "dr_r",
                     "adapt_windows", "eps_c", "mass_burn_frac", "mass_end_frac",
                     "precision", "transport", "transport_links", "transport_wide")

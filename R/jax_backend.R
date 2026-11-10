@@ -843,7 +843,7 @@ bayesroc_clear_cache <- function(path = NULL) {
 .jax_env <- function(python, chains, chain_method = "parallel", sampler = "nuts",
                      control = list(), precision = NULL) {
   device_count <- if (identical(chain_method, "sequential")) 1L else as.integer(chains)
-  f32 <- identical(precision %||% control$precision, "f32") && identical(sampler, "nuts")
+  f32 <- identical(precision %||% control$precision, "f32") && sampler %in% c("nuts", "hmc")
   bvn_lib <- .bvn_ffi_lib(python)
   c("current",
     XLA_FLAGS = paste0("--xla_force_host_platform_device_count=", device_count,
