@@ -86,6 +86,19 @@ test_that("f32 mode agrees with f64 to single-precision rounding", {
   for (k in names(res$rel_err)) expect_lt(res$rel_err[[k]], 2e-7, label = paste(k, "f32 vs f64"))
 })
 
+test_that("f32 logit and cloglog cells far below the float32 floor keep their log-probability and gradient", {
+  skip_if_no_jax()
+  res <- .run_py_check("deep_cell_check.py", .bvn_ffi_lib())
+  expect_true(res$f32)
+  for (link in c("logit", "cloglog")) {
+    expect_lt(res[[paste0(link, "_deepest_lp")]], -300)
+    for (fam in c("simple", "mixture")) {
+      expect_lt(res[[paste0(link, "_", fam, "_lp")]], 1e-6, label = paste(link, fam, "log P"))
+      expect_lt(res[[paste0(link, "_", fam, "_grad")]], 2e-5, label = paste(link, fam, "gradient"))
+    }
+  }
+})
+
 test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0.9 to 0.99999 and in the far tails, native and JAX paths agree", {
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()

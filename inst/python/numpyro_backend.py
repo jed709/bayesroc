@@ -1436,21 +1436,35 @@ def _logit_inner(z_lo, w):
     return lp, A, fh
 
 
-def _inner_ratios(link_name, z_lo, w, lp):
-    """(A / P, B / P) of an interior logit or cloglog cell (z_lo, z_lo + w) of log mass lp, taken in
-    log space so that they hold where the cell's mass and densities underflow."""
-    _, _, lpdf = _link_log_tails(link_name)
-    h = z_lo + w
-    rB = jnp.exp(lpdf(h) - lp)
+def _inner_ratios(link_name, z_lo, w):
+    """(A / P, B / P) of an interior logit or cloglog cell (z_lo, z_lo + w), each density over the mass in
+    closed form from the edge and the width, so that they hold where the cell's mass and densities underflow
+    and no two large logs are differenced."""
     if link_name == "logit":
-        m, lA = _logit_lA(z_lo, w)
-        near = -jnp.sign(m) * jnp.exp(lA - lp)
+        h = z_lo + w
+        x = 0.5 * w
+        lw = jnp.log(-jnp.expm1(-2.0 * x))
+        d_abs = jnp.where(z_lo >= 0, -x, jnp.where(h <= 0, x, 0.5 * (jnp.abs(z_lo) - jnp.abs(h))))
+        d_lc = d_abs + jnp.log1p(jnp.exp(-jnp.abs(z_lo))) - jnp.log1p(jnp.exp(-jnp.abs(h)))
+        rB = jnp.exp(d_lc - x - lw)
+        rL = jnp.exp(-d_lc - x - lw)
+        m = z_lo + x
+        am = jnp.maximum(jnp.abs(m), 1e-300)
+        d_am = jnp.where(z_lo >= 0, x, jnp.where(m <= 0, -x, am - jnp.abs(z_lo)))
+        xs = jnp.minimum(x, 0.5)
+        near = -jnp.sign(m) * jnp.exp(_LOG2 + d_am + jnp.log(-jnp.expm1(-2.0 * am)) + jnp.log(jnp.sinh(xs)) -
+                                      2.0 * jnp.log1p(jnp.exp(-jnp.abs(z_lo))) + d_lc - x - lw)
     else:
         l = jnp.minimum(z_lo, _cloglog_hi())
         wl = jnp.maximum(w, 1e-300)
-        gap = jnp.exp(jnp.minimum(l + wl + jnp.log(-jnp.expm1(-wl)), 700.0))
-        near = jnp.expm1(jnp.minimum(wl, 700.0) - gap) * jnp.exp(lpdf(z_lo) - lp)
-    return jnp.where(w < 1.0, near, rB - jnp.exp(lpdf(z_lo) - lp)), rB
+        lw = jnp.log(-jnp.expm1(-wl))
+        lgap = l + wl + lw
+        gap = jnp.exp(jnp.minimum(lgap, 700.0))
+        q = jnp.where(lgap < -20.0, -0.5 * gap, jnp.log(-jnp.expm1(-gap)) - lgap)
+        rL = jnp.exp(-wl - lw - q)
+        rB = jnp.exp(-lw - q - gap)
+        near = jnp.expm1(jnp.minimum(wl, 700.0) - gap) * rL
+    return jnp.where(w < 1.0, near, rB - rL), rB
 
 
 def _cloglog_inner(z_lo, w):
@@ -1493,9 +1507,65 @@ def _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi):
     return D, A, B, jnp.where(has_lo, z_lo, z_hi)
 
 
-def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma):
+def _link_cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi):
+    """log P, d log P / dz_a at fixed width and d log P / dw of a logit or cloglog cell of _cell_lw, every
+    term in log space so that they hold where the cell's mass underflows the format."""
+    inner = has_lo & has_hi
+    ls, ws = jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0)
+    lS, lF, _ = _link_log_tails(link_name)
+    hS, hF, dS = _link_log_hazards(link_name)
+    lpi = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, ws)[0]
+    nA, nB = _inner_ratios(link_name, ls, ws)
+    wide = inner & (ws > 0.5 * jnp.maximum(1.0, jnp.abs(ls)))
+    tails = wide | ~inner
+    il = jnp.where(wide | (has_lo & ~has_hi), z_lo, 0.0)
+    ih = jnp.where(wide | (has_hi & ~has_lo), z_hi, 1.0)
+    up = jnp.where(inner, il >= (0.0 if link_name == "logit" else _CLOGLOG_MED), has_lo)
+    lFl, lFh = lF(il), lF(ih)
+    d_up = dS(ih, il)
+    w_up = jnp.where(inner, jnp.log(-jnp.expm1(d_up)), 0.0)
+    w_lo = jnp.where(inner, jnp.log(-jnp.expm1(lFl - lFh)), 0.0)
+    lpw = jnp.where(up, lS(il) + w_up, lFh + w_lo)
+    gl = jnp.where(up, -jnp.exp(hS(il) - w_up), jnp.where(inner, -jnp.exp(hF(il) + lFl - lFh - w_lo), 0.0))
+    gh = jnp.where(up, jnp.where(inner, jnp.exp(hS(ih) + d_up - w_up), 0.0), jnp.exp(hF(ih) - w_lo))
+    lp = jnp.where(tails, lpw, lpi)
+    rA = jnp.where(tails, gh + gl, nA)
+    rB = jnp.where(inner, jnp.where(wide, gh, nB), 0.0)
+    return lp, rA, rB
+
+
+def _cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi):
+    """log P, d log P / dz_a at fixed width and d log P / dw of a cell of _cell_lw: the native probit cell, the
+    log-space logit or cloglog cell, or without the native kernel the probit cell floored before log."""
+    if _use_probit_native(link_name, z_lo):
+        return _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi)
+    if link_name != "probit":
+        return _link_cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi)
+    P, A, B, _ = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
+    ip = jnp.where(P > _pfloor(), 1.0 / jnp.maximum(P, _pfloor()), 0.0)
+    return jnp.log(jnp.maximum(P, _pfloor())), A * ip, B * ip
+
+
+def _log_or_prob(link_name, make, logged, prob):
+    """A batch's log-likelihood pieces from its cells, make(log) the tuple of cells: logged(*log cells) for
+    probit, whose native cells are in log space; for logit and cloglog prob(*cells as masses), or logged(*log
+    cells) when some cell's mass is within _METAD_DEEP of the format's floor (one branch runs)."""
+    if link_name == "probit":
+        return logged(*make(True))
+    cells = make(False)
+    deep = jnp.any(jnp.stack([c[0] for c in cells]) < _METAD_DEEP * _pfloor())
+    return jax.lax.cond(deep, lambda: logged(*make(True)), lambda: prob(*cells))
+
+
+def _exp_ratio(x):
+    """e^x for a ratio of cell masses, capped at the reciprocal of the format's floor."""
+    return jnp.exp(jnp.minimum(x, -jnp.log(_pfloor())))
+
+
+def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma, log=False):
     """The cells of responses y_idx (0-based) under N(mu, sigma) and the [N, K - 1] criteria built
-    from [N, n_gaps] gap values: (P, A, B, z_a, w, k_a, inner, z_hi), k_a the criterion of z_a."""
+    from [N, n_gaps] gap values: (P, A, B, z_a, w, k_a, inner, z_hi), k_a the criterion of z_a; with log,
+    (log P, A / P, B / P, ...) from _cell_log."""
     n_thresh = K - 1
     obs = jnp.arange(y_idx.shape[0])
     k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
@@ -1507,7 +1577,11 @@ def _cells_from_thresh(link_name, y_idx, K, thresh, gap_vals, own_idx, mu, sigma
         w = gap_vals[obs, jnp.asarray(own_idx)[y_idx]] / sigma
     else:
         w = jnp.ones_like(z_lo)
-    D, A, B, z_a = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
+    if log:
+        D, A, B = _cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi)
+        z_a = jnp.where(has_lo, z_lo, z_hi)
+    else:
+        D, A, B, z_a = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
     return D, A, B, z_a, w, jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi, z_hi
 
 
@@ -1535,46 +1609,27 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
     n_thresh, mid_idx, gap_mask, build = _thresh_layout(K)
     own_idx, own_mask = _own_gap(K)
 
-    def cells(y, mu, sigma_val, thresh_mid, gap_vals):
-        return _cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx, mu,
-                                  sigma_val)
+    def parts(y, mu, sigma_val, thresh_mid, gap_vals):
+        make = lambda log: (_cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx,
+                                               mu, sigma_val, log=log),)
+        logged = lambda cell: (cell[0], jnp.ones_like(cell[0]), cell)
 
-    def native(y, mu, sigma_val, thresh_mid, gap_vals):
-        y_idx = y - 1
-        obs = jnp.arange(y.shape[0])
-        thresh = build(thresh_mid, gap_vals)
-        k_hi = jnp.clip(y_idx, 0, n_thresh - 1)
-        k_lo = jnp.clip(y_idx - 1, 0, n_thresh - 1)
-        has_hi, has_lo = y_idx < K - 1, y_idx > 0
-        z_hi = jnp.where(has_hi, (thresh[obs, k_hi] - mu) / sigma_val, _OPEN)
-        z_lo = jnp.where(has_lo, (thresh[obs, k_lo] - mu) / sigma_val, -_OPEN)
-        w = (gap_vals[obs, jnp.asarray(own_idx)[y_idx]] / sigma_val if gap_vals.shape[1]
-             else jnp.ones_like(z_lo))
-        inner = has_lo & has_hi
-        lp, gA, gB = _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi)
-        cell = (None, gA, gB, jnp.where(has_lo, z_lo, z_hi), w, jnp.where(has_lo, k_lo, k_hi), inner, z_hi)
-        return lp, cell
+        def prob(cell):
+            p = jnp.maximum(cell[0], _pfloor())
+            return jnp.log(p), jnp.where(cell[0] > _pfloor(), 1.0 / p, 0.0), cell
+        return _log_or_prob(link_name, make, logged, prob)
 
     @custom_jvp
     def _batch_fused(y, mu, sigma_val, thresh_mid, gaps):
         gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
-        if _use_probit_native(link_name, mu):
-            return native(y, mu, sigma_val, thresh_mid, gap_vals)[0]
-        return jnp.log(jnp.clip(cells(y, mu, sigma_val, thresh_mid, gap_vals)[0], _pfloor()))
+        return parts(y, mu, sigma_val, thresh_mid, gap_vals)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, mu, sigma_val, thresh_mid, gaps = primals
         _, d_mu, d_sigma_val, d_thresh_mid, d_gaps = tangents
         gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
-        if _use_probit_native(link_name, mu):
-            val, cell = native(y, mu, sigma_val, thresh_mid, gap_vals)
-            c = jnp.ones_like(val)
-        else:
-            cell = cells(y, mu, sigma_val, thresh_mid, gap_vals)
-            p = jnp.clip(cell[0], _pfloor())
-            val = jnp.log(p)
-            c = jnp.where(cell[0] > _pfloor(), 1.0 / p, 0.0)
+        val, c, cell = parts(y, mu, sigma_val, thresh_mid, gap_vals)
         g_mu, g_sigma, g_mid, g_gap_val = _cell_lw_grads(c, cell, sigma_val, gap_mask, jnp.asarray(own_mask)[:, y - 1])
         tangent_out = (g_mu * d_mu + g_sigma * d_sigma_val + g_mid * d_thresh_mid +
                        jnp.sum((g_gap_val * gap_derivs.T).T * d_gaps, axis=1))
@@ -2349,8 +2404,7 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
             Db = jnp.exp(lb)
             ib = jnp.where(Db > _pfloor(), 1.0 / jnp.maximum(Db, _pfloor()), 0.0)
             deep_b = Db < _METAD_DEEP * _pfloor()
-            dA, dB = _inner_ratios(link_name, jnp.where(deep_b, ls, 0.0), jnp.where(deep_b, w, 1.0),
-                                   jnp.where(deep_b, lb, 0.0))
+            dA, dB = _inner_ratios(link_name, jnp.where(deep_b, ls, 0.0), jnp.where(deep_b, w, 1.0))
             rA, rB = jnp.where(deep_b, dA, A * ib), jnp.where(deep_b, dB, B * ib)
         lb_in = None if link_name == "probit" else jnp.where(sel, lb, 0.0)
         lp, g_a, g_lo, g_hi, g_c = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo), jnp.where(sel, _OPEN, z_hi),
@@ -2485,29 +2539,37 @@ def _make_fused_batch_dpsdt_loglik(K, gap_link_is_softplus, link_name="probit", 
     own_idx, own_mask = _own_gap(K)
 
     def parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals):
-        cell = _cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx, mu,
-                                  sigma_val)
-        cell_p = jnp.clip(cell[0], _pfloor())
-        is_top = (y == edge).astype(_FLOAT)
-        p_raw = lambda_val * is_top + (1.0 - lambda_val) * cell_p
-        return cell, cell_p, is_top, p_raw
+        make = lambda log: (_cells_from_thresh(link_name, y - 1, K, build(thresh_mid, gap_vals), gap_vals, own_idx,
+                                               mu, sigma_val, log=log),)
+        is_top = y == edge
+
+        def logged(cell):
+            lq = jnp.log1p(-lambda_val) + cell[0]
+            val = jnp.where(is_top, jnp.logaddexp(jnp.log(lambda_val), lq), lq)
+            return (val, jnp.where(is_top, _exp_ratio(-val), 0.0) - _exp_ratio(cell[0] - val), jnp.exp(lq - val),
+                    cell)
+
+        def prob(cell):
+            top = is_top.astype(cell[0].dtype)
+            cell_p = jnp.maximum(cell[0], _pfloor())
+            p_raw = lambda_val * top + (1.0 - lambda_val) * cell_p
+            p = jnp.maximum(p_raw, _pfloor())
+            inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
+            return (jnp.log(p), (top - cell_p) * inv_p, jnp.where(cell[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0),
+                    cell)
+        return _log_or_prob(link_name, make, logged, prob)
 
     @custom_jvp
     def _batch_fused(y, mu, sigma_val, lambda_val, thresh_mid, gaps):
         gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
-        return jnp.log(jnp.clip(parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)[3], _pfloor()))
+        return parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, mu, sigma_val, lambda_val, thresh_mid, gaps = primals
         _, d_mu, d_sigma_val, d_lambda, d_thresh_mid, d_gaps = tangents
         gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
-        cell, cell_p, is_top, p_raw = parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)
-        p = jnp.clip(p_raw, _pfloor())
-        val = jnp.log(p)
-        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-        d_lp_d_lambda = (is_top - cell_p) * inv_p
-        c = jnp.where(cell[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0)
+        val, d_lp_d_lambda, c, cell = parts(y, mu, sigma_val, lambda_val, thresh_mid, gap_vals)
         g_mu, g_sigma, g_mid, g_gap_val = _cell_lw_grads(c, cell, sigma_val, gap_mask, jnp.asarray(own_mask)[:, y - 1])
         tangent_out = (g_mu * d_mu + g_sigma * d_sigma_val + d_lp_d_lambda * d_lambda + g_mid * d_thresh_mid +
                        jnp.sum((g_gap_val * gap_derivs.T).T * d_gaps, axis=1))
@@ -2527,31 +2589,38 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
 
     def parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals):
         thresh = build(thresh_mid, gap_vals)
-        c1 = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu1, sigma1_val)
-        c2 = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu2, sigma2_val)
-        p1, p2 = jnp.clip(c1[0], _pfloor()), jnp.clip(c2[0], _pfloor())
-        return c1, c2, p1, p2, lambda_val * p1 + (1.0 - lambda_val) * p2
+        make = lambda log: (_cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu1, sigma1_val, log=log),
+                            _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, mu2, sigma2_val, log=log))
+
+        def logged(ca, cb):
+            la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
+            val = jnp.logaddexp(la, lb)
+            return val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val), jnp.exp(la - val), jnp.exp(lb - val), ca, cb
+
+        def prob(ca, cb):
+            pa, pb = jnp.maximum(ca[0], _pfloor()), jnp.maximum(cb[0], _pfloor())
+            p_raw = lambda_val * pa + (1.0 - lambda_val) * pb
+            p = jnp.maximum(p_raw, _pfloor())
+            inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
+            return (jnp.log(p), (pa - pb) * inv_p, jnp.where(ca[0] > _pfloor(), lambda_val * inv_p, 0.0),
+                    jnp.where(cb[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), ca, cb)
+        return _log_or_prob(link_name, make, logged, prob)
 
     @custom_jvp
     def _batch_fused(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gaps):
         gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
-        p_raw = parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals)[4]
-        return jnp.log(jnp.clip(p_raw, _pfloor()))
+        return parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gaps = primals
         _, d_mu1, d_sigma1, d_mu2, d_sigma2, d_lambda, d_thresh_mid, d_gaps = tangents
         gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
-        c1, c2, p1, p2, p_raw = parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid, gap_vals)
-        p = jnp.clip(p_raw, _pfloor())
-        val = jnp.log(p)
-        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-        d_lp_d_lambda = (p1 - p2) * inv_p
+        val, d_lp_d_lambda, w1, w2, c1, c2 = parts(y, mu1, sigma1_val, mu2, sigma2_val, lambda_val, thresh_mid,
+                                                   gap_vals)
         own = jnp.asarray(own_mask)[:, y - 1]
-        g1 = _cell_lw_grads(jnp.where(c1[0] > _pfloor(), lambda_val * inv_p, 0.0), c1, sigma1_val, gap_mask, own)
-        g2 = _cell_lw_grads(jnp.where(c2[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), c2, sigma2_val,
-                            gap_mask, own)
+        g1 = _cell_lw_grads(w1, c1, sigma1_val, gap_mask, own)
+        g2 = _cell_lw_grads(w2, c2, sigma2_val, gap_mask, own)
         tangent_out = (g1[0] * d_mu1 + g1[1] * d_sigma1 + g2[0] * d_mu2 + g2[1] * d_sigma2 +
                        d_lp_d_lambda * d_lambda + (g1[2] + g2[2]) * d_thresh_mid +
                        jnp.sum(((g1[3] + g2[3]) * gap_derivs.T).T * d_gaps, axis=1))
@@ -2572,31 +2641,39 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
     def parts(y, d_attended, lambda_val, thresh_mid, gap_vals):
         thresh = build(thresh_mid, gap_vals)
         one = jnp.ones_like(d_attended)
-        ca = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, d_attended, one)
-        cn = _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, jnp.zeros_like(d_attended), one)
-        pa, pn = jnp.clip(ca[0], _pfloor()), jnp.clip(cn[0], _pfloor())
-        return ca, cn, pa, pn, lambda_val * pa + (1.0 - lambda_val) * pn
+        make = lambda log: (_cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, d_attended, one, log=log),
+                            _cells_from_thresh(link_name, y - 1, K, thresh, gap_vals, own_idx, jnp.zeros_like(d_attended),
+                                               one, log=log))
+
+        def logged(ca, cb):
+            la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
+            val = jnp.logaddexp(la, lb)
+            return val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val), jnp.exp(la - val), jnp.exp(lb - val), ca, cb
+
+        def prob(ca, cb):
+            pa, pb = jnp.maximum(ca[0], _pfloor()), jnp.maximum(cb[0], _pfloor())
+            p_raw = lambda_val * pa + (1.0 - lambda_val) * pb
+            p = jnp.maximum(p_raw, _pfloor())
+            inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
+            return (jnp.log(p), (pa - pb) * inv_p, jnp.where(ca[0] > _pfloor(), lambda_val * inv_p, 0.0),
+                    jnp.where(cb[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), ca, cb)
+        return _log_or_prob(link_name, make, logged, prob)
 
     @custom_jvp
     def _batch_fused(y, d_attended, lambda_val, thresh_mid, gaps):
         gap_vals = _gap_vals_and_derivs(gaps, gap_link_is_softplus)[0]
-        return jnp.log(jnp.clip(parts(y, d_attended, lambda_val, thresh_mid, gap_vals)[4], _pfloor()))
+        return parts(y, d_attended, lambda_val, thresh_mid, gap_vals)[0]
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
         y, d_attended, lambda_val, thresh_mid, gaps = primals
         _, d_d_attended, d_lambda, d_thresh_mid, d_gaps = tangents
         gap_vals, gap_derivs = _gap_vals_and_derivs(gaps, gap_link_is_softplus)
-        ca, cn, pa, pn, p_raw = parts(y, d_attended, lambda_val, thresh_mid, gap_vals)
-        p = jnp.clip(p_raw, _pfloor())
-        val = jnp.log(p)
-        inv_p = jnp.where(p_raw > _pfloor(), 1.0 / p, 0.0)
-        d_lp_d_lambda = (pa - pn) * inv_p
+        val, d_lp_d_lambda, wa, wn, ca, cn = parts(y, d_attended, lambda_val, thresh_mid, gap_vals)
         own = jnp.asarray(own_mask)[:, y - 1]
         one = jnp.ones_like(d_attended)
-        ga = _cell_lw_grads(jnp.where(ca[0] > _pfloor(), lambda_val * inv_p, 0.0), ca, one, gap_mask, own)
-        gn = _cell_lw_grads(jnp.where(cn[0] > _pfloor(), (1.0 - lambda_val) * inv_p, 0.0), cn, one, gap_mask,
-                            own)
+        ga = _cell_lw_grads(wa, ca, one, gap_mask, own)
+        gn = _cell_lw_grads(wn, cn, one, gap_mask, own)
         tangent_out = (ga[0] * d_d_attended + d_lp_d_lambda * d_lambda + (ga[2] + gn[2]) * d_thresh_mid +
                        jnp.sum(((ga[3] + gn[3]) * gap_derivs.T).T * d_gaps, axis=1))
         return val, tangent_out
