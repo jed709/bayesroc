@@ -3645,6 +3645,16 @@ _fused_cache = {}
 
 # --- Vectorized fused wrappers ---
 
+def _weight(p):
+    """A sampled mixture weight held half a unit roundoff inside (0, 1): a logistic weight rounds to 0 or 1
+    far out (past about 17 on the logit in float32), where the cell's derivative in it overflows and the
+    logistic's own derivative is 0; the weight it rounded from lies inside. Structural zeros (no recollection
+    for new items) are set after it."""
+    p = jnp.asarray(p)
+    e = 0.5 * jnp.finfo(p.dtype).eps
+    return jnp.clip(p, e, 1.0 - e)
+
+
 def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
                          lambda_val, sigma_item, sigma_S,
                          thresh1_mid, gaps1, thresh2_mid, gaps2, gap_link="log"):
@@ -3989,6 +3999,7 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", l
 def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
                        gap_link="log", has_sigma=False, link_name="probit", edge=None):
     """Fully-vectorized fused log-likelihood for DPSDT (old items only)."""
+    lambda_val = _weight(lambda_val)
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4007,6 +4018,7 @@ def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
 def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
                          thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for mixture (old items only)."""
+    lambda_val = _weight(lambda_val)
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4026,6 +4038,7 @@ def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
 def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
                                 gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for source_mixture."""
+    lambda_val = _weight(lambda_val)
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4273,7 +4286,7 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
 
         if family_name == "vrdp2d":
             dprime2 = kwargs.get("dprime2", jnp.zeros(N))
-            R = lambda_val if lambda_val is not None else jnp.zeros(N)
+            R = _weight(lambda_val) if lambda_val is not None else jnp.zeros(N)
             dprime_masked = jnp.where(is_new, 0.0, dprime)
             dprime2_masked = jnp.where(is_new, 0.0, dprime2)
             R_masked = jnp.where(is_new, 0.0, R)
@@ -4315,10 +4328,10 @@ def bivariate_loglik(y1, y2, dprime, dprime_B, thresh1, thresh2,
             return log_lik
 
         elif bounded and family_name == "bivariate_dp":
-            R_I = lambda_val if lambda_val is not None else jnp.zeros(N)
-            R_S = lambda2 if lambda2 is not None else jnp.zeros(N)
-            R_I_B = lambda_B if lambda_B is not None else R_I
-            R_S_B = lambda2_B if lambda2_B is not None else R_S
+            R_I = _weight(lambda_val) if lambda_val is not None else jnp.zeros(N)
+            R_S = _weight(lambda2) if lambda2 is not None else jnp.zeros(N)
+            R_I_B = _weight(lambda_B) if lambda_B is not None else R_I
+            R_S_B = _weight(lambda2_B) if lambda2_B is not None else R_S
             R_I = jnp.where(is_new, 0.0, R_I)
             R_S = jnp.where(is_new, 0.0, R_S)
             R_I_B = jnp.where(is_new, 0.0, R_I_B)
