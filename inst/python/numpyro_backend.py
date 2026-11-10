@@ -1458,8 +1458,9 @@ def _cloglog_inner(z_lo, w):
     el = jnp.exp(l)
     wl = jnp.maximum(w, 1e-300)
     wc = jnp.minimum(wl, 700.0)
-    gap = jnp.exp(jnp.minimum(l + wl + jnp.log(-jnp.expm1(-wl)), 700.0))
-    lp = -el + jnp.log(-jnp.expm1(-gap))
+    lgap = l + wl + jnp.log(-jnp.expm1(-wl))
+    gap = jnp.exp(jnp.minimum(lgap, 700.0))
+    lp = -el + jnp.where(lgap < -20.0, lgap - 0.5 * gap, jnp.log(-jnp.expm1(-gap)))
     fh, fl = _cloglog_pdf(z_lo + w), jnp.exp(l - el)
     return lp, jnp.where(w < 1.0, fl * jnp.expm1(wc - gap), fh - fl), fh
 
