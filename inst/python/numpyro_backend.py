@@ -331,6 +331,9 @@ def _pfloor():
     return 1e-300 if jax.config.jax_enable_x64 else 1e-37
 
 
+_LOG_P_FLOOR = -690.7755278982137
+
+
 _EMPTY_SLOPE = 10.0
 
 
@@ -3421,6 +3424,8 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_rk = jnp.where(tail, jnp.exp(t_lp), p_sel)
 
         val = jnp.log(jnp.clip(p_rk, _pfloor()))
+        if n_rkg == 3:
+            val = jnp.where(tail, jnp.maximum(t_lp, _LOG_P_FLOOR), val)
         narrow, _, kind, lo, gs, _, g1 = _narrow(rk, has_hi, old_idx, gv, gaps, thresh_mid, tau_lo, mu_R, sigma_R,
                                                  mu_F, sigma_F, c_R, c_K, corr)
         val = jax.lax.cond(jnp.any(narrow), lambda v: jnp.where(narrow, jnp.log(jnp.clip(
@@ -3589,7 +3594,8 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             p_cell = jnp.where(tail, jnp.exp(t_lp), p_sel)
             p_rk = p_cell
             prob = p_rk
-            val = jnp.log(jnp.clip(prob, _pfloor()))
+            t_live = tail & (t_lp > _LOG_P_FLOOR)
+            val = jnp.where(tail, jnp.maximum(t_lp, _LOG_P_FLOOR), jnp.log(jnp.clip(prob, _pfloor())))
             inv_prob = jnp.where(prob > _pfloor(), 1.0 / jnp.clip(prob, _pfloor()), 0.0)
             closed = ~tail
 
@@ -3683,7 +3689,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             d_val_dtau_hi = dlp_dzhi * inv_sM + eff_dpG * dGhi_dtau
             d_val_dtau_lo = dlp_dzlo * inv_sM + eff_dpG * (-dGlo_dtau)
 
-            t_w = jnp.where(tail & (prob > _pfloor()), p_cell * inv_prob, 0.0)
+            t_w = jnp.where(t_live, 1.0, 0.0)
             td = [t_w * jnp.where(tail, t_d[..., j], 0.0) for j in range(9)]
             d_val_dmuR = d_val_dmuR + td[0]
             d_val_dsigR = d_val_dsigR + td[1]
@@ -3695,7 +3701,7 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
             d_val_dtau_hi = d_val_dtau_hi + td[7]
             d_val_dcorr = d_val_dcorr + td[8]
 
-            live = prob > _pfloor()
+            live = jnp.where(tail, t_live, prob > _pfloor())
             (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF, d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
              d_val_dtau_hi) = (jnp.where(live, d, 0.0) for d in (d_val_dmuR, d_val_dsigR, d_val_dmuF, d_val_dsigF,
                                                               d_val_dcR, d_val_dcK, d_val_dcorr, d_val_dtau_lo,
