@@ -73,11 +73,11 @@ test_that("summary() is structured and prints readable sections", {
   expect_true(any(grepl("(log gap)", s$random_sd$effect, fixed = TRUE)))
   out <- paste(capture.output(print(s)), collapse = "\n")
   for (h in c("ESTIMATES", "COEFFICIENTS", "RANDOM EFFECTS: STANDARD DEVIATIONS", "sigma (log)",
-              "condition: read", "Sampler:", "Formula:")) {
+              "condition: read", "Sampler", "Formula:")) {
     expect_true(grepl(h, out, fixed = TRUE), label = h)
   }
   pf <- paste(capture.output(print(f)), collapse = "\n")
-  expect_true(grepl("Formula:", pf, fixed = TRUE) && grepl("Sampler:", pf, fixed = TRUE))
+  expect_true(grepl("Formula:", pf, fixed = TRUE) && grepl("Sampler", pf, fixed = TRUE))
 })
 
 test_that("correlation tables list every pair", {

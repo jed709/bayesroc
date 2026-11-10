@@ -8,7 +8,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
+#endif
 #include <vector>
 
 namespace tmap {
@@ -20,7 +22,15 @@ typedef double v4d __attribute__((vector_size(32)));
 inline v4d splat(double x) { return v4d{x, x, x, x}; }
 inline v4d ld(const double* p) { v4d v; std::memcpy(&v, p, 32); return v; }
 inline void st(double* p, v4d v) { std::memcpy(p, &v, 32); }
-inline v4d vsqrt(v4d x) { return (v4d)_mm256_sqrt_pd((__m256d)x); }
+inline v4d vsqrt(v4d x) {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+  return (v4d)_mm256_sqrt_pd((__m256d)x);
+#else
+  v4d r;
+  for (int l = 0; l < 4; ++l) r[l] = __builtin_sqrt(x[l]);
+  return r;
+#endif
+}
 inline v4d vlog(v4d x) { v4d r; for (int l = 0; l < 4; ++l) r[l] = __builtin_log(x[l]); return r; }
 
 // a [D, n] row at groups g..g+3; the tail past n reads as `fill`

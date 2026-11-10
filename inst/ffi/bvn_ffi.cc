@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <limits>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <xmmintrin.h>
+#endif
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -385,9 +387,19 @@ void cdp_k(int64_t n, const double* const* i, double* const* o) {
 }
 
 struct FlushDenormals {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
   unsigned saved;
   FlushDenormals() : saved(_mm_getcsr()) { _mm_setcsr(saved | 0x8040); }
   ~FlushDenormals() { _mm_setcsr(saved); }
+#elif defined(__aarch64__)
+  uint64_t saved;
+  FlushDenormals() {
+    __asm__ volatile("mrs %0, fpcr" : "=r"(saved));
+    uint64_t flushed = saved | (uint64_t(1) << 24);
+    __asm__ volatile("msr fpcr, %0" : : "r"(flushed));
+  }
+  ~FlushDenormals() { __asm__ volatile("msr fpcr, %0" : : "r"(saved)); }
+#endif
 };
 
 template <int NI, int NO, void (*K)(int64_t, const double* const*, double* const*)>

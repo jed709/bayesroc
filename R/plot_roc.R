@@ -237,6 +237,7 @@ plot_roc <- function(fit, by = NULL, response = NULL, type = c("marginal", "cond
     slim$stan_data <- list(is_old = NULL)
     cl <- parallel::makeCluster(min(cores, length(units)))
     on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterCall(cl, .libPaths, .libPaths())
     .export_pkg_fns(cl, c(".roc_survival_rows", ".criterion_path"))
     part <- parallel::parLapply(cl, units, function(un, model, response, u) {
       model$stan_data$is_old <- un$is_old

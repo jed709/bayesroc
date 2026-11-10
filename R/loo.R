@@ -223,6 +223,7 @@ loo.broc_fit <- function(x, cores = 4, type = c("trial", "cell"),
   } else {
     cl <- parallel::makeCluster(n_workers)
     on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::clusterCall(cl, .libPaths, .libPaths())
     parallel::clusterEvalQ(cl, library(loo))
     fn_env <- environment(.read_loglik_SN_cols)
     parallel::clusterExport(cl, c(".read_loglik_SN_cols", ".loglik_meta",

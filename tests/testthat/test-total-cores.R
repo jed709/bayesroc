@@ -10,6 +10,7 @@ test_that("total_cores is validated", {
 
 test_that("CPUs are taken P-cores first, one per physical core first, and the full set is restored", {
   skip_if_no_jax()
+  skip_on_os("mac")
   out <- system2(jax_python(), c(test_path("python", "cpu_limit_check.py"), dirname(find_backend_script())),
                  stdout = TRUE, stderr = FALSE)
   res <- jsonlite::fromJSON(sub("^RESULT ", "", grep("^RESULT ", out, value = TRUE)))

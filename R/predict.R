@@ -2151,6 +2151,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
 
   cl <- parallel::makeCluster(n_workers)
   on.exit(parallel::stopCluster(cl))
+  parallel::clusterCall(cl, .libPaths, .libPaths())
 
   .export_pkg_fns(cl, "compute_category_probs")
 
