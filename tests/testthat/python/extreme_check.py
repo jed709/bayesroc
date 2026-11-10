@@ -7,9 +7,10 @@ import sys
 # log-probability and its gradient finite at points s = 1 and 3 units from a default fit's start in the
 # sampler's coordinates (through the transport map, in the map's correlation order as a fit evaluates the
 # model). A point is left out when a parameter is already non-finite before the likelihood runs or a
-# random-effect correlation is near singular (smallest eigenvalue below 1e-9 in float64, 1e-7 in float32):
-# the transport map's derivative through such a correlation (condition number past about 1e9, |corr| near
-# 0.99997) is not finite, which a sampler meets as a divergence. The native path
+# random-effect correlation is singular at the format's precision (smallest eigenvalue below 1e-13 in
+# float64, 1e-7 in float32), or the log-likelihood is past the format's range (a trial's log P below
+# -1e300 in float64, -1e36 in float32: the cloglog tail at its cap, where every derivative overflows).
+# The native path
 # saves each configuration's anchors and start; the f32 path (a float32 process) reuses them.
 # Arguments: the backend directory, the configuration directory, the path ("native" or "f32").
 
@@ -22,7 +23,8 @@ from numpyro.infer.util import constrain_fn
 import numpyro_backend as nb
 import worker
 
-singular = 1e-7 if path == "f32" else 1e-9
+singular = 1e-7 if path == "f32" else 1e-13
+huge = 1e36 if path == "f32" else 1e300
 
 
 def corr_of(x):
@@ -77,8 +79,10 @@ for file in sorted(glob.glob(os.path.join(directory, "*.json"))):
             eig = min([1.0] + [float(np.linalg.eigvalsh(corr_of(vn[coords.off[k][0]])).min()) for k in corr_keys])
             if not bool(finite(v)) or eig < singular:
                 continue
-            checked += 1
             ll = np.asarray(log_lik(v))
+            if np.any(ll < -huge):
+                continue
+            checked += 1
             g = np.asarray(gradient(v))
             bad = []
             if np.any(np.isnan(ll)) or np.any(ll == np.inf):
