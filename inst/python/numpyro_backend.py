@@ -1617,9 +1617,12 @@ def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     return lp, ga, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), gc
 
 
-def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
+def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb=None):
     """The meta-d' cell of _metad_cell_jax under a logistic or Gumbel-min latent distribution: the
-    survival on "old" responses and the CDF on "new" ones taken directly, the link not being symmetric."""
+    survival on "old" responses and the CDF on "new" ones taken directly, the link not being symmetric.
+    lb, a log mass the caller adds to the rating cell's (a narrow band's, with open edges here), is added
+    before the meta-level decision's is taken off, which far into one tail is as large and cancels it."""
+    lb = jnp.zeros_like(z_a) if lb is None else lb
     cdf, pdf = _link_fns(link_name)
     diff = _link_diff_fn(link_name)
     if link_name == "logit":
@@ -1638,7 +1641,7 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
     ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
     ic = jnp.where(Pc > fl, 1.0 / jnp.maximum(Pc, fl), 0.0)
     s = jnp.where(old, -1.0, 1.0).astype(z_a.dtype)
-    lp = jnp.log(jnp.maximum(Pa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Pc, fl))
+    lp = jnp.log(jnp.maximum(Pa, fl)) + (jnp.log(jnp.maximum(D, fl) / jnp.maximum(Pc, fl)) + lb)
     ga, gl, gh, gc = s * pdf(z_a) * ia, -pdf(zl) * ib, pdf(zh) * ib, -s * pdf(z_c) * ic
     deep = (Pa < _METAD_DEEP * fl) | (D < _METAD_DEEP * fl) | (Pc < _METAD_DEEP * fl)
     pick = lambda x, safe: jnp.where(deep, x, safe)
@@ -1656,7 +1659,7 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name):
     gc = jnp.where(deep, -s * jnp.exp(lpdf(zc_s) - lPc), gc)
     gl = jnp.where(deep, -jnp.exp(lpdf(zl_s) - lD), gl)
     gh = jnp.where(deep, jnp.exp(lpdf(zh_s) - lD), gh)
-    lp = jnp.where(deep, lPa + lD - lPc, lp)
+    lp = jnp.where(deep, lPa + ((lD + lb) - lPc), lp)
     return lp, ga, jnp.where(lo_open, 0.0, gl), jnp.where(hi_open, 0.0, gh), gc
 
 
@@ -1672,9 +1675,9 @@ def _link_log_tails(link_name):
     return lS, lF, lpdf
 
 
-def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit"):
+def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit", lb=None):
     if link_name != "probit":
-        return _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name)
+        return _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb)
     if _native_ok(z_a):
         return _native_call("metad_cell", 5, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype)])
     return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
@@ -2314,13 +2317,14 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
             dA, dB = _inner_ratios(link_name, jnp.where(deep_b, ls, 0.0), jnp.where(deep_b, w, 1.0),
                                    jnp.where(deep_b, lb, 0.0))
             rA, rB = jnp.where(deep_b, dA, A * ib), jnp.where(deep_b, dB, B * ib)
+        lb_in = None if link_name == "probit" else jnp.where(sel, lb, 0.0)
         lp, g_a, g_lo, g_hi, g_c = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo), jnp.where(sel, _OPEN, z_hi),
-                                               c + off, old, link_name)
+                                               c + off, old, link_name, lb_in)
         g_lo = jnp.where(y > 1, g_lo, 0.0)
         g_hi = jnp.where(y < K, g_hi, 0.0)
         gA = jnp.where(sel, rA, g_lo + g_hi)
         gB = jnp.where(sel, rB, jnp.where(inner, g_hi, 0.0))
-        out = (jnp.where(sel, lp + lb, lp), g_a, gA, gB, g_c)
+        out = (jnp.where(sel, lp if link_name != "probit" else lp + lb, lp), g_a, gA, gB, g_c)
         return out, (old, M, a_c, c_mid, jnp.where(y > 1, k_lo, k_hi), gap_vals)
 
     @custom_jvp
