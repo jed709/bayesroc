@@ -2168,6 +2168,7 @@ def _ln_density(a, l, s):
     off = jnp.asarray(0.25 * (2.0 ** np.arange(_LN_LEVELS + 1) - 1.0), dtype=a.dtype)
     ts, ws = [], []
     for m, end, on in sides:
+        m, end = jnp.where(on, m, 0.0), jnp.where(on, end, 0.0)
         sc = 1.0 / jnp.sqrt(jnp.maximum(-d2h(m), 1e-24))
         L = jnp.where(on, jnp.abs(end - m), 0.0)
         sg = jnp.where(end >= m, 1.0, -1.0)
@@ -2181,7 +2182,7 @@ def _ln_density(a, l, s):
     wt = jnp.concatenate([q.reshape(q.shape[:-2] + (-1,)) for q in ws], -1)
     ht = t - 0.5 * (jnp.exp(t) - a[..., None]) ** 2 - 0.5 * (t - l[..., None]) ** 2 * is2[..., None]
     ref =jnp.max(jnp.where(wt > 0.0, ht, -jnp.inf), -1, keepdims=True)
-    F = wt * jnp.exp(ht - ref)
+    F = jnp.where(wt > 0.0, wt * jnp.exp(ht - ref), 0.0)
     c = jnp.exp(ref[..., 0]) / (2.0 * np.pi * s)
     dl = (t - l[..., None]) * is2[..., None]
     return (c * jnp.sum(F, -1), c * jnp.sum(F * (jnp.exp(t) - a[..., None]), -1), c * jnp.sum(F * dl, -1),
