@@ -6799,6 +6799,7 @@ class FastHMC(HMC):
 
 _MAP_WARMUP = 1000
 _LAPLACE_PASSES = 2
+_INIT_TRIES = 100
 _CURV_LOOP_MAX = 256
 _CURV_PROBES = 32
 _HMC_TMAX = float(np.pi)
@@ -6829,6 +6830,7 @@ class NutsCoords:
         th0 = _rkg_lift(config, th0, lambda r: self.unflatten(jnp.asarray(r)), self.off)
         self._config = config
         self.start, self._th0, self._init_strategy = th0, th0, init_strategy
+        self._init_draw = None if init_z is not None or (init_strategy not in ("random", "prior") and not init_radius) else             (seed, init_strategy, init_radius)
         self.source, self.pf, self._split_flags, self.label = None, None, None, label
         self.klog, self.wlog = {}, {}
         self.split_thr, self.split_at, self.split_cand = (float(split) if split else None), split_at, split_cand
@@ -6903,6 +6905,28 @@ class NutsCoords:
         self.tm = tm.cheap_of(self.aux_flat)
         self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
 
+    def _redraw_starts(self, chains):
+        """Random starting points (init "random", "prior" or a nonzero radius) redrawn chain by chain until the
+        sampler's potential and its gradient are finite there, at most _INIT_TRIES draws per chain, as Stan and
+        NumPyro do for random starts; a chain still without one keeps its last draw, and the warmup reports it."""
+        if self._init_draw is None:
+            return
+        import drghmc as dr
+        seed, strategy, radius = self._init_draw
+        vg1, trim = self._vgc(), self.vg.trim
+        start, th0 = np.array(self.start), np.array(self._th0)
+        for c in range(chains):
+            for t in range(1, _INIT_TRIES):
+                u, g = vg1(jnp.asarray(start[c]), self.aux)
+                if np.isfinite(float(u)) and np.all(np.isfinite(np.asarray(g))):
+                    break
+                th = dr._initial_positions(sdt_model, self._config, self.keys, self.off, self.D, 1,
+                                           int(seed) + 7919 * t + 104729 * c, strategy, radius, None,
+                                           self.unflatten.to_sampled)
+                th0[c] = _rkg_lift(self._config, th, lambda r: self.unflatten(jnp.asarray(r)), self.off)[0]
+                start[c] = self._tm.inverse_chains(th0[c:c + 1], self.aux_flat, trim)[0]
+        self.start, self._th0 = start, th0
+
     def _vgc(self):
         if getattr(self, "_vg1", None) is None:
             vgm, OFF = self.tm.wrap(self.vg.pot), self.vg.OFF0
@@ -6969,6 +6993,7 @@ class NutsCoords:
             self.start = v
         else:
             self.start = self._tm.inverse_chains(np.asarray(self._th0), np.repeat(self.aux_flat, chains, 0), trim)
+            self._redraw_starts(chains)
         info["walls"].append(_t.time() - t0)
         return dict(iters=np.asarray(info["iters"]), wall=float(np.sum(info["walls"])), walls=np.asarray(info["walls"]),
                     h=np.asarray(info["h"]), f=np.asarray(info["f"]), hidx=hidx, h_sd_final=h_sd_final, center=th_c)

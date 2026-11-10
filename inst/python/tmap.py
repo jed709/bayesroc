@@ -1668,7 +1668,8 @@ class TMap:
         conditional mode (up to _NEWTON capped Newton steps from its effects at th with
         everything else held fixed, each kept only for the groups whose conditional gradient it
         shrinks): Lam [n, D, D] (PSD part), q0 and u [D, n], the starting u0 and diag(A A^T).
-        Traceable: the
+        The map's centre is a further full Newton step from u, kept under the same test; where
+        it fails, q0 is set so that the centre is u itself. Traceable: the
         expansion's D + 1 gradients run in a lax.map and the Newton steps in a fori_loop, so the
         gradient is compiled once per super-block."""
         post0 = self.post(th, OFF["trim"])
@@ -1710,7 +1711,11 @@ class TMap:
 
             u0 = A @ sb.get(th)
             q0, Lam = expand(u0)
-            u, q0, Lam, _ = jax.lax.fori_loop(0, _NEWTON, newton, (u0, q0, Lam, merit(u0, q0)))
+            u, q0, Lam, m = jax.lax.fori_loop(0, _NEWTON, newton, (u0, q0, Lam, merit(u0, q0)))
+            full = u + jnp.linalg.solve(Lam + Q[None], -(q0.T + u.T @ Q)[..., None])[..., 0].T
+            m_full = merit(full, neg_grad(full))
+            ok = jnp.isfinite(m_full) & (m_full < m)
+            q0 = jnp.where(ok[None, :], q0, -(Q @ u))
             out.append(dict(Lam=Lam, q0=q0, u=u, u0=u0, A2=jnp.diag(A @ A.T)))
         return out
 

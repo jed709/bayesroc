@@ -1407,7 +1407,9 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
                        init_radius, init_z=None, to_sampled=None):
     """Per-chain starting points on the unconstrained scale, matching the NUTS
     init strategies: user values (`init_z`), 'prior' draws from the prior,
-    otherwise uniform(-r, r)."""
+    otherwise uniform(-r, r) with each correlation factor drawn from its LKJ prior
+    (uniform unconstrained values put a large block's correlation matrix next to
+    singular, where the prior puts almost no mass)."""
     base = _tagged(seed, 5)
     if init_z is not None:
         th = np.zeros((chains, D))
@@ -1427,7 +1429,27 @@ def _initial_positions(model, config, keys, off, D, chains, seed, init_strategy,
     r = float(init_radius)
     if r == 0.0:
         return np.zeros((chains, D))
-    return np.asarray(jax.random.uniform(base, (chains, D), minval=-r, maxval=r))
+    th = np.array(jax.random.uniform(base, (chains, D), minval=-r, maxval=r))
+    for k, draw in _corr_prior_draws(model, config, keys, chains, jax.random.fold_in(base, 1)).items():
+        th[:, off[k][0]] = draw
+    return th
+
+
+def _corr_prior_draws(model, config, keys, chains, key):
+    """Unconstrained draws [chains, size] of each sampled correlation factor (L_corr sites) from its own LKJ prior."""
+    from numpyro import handlers
+    from numpyro.distributions.transforms import biject_to
+    names = [k for k in keys if k.startswith("L_corr")]
+    if not names:
+        return {}
+    init = handlers.substitute(handlers.seed(model, rng_seed=0), substitute_fn=init_to_uniform(radius=0.0))
+    tr = handlers.trace(init).get_trace(config)
+    out = {}
+    for j, k in enumerate(names):
+        fn = tr[k]["fn"]
+        L = fn.sample(jax.random.fold_in(key, j), (chains,))
+        out[k] = np.asarray(biject_to(fn.support).inv(L)).reshape(chains, -1)
+    return out
 
 
 def run_drghmc(model, config, chains=4, warmup=1000, samples=10000, seed=0,
