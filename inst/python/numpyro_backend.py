@@ -289,17 +289,19 @@ def parse_prior(prior_str, dim=None):
 # Link Functions
 # =============================================================================
 
-_CLOGLOG_HI = 700.0
+def _cloglog_hi():
+    """Where the Gumbel-min latent's e^x is capped: below the format's exp overflow."""
+    return 700.0 if jax.config.jax_enable_x64 else 88.0
 
 
 def _cloglog_cdf(x):
     """Gumbel-min (smallest extreme value) CDF: F(x) = 1 - exp(-exp(x))."""
-    return -jnp.expm1(-jnp.exp(jnp.minimum(x, _CLOGLOG_HI)))
+    return -jnp.expm1(-jnp.exp(jnp.minimum(x, _cloglog_hi())))
 
 
 def _cloglog_pdf(x):
     """Gumbel-min density: f(x) = exp(x - exp(x))."""
-    xc = jnp.minimum(x, _CLOGLOG_HI)
+    xc = jnp.minimum(x, _cloglog_hi())
     return jnp.exp(xc - jnp.exp(xc))
 
 
@@ -347,7 +349,7 @@ def _link_diff_fn(link_name):
                                         jax_expit(hi) - jax_expit(lo))
     if link_name == "cloglog":
         def diff(lo, hi):
-            surv = lambda x: jnp.exp(-jnp.exp(jnp.minimum(x, _CLOGLOG_HI)))
+            surv = lambda x: jnp.exp(-jnp.exp(jnp.minimum(x, _cloglog_hi())))
             return jnp.where(lo >= _CLOGLOG_MED, surv(lo) - surv(hi),
                              _cloglog_cdf(hi) - _cloglog_cdf(lo))
         return diff
@@ -1397,7 +1399,7 @@ def _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi):
     inner = has_lo & has_hi
     lp, g_lo, g_hi = _probit_cell_native(z_lo, z_hi)
     narrow, lpn, rA, rB = _probit_narrow(jnp.where(inner, z_lo, 0.0), jnp.where(inner, w, 1.0), inner)
-    lfl = jnp.log(_pfloor())
+    lfl = jnp.log(1e-300)
     kept = lpn > lfl
     lp = jnp.where(narrow, jnp.where(kept, lpn, lfl), lp)
     gA = jnp.where(narrow, jnp.where(kept, rA, 0.0), jnp.where(has_hi, g_hi, 0.0) + jnp.where(has_lo, g_lo, 0.0))
@@ -1444,7 +1446,7 @@ def _inner_ratios(link_name, z_lo, w, lp):
         m, lA = _logit_lA(z_lo, w)
         near = -jnp.sign(m) * jnp.exp(lA - lp)
     else:
-        l = jnp.minimum(z_lo, _CLOGLOG_HI)
+        l = jnp.minimum(z_lo, _cloglog_hi())
         wl = jnp.maximum(w, 1e-300)
         gap = jnp.exp(jnp.minimum(l + wl + jnp.log(-jnp.expm1(-wl)), 700.0))
         near = jnp.expm1(jnp.minimum(wl, 700.0) - gap) * jnp.exp(lpdf(z_lo) - lp)
@@ -1452,7 +1454,7 @@ def _inner_ratios(link_name, z_lo, w, lp):
 
 
 def _cloglog_inner(z_lo, w):
-    l = jnp.minimum(z_lo, _CLOGLOG_HI)
+    l = jnp.minimum(z_lo, _cloglog_hi())
     el = jnp.exp(l)
     wl = jnp.maximum(w, 1e-300)
     wc = jnp.minimum(wl, 700.0)
@@ -1621,14 +1623,17 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb=None):
     """The meta-d' cell of _metad_cell_jax under a logistic or Gumbel-min latent distribution: the
     survival on "old" responses and the CDF on "new" ones taken directly, the link not being symmetric.
     lb, a log mass the caller adds to the rating cell's (a narrow band's, with open edges here), is added
-    before the meta-level decision's is taken off, which far into one tail is as large and cancels it."""
+    before the meta-level decision's is taken off, which far into one tail is as large and cancels it.
+    Where an "old" cell's lower edge is the meta criterion itself (the lowest "old" rating), the two edges'
+    derivatives, each near e^z far into the upper tail, cancel in any parameter's: their sum goes on z_c and
+    the lower edge's is 0."""
     lb = jnp.zeros_like(z_a) if lb is None else lb
     cdf, pdf = _link_fns(link_name)
     diff = _link_diff_fn(link_name)
     if link_name == "logit":
         ccdf = lambda x: jax_expit(-x)
     else:
-        ccdf = lambda x: jnp.exp(-jnp.exp(jnp.minimum(x, _CLOGLOG_HI)))
+        ccdf = lambda x: jnp.exp(-jnp.exp(jnp.minimum(x, _cloglog_hi())))
     fl = _pfloor()
     lo_open = z_lo <= -0.5 * _OPEN
     hi_open = z_hi >= 0.5 * _OPEN
@@ -1647,19 +1652,33 @@ def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb=None):
     pick = lambda x, safe: jnp.where(deep, x, safe)
     za_s, zc_s, zl_s, zh_s = pick(z_a, 0.0), pick(z_c, 0.0), pick(zl, 0.0), pick(zh, 1.0)
     lS, lF, lpdf = _link_log_tails(link_name)
+    hS, hF, dS = _link_log_hazards(link_name)
     lPa = jnp.where(old, lS(za_s), lF(za_s))
     lPc = jnp.where(old, lS(zc_s), lF(zc_s))
     med = 0.0 if link_name == "logit" else _CLOGLOG_MED
     inner = ~lo_open & ~hi_open
     il, ih = jnp.where(inner, zl_s, 0.0), jnp.where(inner, zh_s, 1.0)
-    l_in = jnp.where(il >= med, lS(il) + jnp.log(-jnp.expm1(lS(ih) - lS(il))),
-                     lF(ih) + jnp.log(-jnp.expm1(lF(il) - lF(ih))))
+    up = il >= med
+    w_up = jnp.log(-jnp.expm1(dS(ih, il)))
+    w_lo = jnp.log(-jnp.expm1(lF(il) - lF(ih)))
+    l_in = jnp.where(up, lS(il) + w_up, lF(ih) + w_lo)
     lD = jnp.where(lo_open & hi_open, 0.0, jnp.where(lo_open, lF(zh_s), jnp.where(hi_open, lS(zl_s), l_in)))
-    ga = jnp.where(deep, s * jnp.exp(lpdf(za_s) - lPa), ga)
-    gc = jnp.where(deep, -s * jnp.exp(lpdf(zc_s) - lPc), gc)
-    gl = jnp.where(deep, -jnp.exp(lpdf(zl_s) - lD), gl)
-    gh = jnp.where(deep, jnp.exp(lpdf(zh_s) - lD), gh)
-    lp = jnp.where(deep, lPa + ((lD + lb) - lPc), lp)
+    rel = jnp.where(lo_open & hi_open, -lPc, lD - lPc)
+    rel = jnp.where(old & hi_open & ~lo_open, dS(zl_s, zc_s), rel)
+    rel = jnp.where(old & inner & up, dS(il, zc_s) + w_up, rel)
+    ga = jnp.where(deep, s * jnp.exp(jnp.where(old, hS(za_s), hF(za_s))), ga)
+    gc = jnp.where(deep, -s * jnp.exp(jnp.where(old, hS(zc_s), hF(zc_s))), gc)
+    gl_d = jnp.where(hi_open, -jnp.exp(hS(zl_s)),
+                     jnp.where(up, -jnp.exp(hS(il) - w_up), -jnp.exp(hF(il) + lF(il) - lF(ih) - w_lo)))
+    gh_d = jnp.where(lo_open, jnp.exp(hF(zh_s)),
+                     jnp.where(up, jnp.exp(hS(ih) + dS(ih, il) - w_up), jnp.exp(hF(ih) - w_lo)))
+    shared = old & ~lo_open & up & (zl_s == zc_s)
+    gc_shared = jnp.where(hi_open, 0.0, -jnp.exp(hS(il) + dS(ih, il) - w_up))
+    gc = jnp.where(deep & shared, gc_shared, gc)
+    gl_d = jnp.where(shared, 0.0, gl_d)
+    gl = jnp.where(deep, gl_d, gl)
+    gh = jnp.where(deep, gh_d, gh)
+    lp = jnp.where(deep, lPa + (rel + lb), lp)
     return lp, ga, jnp.where(lo_open, 0.0, gl), jnp.where(hi_open, 0.0, gh), gc
 
 
@@ -1668,11 +1687,25 @@ def _link_log_tails(link_name):
     accurate far into its tails."""
     if link_name == "logit":
         return (lambda x: -jax.nn.softplus(x)), (lambda x: -jax.nn.softplus(-x)), _log_logit_pdf
-    lS = lambda x: -jnp.exp(jnp.minimum(x, _CLOGLOG_HI))
+    lS = lambda x: -jnp.exp(jnp.minimum(x, _cloglog_hi()))
     lF = lambda x: jnp.where(x < -20.0, x - 0.5 * jnp.exp(jnp.minimum(x, -20.0)),
-                             jnp.log(-jnp.expm1(-jnp.exp(jnp.maximum(jnp.minimum(x, _CLOGLOG_HI), -20.0)))))
-    lpdf = lambda x: jnp.minimum(x, _CLOGLOG_HI) - jnp.exp(jnp.minimum(x, _CLOGLOG_HI))
+                             jnp.log(-jnp.expm1(-jnp.exp(jnp.maximum(jnp.minimum(x, _cloglog_hi()), -20.0)))))
+    lpdf = lambda x: jnp.minimum(x, _cloglog_hi()) - jnp.exp(jnp.minimum(x, _cloglog_hi()))
     return lS, lF, lpdf
+
+
+def _link_log_hazards(link_name):
+    """log f / S and log f / F of the logistic or Gumbel-min latent distribution, and the difference of log
+    survivals dS(a, b) = log S(a) - log S(b), each in closed form: far into the upper Gumbel tail log S and
+    log f are both near -e^x, and their differences cancel to nothing taken as differences."""
+    if link_name == "logit":
+        return (lambda x: -jax.nn.softplus(-x)), (lambda x: -jax.nn.softplus(x)),             (lambda a, b: jax.nn.softplus(b) - jax.nn.softplus(a))
+    hi = _cloglog_hi()
+    lF = _link_log_tails(link_name)[1]
+    hS = lambda x: jnp.minimum(x, hi)
+    hF = lambda x: jnp.minimum(x, hi) - jnp.exp(jnp.minimum(x, hi)) - lF(x)
+    dS = lambda a, b: -jnp.exp(jnp.minimum(b, hi)) * jnp.expm1(jnp.minimum(a, hi) - jnp.minimum(b, hi))
+    return hS, hF, dS
 
 
 def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit", lb=None):
@@ -3646,13 +3679,12 @@ _fused_cache = {}
 # --- Vectorized fused wrappers ---
 
 def _weight(p):
-    """A sampled mixture weight held half a unit roundoff inside (0, 1): a logistic weight rounds to 0 or 1
-    far out (past about 17 on the logit in float32), where the cell's derivative in it overflows and the
-    logistic's own derivative is 0; the weight it rounded from lies inside. Structural zeros (no recollection
-    for new items) are set after it."""
+    """A sampled mixture weight held half a unit roundoff below 1: a logistic weight rounds to exactly 1 far
+    out (past about 17 on the logit in float32), where the cell's derivative in it overflows and the
+    logistic's own derivative is 0; the weight it rounded from lies below. Small weights are representable
+    and are left as they are. Structural zeros (no recollection for new items) are set after it."""
     p = jnp.asarray(p)
-    e = 0.5 * jnp.finfo(p.dtype).eps
-    return jnp.clip(p, e, 1.0 - e)
+    return jnp.minimum(p, 1.0 - 0.5 * jnp.finfo(p.dtype).eps)
 
 
 def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
