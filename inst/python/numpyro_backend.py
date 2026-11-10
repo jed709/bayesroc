@@ -2969,7 +2969,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         zs_a = jnp.where(has2_lo, zs_lo, zs_hi)
         Bs_in = jnp.where(in2, Bs, 0.0)
         g2 = _lw_chain(Ar2 * inv_P, Br2 * inv_P, z2_a, w2, in2, inv_s2, z2_hi)
-        src_scale = -(As * zs_a + Bs_in * jnp.where(in2, ws, 0.0)) * inv_P
+        src_scale = -_lw_scale(As, Bs_in, zs_a, ws, in2, zs_hi) * inv_P
         dg2 = _lw_gap_grads((Ar2 * inv_s2 + As * inv_sc) * inv_P, (Br2 * inv_s2 + Bs * inv_sc) * inv_P, k2_a,
                             jnp.asarray(own_mask2)[:, y2 - 1], in2, gap_mask2_np, gd2)
 
@@ -3913,7 +3913,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         g1 = _lw_chain(gA1, gB1, z1_a, w1, in1, inv_s1, z1_hi)
         g2 = _lw_chain(gA2, gB2, z2_a, w2, in2, inv_s2, z2_hi)
         zs_a = jnp.where(has2_lo, q["zs_lo"], q["zs_hi"])
-        zs_term = As * zs_a + Bs * jnp.where(in2, q["ws"], 0.0)
+        zs_term = _lw_scale(As, Bs, zs_a, q["ws"], in2, q["zs_hi"])
         not_floor = f(~q["sc_floor"] & (1.0 - rho_val**2 > 1e-20))
         d_mu2_c = g2[0] - g_zcp / rs2
         d_s2_c = g2[1] - zs_term * inv_s2 + g_zcp * mu2 * rho_val / (rs2 * rs2)
@@ -4454,6 +4454,8 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
         gap_link: "log" or "softplus"
     """
 
+    if corr is not None:
+        corr = jnp.clip(corr, -_RHO_MAX, _RHO_MAX)
     N = y.shape[0]
     K = len(old_level_map) + J
 
@@ -4486,8 +4488,7 @@ def cdp_loglik(y, rk, is_old, thresh, mu_R, sigma_R, mu_F, sigma_F,
             unjudged = rk == 0
             y_band = jnp.where(match.any(axis=1), old_idx + 2, 1).astype(jnp.int32)
             mu_M = mu_R + mu_F
-            sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 +
-                            (0.0 if corr is None else 2.0 * jnp.clip(corr, -_RHO_MAX, _RHO_MAX) * sigma_R * sigma_F))
+            sd_M = jnp.sqrt(sigma_R ** 2 + sigma_F ** 2 + (0.0 if corr is None else 2.0 * corr * sigma_R * sigma_F))
             ug = jnp.minimum(u, N - 1)
             log_lik = jnp.zeros(N, dtype=_FLOAT).at[u].set(
                 fused_loglik_simple(y_band[ug], J + 1, mu_M[ug], sd_M[ug], thresh_mid[ug], _gap_rows(log_gaps, ug),
