@@ -269,8 +269,14 @@ inline void probit_cell_range(int64_t i0, int64_t i1, const double* zlo, const d
 }
 
 
-inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& ga, v4d& gl, v4d& gh,
-                        v4d& gc) {
+inline double hazard_excess(double x) {
+  double t = x;
+  for (int k = 16; k > 1; --k) t = x + k / t;
+  return 1.0 / t;
+}
+
+inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d tail, v4d e, v4d w, v4d& lp, v4d& ga,
+                        v4d& gl, v4d& gh, v4d& gc, v4d& gs) {
   const v4d zero = splat(0.0), one = splat(1.0), fl = splat(1e-300);
   const v4i old = side > splat(0.5);
   const v4d s = vsel(old, one, -one);
@@ -292,7 +298,38 @@ inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& 
   const v4d bl = -dl * ib, bh = dh * ib;
   gl = vsel(old, bl, -bh);
   gh = vsel(old, bh, -bl);
+  gs = gl + gh + gc;
   for (int k = 0; k < 4; ++k) {
+    if (tail[k] > 0.5) {
+      const double u = uc[k], x1 = u + e[k], x2 = x1 + w[k];
+      const double ru = hazard_excess(u), r1 = hazard_excess(x1), r2 = hazard_excess(x2);
+      const double hu = u + ru, h1 = x1 + r1, h2 = x2 + r2;
+      const double d1 = e[k] + (r1 - ru);
+      const double H01 = e[k] * (u + 0.5 * e[k]) + std::log1p(d1 / hu);
+      double dh12, H12;
+      if (w[k] * x2 < 0.05) {
+        const double xm = x1 + 0.5 * w[k], rm = hazard_excess(xm), hm = xm + rm;
+        dh12 = w[k] * (h1 * r1 + 4.0 * hm * rm + h2 * r2) / 6.0;
+        H12 = w[k] * (h1 + 4.0 * hm + h2) / 6.0;
+      } else {
+        dh12 = w[k] + (r2 - r1);
+        H12 = w[k] * (x1 + 0.5 * w[k]) + std::log1p(dh12 / h1);
+      }
+      const double em = std::expm1(H12), om = -std::expm1(-H12);
+      const double tl = -h1 / om, th = h2 / em;
+      if (Qa[k] < 1e-280) {
+        const double lQa = bvn_tail::log_Q(ua[k]);
+        lp[k] = lQa + (std::log(om) - H01);
+        ga[k] = -s[k] * std::exp(bvn_tail::log_phi(ua[k]) - lQa);
+      } else {
+        lp[k] = std::log(Qa[k]) + (std::log(om) - H01);
+      }
+      gl[k] = old[k] ? tl : -th;
+      gh[k] = old[k] ? th : -tl;
+      gc[k] = s[k] * hu;
+      gs[k] = s[k] * (dh12 / em - d1);
+      continue;
+    }
     if (!(Qa[k] < 1e-280 || D[k] < 1e-280 || Qc[k] < 1e-280)) continue;
     const double lQa = bvn_tail::log_Q(ua[k]), lQc = bvn_tail::log_Q(uc[k]);
     const bvn_tail::Band b = bvn_tail::band(ul[k], uh[k]);
@@ -301,24 +338,25 @@ inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& 
     gc[k] = s[k] * std::exp(bvn_tail::log_phi(uc[k]) - lQc);
     gl[k] = old[k] ? -b.Al : -b.Au;
     gh[k] = old[k] ? b.Au : b.Al;
+    gs[k] = gl[k] + gh[k] + gc[k];
   }
 }
 
 inline void metad_array(int64_t n, const double* const* in, double* const* out) {
   int64_t i = 0;
-  v4d a[5], r[5];
+  v4d a[8], r[6];
   for (; i + 4 <= n; i += 4) {
-    for (int j = 0; j < 5; ++j) std::memcpy(&a[j], in[j] + i, 32);
-    metad_cell4(a[0], a[1], a[2], a[3], a[4], r[0], r[1], r[2], r[3], r[4]);
-    for (int j = 0; j < 5; ++j) std::memcpy(out[j] + i, &r[j], 32);
+    for (int j = 0; j < 8; ++j) std::memcpy(&a[j], in[j] + i, 32);
+    metad_cell4(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], r[0], r[1], r[2], r[3], r[4], r[5]);
+    for (int j = 0; j < 6; ++j) std::memcpy(out[j] + i, &r[j], 32);
   }
   if (i < n) {
-    for (int j = 0; j < 5; ++j) {
+    for (int j = 0; j < 8; ++j) {
       a[j] = splat(j == 2 || j == 4 ? 1.0 : 0.0);
       for (int64_t k = 0; i + k < n; ++k) a[j][k] = in[j][i + k];
     }
-    metad_cell4(a[0], a[1], a[2], a[3], a[4], r[0], r[1], r[2], r[3], r[4]);
-    for (int j = 0; j < 5; ++j)
+    metad_cell4(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], r[0], r[1], r[2], r[3], r[4], r[5]);
+    for (int j = 0; j < 6; ++j)
       for (int64_t k = 0; i + k < n; ++k) out[j][i + k] = r[j][k];
   }
 }

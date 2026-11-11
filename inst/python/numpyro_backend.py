@@ -1642,11 +1642,33 @@ def _make_fused_batch_loglik(K, gap_link_is_softplus, link_name="probit"):
 
 
 _METAD_DEEP = 1e20
+_METAD_TAIL = 8.0
 
 
-def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
-    """(lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c) of log P(R | S) + log P'(cell) - log P'(R | S), every
-    term an upper-tail probability after reflecting "new" responses."""
+def _hazard_excess(x):
+    """phi(x) / Q(x) - x by Laplace's continued fraction, at rounding from x = _METAD_TAIL up."""
+    t = x
+    for k in range(16, 1, -1):
+        t = x + k / t
+    return 1.0 / t
+
+
+def _metad_tail(z_lo, z_hi, z_c, old, e=None, w=None):
+    """The meta-d' cell's tail rows, the meta criterion beyond _METAD_TAIL on the response's side, with the
+    distance e from the criterion to the cell's near edge and the cell's width w, taken from the edges
+    unless given."""
+    e = jnp.where(old, z_lo - z_c, z_c - z_hi) if e is None else e
+    w = z_hi - z_lo if w is None else w
+    return (jnp.where(old, z_c, -z_c) > _METAD_TAIL) & (e >= 0.0), e, w
+
+
+def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old, e=None, w=None):
+    """(lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c, d/d shift) of log P(R | S) + log P'(cell) - log P'(R | S),
+    every term an upper-tail probability after reflecting "new" responses, the last the derivative in a
+    common shift of z_lo, z_hi and z_c. On the tail rows of _metad_tail the cell is taken from z_c, e and w:
+    the hazards x + r(x) of the three points differ by e, w and differences of the excesses r, and the log
+    survivals by integrals of the hazard, so that neither the value nor the shift derivative is a
+    difference of terms the size of z_c."""
     s = jnp.where(old, 1.0, -1.0).astype(z_a.dtype)
     ua, uc = s * z_a, s * z_c
     ul, uh = jnp.where(old, z_lo, -z_hi), jnp.where(old, z_hi, -z_lo)
@@ -1675,7 +1697,37 @@ def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old):
     bl = jnp.where(deep, jnp.where(edge(ul_s), -jnp.exp(lphi(ul_s) - lD), 0.0), bl)
     bh = jnp.where(deep, jnp.where(edge(uh_s), jnp.exp(lphi(uh_s) - lD), 0.0), bh)
     lp = jnp.where(deep, lQa + lD - lQc, lp)
-    return lp, ga, jnp.where(old, bl, -bh), jnp.where(old, bh, -bl), gc
+    tail, e, w = _metad_tail(z_lo, z_hi, z_c, old, e, w)
+    u, es, ws = jnp.where(tail, uc, _METAD_TAIL), jnp.where(tail, e, 0.0), jnp.where(tail, w, 1.0)
+    x1 = u + es
+    x2, xm = x1 + ws, x1 + 0.5 * ws
+    ru, r1, rm, r2 = _hazard_excess(u), _hazard_excess(x1), _hazard_excess(xm), _hazard_excess(x2)
+    hu, h1, hm, h2 = u + ru, x1 + r1, xm + rm, x2 + r2
+    d1 = es + (r1 - ru)
+    H01 = es * (u + 0.5 * es) + jnp.log1p(d1 / hu)
+    nar = ws * x2 < _NARROW_U
+    dh = jnp.where(nar, ws * (h1 * r1 + 4.0 * hm * rm + h2 * r2) / 6.0, ws + (r2 - r1))
+    H12 = jnp.where(nar, ws * (h1 + 4.0 * hm + h2) / 6.0, ws * (x1 + 0.5 * ws) + jnp.log1p(dh / h1))
+    em, om = jnp.expm1(H12), -jnp.expm1(-H12)
+    lp = jnp.where(tail, jnp.where(deep, lQa, jnp.log(jnp.maximum(Qa, fl))) + (jnp.log(om) - H01), lp)
+    gc = jnp.where(tail, s * hu, gc)
+    bl, bh = jnp.where(tail, -h1 / om, bl), jnp.where(tail, h2 / em, bh)
+    gl, gh = jnp.where(old, bl, -bh), jnp.where(old, bh, -bl)
+    return lp, ga, gl, gh, gc, jnp.where(tail, s * (dh / em - d1), gl + gh + gc)
+
+
+def _cloglog_old_shift(z_c, e, w, inner):
+    """d/d shift of log(S(z_c + e) - S(z_c + e + w)) - log S(z_c) for the Gumbel-min survival S, the far
+    edge absent where not inner. The hazard is e^x, so the derivative is e^{z_c + e} (e^{-e} - 1) +
+    t / (e^t - 1) with t = e^{z_c + e} (e^w - 1), in closed form where the edge terms, each near e^z far
+    into the upper tail, cancel taken one by one."""
+    hi = _cloglog_hi()
+    x1 = jnp.minimum(z_c + e, hi)
+    near = jnp.exp(x1) * jnp.expm1(-jnp.where(z_c + e > hi, jnp.maximum(hi - z_c, 0.0), e))
+    ws = jnp.where(inner, w, 1.0)
+    t = jnp.exp(jnp.minimum(x1 + ws + jnp.log(-jnp.expm1(-ws)), 10.0))
+    t = jnp.maximum(t, jnp.finfo(z_c.dtype).tiny)
+    return near + jnp.where(inner, t * jnp.exp(-t) / -jnp.expm1(-t), 0.0)
 
 
 def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb=None):
@@ -1767,12 +1819,17 @@ def _link_log_hazards(link_name):
     return hS, hF, dS
 
 
-def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit", lb=None):
+def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit", lb=None, e=None, w=None):
+    """The meta-d' cell: (lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c, d/d shift), the last the derivative in a
+    common shift of z_lo, z_hi and z_c; e and w as in _metad_tail."""
     if link_name != "probit":
-        return _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb)
+        lp, ga, gl, gh, gc = _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb)
+        return lp, ga, gl, gh, gc, gl + gh + gc
     if _native_ok(z_a):
-        return _native_call("metad_cell", 5, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype)])
-    return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old)
+        tail, e, w = _metad_tail(z_lo, z_hi, z_c, old, e, w)
+        return _native_call("metad_cell", 6, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype), tail.astype(z_a.dtype),
+                                              e, w])
+    return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old, e, w)
 
 
 _PCQ_GL_X, _PCQ_GL_W = np.polynomial.legendre.leggauss(64)
@@ -2383,7 +2440,8 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
 
     def _pieces(y, d, m_old, m_new, a, thresh_mid, gaps):
         gap_vals = jax.nn.softplus(gaps) if gap_link_is_softplus else jnp.exp(gaps)
-        thresh = build(thresh_mid, gap_vals)
+        from_c = build(jnp.zeros_like(thresh_mid), gap_vals)
+        thresh = thresh_mid[:, None] + from_c
         old = y > half
         M = jnp.where(old, m_old, m_new)
         c = thresh_mid
@@ -2399,8 +2457,11 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
         inner = (y > 1) & (y < K)
         w = jnp.where(inner, gap_vals[rows, jnp.asarray(own_idx)[y - 1]], 1.0) if n_thresh > 1 else jnp.ones_like(d)
         ls = jnp.where(inner, z_lo, 0.0)
+        e = jnp.where(old, from_c[rows, k_lo], -from_c[rows, k_hi])
+        w_far = jnp.where(inner, w, _OPEN)
         if link_name == "probit":
-            sel, lb, rA, rB = _probit_narrow(ls, w, inner)
+            narrow, lb, rA, rB = _probit_narrow(ls, w, inner)
+            sel = narrow & ~_metad_tail(z_lo, z_hi, c + off, old, e, w_far)[0]
         else:
             lb, A, B = (_logit_inner if link_name == "logit" else _cloglog_inner)(ls, w)
             sel = inner & ~(w > 0.5 * jnp.maximum(1.0, jnp.abs(ls)))
@@ -2409,14 +2470,18 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
             deep_b = Db < _METAD_DEEP * _pfloor()
             dA, dB = _inner_ratios(link_name, jnp.where(deep_b, ls, 0.0), jnp.where(deep_b, w, 1.0))
             rA, rB = jnp.where(deep_b, dA, A * ib), jnp.where(deep_b, dB, B * ib)
+            narrow = sel
         lb_in = None if link_name == "probit" else jnp.where(sel, lb, 0.0)
-        lp, g_a, g_lo, g_hi, g_c = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo), jnp.where(sel, _OPEN, z_hi),
-                                               c + off, old, link_name, lb_in)
+        lp, g_a, g_lo, g_hi, _, G = _metad_cell(c - a * d, jnp.where(sel, -_OPEN, z_lo),
+                                                jnp.where(sel, _OPEN, z_hi), c + off, old, link_name, lb_in, e, w_far)
         g_lo = jnp.where(y > 1, g_lo, 0.0)
         g_hi = jnp.where(y < K, g_hi, 0.0)
-        gA = jnp.where(sel, rA, g_lo + g_hi)
-        gB = jnp.where(sel, rB, jnp.where(inner, g_hi, 0.0))
-        out = (jnp.where(sel, lp if link_name != "probit" else lp + lb, lp), g_a, gA, gB, g_c)
+        gA = jnp.where(narrow, rA, g_lo + g_hi)
+        gB = jnp.where(narrow, rB, jnp.where(inner, g_hi, 0.0))
+        G = jnp.where(sel, rA + G, G)
+        if link_name == "cloglog":
+            G = jnp.where(old, _cloglog_old_shift(c + off, e, w, inner), G)
+        out = (jnp.where(sel, lp if link_name != "probit" else lp + lb, lp), g_a, gA, gB, G)
         return out, (old, M, a_c, c_mid, jnp.where(y > 1, k_lo, k_hi), gap_vals)
 
     @custom_jvp
@@ -2427,14 +2492,13 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
     def _metad_jvp(primals, tangents):
         y, d, m_old, m_new, a, thresh_mid, gaps = primals
         _, t_d, t_mo, t_mn, _, t_mid, t_gaps = tangents
-        (lp, g_a, gA, gB, g_c), (old, M, a_c, c_mid, k_a, gap_vals) = _pieces(*primals)
-        G = gA + g_c
+        (lp, g_a, gA, gB, G), (old, M, a_c, c_mid, k_a, gap_vals) = _pieces(*primals)
         if relative:
-            d_mid = g_a + g_c + (M - 1.0) * G
+            d_mid = g_a + G * M
             d_d = -a * g_a - G * M * a
             d_M = G * (c_mid - d * a_c)
         else:
-            d_mid = g_a + g_c
+            d_mid = g_a + G
             d_d = -a * g_a - G * (q + M * a_c)
             d_M = -G * d * a_c
         gap_d = jax.nn.sigmoid(gaps) if gap_link_is_softplus else gap_vals
@@ -2442,7 +2506,7 @@ def _make_fused_metad_loglik(K, gap_link_is_softplus, q, relative, link_name="pr
         own = jnp.asarray(own_mask, dtype=gaps.dtype)[:, y - 1]
         d_gaps = (gm[:, k_a].T * gA[:, None] + own.T * gB[:, None]) * gap_d
         tan = (d_d * t_d + jnp.where(old, d_M, 0.0) * t_mo + jnp.where(old, 0.0, d_M) * t_mn +
-               (d_mid + gA) * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
+               d_mid * t_mid + jnp.sum(d_gaps * t_gaps, axis=1))
         return lp, tan
 
     return _metad
@@ -2598,7 +2662,7 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
         def logged(ca, cb):
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
-            ka, kb = ca[0] > _LOG_P_FLOOR + 1e-3, cb[0] > _LOG_P_FLOOR + 1e-3
+            ka, kb = jnp.abs(ca[0] - _LOG_P_FLOOR) > 1e-3, jnp.abs(cb[0] - _LOG_P_FLOOR) > 1e-3
             return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
                     jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
@@ -2653,7 +2717,7 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
         def logged(ca, cb):
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
-            ka, kb = ca[0] > _LOG_P_FLOOR + 1e-3, cb[0] > _LOG_P_FLOOR + 1e-3
+            ka, kb = jnp.abs(ca[0] - _LOG_P_FLOOR) > 1e-3, jnp.abs(cb[0] - _LOG_P_FLOOR) > 1e-3
             return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
                     jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
