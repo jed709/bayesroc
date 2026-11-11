@@ -147,6 +147,15 @@ struct PhiV {
   v4d P, dP, Q;
 };
 
+inline PhiV vacc_phi(v4d x);
+
+inline void vprobit_triple_acc(v4d x, v4d& P, v4d& dP, v4d& q) {
+  const PhiV r = vacc_phi(x);
+  P = r.P;
+  dP = r.dP;
+  q = r.Q;
+}
+
 constexpr double kProbitC[12] = {0.23164256724403792, 0.2316161018958152, 0.21963988229322737, 0.19034147705499127, 0.182843173379805, 0.023627126024141354, 0.3261383197776697, -0.4226294412990229, 0.566393164718276, -0.42518433981895243, 0.14839140546152088, -0.019505298125989647};
 constexpr double kProbitG[14] = {1.0000028804980357, -0.00011425112737684096, 0.001956685225065126, -0.019177470139476724, 0.12026315990835201, -0.510972748965256, 1.5177140282601391, -3.1995984292291655, 4.79844987841736, -5.063837790314006, 3.656934740253874, -1.7097165426172967, 0.46231487164147905, -0.05421893181564818};
 
@@ -186,8 +195,8 @@ inline v4d vprobit_band(v4d l, v4d h, v4d Pl, v4d Ph, v4d ql, v4d qh, v4d& dl, v
 inline void probit_cell4(v4d l, v4d h, v4d& lp, v4d& glo, v4d& ghi) {
   const v4d zero = splat(0.0), fl = splat(1e-300);
   v4d Pl, dl, ql, Ph, dh, qh;
-  vprobit_triple(l, Pl, dl, ql);
-  vprobit_triple(h, Ph, dh, qh);
+  vprobit_triple_acc(l, Pl, dl, ql);
+  vprobit_triple_acc(h, Ph, dh, qh);
   v4d D = vprobit_band(l, h, Pl, Ph, ql, qh, dl, dh);
   v4d p = vmax(D, fl);
   v4d inv = vsel(D > fl, splat(1.0) / p, zero);
@@ -198,8 +207,8 @@ inline void probit_cell4(v4d l, v4d h, v4d& lp, v4d& glo, v4d& ghi) {
 
 inline void probit_diff4(v4d l, v4d h, v4d& D, v4d& pl, v4d& ph) {
   v4d Pl, ql, Ph, qh;
-  vprobit_triple(l, Pl, pl, ql);
-  vprobit_triple(h, Ph, ph, qh);
+  vprobit_triple_acc(l, Pl, pl, ql);
+  vprobit_triple_acc(h, Ph, ph, qh);
   D = vprobit_band(l, h, Pl, Ph, ql, qh, pl, ph);
 }
 
@@ -267,10 +276,10 @@ inline void metad_cell4(v4d za, v4d zl, v4d zh, v4d zc, v4d side, v4d& lp, v4d& 
   const v4d s = vsel(old, one, -one);
   const v4d ua = s * za, uc = s * zc, ul = vsel(old, zl, -zh), uh = vsel(old, zh, -zl);
   v4d Pa, da, qa, Pc, dc, qc, Pl, dl, ql, Ph, dh, qh;
-  vprobit_triple(ua, Pa, da, qa);
-  vprobit_triple(uc, Pc, dc, qc);
-  vprobit_triple(ul, Pl, dl, ql);
-  vprobit_triple(uh, Ph, dh, qh);
+  vprobit_triple_acc(ua, Pa, da, qa);
+  vprobit_triple_acc(uc, Pc, dc, qc);
+  vprobit_triple_acc(ul, Pl, dl, ql);
+  vprobit_triple_acc(uh, Ph, dh, qh);
   const v4d Qa = vsel(ua >= zero, qa, one - qa);
   const v4d Qc = vsel(uc >= zero, qc, one - qc);
   const v4d D = vprobit_band(ul, uh, Pl, Ph, ql, qh, dl, dh);
@@ -681,14 +690,14 @@ inline void vrdp4(const v4d* in, v4d* out) {
   v4d z2rh = vsel(h2h, (c2h - sd) * isS, INF), z2rl = vsel(h2l, (c2l - sd) * isS, NINF);
   v4d P1fh, d1fh, P1fl, d1fl, P2nh, d2nh, P2nl, d2nl, P1rh, d1rh, P1rl, d1rl, P2rh, d2rh, P2rl, d2rl;
   v4d q1fh, q1fl, q2nh, q2nl, q1rh, q1rl, q2rh, q2rl;
-  vprobit_triple(z1fh, P1fh, d1fh, q1fh);
-  vprobit_triple(z1fl, P1fl, d1fl, q1fl);
-  vprobit_triple(z2h, P2nh, d2nh, q2nh);
-  vprobit_triple(z2l, P2nl, d2nl, q2nl);
-  vprobit_triple(z1rh, P1rh, d1rh, q1rh);
-  vprobit_triple(z1rl, P1rl, d1rl, q1rl);
-  vprobit_triple(z2rh, P2rh, d2rh, q2rh);
-  vprobit_triple(z2rl, P2rl, d2rl, q2rl);
+  vprobit_triple_acc(z1fh, P1fh, d1fh, q1fh);
+  vprobit_triple_acc(z1fl, P1fl, d1fl, q1fl);
+  vprobit_triple_acc(z2h, P2nh, d2nh, q2nh);
+  vprobit_triple_acc(z2l, P2nl, d2nl, q2nl);
+  vprobit_triple_acc(z1rh, P1rh, d1rh, q1rh);
+  vprobit_triple_acc(z1rl, P1rl, d1rl, q1rl);
+  vprobit_triple_acc(z2rh, P2rh, d2rh, q2rh);
+  vprobit_triple_acc(z2rl, P2rl, d2rl, q2rl);
   v4d D1f = vprobit_band(z1fl, z1fh, P1fl, P1fh, q1fl, q1fh, d1fl, d1fh);
   v4d D2n = vprobit_band(z2l, z2h, P2nl, P2nh, q2nl, q2nh, d2nl, d2nh);
   v4d D1r = vprobit_band(z1rl, z1rh, P1rl, P1rh, q1rl, q1rh, d1rl, d1rh);
