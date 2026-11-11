@@ -1177,7 +1177,7 @@ class TMap:
     def _post(self, th, parts, trim):
         """The constrained parameters at th, the model's coordinates in the sampled orders, with
         the orders under "__corr_perm" for the blocks' prior factors."""
-        post = dict(self.post(th, self.with_order(trim, parts)))
+        post = dict(getattr(self.post, "nolik", self.post)(th, self.with_order(trim, parts)))
         if self.corr:
             post["__corr_perm"] = {cb["prefix"]: p for cb, p in zip(self.corr, self._corr_perms(parts))}
         return post
@@ -1672,7 +1672,7 @@ class TMap:
         it fails, q0 is set so that the centre is u itself. Traceable: the
         expansion's D + 1 gradients run in a lax.map and the Newton steps in a fori_loop, so the
         gradient is compiled once per super-block."""
-        post0 = self.post(th, OFF["trim"])
+        post0 = getattr(self.post, "nolik", self.post)(th, OFF["trim"])
         out = []
         for sb in self.sbs:
             A = sb.A(post0)
@@ -1733,7 +1733,9 @@ def build(model, config, off, unflatten, split=False, links=True):
             sb.links_kept = []
     _, _, post_trim = dr._model_info(model, dr._trim_config(config))
     import numpyro_backend as nb
-    tm = TMap(sbs, lambda th, trim: post_trim(unflatten(th), trim))
+    post = lambda th, trim: post_trim(unflatten(th), trim)
+    post.nolik = lambda th, trim: post_trim.nolik(unflatten(th), trim)
+    tm = TMap(sbs, post)
     tm.rkg_plan = nb._rkg_plan(config)
     for sb in sbs:
         for b in sb.blocks:

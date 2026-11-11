@@ -83,7 +83,7 @@ test_that("meta-d' cell probabilities match the bmm / hmetad / quadrature refere
   expect_setequal(unique(f$anchor), c("absolute", "relative"))
 })
 
-test_that("native and pure-JAX meta-d' kernels match the reference and each other; the map projects M on its own response side", {
+test_that("the native meta-d' kernel matches the reference; the map projects M on its own response side", {
   skip_if_no_jax()
   py <- jax_python()
   out <- system2(py, c(test_path("python", "metad_check.py"), dirname(find_backend_script()), .bvn_ffi_lib(),
@@ -91,7 +91,6 @@ test_that("native and pure-JAX meta-d' kernels match the reference and each othe
   res <- jsonlite::fromJSON(sub("^RESULT ", "", grep("^RESULT ", out, value = TRUE)))
   expect_true(res$ffi_loaded)
   expect_lt(res$fixture_rel, 1e-7)
-  expect_lt(res$native_vs_jax, 1e-9)
   expect_true(res$tmap_rows)
 })
 

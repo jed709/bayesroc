@@ -741,7 +741,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
-                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"),
+                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
@@ -750,7 +750,7 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"), ("probit_diff", "ProbitDiff"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
-                         ("lnoise_cell", "LnoiseCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                         ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
@@ -2869,7 +2869,7 @@ def _dd_gap(g, softplus):
         return _dd_exp(g)
     y = jax.nn.softplus(g)
     ey = _dd_exp(y)
-    rhs = _dd_add((jnp.ones_like(g), jnp.zeros_like(g)), _dd_exp(g))
+    rhs = _dd_add(_dd_exp(g), (jnp.ones_like(g), jnp.zeros_like(g)))
     num = _dd_add(ey, (-rhs[0], -rhs[1]))
     newton = _two_sum(y, -(num[0] + num[1]) / ey[0])
     v = _dd_exp(jnp.minimum(g, -10.0))
@@ -2933,6 +2933,98 @@ def _cp_offset(thresh1_mid, gaps1, softplus, gm1, y1, n_thresh1, mu1, sigma1, mu
     return _dd_offset(zc, z1)
 
 
+def _bounded_geometry(e2, c2, y2, n_thresh2, item_type, mu2, sigma2, rho_val):
+    """The source dimension's conditional cell below the crossing point and the crossing point of the bounded
+    bivariate cell: (z_cp, zs_lo, zs_hi, ws, inv_sc, sqrt_1mrr, sc_floor, rho_sigma2, is_new)."""
+    _, _, w2, _, _, _, has2_lo, has2_hi = e2
+    sqrt_1mrr = jnp.sqrt(jnp.clip(1.0 - rho_val ** 2, 1e-20))
+    sc_floor = sigma2 * sqrt_1mrr <= sigma2 * 1e-6
+    sigma_cond = jnp.maximum(sigma2 * sqrt_1mrr, sigma2 * 1e-6)
+    inv_sc = 1.0 / sigma_cond
+    rho_sigma2 = rho_val * sigma2 + 1e-30
+    is_new = item_type == 1
+    z_cp = jnp.where(is_new, -1e6, -mu2 / rho_sigma2)
+    obs = jnp.arange(y2.shape[0])
+    zs_hi = jnp.where(has2_hi, c2[obs, jnp.clip(y2 - 1, 0, n_thresh2 - 1)] * inv_sc, _OPEN)
+    zs_lo = jnp.where(has2_lo, c2[obs, jnp.clip(y2 - 2, 0, n_thresh2 - 1)] * inv_sc, -_OPEN)
+    ws = w2 * sigma2 * inv_sc
+    return z_cp, zs_lo, zs_hi, ws, inv_sc, sqrt_1mrr, sc_floor, rho_sigma2, is_new
+
+
+def _bbv_jax(e1, e2, geo, rho_val, w_cut):
+    """The bounded bivariate cell at unit weight from its JAX pieces, w_cut the width of the detection cell's part
+    below the crossing point (_cp_offset): (P, p_det, D_s, A_s, B_s, As, Bs, gA1, gB1, g_zcp, Ar2, Br2, drho), P =
+    p_det p_src + p_above, D_s, A_s, B_s the conditional source cell of _cell_lw, As, Bs its anchor and width
+    derivatives weighted by p_det, gA1, gB1 the detection cell's anchor and width derivatives, g_zcp the crossing
+    point's, and Ar2, Br2, drho the rectangle's source anchor, width and rho derivatives."""
+    z1_lo, z1_hi, w1, _, _, in1, has1_lo, has1_hi = e1
+    z2_lo, z2_hi, w2, _, _, _, has2_lo, has2_hi = e2
+    z_cp, zs_lo, zs_hi, ws, _, _, sc_floor, _, is_new = geo
+    z_cp_eff = jnp.where(is_new, z1_lo, jnp.clip(z_cp, z1_lo, z1_hi))
+    off = jnp.where(has1_lo, w_cut, 1.0)
+    above_only = is_new | (off <= 0.0)
+    below_only = ~above_only & jnp.where(in1, off >= w1, z_cp >= z1_hi)
+    split = ~above_only & ~below_only
+    det_hi = z_cp_eff < 0.5 * _OPEN
+    w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, jnp.where(has1_lo, w_cut, z_cp_eff - z1_lo)))
+    det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
+    src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
+    w_ab = jnp.where(above_only, w1, jnp.where(in1, w1 - w_cut, z1_hi - z_cp_eff))
+    rect = _rect_lw(z_cp_eff, z1_hi, w_ab, z2_lo, z2_hi, w2, rho_val)
+    p_det = jnp.where(above_only, 0.0, jnp.clip(det[0], 0.0))
+    p_src = jnp.clip(src[0], 0.0)
+    p_above = jnp.where(below_only, 0.0, jnp.clip(rect[0], 0.0))
+    det_on = jnp.where((det[0] > 0.0) & ~above_only, p_src, 0.0)
+    src_on = jnp.where(src[0] > 0.0, p_det, 0.0)
+    above_on = (rect[0] > 0.0) & ~below_only
+    Ad, Bd = (jnp.where(det_on != 0.0, det[j], 0.0) * det_on for j in (1, 2))
+    As, Bs = (jnp.where(src_on != 0.0, src[j], 0.0) * src_on for j in (1, 2))
+    _, Ar1, Br1, Ar2, Br2, dr = (jnp.where(above_on, x, 0.0) for x in rect)
+    dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & det_hi, has1_lo)
+    in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
+    dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, in_ab, z_cp_eff > -0.5 * _OPEN)
+    cont = split & has1_lo & in_ab & ~sc_floor
+    gA1 = jnp.where(cont, Ad + Ar1, jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1)))
+    gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
+    g_zcp = jnp.where(split & sc_floor, dd_hi + dr_lo, 0.0)
+    return (p_det * p_src + p_above, p_det, src[0], src[1], src[2], As, Bs, gA1, gB1, g_zcp, Ar2, Br2, dr)
+
+
+_BBV_ROWS = 64
+
+
+def _bbv_cell(e1, e2, geo, rho_val, w_cut_fn):
+    """_bbv_jax from the native kernel, with the rows holding a narrow cell (which the kernel flags) from
+    _bbv_jax, gathered max(_BBV_ROWS, N / _BBV_ROWS) at a time; w_cut_fn(take) builds the crossing-point width of
+    the rows take() selects, which only the JAX path needs."""
+    z1_lo, z1_hi, w1 = e1[:3]
+    z2_lo, z2_hi, w2 = e2[:3]
+    z_cp, zs_lo, zs_hi, ws, is_new = geo[0], geo[1], geo[2], geo[3], geo[8]
+    full = lambda x: x
+    if not _native_ok(z1_lo):
+        return _bbv_jax(e1, e2, geo, rho_val, w_cut_fn(full))
+    dt = jnp.asarray(z1_lo).dtype
+    out = _native_call("bbv_cell", 14, jnp.broadcast_arrays(
+        *[jnp.asarray(a, dtype=dt) for a in (z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, zs_lo, zs_hi, ws, rho_val, z_cp,
+                                             is_new)]))
+    narrow = out[0] > 0.0
+    n = narrow.shape[0]
+    m = min(max(_BBV_ROWS, n // _BBV_ROWS), n)
+    count = jnp.sum(narrow)
+    rank = jnp.cumsum(narrow) - 1
+
+    def rows(carry):
+        o, k = carry
+        pick = narrow & (rank >= k * m) & (rank < (k + 1) * m)
+        idx = jnp.nonzero(pick, size=m, fill_value=n)[0]
+        take = lambda x: jnp.broadcast_to(x, (n,) + jnp.shape(x)[1:] if jnp.ndim(x) else (n,))[jnp.minimum(idx, n - 1)]
+        sub = _bbv_jax(tuple(take(x) for x in e1), tuple(take(x) for x in e2), tuple(take(x) for x in geo),
+                       take(rho_val), w_cut_fn(take))
+        return tuple(a.at[idx].set(b, mode="drop") for a, b in zip(o, sub)), k + 1
+
+    return jax.lax.while_loop(lambda c: c[1] * m < count, rows, (tuple(out[1:]), jnp.zeros((), count.dtype)))[0]
+
+
 def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
     """Fully-vectorized batch log-likelihood for bounded bivariate_sdt.
 
@@ -2941,7 +3033,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
     normal applies. For new items, z_cp=-20 so everything is above-cp.
 
     Each rating cell enters by its lower edge and width (_cell_lw, _rect_lw) wherever the crossing point
-    does not split it, with fully analytic JVP gradients.
+    does not split it, with fully analytic JVP gradients; the cell is the native kernel's (_bbv_cell).
     """
     n_thresh1 = K1 - 1
     n_gaps1 = n_thresh1 - 1
@@ -2963,50 +3055,20 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
         e1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
         e2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
-        z1_lo, z1_hi, w1, _, _, in1, has1_lo, has1_hi = e1
-        z2_lo, z2_hi, w2, _, _, in2, has2_lo, has2_hi = e2
-        one_minus_rho2 = jnp.clip(1.0 - rho_val ** 2, 1e-20)
-        sigma_cond = jnp.maximum(sigma2 * jnp.sqrt(one_minus_rho2), sigma2 * 1e-6)
-        inv_sc = 1.0 / sigma_cond
-        is_new = item_type == 1
-        z_cp = jnp.where(is_new, -1e6, -mu2 / (rho_val * sigma2 + 1e-30))
-        z_cp_eff = jnp.where(is_new, z1_lo, jnp.clip(z_cp, z1_lo, z1_hi))
-        split = ~is_new & (z_cp > z1_lo) & (z_cp < z1_hi)
-        above_only = is_new | (z_cp <= z1_lo)
-        below_only = ~is_new & (z_cp >= z1_hi)
-        obs = jnp.arange(y2.shape[0])
-        k2_hi = jnp.clip(y2 - 1, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(y2 - 2, 0, n_thresh2 - 1)
-        zs_hi = jnp.where(has2_hi, c2[obs, k2_hi] * inv_sc, _OPEN)
-        zs_lo = jnp.where(has2_lo, c2[obs, k2_lo] * inv_sc, -_OPEN)
-        ws = w2 * sigma2 * inv_sc
-        det_hi = z_cp_eff < 0.5 * _OPEN
-        w_cut = _cp_offset(thresh1_mid, gaps1, gap_link_is_softplus, gap_mask1_np, y1, n_thresh1, mu1, sigma1, mu2,
-                           sigma2, rho_val)
-        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, jnp.where(has1_lo, w_cut, z_cp_eff - z1_lo)))
-        det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
-        src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
-        w_ab = jnp.where(above_only, w1, jnp.where(in1, w1 - w_cut, z1_hi - z_cp_eff))
-        rect = _rect_lw(z_cp_eff, z1_hi, w_ab, z2_lo, z2_hi, w2, rho_val)
-        geo = (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
-               sigma_cond)
-        return e1, e2, det, src, rect, geo
-
-    def prob(det, src, rect, geo):
-        above_only, below_only = geo[3], geo[4]
-        p_det = jnp.where(above_only, 0.0, jnp.clip(det[0], 0.0))
-        p_src = jnp.clip(src[0], 0.0)
-        p_above = jnp.where(below_only, 0.0, jnp.clip(rect[0], 0.0))
-        return p_det, p_src, p_above, p_det * p_src + p_above
+        geo = _bounded_geometry(e2, c2, y2, n_thresh2, item_type, mu2, sigma2, rho_val)
+        cell = _bbv_cell(e1, e2, geo, rho_val, lambda t: _cp_offset(t(thresh1_mid), t(gaps1), gap_link_is_softplus,
+                                                                    gap_mask1_np, t(y1), n_thresh1, t(mu1), t(sigma1),
+                                                                    t(mu2), t(sigma2), t(rho_val)))
+        return e1, e2, geo, cell
 
     @custom_jvp
     def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
                      thresh1_mid, gaps1, thresh2_mid, gaps2):
         gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
         gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
-        _, _, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
-                                           thresh2_mid, gv2, gaps1)
-        return jnp.log(jnp.clip(prob(det, src, rect, geo)[3], _pfloor()))
+        cell = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2,
+                      gaps1)[3]
+        return jnp.log(jnp.clip(cell[0], _pfloor()))
 
     @_batch_fused.defjvp
     def _batch_fused_jvp(primals, tangents):
@@ -3016,31 +3078,16 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
          d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
         gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
         gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
-        e1, e2, det, src, rect, geo = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
-                                             gv1, thresh2_mid, gv2, gaps1)
+        e1, e2, geo, cell = pieces(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
+                                   thresh2_mid, gv2, gaps1)
         z1_lo, z1_hi, w1, z1_a, k1_a, in1, has1_lo, has1_hi = e1
         z2_lo, z2_hi, w2, z2_a, k2_a, in2, has2_lo, has2_hi = e2
-        (z_cp, z_cp_eff, split, above_only, below_only, zs_lo, zs_hi, ws, det_hi, inv_sc, one_minus_rho2,
-         sigma_cond) = geo
-        p_det, p_src, p_above, P_raw = prob(det, src, rect, geo)
+        _, zs_lo, zs_hi, ws, inv_sc, sqrt_1mrr, sc_floor, _, _ = geo
+        P_raw, _, _, _, _, As, Bs, gA1, gB1, d_zcp, Ar2, Br2, dr = cell
         P = jnp.clip(P_raw, _pfloor())
         val = jnp.log(P)
         inv_P = jnp.where(P_raw > _pfloor(), 1.0 / P, 0.0)
-
-        det_on = jnp.where((det[0] > 0.0) & ~above_only, p_src, 0.0)
-        src_on = jnp.where(src[0] > 0.0, p_det, 0.0)
-        above_on = jnp.where((rect[0] > 0.0) & ~below_only, 1.0, 0.0)
-        Ad, Bd = (jnp.where(det_on != 0.0, det[j], 0.0) * det_on for j in (1, 2))
-        As, Bs = (jnp.where(src_on != 0.0, src[j], 0.0) * src_on for j in (1, 2))
-        _, Ar1, Br1, Ar2, Br2, dr = (jnp.where(above_on > 0.0, x, 0.0) for x in rect)
-
-        dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & det_hi, has1_lo)
-        in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
-        dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, in_ab, z_cp_eff > -0.5 * _OPEN)
-        cont = split & has1_lo & in_ab & (item_type != 1) & (sigma2 * jnp.sqrt(one_minus_rho2) > sigma2 * 1e-6)
-        gA1 = jnp.where(cont, Ad + Ar1, jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1)))
-        gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
-        d_zcp = jnp.where(cont, 0.0, jnp.where(split, dd_hi + dr_lo, 0.0))
+        one_minus_rho2 = jnp.clip(1.0 - rho_val ** 2, 1e-20)
 
         inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
         g1 = _lw_chain(gA1 * inv_P, gB1 * inv_P, z1_a, w1, in1, inv_s1, z1_hi)
@@ -3059,8 +3106,7 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
         dz_cp_dmu2 = -1.0 / rho_sigma2_safe
         dz_cp_ds2 = mu2 / (rho_sigma2_safe * sigma2)
         dz_cp_drho = mu2 / (rho_safe * rho_sigma2_safe)
-        rho_factor = jnp.where((sigma2 * jnp.sqrt(one_minus_rho2) > sigma2 * 1e-6) & (1.0 - rho_val ** 2 > 1e-20),
-                               rho_val / one_minus_rho2, 0.0)
+        rho_factor = jnp.where(~sc_floor & (1.0 - rho_val ** 2 > 1e-20), rho_val / one_minus_rho2, 0.0)
         d_zcp = d_zcp * inv_P
 
         d_lp_dmu2 = g2[0] + d_zcp * dz_cp_dmu2
@@ -3880,37 +3926,12 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         e2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
         z1_lo, z1_hi, w1, _, _, in1, has1_lo, has1_hi = e1
         z2_lo, z2_hi, w2, _, _, in2, has2_lo, has2_hi = e2
-        k2_hi = jnp.clip(y2 - 1, 0, n_thresh2 - 1)
-        k2_lo = jnp.clip(y2 - 2, 0, n_thresh2 - 1)
-        sqrt_1mrr = jnp.sqrt(jnp.clip(1.0 - rho_val**2, 1e-20))
-        sc_floor = sigma2 * sqrt_1mrr <= sigma2 * 1e-6
-        sigma_cond = jnp.maximum(sigma2 * sqrt_1mrr, sigma2 * 1e-6)
-        inv_sc = 1.0 / sigma_cond
-        rho_sigma2 = rho_val * sigma2 + 1e-30
-        is_new = item_type == 1
-        z_cp = jnp.where(is_new, -1e6, -mu2 / rho_sigma2)
-        z_cp_eff = jnp.where(is_new, z1_lo, jnp.clip(z_cp, z1_lo, z1_hi))
-        split = ~is_new & (z_cp > z1_lo) & (z_cp < z1_hi)
-        above_only = is_new | (z_cp <= z1_lo)
-        below_only = ~is_new & (z_cp >= z1_hi)
-        zs_hi = jnp.where(has2_hi, c2[obs_idx, k2_hi] * inv_sc, INF)
-        zs_lo = jnp.where(has2_lo, c2[obs_idx, k2_lo] * inv_sc, -INF)
-        ws = w2 * sigma2 * inv_sc
-
-        det_hi = z_cp_eff < 0.5 * INF
-        w_cut = _cp_offset(thresh1_mid, gaps1, gap_link_is_softplus, gap_mask1_np, y1, n_thresh1, mu1, sigma1, mu2,
-                           sigma2, rho_val)
-        w_det = jnp.where(below_only, w1, jnp.where(above_only, 1.0, jnp.where(has1_lo, w_cut, z_cp_eff - z1_lo)))
-        det = _cell_lw("probit", z1_lo, z_cp_eff, jnp.where(has1_lo & det_hi, w_det, 1.0), has1_lo, det_hi)
-        src = _cell_lw("probit", zs_lo, zs_hi, ws, has2_lo, has2_hi)
-        det_on = (det[0] > 0.0) & ~above_only
-        src_on = src[0] > 0.0
-        p_det = jnp.where(det_on, det[0], 0.0)
-        p_src = jnp.where(src_on, src[0], 0.0)
-        rect = _rect_lw(z_cp_eff, z1_hi, jnp.where(above_only, w1, jnp.where(in1, w1 - w_cut, z1_hi - z_cp_eff)),
-                        z2_lo, z2_hi, w2, rho_val)
-        above_on = (rect[0] > 0.0) & ~below_only
-        biv_raw = p_det * p_src + jnp.where(above_on, rect[0], 0.0)
+        geo = _bounded_geometry(e2, c2, y2, n_thresh2, item_type, mu2, sigma2, rho_val)
+        z_cp, zs_lo, zs_hi, ws, inv_sc, sqrt_1mrr, sc_floor, rho_sigma2, is_new = geo
+        cell = _bbv_cell(e1, e2, geo, rho_val, lambda t: _cp_offset(t(thresh1_mid), t(gaps1), gap_link_is_softplus,
+                                                                    gap_mask1_np, t(y1), n_thresh1, t(mu1), t(sigma1),
+                                                                    t(mu2), t(sigma2), t(rho_val)))
+        biv_raw, p_det, D_s, A_s, B_s = cell[:5]
         biv_on = biv_raw > _pfloor()
         bounded_biv = jnp.where(biv_on, biv_raw, _pfloor())
 
@@ -3922,7 +3943,7 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         put = lambda v: jnp.zeros(N, dtype=v.dtype).at[midx].set(v, mode="drop")
         Pcp, dPcp = put(Pcp_g), put(dPcp_g)
         pm, Am1, _, Am2, Bm2, dmr = (put(v) for v in marg_g)
-        marg_raw = Pcp * src[0] + pm
+        marg_raw = Pcp * D_s + pm
         marg_on = marg_raw > _pfloor()
         bounded_marg = jnp.where(marg_on, marg_raw, _pfloor())
 
@@ -3935,10 +3956,8 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         wt2 = jnp.where(is_y1_top, R_I_eff * (1.0 - R_S_eff), 0.0)
         prob_raw = wt1 * bounded_biv + wt2 * bounded_marg + jnp.where(is_corner, R_I_eff * R_S_eff, 0.0)
         prob = jnp.clip(prob_raw, _pfloor())
-        parts = dict(e1=e1, e2=e2, det=det, src=src, rect=rect, det_on=det_on, src_on=src_on, above_on=above_on,
-                     p_det=p_det, p_src=p_src, biv_on=biv_on, marg_on=marg_on, Pcp=Pcp, dPcp=dPcp, Am1=Am1,
-                     Am2=Am2, Bm2=Bm2, dmr=dmr, z_cp=z_cp, z_cp_eff=z_cp_eff, split=split, above_only=above_only,
-                     below_only=below_only, det_hi=det_hi, zs_lo=zs_lo, zs_hi=zs_hi, ws=ws, inv_sc=inv_sc,
+        parts = dict(e1=e1, e2=e2, cell=cell, biv_on=biv_on, marg_on=marg_on, Pcp=Pcp, dPcp=dPcp, Am1=Am1,
+                     Am2=Am2, Bm2=Bm2, dmr=dmr, zs_lo=zs_lo, zs_hi=zs_hi, ws=ws, inv_sc=inv_sc,
                      sc_floor=sc_floor, sqrt_1mrr=sqrt_1mrr, rho_sigma2=rho_sigma2, is_new=is_new,
                      R_I_eff=R_I_eff, R_S_eff=R_S_eff, is_A=is_A, is_y1_top=is_y1_top, is_corner=is_corner,
                      w1=wt1, w2=wt2, bounded_biv=bounded_biv, bounded_marg=bounded_marg, prob_raw=prob_raw)
@@ -3970,27 +3989,17 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
 
         gb = q["w1"] * f(q["biv_on"]) * inv_P
         gm = q["w2"] * f(q["marg_on"]) * inv_P
-        det_g = gb * f(q["det_on"]) * q["p_src"]
-        ab = gb * f(q["above_on"])
-        det, src, rect = q["det"], q["src"], q["rect"]
-        Ad, Bd = (jnp.where(det_g != 0.0, det[j], 0.0) * det_g for j in (1, 2))
-        Ar1, Br1, Ar2, Br2 = (jnp.where(ab != 0.0, rect[j], 0.0) * ab for j in (1, 2, 3, 4))
-        z_cp_eff = q["z_cp_eff"]
-        dd_lo, dd_hi = _band_edge_grads(Ad, Bd, has1_lo & q["det_hi"], has1_lo)
-        dr_lo, dr_hi = _band_edge_grads(Ar1, Br1, (z_cp_eff > -0.5 * _OPEN) & has1_hi, z_cp_eff > -0.5 * _OPEN)
-        split, below_only = q["split"], q["below_only"]
-        in_ab = (z_cp_eff > -0.5 * _OPEN) & has1_hi
-        cont = split & has1_lo & in_ab & ~q["is_new"] & ~q["sc_floor"]
-        gA1 = jnp.where(cont, Ad + Ar1, jnp.where(split, dd_lo + dr_hi, jnp.where(below_only, Ad, Ar1)))
-        gB1 = jnp.where(split, dr_hi, jnp.where(below_only, Bd, Br1))
-        g_zcp = jnp.where(cont, 0.0, jnp.where(split, dd_hi + dr_lo, 0.0)) + gm * (q["dPcp"] * src[0] + q["Am1"])
+        _, _, D_s, A_s, B_s, As_c, Bs_c, gA1_c, gB1_c, g_zcp_c, Ar2_c, Br2_c, dr_c = q["cell"]
+        gA1 = gb * gA1_c
+        gB1 = gb * gB1_c
+        g_zcp = jnp.where(q["sc_floor"], gb * g_zcp_c + gm * (q["dPcp"] * D_s + q["Am1"]), 0.0)
         g_zcp = jnp.where(q["is_new"], 0.0, g_zcp)
 
-        wsrc = gb * f(q["src_on"]) * q["p_det"] + gm * q["Pcp"]
-        As, Bs = src[1] * wsrc, jnp.where(in2, src[2] * wsrc, 0.0)
-        gA2 = Ar2 + gm * q["Am2"]
-        gB2 = Br2 + gm * q["Bm2"]
-        g_rho_direct = jnp.where(ab != 0.0, rect[5], 0.0) * ab + gm * q["dmr"]
+        As = gb * As_c + gm * q["Pcp"] * A_s
+        Bs = jnp.where(in2, gb * Bs_c + gm * q["Pcp"] * B_s, 0.0)
+        gA2 = gb * Ar2_c + gm * q["Am2"]
+        gB2 = gb * Br2_c + gm * q["Bm2"]
+        g_rho_direct = gb * dr_c + gm * q["dmr"]
 
         inv_s1, inv_s2, inv_sc = 1.0 / sigma1, 1.0 / sigma2, q["inv_sc"]
         rs2 = q["rho_sigma2"]
@@ -5815,10 +5824,11 @@ def sdt_model(config):
         else:
             trial_params[param_name] = eta
 
+    no_lik = bool(config.get("_no_lik"))
     if family_name == "mafc":
         M = int(config["K"])
         bias_full = _mafc_bias(config, bias_re_configs, cross_cor_bias_contributions, N, M)
-        log_lik = fused_loglik_mafc(y - 1, jnp.array(config["target_pos"], dtype=jnp.int32) - 1,
+        log_lik = jnp.zeros(N) if no_lik else fused_loglik_mafc(y - 1, jnp.array(config["target_pos"], dtype=jnp.int32) - 1,
                                     jnp.array(config["m_alt"], dtype=jnp.int32), trial_params.get("dprime", jnp.zeros(N)),
                                     trial_params.get("sigma", jnp.ones(N)), bias_full)
     else:
@@ -6160,7 +6170,7 @@ def sdt_model(config):
                         numpyro.deterministic(f"beta_know_crit[{j+1}]", beta_kc[j])
                 c_K = c_K + t * (knob_state["X"] @ v)
 
-            log_lik = cdp_loglik(
+            log_lik = jnp.zeros(N) if no_lik else cdp_loglik(
                     y=y, rk=rk, is_old=is_old, thresh=thresh,
                     mu_R=mu_R, sigma_R=sigma_R, mu_F=mu_F, sigma_F=sigma_F,
                     c_R=c_R, c_K=c_K, J=J, old_level_map=old_level_map,
@@ -6175,7 +6185,7 @@ def sdt_model(config):
             ones = jnp.ones(N, dtype=_FLOAT)
             m_old = trial_params.get("mratio", ones)
             m_new = m_old if config.get("metad_shared") else trial_params.get("mratio_N", ones)
-            log_lik = fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
+            log_lik = jnp.zeros(N) if no_lik else fused_loglik_metad(y, int(config["K"]), param_values.get("dprime", jnp.zeros(N)), m_old, m_new,
                                          is_old, thresh_mid_vec, log_gaps_obs, gap_link,
                                          q=float(config["is_old_mid"]), relative=bool(config.get("metad_relative")),
                                          link_name=link_name)
@@ -6435,7 +6445,7 @@ def sdt_model(config):
                     _t2_mid_fused = jnp.broadcast_to(thresh2_mid, (N,))
                     _t2_gaps_fused = jnp.broadcast_to(log_gaps2[:, None], (n_gaps2, N)) if n_gaps2 > 0 else jnp.zeros((0, N))
 
-            log_lik = bivariate_loglik(
+            log_lik = jnp.zeros(N) if no_lik else bivariate_loglik(
                 y, y2,
                 src_obs=jnp.asarray(config["src_obs"], dtype=jnp.int32) if config.get("src_obs") is not None else None,
                 dprime=trial_params.get("dprime", jnp.zeros(N)),
@@ -6469,7 +6479,7 @@ def sdt_model(config):
         else:
             source = jnp.array(config["source"], dtype=jnp.int32) if config.get("source") is not None else None
 
-            log_lik = univariate_loglik(
+            log_lik = jnp.zeros(N) if no_lik else univariate_loglik(
                 y=y,
                 dprime=trial_params.get("dprime", jnp.zeros(N)),
                 thresh=thresh,

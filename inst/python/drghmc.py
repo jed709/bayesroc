@@ -394,7 +394,7 @@ def _model_info(model, config):
     def run():
         init = handlers.substitute(handlers.seed(model, rng_seed=0),
                                    substitute_fn=init_to_uniform(radius=0.0))
-        tr = handlers.trace(init).get_trace(config)
+        tr = handlers.trace(init).get_trace({**config, "_no_lik": True})
         out = {}
         for name, site in tr.items():
             if site["type"] == "sample" and not site["is_observed"]:
@@ -410,6 +410,8 @@ def _model_info(model, config):
     pot = lambda z, OFF: potential_energy(model, (_with_data(config, OFF["data"], OFF["off"]),), {}, z)
     pot.sd_scale = sd_scale
     post = lambda z, data: constrain_fn(model, (_with_data(config, data),), {}, z, return_deterministic=True)
+    post.nolik = lambda z, data: constrain_fn(model, ({**_with_data(config, data), "_no_lik": True},), {}, z,
+                                              return_deterministic=True)
     return shapes, pot, post
 
 

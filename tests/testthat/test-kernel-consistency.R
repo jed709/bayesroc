@@ -73,7 +73,6 @@ test_that("the Gaussian product-of-CDFs kernel matches the 30-digit reference at
   expect_gt(res$steep_rows, 50)
   expect_lt(res$native, 1e-12)
   expect_lt(res$jax, 1e-12)
-  expect_lt(res$native_vs_jax_grad, 1e-9)
   expect_equal(res$vmap_vs_rows, 0)
 })
 

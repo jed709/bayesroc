@@ -363,6 +363,85 @@ void rect_k(int64_t n, const double* const* i, double* const* o) {
   bvn::rect_array(n, i[0], i[1], i[2], i[3], i[4], o[0], o[1], o[2], o[3], o[4], o[5]);
 }
 
+// z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, zs_lo, zs_hi, ws, rho, z_cp, is_new [N] -> narrow, P, p_det, D_s, A_s, B_s,
+// As, Bs, gA1, gB1, g_zcp, Ar2, Br2, drho [N]: bounded bivariate cell at unit weight
+inline double strip_scale(double t_lo, double v, double a_lo, double a_hi, bool hl, bool hh, double rho) {
+  const double r = std::fmin(std::fmax(rho, -0.999999), 0.999999), s = std::sqrt((1.0 - r) * (1.0 + r));
+  const double m = t_lo + 0.5 * v;
+  const double zl = hl ? std::fabs(a_lo - r * m) / s : 1e300, zh = hh ? std::fabs(a_hi - r * m) / s : 1e300;
+  const double zmin = (hl || hh) ? std::fmin(zl, zh) : 0.0;
+  return v * (std::fmax(1.0, std::fabs(m)) + std::fabs(r) / s * std::fmax(1.0, zmin));
+}
+
+inline bool probit_narrow(double z_lo, double w, double u) { return w * std::fmax(1.0, std::fabs(z_lo + 0.5 * w)) < u; }
+
+template <int NARROW_EXP>
+void bbv_k(int64_t n, const double* const* i, double* const* o) {
+  const double narrow_u = NARROW_EXP == 5 ? 1e-5 : 0.05, strip_u = NARROW_EXP == 5 ? 1e-3 : 0.05;
+  const double H = 5e9;
+  thread_local std::vector<double> buf;
+  if (buf.size() < size_t(13 * n)) buf.resize(13 * n);
+  double *ze = buf.data(), *Dd = ze + n, *pdl = Dd + n, *pdh = pdl + n, *Ds = pdh + n, *psl = Ds + n, *psh = psl + n;
+  double *rp = psh + n, *r1l = rp + n, *r1h = r1l + n, *r2l = r1h + n, *r2h = r2l + n, *rr = r2h + n;
+  for (int64_t k = 0; k < n; ++k) {
+    const double zc = i[10][k];
+    ze[k] = i[11][k] != 0.0 ? i[0][k] : std::fmin(std::fmax(zc, i[0][k]), i[1][k]);
+  }
+  bvn::probit_diff_range(0, n, i[0], ze, Dd, pdl, pdh);
+  bvn::probit_diff_range(0, n, i[6], i[7], Ds, psl, psh);
+  bvn::rect_array(n, ze, i[1], i[3], i[4], i[9], rp, r1l, r1h, r2l, r2h, rr);
+  for (int64_t k = 0; k < n; ++k) {
+    const double z1l = i[0][k], z1h = i[1][k], w1 = i[2][k], z2l = i[3][k], z2h = i[4][k], w2 = i[5][k];
+    const double zsl = i[6][k], ws = i[8][k], rho = i[9][k], zc = i[10][k], zce = ze[k];
+    const bool is_new = i[11][k] != 0.0;
+    const bool h1l = z1l > -H, h1h = z1h < H, h2l = z2l > -H, h2h = z2h < H, hsl = h2l, hsh = h2h;
+    const bool split = !is_new && zc > z1l && zc < z1h, above_only = is_new || zc <= z1l;
+    const bool below_only = !is_new && zc >= z1h;
+    const bool det_hi = zce < H, in_d = h1l && det_hi, in_s = hsl && hsh, in2 = h2l && h2h;
+    const bool ehl = zce > -H, in_ab = ehl && h1h;
+    const bool sc_floor = !(std::sqrt(std::fmax(1.0 - rho * rho, 1e-20)) > 1e-6);
+    const double Ad0 = in_d ? pdh[k] - pdl[k] : (h1l ? -pdl[k] : pdh[k]), Bd0 = in_d ? pdh[k] : 0.0;
+    const double As0 = in_s ? psh[k] - psl[k] : (hsl ? -psl[k] : psh[k]), Bs0 = in_s ? psh[k] : 0.0;
+    const double p_det = above_only ? 0.0 : std::fmax(Dd[k], 0.0), p_src = std::fmax(Ds[k], 0.0);
+    const bool above_on = rp[k] > 0.0 && !below_only;
+    const double p_above = above_on ? rp[k] : 0.0;
+    const double det_w = (Dd[k] > 0.0 && !above_only) ? p_src : 0.0;
+    const double src_w = Ds[k] > 0.0 ? p_det : 0.0;
+    const double Ad = det_w != 0.0 ? Ad0 * det_w : 0.0, Bd = det_w != 0.0 ? Bd0 * det_w : 0.0;
+    const double Ar1 = above_on ? r1l[k] + r1h[k] : 0.0, Br1 = above_on && in_ab ? r1h[k] : 0.0;
+    const double dd_lo = in_d ? Ad - Bd : (h1l ? Ad : 0.0), dd_hi = in_d ? Bd : (h1l ? 0.0 : Ad);
+    const double dr_lo = in_ab ? Ar1 - Br1 : (ehl ? Ar1 : 0.0), dr_hi = in_ab ? Br1 : (ehl ? 0.0 : Ar1);
+    const bool cont = split && h1l && in_ab && !sc_floor;
+    double nar = 0.0;
+    if (!above_only && in_d) {
+      const double wd = below_only ? w1 : zce - z1l;
+      if (probit_narrow(z1l, wd, narrow_u)) nar = 1.0;
+    }
+    if (in_s && probit_narrow(zsl, ws, narrow_u)) nar = 1.0;
+    if (!below_only) {
+      const double wab = above_only ? w1 : z1h - zce;
+      const double v1 = in_ab ? wab : 1e-3, v2 = in2 ? w2 : 1e-3;
+      const bool n2 = in2 && strip_scale(in2 ? z2l : 0.0, v2, zce, z1h, ehl, h1h, rho) < strip_u;
+      const bool n1 = in_ab && !n2 && strip_scale(in_ab ? zce : 0.0, v1, z2l, z2h, h2l, h2h, rho) < strip_u;
+      if (n1 || n2) nar = 1.0;
+    }
+    o[0][k] = nar;
+    o[1][k] = p_det * p_src + p_above;
+    o[2][k] = p_det;
+    o[3][k] = Ds[k];
+    o[4][k] = As0;
+    o[5][k] = Bs0;
+    o[6][k] = src_w != 0.0 ? As0 * src_w : 0.0;
+    o[7][k] = src_w != 0.0 ? Bs0 * src_w : 0.0;
+    o[8][k] = cont ? Ad + Ar1 : (split ? dd_lo + dr_hi : (below_only ? Ad : Ar1));
+    o[9][k] = split ? dr_hi : (below_only ? Bd : Br1);
+    o[10][k] = (split && sc_floor) ? dd_hi + dr_lo : 0.0;
+    o[11][k] = above_on ? r2l[k] + r2h[k] : 0.0;
+    o[12][k] = above_on && in2 ? r2h[k] : 0.0;
+    o[13][k] = above_on ? rr[k] : 0.0;
+  }
+}
+
 ffi::Error ProbitDiffImpl(ffi::ThreadPool pool, ffi::Buffer<ffi::F64> zlo, ffi::Buffer<ffi::F64> zhi,
                           ffi::ResultBuffer<ffi::F64> D, ffi::ResultBuffer<ffi::F64> pl,
                           ffi::ResultBuffer<ffi::F64> ph) {
@@ -481,6 +560,7 @@ BAYESROC_F32(BayesrocCdpCellF32, 11, 10, cdp_k);
 BAYESROC_F32(BayesrocMetadCellF32, 5, 5, bvn::metad_array);
 BAYESROC_F32(BayesrocProbitCellF32, 2, 3, probit_cell_k);
 BAYESROC_F32(BayesrocProbitDiffF32, 2, 3, probit_diff_k);
+BAYESROC_F32(BayesrocBbvCellF32, 12, 14, bbv_k<2>);
 
 #define BAYESROC_F64(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F64Impl<NI, NO, K>),                           \
@@ -492,6 +572,7 @@ BAYESROC_F64(BayesrocBvnRect, 5, 6, rect_k);
 BAYESROC_F64(BayesrocVrdp2d, 14, 11, bvn::vrdp_array);
 BAYESROC_F64(BayesrocBvnCdf2, 6, 18, (bvn::cdf_multi_array<2, 1>));
 BAYESROC_F64(BayesrocBvnCdf4, 11, 36, (bvn::cdf_multi_array<4, 2>));
+BAYESROC_F64(BayesrocBbvCell, 12, 14, bbv_k<5>);
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocProbitDiff, ProbitDiffImpl,
                               ffi::Ffi::Bind()
