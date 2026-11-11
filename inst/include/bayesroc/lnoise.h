@@ -155,6 +155,7 @@ inline void load4(const double* X, const double* W, int i, v4d& x, v4d& w) {
 inline v4d vpdf(v4d x) { return splat(bvn_tail::kInvSqrt2Pi) * bvn::vexp(splat(-0.5) * x * x); }
 
 inline v4d vD(v4d a, v4d w, const bvn::PhiV& ph, v4d u, const Side& sd) {
+  if (!(w[0] <= kWSer || w[1] <= kWSer || w[2] <= kWSer || w[3] <= kWSer)) return bvn::vmax(kdiff(ph, u, sd), splat(kFloor));
   const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w, one = splat(1.0);
   const v4d mc = bvn::vmax(bvn::vmin(m, splat(40.0)), splat(-40.0)), m2 = mc * mc;
   const v4d he2 = m2 - one, he4 = m2 * m2 - splat(6.0) * m2 + splat(3.0);
@@ -164,6 +165,7 @@ inline v4d vD(v4d a, v4d w, const bvn::PhiV& ph, v4d u, const Side& sd) {
 }
 
 inline v4d vdDda(v4d a, v4d w, const bvn::PhiV& ph, const Side& sd) {
+  if (!(w[0] <= kWSer || w[1] <= kWSer || w[2] <= kWSer || w[3] <= kWSer)) return splat(sd.pa) - ph.dP;
   const v4d m = a - splat(0.5) * w, h2 = splat(0.25) * w * w;
   const v4d mc = bvn::vmax(bvn::vmin(m, splat(40.0)), splat(-40.0)), m2 = mc * mc;
   const v4d he3 = mc * (m2 - splat(3.0)), he5 = mc * (m2 * m2 - splat(10.0) * m2 + splat(15.0));
@@ -286,9 +288,25 @@ inline double mode_e(double a, double l, double s, double zs, double es) {
     return -e + ph.dP[0] / std::fmax(diff, 1e-300) / (s * T);
   };
   double lo = es + 1e-9 * std::fmax(1.0, std::fabs(es)), hi = es + 80.0;
-  for (int it = 0; it < 50 && hi - lo > 1e-6; ++it) {
-    const double mid = 0.5 * (lo + hi);
-    if (slope(mid) > 0.0) lo = mid; else hi = mid;
+  const double end = es + 80.0;
+  double step = 0.25, fl = 0.0, fh = 0.0;
+  bool have_l = false;
+  hi = lo + step;
+  for (;;) {
+    if (hi >= end) { hi = end; fh = slope(hi); break; }
+    fh = slope(hi);
+    if (!(fh > 0.0)) break;
+    lo = hi; fl = fh; have_l = true; step *= 2.0; hi = lo + step;
+  }
+  if (fh > 0.0) return hi;
+  int side = 0;
+  for (int it = 0; it < 60 && hi - lo > 1e-6; ++it) {
+    double mid = have_l ? hi - fh * (hi - lo) / (fh - fl) : 0.5 * (lo + hi);
+    if (!(mid > lo && mid < hi)) mid = 0.5 * (lo + hi);
+    const double fm = slope(mid);
+    if (fm > 0.0) { lo = mid; fl = fm; have_l = true; if (side == 1) fh *= 0.5; side = 1; }
+    else { hi = mid; fh = fm; if (side == -1) fl *= 0.5; side = -1; }
+    if (fm == 0.0) break;
   }
   return 0.5 * (lo + hi);
 }
