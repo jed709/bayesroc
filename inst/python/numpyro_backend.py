@@ -2598,7 +2598,9 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
         def logged(ca, cb):
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
-            return val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val), jnp.exp(la - val), jnp.exp(lb - val), ca, cb
+            ka, kb = ca[0] > _LOG_P_FLOOR + 1e-3, cb[0] > _LOG_P_FLOOR + 1e-3
+            return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
+                    jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
         def prob(ca, cb):
             pa, pb = jnp.maximum(ca[0], _pfloor()), jnp.maximum(cb[0], _pfloor())
@@ -2651,7 +2653,9 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
         def logged(ca, cb):
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
-            return val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val), jnp.exp(la - val), jnp.exp(lb - val), ca, cb
+            ka, kb = ca[0] > _LOG_P_FLOOR + 1e-3, cb[0] > _LOG_P_FLOOR + 1e-3
+            return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
+                    jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
         def prob(ca, cb):
             pa, pb = jnp.maximum(ca[0], _pfloor()), jnp.maximum(cb[0], _pfloor())
@@ -4008,9 +4012,12 @@ def _make_fused_batch_bounded_bivariate_dp_loglik(K1, K2, gap_link_is_softplus):
         zs_a = jnp.where(has2_lo, q["zs_lo"], q["zs_hi"])
         zs_term = _lw_scale(As, Bs, zs_a, q["ws"], in2, q["zs_hi"])
         not_floor = f(~q["sc_floor"] & (1.0 - rho_val**2 > 1e-20))
-        d_mu2_c = g2[0] - g_zcp / rs2
-        d_s2_c = g2[1] - zs_term * inv_s2 + g_zcp * mu2 * rho_val / (rs2 * rs2)
-        d_rho_c = g_rho_direct + g_zcp * mu2 * sigma2 / (rs2 * rs2) + zs_term * not_floor * rho_val / (q["sqrt_1mrr"] ** 2)
+        live = g_zcp != 0.0
+        rs2_live = jnp.where(live, rs2, 1.0)
+        d_mu2_c = g2[0] - jnp.where(live, g_zcp / rs2_live, 0.0)
+        d_s2_c = g2[1] - zs_term * inv_s2 + jnp.where(live, g_zcp * mu2 * rho_val / (rs2_live * rs2_live), 0.0)
+        d_rho_c = (g_rho_direct + jnp.where(live, g_zcp * mu2 * sigma2 / (rs2_live * rs2_live), 0.0) +
+                   zs_term * not_floor * rho_val / (q["sqrt_1mrr"] ** 2))
         d_gaps1_c = _lw_gap_grads(gA1 * inv_s1, gB1 * inv_s1, k1_a, jnp.asarray(own_mask1)[:, y1 - 1], in1,
                                   gap_mask1_np, gd1)
         d_gaps2_c = _lw_gap_grads(gA2 * inv_s2 + As * inv_sc, gB2 * inv_s2 + Bs * inv_sc, k2_a,

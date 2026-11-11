@@ -396,7 +396,7 @@ void bbv_k(int64_t n, const double* const* i, double* const* o) {
     const bool is_new = i[11][k] != 0.0;
     const bool h1l = z1l > -H, h1h = z1h < H, h2l = z2l > -H, h2h = z2h < H, hsl = h2l, hsh = h2h;
     const bool split = !is_new && zc > z1l && zc < z1h, above_only = is_new || zc <= z1l;
-    const bool below_only = !is_new && zc >= z1h;
+    const bool below_only = !is_new && !above_only && zc >= z1h;
     const bool det_hi = zce < H, in_d = h1l && det_hi, in_s = hsl && hsh, in2 = h2l && h2h;
     const bool ehl = zce > -H, in_ab = ehl && h1h;
     const bool sc_floor = !(std::sqrt(std::fmax(1.0 - rho * rho, 1e-20)) > 1e-6);
