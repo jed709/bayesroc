@@ -2710,7 +2710,7 @@ def _make_fused_batch_mixture_loglik(K, gap_link_is_softplus, link_name="probit"
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
             ka, kb = jnp.abs(ca[0] - _LOG_P_FLOOR) > 1e-3, jnp.abs(cb[0] - _LOG_P_FLOOR) > 1e-3
-            return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
+            return (val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val),
                     jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
         def prob(ca, cb):
@@ -2765,7 +2765,7 @@ def _make_fused_batch_source_mixture_loglik(K, gap_link_is_softplus, link_name="
             la, lb = jnp.log(lambda_val) + ca[0], jnp.log1p(-lambda_val) + cb[0]
             val = jnp.logaddexp(la, lb)
             ka, kb = jnp.abs(ca[0] - _LOG_P_FLOOR) > 1e-3, jnp.abs(cb[0] - _LOG_P_FLOOR) > 1e-3
-            return (val, jnp.where(ka, _exp_ratio(ca[0] - val), 0.0) - jnp.where(kb, _exp_ratio(cb[0] - val), 0.0),
+            return (val, _exp_ratio(ca[0] - val) - _exp_ratio(cb[0] - val),
                     jnp.where(ka, jnp.exp(la - val), 0.0), jnp.where(kb, jnp.exp(lb - val), 0.0), ca, cb)
 
         def prob(ca, cb):
