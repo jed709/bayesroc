@@ -1119,6 +1119,170 @@ void vrdp_chunk(int64_t n, int GT, const double* const* in, double* const* out) 
   }
 }
 
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#endif
+
+struct DD {
+  double hi, lo;
+};
+
+constexpr double kDdLn2[2] = {0.6931471805599453, 2.3190468138462996e-17};
+constexpr double kDdLog1p[8][2] = {{1.0, 0.0}, {-0.5, 0.0}, {0.3333333333333333, 1.850371707708594e-17},
+                                   {-0.25, 0.0}, {0.2, -1.1102230246251566e-17},
+                                   {-0.16666666666666666, -9.25185853854297e-18},
+                                   {0.14285714285714285, 7.93016446160826e-18}, {-0.125, 0.0}};
+constexpr double kDdInvFact[13][2] = {{1.0, 0.0},
+                                      {1.0, 0.0},
+                                      {0.5, 0.0},
+                                      {0.16666666666666666, 9.25185853854297e-18},
+                                      {0.041666666666666664, 2.3129646346357427e-18},
+                                      {0.008333333333333333, 1.1564823173178714e-19},
+                                      {0.001388888888888889, -5.300543954373577e-20},
+                                      {0.0001984126984126984, 1.7209558293420705e-22},
+                                      {2.48015873015873e-05, 2.1511947866775882e-23},
+                                      {2.7557319223985893e-06, -1.858393274046472e-22},
+                                      {2.755731922398589e-07, 2.3767714622250297e-23},
+                                      {2.505210838544172e-08, -1.448814070935912e-24},
+                                      {2.08767569878681e-09, -1.20734505911326e-25}};
+
+inline DD dd_two_sum(double a, double b) {
+  const double s = a + b, bb = s - a;
+  return {s, (a - (s - bb)) + (b - bb)};
+}
+
+inline DD dd_two_prod(double a, double b) {
+  const double p = a * b;
+  return {p, std::fma(a, b, -p)};
+}
+
+inline DD dd_add(DD a, DD b) {
+  const DD s = dd_two_sum(a.hi, b.hi);
+  return dd_two_sum(s.hi, s.lo + a.lo + b.lo);
+}
+
+inline DD dd_mul(DD a, DD b) {
+  const DD p = dd_two_prod(a.hi, b.hi);
+  return dd_two_sum(p.hi, p.lo + a.hi * b.lo + a.lo * b.hi);
+}
+
+inline DD dd_div(DD a, DD b) {
+  const double q = a.hi / b.hi;
+  const DD p = dd_two_prod(q, b.hi);
+  return {q, (((a.hi - p.hi) - p.lo) + a.lo - q * b.lo) / b.hi};
+}
+
+inline DD dd_sum3(double a, double b, double c) {
+  DD s = dd_two_sum(a, b);
+  const DD t = dd_two_sum(s.hi, c);
+  return {t.hi, s.lo + t.lo};
+}
+
+inline double dd_offset(DD a, DD b) {
+  const DD s = dd_two_sum(a.hi, -b.hi);
+  return s.hi + (s.lo + (a.lo - b.lo));
+}
+
+inline DD dd_exp(double x) {
+  const double k = std::nearbyint(x / kDdLn2[0]);
+  const DD p = dd_two_prod(k, kDdLn2[0]);
+  DD r = dd_add(dd_add({x, 0.0}, {-p.hi, -p.lo}), {-k * kDdLn2[1], 0.0});
+  r = {r.hi / 256.0, r.lo / 256.0};
+  DD e = {kDdInvFact[12][0], kDdInvFact[12][1]};
+  for (int n = 11; n >= 0; --n) e = dd_add(dd_mul(e, r), {kDdInvFact[n][0], kDdInvFact[n][1]});
+  for (int s = 0; s < 8; ++s) e = dd_mul(e, e);
+  const int ki = int(k);
+  return {std::ldexp(e.hi, ki), std::ldexp(e.lo, ki)};
+}
+
+inline DD dd_gap(double g, bool softplus) {
+  if (!softplus) return dd_exp(g);
+  if (g < -10.0) {
+    const DD v = dd_exp(g);
+    DD c = {kDdLog1p[7][0], kDdLog1p[7][1]};
+    for (int t = 6; t >= 0; --t) c = dd_add(dd_mul(c, v), {kDdLog1p[t][0], kDdLog1p[t][1]});
+    return dd_mul(c, v);
+  }
+  const double y = std::log1p(std::exp(-std::fabs(g))) + std::fmax(g, 0.0);
+  const DD ey = dd_exp(y);
+  const DD rhs = dd_add(dd_exp(g), {1.0, 0.0});
+  const DD num = dd_add(ey, {-rhs.hi, -rhs.lo});
+  return dd_two_sum(y, -(num.hi + num.lo) / ey.hi);
+}
+
+void dd_offset_k(int64_t n, int G, const double* const* in, double* const* out) {
+  for (int64_t k = 0; k < n; ++k) {
+    const bool crossing = in[0][k] == 0.0, softplus = in[1][k] != 0.0;
+    DD c = {in[7][k], 0.0};
+    for (int g = 0; g < G; ++g) {
+      const double sg = in[8 + G + g][k];
+      if (sg == 0.0) continue;
+      const DD v = dd_gap(in[8 + g][k], softplus);
+      c = dd_add(c, {sg * v.hi, sg * v.lo});
+    }
+    if (crossing) {
+      const double mu1 = in[2][k], s1 = in[3][k], mu2 = in[4][k], s2 = in[5][k], rho = in[6][k];
+      const DD num = dd_sum3(c.hi, -mu1, c.lo);
+      const DD z1 = dd_div(num, {s1, 0.0});
+      const DD d0 = dd_two_prod(rho, s2);
+      const DD d = dd_sum3(d0.hi, 1e-30, d0.lo);
+      const DD zc = dd_div({-mu2, 0.0}, d);
+      out[0][k] = dd_offset(zc, z1);
+    } else {
+      out[0][k] = dd_offset(dd_two_sum(in[2][k], in[3][k]), c);
+    }
+  }
+}
+
+#if defined(__clang__)
+#pragma clang fp contract(on)
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+
+template <bool F32>
+ffi::Error DdOffsetImpl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
+  const int NI = int(args.size()), G = (NI - 8) / 2;
+  if (NI < 8 || (NI - 8) % 2 != 0 || rets.size() != 1) return ffi::Error::InvalidArgument("bayesroc: dd_offset arity");
+  std::vector<const void*> in(NI);
+  int64_t n = 0;
+  for (int a = 0; a < NI; ++a) {
+    auto b = args.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    in[a] = b.value().untyped_data();
+    n = b.value().element_count();
+  }
+  auto r = rets.get<ffi::AnyBuffer>(0);
+  if (r.has_error()) return r.error();
+  void* out = r.value()->untyped_data();
+  pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
+    const int64_t m = i1 - i0;
+    std::vector<const double*> ci(NI);
+    double* co[1];
+    if (!F32) {
+      for (int a = 0; a < NI; ++a) ci[a] = static_cast<const double*>(in[a]) + i0;
+      co[0] = static_cast<double*>(out) + i0;
+      dd_offset_k(m, G, ci.data(), co);
+      return;
+    }
+    std::vector<double> cv(size_t(NI + 1) * m);
+    for (int a = 0; a < NI; ++a) {
+      double* d = cv.data() + size_t(a) * m;
+      const float* f = static_cast<const float*>(in[a]) + i0;
+      for (int64_t k = 0; k < m; ++k) d[k] = f[k];
+      ci[a] = d;
+    }
+    co[0] = cv.data() + size_t(NI) * m;
+    dd_offset_k(m, G, ci.data(), co);
+    float* f = static_cast<float*>(out) + i0;
+    for (int64_t k = 0; k < m; ++k) f[k] = static_cast<float>(co[0][k]);
+  });
+  return ffi::Error::Success();
+}
+
 template <void (*FN)(int64_t, int, const double* const*, double* const*), int NIF, int NOF, bool F32>
 ffi::Error TrialImpl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
   const int NI = int(args.size()), G = NI - NIF, NO = NOF + G;
@@ -1171,6 +1335,11 @@ ffi::Error TrialImpl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaini
 #define BAYESROC_TRIAL(NAME, FN, NIF, NOF, F32)                                     \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (TrialImpl<FN, NIF, NOF, F32>),                 \
                                 ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocDdOffset, DdOffsetImpl<false>,
+                              ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets());
+XLA_FFI_DEFINE_HANDLER_SYMBOL(BayesrocDdOffsetF32, DdOffsetImpl<true>,
+                              ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets());
 
 BAYESROC_TRIAL(BayesrocMetadTrial, metad_chunk<false>, 8, 5, false);
 BAYESROC_TRIAL(BayesrocMetadTrialSp, metad_chunk<true>, 8, 5, false);

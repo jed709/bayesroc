@@ -754,7 +754,8 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
                          ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
-                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
+                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
+                         ("dd_offset", "DdOffset")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
                                         platform="cpu")
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
@@ -766,7 +767,8 @@ if os.environ.get("BAYESROC_BVN_FFI"):
                          ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
-                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
+                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
+                         ("dd_offset", "DdOffset")):
             jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
                                         platform="cpu")
     except Exception as _e:
@@ -3035,10 +3037,25 @@ def _bivariate_edges(y, K, c, gv, own_idx, mu, sigma):
             has_lo, has_hi)
 
 
+def _dd_offset_native(crossing, softplus, a, mid, gaps, gm, k):
+    """The native kernel's double-double offset (exact products, any compiler): crossing, a = (mu1, sigma1, mu2,
+    sigma2, rho), the crossing point -mu2 / (rho sigma2) less (c_k - mu1) / sigma1; otherwise, a = (u, v), u + v
+    less c_k; c_k the criterion k of every row from the midpoint and the [N, n_gaps] gaps, rounded once."""
+    signs = jnp.asarray(gm)[:, k]
+    a = tuple(a) + (0.0,) * (5 - len(a))
+    args = jnp.broadcast_arrays(mid, *a, *[gaps[:, g] for g in range(gaps.shape[1])],
+                                *[signs[g] for g in range(gaps.shape[1])])
+    dt = jnp.asarray(mid).dtype
+    head = (jnp.full(args[0].shape, 0.0 if crossing else 1.0, dt), jnp.full(args[0].shape, float(softplus), dt))
+    return _native_call("dd_offset", 1, head + tuple(args[1:6]) + (args[0],) + tuple(args[6:]))[0]
+
+
 def _cp_offset(thresh1_mid, gaps1, softplus, gm1, y1, n_thresh1, mu1, sigma1, mu2, sigma2, rho):
     """The crossing point -mu2 / (rho sigma2) less the detection cell's lower edge (c_lo - mu1) / sigma1, both in
     double-double, rounded once: the width of the cell's part below the crossing point to full precision."""
     k = jnp.clip(y1 - 2, 0, n_thresh1 - 1)
+    if _native_ok(mu1):
+        return _dd_offset_native(True, softplus, (mu1, sigma1, mu2, sigma2, rho), thresh1_mid, gaps1, gm1, k)
     c = _dd_criterion(thresh1_mid, gaps1, softplus, gm1, k)
     num = _dd_sum([c[0], -mu1, c[1]])
     z1 = _dd_div(num[0], num[1], sigma1, jnp.zeros_like(sigma1))
@@ -3488,8 +3505,12 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         lo = jnp.where(inner, tau_lo, 0.0)
         narrow = inner & (_cdp_strip_scale(kind, lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) < _NARROW_U)
         gs = jnp.where(narrow, gap, 1e-3)
-        g1 = (_dd_offset(_dd_sum([c_R, c_K]), _dd_criterion(mid, gaps, gap_link_is_softplus, gap_mask_np, k))
-              if n_gaps else c_R + c_K - lo)
+        if not n_gaps:
+            g1 = c_R + c_K - lo
+        elif _native_ok(c_R):
+            g1 = _dd_offset_native(False, gap_link_is_softplus, (c_R, c_K), mid, gaps, gap_mask_np, k)
+        else:
+            g1 = _dd_offset(_dd_sum([c_R, c_K]), _dd_criterion(mid, gaps, gap_link_is_softplus, gap_mask_np, k))
         return narrow, inner, kind, lo, gs, k, g1
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):

@@ -128,6 +128,14 @@ test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0
   expect_true(res$cdp_cell_empty_ok)
 })
 
+test_that("the native double-double offsets are correctly rounded at every batch length", {
+  skip_if_no_jax()
+  res <- .run_py_check("dd_offset_check.py", .bvn_ffi_lib())
+  expect_true(res$ffi_loaded)
+  expect_true(res$same_at_every_length)
+  expect_lt(res$dd_offset_max_ulps, 1)
+})
+
 test_that("the transport-map kernel matches a reference solve and its gradients at every width", {
   skip_if_no_jax()
   widths <- c(1, 5, 31, 64, 65, 84, 130)
