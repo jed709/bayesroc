@@ -546,7 +546,653 @@ ffi::Error F32Impl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::Remaining
   return ffi::Error::Success();
 }
 
+template <bool SP>
+void ordinal_chunk(int64_t n, int G, const double* const* in, double* const* out) {
+  const double *y = in[0], *mu = in[1], *sg = in[2], *mid = in[3];
+  const int MI = G / 2, NU = G - MI, NV = SP ? 2 * G : G;
+  thread_local std::vector<double> buf;
+  if (buf.size() < size_t((4 + NV) * n + G + 1)) buf.resize((4 + NV) * n + G + 1);
+  double *zlo = buf.data(), *zhi = zlo + n, *glo = zhi + n, *ghi = glo + n, *ev = ghi + n, *dv = SP ? ev + size_t(G) * n : ev;
+  double* t = ev + size_t(NV) * n;
+  for (int g = 0; g < G; ++g) {
+    const double* x = in[4 + g];
+    double *e = ev + size_t(g) * n, *d = dv + size_t(g) * n;
+    if (SP) {
+      for (int64_t k = 0; k < n; ++k) {
+        const double a = std::exp(-std::fabs(x[k]));
+        e[k] = std::max(x[k], 0.0) + std::log1p(a);
+        d[k] = x[k] >= 0.0 ? 1.0 / (1.0 + a) : a / (1.0 + a);
+      }
+    } else {
+      int64_t k = 0;
+      bvn::v4d v;
+      for (; k + 4 <= n; k += 4) { std::memcpy(&v, x + k, 32); v = bvn::vexp(v); std::memcpy(e + k, &v, 32); }
+      for (; k < n; ++k) e[k] = std::exp(x[k]);
+    }
+  }
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy = int(y[k]) - 1;
+    t[MI] = mid[k];
+    double c = 0.0;
+    for (int j = 0; j < NU; ++j) { c += ev[size_t(j) * n + k]; t[MI + 1 + j] = mid[k] + c; }
+    c = 0.0;
+    for (int j = 0; j < MI; ++j) { c += ev[size_t(NU + j) * n + k]; t[MI - 1 - j] = mid[k] - c; }
+    zlo[k] = yy > 0 ? (t[yy - 1] - mu[k]) / sg[k] : -1e10;
+    zhi[k] = yy < G + 1 ? (t[yy] - mu[k]) / sg[k] : 1e10;
+  }
+  bvn::probit_cell_range(0, n, zlo, zhi, out[0], glo, ghi);
+  const double lfl = std::log(1e-300);
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy = int(y[k]) - 1;
+    const bool lo = yy > 0, hi = yy < G + 1, inner = lo && hi;
+    const int own = inner ? (yy - 1 >= MI ? yy - 1 - MI : NU + MI - yy) : 0;
+    const double s = sg[k];
+    const double w = inner ? ev[size_t(own) * n + k] / s : 1.0;
+    double gA = (hi ? ghi[k] : 0.0) + (lo ? glo[k] : 0.0), gB = inner ? ghi[k] : 0.0;
+    if (inner && w * std::max(1.0, std::fabs(zlo[k] + 0.5 * w)) < 0.05) {
+      const double m = zlo[k] + 0.5 * w, m2 = m * m, w2 = w * w, u2 = (w * m) * (w * m);
+      const double ser = (u2 - w2) / 24.0 + (u2 * (u2 - 6.0 * w2) + 3.0 * w2 * w2) / 1920.0 +
+                         (u2 * (u2 * (u2 - 15.0 * w2) + 45.0 * w2 * w2) - 15.0 * w2 * w2 * w2) / 322560.0;
+      const double lpn = std::log(w) - 0.5 * m2 - 0.9189385332046727 + std::log1p(ser);
+      const double kk = std::exp(-0.125 * w2) / (w * (1.0 + ser));
+      const bool kept = lpn > lfl;
+      out[0][k] = kept ? lpn : lfl;
+      gA = kept ? -2.0 * kk * std::sinh(0.5 * m * w) : 0.0;
+      gB = kept ? kk * std::exp(-0.5 * m * w) : 0.0;
+    }
+    const double za = lo ? zlo[k] : zhi[k];
+    const int ka = lo ? yy - 1 : yy;
+    const bool wide = inner && w > 0.5 * std::max(1.0, std::fabs(za));
+    const double sc = wide ? (gA - gB) * za + gB * zhi[k] : gA * za + (inner ? gB * w : 0.0);
+    out[1][k] = -gA / s;
+    out[2][k] = -sc / s;
+    out[3][k] = gA / s;
+    for (int g = 0; g < G; ++g) {
+      const double mk = g < NU ? (ka >= MI + 1 + g ? 1.0 : 0.0) : (ka < MI - (g - NU) ? -1.0 : 0.0);
+      const double dg = SP ? dv[size_t(g) * n + k] : ev[size_t(g) * n + k];
+      out[4 + g][k] = (mk * gA + (inner && g == own ? gB : 0.0)) / s * dg;
+    }
+  }
 }
+
+template <bool SP, bool F32>
+ffi::Error OrdinalImpl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
+  const int NI = int(args.size());
+  if (NI < 4 || int(rets.size()) != NI) return ffi::Error::InvalidArgument("bayesroc: ordinal arity");
+  const int G = NI - 4;
+  std::vector<const void*> in(NI);
+  std::vector<void*> out(NI);
+  int64_t n = 0;
+  for (int a = 0; a < NI; ++a) {
+    auto b = args.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    in[a] = b.value().untyped_data();
+    n = b.value().element_count();
+    auto r = rets.get<ffi::AnyBuffer>(a);
+    if (r.has_error()) return r.error();
+    out[a] = r.value()->untyped_data();
+  }
+  pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
+    FlushDenormals ftz;
+    const int64_t m = i1 - i0;
+    std::vector<const double*> ci(NI);
+    std::vector<double*> co(NI);
+    if (!F32) {
+      for (int a = 0; a < NI; ++a) {
+        ci[a] = static_cast<const double*>(in[a]) + i0;
+        co[a] = static_cast<double*>(out[a]) + i0;
+      }
+      ordinal_chunk<SP>(m, G, ci.data(), co.data());
+      return;
+    }
+    thread_local std::vector<double> cv;
+    if (cv.size() < size_t(2 * NI) * m) cv.resize(size_t(2 * NI) * m);
+    for (int a = 0; a < NI; ++a) {
+      double* d = cv.data() + size_t(a) * m;
+      const float* f = static_cast<const float*>(in[a]) + i0;
+      for (int64_t k = 0; k < m; ++k) d[k] = f[k];
+      ci[a] = d;
+      co[a] = cv.data() + size_t(NI + a) * m;
+    }
+    ordinal_chunk<SP>(m, G, ci.data(), co.data());
+    for (int a = 0; a < NI; ++a) {
+      float* f = static_cast<float*>(out[a]) + i0;
+      for (int64_t k = 0; k < m; ++k) f[k] = static_cast<float>(co[a][k]);
+    }
+  });
+  return ffi::Error::Success();
+}
+
+template <bool SP>
+void metad_chunk(int64_t n, int G, const double* const* in, double* const* out) {
+  const double *y = in[0], *d = in[1], *mo = in[2], *mn = in[3], *a = in[4], *mid = in[5], *q = in[6], *rel = in[7];
+  const int MI = G / 2, NU = G - MI, NV = SP ? 2 * G : G, half = (G + 2) / 2;
+  const double OPEN = 1e10;
+  thread_local std::vector<double> buf;
+  const size_t need = size_t(19 + NV) * n + G + 1;
+  if (buf.size() < need) buf.resize(need);
+  double* b = buf.data();
+  double *za = b, *zl = za + n, *zh = zl + n, *zc = zh + n, *side = zc + n, *tail = side + n, *ee = tail + n, *wf = ee + n;
+  double *lp = wf + n, *ga = lp + n, *gl = ga + n, *gh = gl + n, *gc = gh + n, *gs = gc + n;
+  double *lb = gs + n, *rA = lb + n, *rB = rA + n, *flag = rB + n, *wv = flag + n;
+  double *ev = wv + n, *dv = SP ? ev + size_t(G) * n : ev;
+  double* fc = ev + size_t(NV) * n;
+  for (int g = 0; g < G; ++g) {
+    const double* x = in[8 + g];
+    double *e = ev + size_t(g) * n, *dd = dv + size_t(g) * n;
+    if (SP) {
+      for (int64_t k = 0; k < n; ++k) {
+        const double t = std::exp(-std::fabs(x[k]));
+        e[k] = std::max(x[k], 0.0) + std::log1p(t);
+        dd[k] = x[k] >= 0.0 ? 1.0 / (1.0 + t) : t / (1.0 + t);
+      }
+    } else {
+      int64_t k = 0;
+      bvn::v4d v;
+      for (; k + 4 <= n; k += 4) { std::memcpy(&v, x + k, 32); v = bvn::vexp(v); std::memcpy(e + k, &v, 32); }
+      for (; k < n; ++k) e[k] = std::exp(x[k]);
+    }
+  }
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy = int(y[k]) - 1;
+    fc[MI] = 0.0;
+    double c = 0.0;
+    for (int j = 0; j < NU; ++j) { c += ev[size_t(j) * n + k]; fc[MI + 1 + j] = c; }
+    c = 0.0;
+    for (int j = 0; j < MI; ++j) { c += ev[size_t(NU + j) * n + k]; fc[MI - 1 - j] = -c; }
+    const bool old = yy + 1 > half, lo = yy > 0, hi = yy < G + 1, inner = lo && hi;
+    const double M = old ? mo[k] : mn[k], ac = a[k] - q[k];
+    const double mu_m = q[k] * d[k] + M * d[k] * ac, c_mid = mid[k] - q[k] * d[k];
+    const double off = (rel[k] != 0.0 ? (M - 1.0) * c_mid : 0.0) - mu_m;
+    const int k_hi = std::min(std::max(yy, 0), G), k_lo = std::min(std::max(yy - 1, 0), G);
+    const double z_lo = lo ? (mid[k] + fc[k_lo]) + off : -OPEN, z_hi = hi ? (mid[k] + fc[k_hi]) + off : OPEN;
+    const int own = inner ? (yy - 1 >= MI ? yy - 1 - MI : NU + MI - yy) : 0;
+    const double w = inner ? ev[size_t(own) * n + k] : 1.0;
+    const double ls = inner ? z_lo : 0.0;
+    const double e = old ? fc[k_lo] : -fc[k_hi];
+    const double z_c = mid[k] + off;
+    const double m0 = ls + 0.5 * w;
+    const bool narrow = inner && w * std::max(1.0, std::fabs(m0)) < 0.05;
+    const bool tl = (old ? z_c : -z_c) > 8.0 && e >= 0.0;
+    const bool sel = narrow && !tl;
+    if (narrow) {
+      const double m2 = m0 * m0, w2 = w * w, u2 = (w * m0) * (w * m0);
+      const double s = (u2 - w2) / 24.0 + (u2 * (u2 - 6.0 * w2) + 3.0 * w2 * w2) / 1920.0 +
+                       (u2 * (u2 * (u2 - 15.0 * w2) + 45.0 * w2 * w2) - 15.0 * w2 * w2 * w2) / 322560.0;
+      lb[k] = std::log(w) - 0.5 * m2 - 0.9189385332046727 + std::log1p(s);
+      const double kk = std::exp(-0.125 * w2) / (w * (1.0 + s));
+      rA[k] = -2.0 * kk * std::sinh(0.5 * m0 * w);
+      rB[k] = kk * std::exp(-0.5 * m0 * w);
+    } else {
+      lb[k] = 0.0; rA[k] = 0.0; rB[k] = 0.0;
+    }
+    za[k] = mid[k] - a[k] * d[k];
+    zl[k] = sel ? -OPEN : z_lo;
+    zh[k] = sel ? OPEN : z_hi;
+    zc[k] = z_c;
+    side[k] = old ? 1.0 : 0.0;
+    tail[k] = tl ? 1.0 : 0.0;
+    ee[k] = e;
+    wf[k] = inner ? w : OPEN;
+    wv[k] = w;
+    flag[k] = (narrow ? 1.0 : 0.0) + (sel ? 2.0 : 0.0);
+  }
+  const double* ci[8] = {za, zl, zh, zc, side, tail, ee, wf};
+  double* co[6] = {lp, ga, gl, gh, gc, gs};
+  bvn::metad_array(n, ci, co);
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy = int(y[k]) - 1;
+    const bool old = yy + 1 > half, lo = yy > 0, hi = yy < G + 1, inner = lo && hi;
+    const bool narrow = flag[k] == 1.0 || flag[k] == 3.0, sel = flag[k] >= 2.0;
+    const double M = old ? mo[k] : mn[k], ac = a[k] - q[k], c_mid = mid[k] - q[k] * d[k];
+    const double g_lo = lo ? gl[k] : 0.0, g_hi = hi ? gh[k] : 0.0;
+    const double gA = narrow ? rA[k] : g_lo + g_hi, gB = narrow ? rB[k] : (inner ? g_hi : 0.0);
+    const double Gs = sel ? rA[k] + gs[k] : gs[k];
+    out[0][k] = sel ? lp[k] + lb[k] : lp[k];
+    double d_mid, d_d, d_M;
+    if (rel[k] != 0.0) {
+      d_mid = ga[k] + Gs * M;
+      d_d = -a[k] * ga[k] - Gs * M * a[k];
+      d_M = Gs * (c_mid - d[k] * ac);
+    } else {
+      d_mid = ga[k] + Gs;
+      d_d = -a[k] * ga[k] - Gs * (q[k] + M * ac);
+      d_M = -Gs * d[k] * ac;
+    }
+    out[1][k] = d_d;
+    out[2][k] = old ? d_M : 0.0;
+    out[3][k] = old ? 0.0 : d_M;
+    out[4][k] = d_mid;
+    const int k_hi = std::min(std::max(yy, 0), G), k_lo = std::min(std::max(yy - 1, 0), G);
+    const int ka = lo ? k_lo : k_hi;
+    const int own = inner ? (yy - 1 >= MI ? yy - 1 - MI : NU + MI - yy) : -1;
+    for (int g = 0; g < G; ++g) {
+      const double mk = g < NU ? (ka >= MI + 1 + g ? 1.0 : 0.0) : (ka < MI - (g - NU) ? -1.0 : 0.0);
+      const double dg = SP ? dv[size_t(g) * n + k] : ev[size_t(g) * n + k];
+      out[5 + g][k] = (mk * gA + (g == own ? gB : 0.0)) * dg;
+    }
+  }
+}
+
+template <bool SP>
+inline void gap_values(int64_t n, const double* x, double* e, double* d) {
+  if (SP) {
+    for (int64_t k = 0; k < n; ++k) {
+      const double t = std::exp(-std::fabs(x[k]));
+      e[k] = std::max(x[k], 0.0) + std::log1p(t);
+      d[k] = x[k] >= 0.0 ? 1.0 / (1.0 + t) : t / (1.0 + t);
+    }
+    return;
+  }
+  int64_t k = 0;
+  bvn::v4d v;
+  for (; k + 4 <= n; k += 4) { std::memcpy(&v, x + k, 32); v = bvn::vexp(v); std::memcpy(e + k, &v, 32); }
+  for (; k < n; ++k) e[k] = std::exp(x[k]);
+}
+
+inline void rect_strip(double t_lo, double v, double a_lo, double a_hi, double wa, bool hl, bool hh, double rho,
+                       double* o) {
+  using bvn::v4d;
+  using bvn::splat;
+  const double OPEN = 1e10;
+  const double r = std::min(std::max(rho, -0.999999), 0.999999), s = std::sqrt((1.0 - r) * (1.0 + r));
+  const v4d x = {0.5 * (1.0 - 0.8611363115940526), 0.5 * (1.0 - 0.3399810435848563),
+                 0.5 * (1.0 + 0.3399810435848563), 0.5 * (1.0 + 0.8611363115940526)};
+  const v4d W = {0.5 * 0.3478548451374538, 0.5 * 0.6521451548625461, 0.5 * 0.6521451548625461,
+                 0.5 * 0.3478548451374538};
+  const v4d t = splat(t_lo) + splat(v) * x;
+  const v4d pt = bvn::vexp(splat(-0.5) * t * t - splat(0.9189385332046727));
+  const v4d zlo = hl ? (splat(a_lo) - splat(r) * t) / splat(s) : splat(-OPEN);
+  const v4d zhi = hh ? (splat(a_hi) - splat(r) * t) / splat(s) : splat(OPEN);
+  const double om = wa / s;
+  const bool inner = hl && hh;
+  v4d Pl, dl, ql, Ph, dh, qh;
+  bvn::vprobit_triple(zhi, Ph, dh, qh);
+  bvn::vprobit_triple(zlo, Pl, dl, ql);
+  v4d C = bvn::vprobit_band(zlo, zhi, Pl, Ph, ql, qh, dl, dh);
+  v4d Ac, Bc;
+  for (int l = 0; l < 4; ++l) {
+    double A = inner ? dh[l] - dl[l] : (hl ? -dl[l] : dh[l]), B = inner ? dh[l] : 0.0;
+    if (inner) {
+      const double m0 = zlo[l] + 0.5 * om;
+      if (om * std::max(1.0, std::fabs(m0)) < 0.05) {
+        const double m2 = m0 * m0, w2 = om * om, u2 = (om * m0) * (om * m0);
+        const double ser = (u2 - w2) / 24.0 + (u2 * (u2 - 6.0 * w2) + 3.0 * w2 * w2) / 1920.0 +
+                           (u2 * (u2 * (u2 - 15.0 * w2) + 45.0 * w2 * w2) - 15.0 * w2 * w2 * w2) / 322560.0;
+        const double lpn = std::log(om) - 0.5 * m2 - 0.9189385332046727 + std::log1p(ser);
+        const double kk = std::exp(-0.125 * w2) / (om * (1.0 + ser));
+        const double Dn = std::exp(lpn);
+        C[l] = Dn;
+        A = -2.0 * kk * std::sinh(0.5 * m0 * om) * Dn;
+        B = kk * std::exp(-0.5 * m0 * om) * Dn;
+      }
+    }
+    Ac[l] = A;
+    Bc[l] = B;
+  }
+  const v4d za = hl ? zlo : zhi;
+  const v4d g = pt * C, gp = pt * (-t * C - splat(r / s) * Ac);
+  const v4d dza = (-t + za * splat(r / s)) / splat(s);
+  const double dom = om * (r / (s * s));
+  const v4d q0 = W * g, q1 = W * gp, q2 = W * x * gp, q3 = W * pt * Ac, q4 = W * pt * Bc,
+            q5 = W * pt * (Ac * dza + Bc * splat(dom));
+  auto sum4 = [](v4d q) { return ((q[0] + q[1]) + q[2]) + q[3]; };
+  const double Sg = sum4(q0);
+  o[0] = v * Sg;
+  o[1] = v * sum4(q1);
+  o[2] = Sg + v * sum4(q2);
+  o[3] = v * sum4(q3) / s;
+  o[4] = v * sum4(q4) / s;
+  o[5] = std::fabs(rho) < 0.999999 ? v * sum4(q5) : 0.0;
+}
+
+struct DimEdges {
+  double z_lo, z_hi, w, z_a;
+  int k_a, own;
+  bool lo, hi, inner;
+};
+
+inline DimEdges dim_edges(int yy, int G, double mid, double mu, double sg, const double* ev, int64_t n, int64_t k,
+                          double* t) {
+  const int MI = G / 2, NU = G - MI;
+  t[MI] = mid;
+  double c = 0.0;
+  for (int j = 0; j < NU; ++j) { c += ev[size_t(j) * n + k]; t[MI + 1 + j] = mid + c; }
+  c = 0.0;
+  for (int j = 0; j < MI; ++j) { c += ev[size_t(NU + j) * n + k]; t[MI - 1 - j] = mid - c; }
+  DimEdges e;
+  e.lo = yy > 0;
+  e.hi = yy < G + 1;
+  e.inner = e.lo && e.hi;
+  const int k_hi = std::min(std::max(yy, 0), G), k_lo = std::min(std::max(yy - 1, 0), G);
+  e.z_hi = e.hi ? (t[k_hi] - mu) / sg : 1e10;
+  e.z_lo = e.lo ? (t[k_lo] - mu) / sg : -1e10;
+  e.own = e.inner ? (yy - 1 >= MI ? yy - 1 - MI : NU + MI - yy) : -1;
+  e.w = G > 0 ? ev[size_t(e.inner ? e.own : 0) * n + k] / sg : 1.0;
+  e.z_a = e.lo ? e.z_lo : e.z_hi;
+  e.k_a = e.lo ? k_lo : k_hi;
+  return e;
+}
+
+inline double lw_scale(double gA, double gB, double z_a, double w, bool inner, double z_b) {
+  const double b = inner ? gB : 0.0, wi = inner ? w : 0.0;
+  const bool wide = inner && wi > 0.5 * std::max(1.0, std::fabs(z_a));
+  return wide ? (gA - b) * z_a + b * z_b : gA * z_a + b * wi;
+}
+
+inline double gap_sign(int g, int G, int ka) {
+  const int MI = G / 2, NU = G - MI;
+  return g < NU ? (ka >= MI + 1 + g ? 1.0 : 0.0) : (ka < MI - (g - NU) ? -1.0 : 0.0);
+}
+
+template <bool SP>
+void bg_chunk(int64_t n, int GT, const double* const* in, double* const* out) {
+  const double *y1 = in[0], *y2 = in[1], *mu1 = in[2], *mu2 = in[3], *s1 = in[4], *s2 = in[5], *rho = in[6];
+  const double *mid1 = in[7], *mid2 = in[8];
+  const int G1 = n > 0 ? int(in[9][0]) : 0, G2 = GT - G1, NV = SP ? 2 : 1;
+  thread_local std::vector<double> buf;
+  const size_t need = size_t(12 + NV * GT) * n + GT + 4;
+  if (buf.size() < need) buf.resize(need);
+  double* b = buf.data();
+  double *a1 = b, *b1 = a1 + n, *a2 = b1 + n, *b2 = a2 + n, *w1 = b2 + n, *w2 = w1 + n;
+  double *p = w2 + n, *d1l = p + n, *d1h = d1l + n, *d2l = d1h + n, *d2h = d2l + n, *dr = d2h + n;
+  double *ev1 = dr + n, *ev2 = ev1 + size_t(G1) * n;
+  double *dv1 = SP ? ev2 + size_t(G2) * n : ev1, *dv2 = SP ? dv1 + size_t(G1) * n : ev2;
+  double *t1 = ev1 + size_t(NV * GT) * n, *t2 = t1 + G1 + 2;
+  for (int g = 0; g < G1; ++g) gap_values<SP>(n, in[10 + g], ev1 + size_t(g) * n, dv1 + size_t(g) * n);
+  for (int g = 0; g < G2; ++g) gap_values<SP>(n, in[10 + G1 + g], ev2 + size_t(g) * n, dv2 + size_t(g) * n);
+  for (int64_t k = 0; k < n; ++k) {
+    const DimEdges e1 = dim_edges(int(y1[k]) - 1, G1, mid1[k], mu1[k], s1[k], ev1, n, k, t1);
+    const DimEdges e2 = dim_edges(int(y2[k]) - 1, G2, mid2[k], mu2[k], s2[k], ev2, n, k, t2);
+    a1[k] = e1.z_lo; b1[k] = e1.z_hi; w1[k] = e1.w;
+    a2[k] = e2.z_lo; b2[k] = e2.z_hi; w2[k] = e2.w;
+  }
+  bvn::rect_array(n, a1, b1, a2, b2, rho, p, d1l, d1h, d2l, d2h, dr);
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy1 = int(y1[k]) - 1, yy2 = int(y2[k]) - 1;
+    const bool lo1 = yy1 > 0, hi1 = yy1 < G1 + 1, in1 = lo1 && hi1, lo2 = yy2 > 0, hi2 = yy2 < G2 + 1, in2 = lo2 && hi2;
+    const bool f1l = a1[k] > -5e9, f1h = b1[k] < 5e9, f2l = a2[k] > -5e9, f2h = b2[k] < 5e9;
+    const bool r1 = f1l && f1h, r2 = f2l && f2h;
+    double P = p[k], A1 = d1l[k] + d1h[k], B1 = r1 ? d1h[k] : 0.0, A2 = d2l[k] + d2h[k], B2 = r2 ? d2h[k] : 0.0;
+    double R = dr[k];
+    const double v1 = r1 ? w1[k] : 1e-3, v2 = r2 ? w2[k] : 1e-3, l1 = r1 ? a1[k] : 0.0, l2 = r2 ? a2[k] : 0.0;
+    bool n2 = false, n1 = false;
+    if (r1 || r2) {
+      const double rr = std::min(std::max(rho[k], -0.999999), 0.999999), is = 1.0 / std::sqrt((1.0 - rr) * (1.0 + rr));
+      const double ars = std::fabs(rr) * is;
+      auto scale = [&](double t_lo, double v, double a_lo, double a_hi, bool hl, bool hh) {
+        const double m = t_lo + 0.5 * v;
+        const double zl = hl ? std::fabs(a_lo - rr * m) * is : 1e300, zh = hh ? std::fabs(a_hi - rr * m) * is : 1e300;
+        const double zmin = (hl || hh) ? std::min(zl, zh) : 0.0;
+        return v * (std::max(1.0, std::fabs(m)) + ars * std::max(1.0, zmin));
+      };
+      n2 = r2 && scale(l2, v2, a1[k], b1[k], f1l, f1h) < 0.05;
+      n1 = r1 && !n2 && scale(l1, v1, a2[k], b2[k], f2l, f2h) < 0.05;
+    }
+    if (n2) {
+      double o[6];
+      rect_strip(l2, v2, a1[k], b1[k], r1 ? w1[k] : 1.0, f1l, f1h, rho[k], o);
+      P = o[0]; A1 = o[3]; B1 = o[4]; A2 = o[1]; B2 = o[2]; R = o[5];
+    } else if (n1) {
+      double o[6];
+      rect_strip(l1, v1, a2[k], b2[k], r2 ? w2[k] : 1.0, f2l, f2h, rho[k], o);
+      P = o[0]; A1 = o[1]; B1 = o[2]; A2 = o[3]; B2 = o[4]; R = o[5];
+    }
+    const double prob = std::max(P, 1e-300), inv_P = P > 1e-300 ? 1.0 / prob : 0.0;
+    const double is1 = 1.0 / s1[k], is2 = 1.0 / s2[k];
+    const double gA1 = A1 * inv_P, gB1 = B1 * inv_P, gA2 = A2 * inv_P, gB2 = B2 * inv_P;
+    const double za1 = lo1 ? a1[k] : b1[k], za2 = lo2 ? a2[k] : b2[k];
+    out[0][k] = prob;
+    out[1][k] = -gA1 * is1;
+    out[2][k] = -gA2 * is2;
+    out[3][k] = -lw_scale(gA1, gB1, za1, w1[k], in1, b1[k]) * is1;
+    out[4][k] = -lw_scale(gA2, gB2, za2, w2[k], in2, b2[k]) * is2;
+    out[5][k] = R * inv_P;
+    out[6][k] = gA1 * is1;
+    out[7][k] = gA2 * is2;
+    const int MI1 = G1 / 2, NU1 = G1 - MI1, MI2 = G2 / 2, NU2 = G2 - MI2;
+    const int ka1 = lo1 ? std::min(std::max(yy1 - 1, 0), G1) : std::min(std::max(yy1, 0), G1);
+    const int ka2 = lo2 ? std::min(std::max(yy2 - 1, 0), G2) : std::min(std::max(yy2, 0), G2);
+    const int own1 = in1 ? (yy1 - 1 >= MI1 ? yy1 - 1 - MI1 : NU1 + MI1 - yy1) : -1;
+    const int own2 = in2 ? (yy2 - 1 >= MI2 ? yy2 - 1 - MI2 : NU2 + MI2 - yy2) : -1;
+    for (int g = 0; g < G1; ++g)
+      out[8 + g][k] = (gap_sign(g, G1, ka1) * (gA1 * is1) + (g == own1 ? gB1 * is1 : 0.0)) * dv1[size_t(g) * n + k];
+    for (int g = 0; g < G2; ++g)
+      out[8 + G1 + g][k] = (gap_sign(g, G2, ka2) * (gA2 * is2) + (g == own2 ? gB2 * is2 : 0.0)) * dv2[size_t(g) * n + k];
+  }
+  {
+    int64_t k = 0;
+    bvn::v4d v;
+    for (; k + 4 <= n; k += 4) { std::memcpy(&v, out[0] + k, 32); v = bvn::vlog(v); std::memcpy(out[0] + k, &v, 32); }
+    for (; k < n; ++k) out[0][k] = std::log(out[0][k]);
+  }
+}
+
+inline void build_thresh(int G, double mid, const double* ev, int64_t n, int64_t k, double* t) {
+  const int MI = G / 2, NU = G - MI;
+  t[MI] = mid;
+  double c = 0.0;
+  for (int j = 0; j < NU; ++j) { c += ev[size_t(j) * n + k]; t[MI + 1 + j] = mid + c; }
+  c = 0.0;
+  for (int j = 0; j < MI; ++j) { c += ev[size_t(NU + j) * n + k]; t[MI - 1 - j] = mid - c; }
+}
+
+inline DimEdges edges_at(const double* t, int yy, int G, double mu, double sg, const double* ev, int64_t n,
+                         int64_t k) {
+  const int MI = G / 2, NU = G - MI;
+  DimEdges e;
+  e.lo = yy > 0;
+  e.hi = yy < G + 1;
+  e.inner = e.lo && e.hi;
+  const int k_hi = std::min(std::max(yy, 0), G), k_lo = std::min(std::max(yy - 1, 0), G);
+  e.z_hi = e.hi ? (t[k_hi] - mu) / sg : 1e10;
+  e.z_lo = e.lo ? (t[k_lo] - mu) / sg : -1e10;
+  e.own = e.inner ? (yy - 1 >= MI ? yy - 1 - MI : NU + MI - yy) : -1;
+  e.w = G > 0 ? ev[size_t(e.inner ? e.own : 0) * n + k] / sg : 1.0;
+  e.z_a = e.lo ? e.z_lo : e.z_hi;
+  e.k_a = e.lo ? k_lo : k_hi;
+  return e;
+}
+
+inline bool cell_narrow(const DimEdges& e) {
+  return e.inner && e.w * std::max(1.0, std::fabs(e.z_lo + 0.5 * e.w)) < 0.05;
+}
+
+template <bool SP>
+void vrdp_chunk(int64_t n, int GT, const double* const* in, double* const* out) {
+  const double *y1 = in[0], *y2 = in[1], *dF = in[2], *dR = in[3], *sd = in[4], *lam = in[5], *si = in[6], *sS = in[7];
+  const double *mid1 = in[8], *mid2 = in[9];
+  const int G1 = n > 0 ? int(in[10][0]) : 0, G2 = GT - G1, NV = SP ? 2 : 1;
+  thread_local std::vector<double> buf;
+  const size_t need = size_t(19 + NV * GT) * n + GT + 4;
+  if (buf.size() < need) buf.resize(need);
+  double* b = buf.data();
+  double *c1h = b, *c1l = c1h + n, *c2h = c1l + n, *c2l = c2h + n, *h1h = c2l + n, *h1l = h1h + n, *h2h = h1l + n;
+  double *h2l = h2h + n, *o7 = h2l + n, *o8 = o7 + n, *o9 = o8 + n, *o10 = o9 + n, *T1B = o10 + n, *T2B = T1B + n;
+  double *T1A = T2B + n, *T2A = T1A + n, *ka1 = T2A + n, *ka2 = ka1 + n, *nar = ka2 + n;
+  double *ev1 = nar + n, *ev2 = ev1 + size_t(G1) * n;
+  double *dv1 = SP ? ev2 + size_t(G2) * n : ev1, *dv2 = SP ? dv1 + size_t(G1) * n : ev2;
+  double *t1 = ev1 + size_t(NV * GT) * n, *t2 = t1 + G1 + 2;
+  for (int g = 0; g < G1; ++g) gap_values<SP>(n, in[11 + g], ev1 + size_t(g) * n, dv1 + size_t(g) * n);
+  for (int g = 0; g < G2; ++g) gap_values<SP>(n, in[11 + G1 + g], ev2 + size_t(g) * n, dv2 + size_t(g) * n);
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy1 = int(y1[k]) - 1, yy2 = int(y2[k]) - 1;
+    build_thresh(G1, mid1[k], ev1, n, k, t1);
+    build_thresh(G2, mid2[k], ev2, n, k, t2);
+    c1h[k] = t1[std::min(std::max(yy1, 0), G1)];
+    c1l[k] = t1[std::min(std::max(yy1 - 1, 0), G1)];
+    c2h[k] = t2[std::min(std::max(yy2, 0), G2)];
+    c2l[k] = t2[std::min(std::max(yy2 - 1, 0), G2)];
+    h1h[k] = yy1 < G1 + 1 ? 1.0 : 0.0;
+    h1l[k] = yy1 > 0 ? 1.0 : 0.0;
+    h2h[k] = yy2 < G2 + 1 ? 1.0 : 0.0;
+    h2l[k] = yy2 > 0 ? 1.0 : 0.0;
+  }
+  const double* ci[14] = {c1h, c1l, c2h, c2l, h1h, h1l, h2h, h2l, dF, dR, sd, lam, si, sS};
+  double* co[11] = {out[0], out[1], out[2], out[3], out[4], out[5], out[6], o7, o8, o9, o10};
+  bvn::vrdp_array(n, ci, co);
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy1 = int(y1[k]) - 1, yy2 = int(y2[k]) - 1;
+    const bool lo1 = yy1 > 0, in1 = lo1 && yy1 < G1 + 1, lo2 = yy2 > 0, in2 = lo2 && yy2 < G2 + 1;
+    ka1[k] = lo1 ? std::min(std::max(yy1 - 1, 0), G1) : std::min(std::max(yy1, 0), G1);
+    ka2[k] = lo2 ? std::min(std::max(yy2 - 1, 0), G2) : std::min(std::max(yy2, 0), G2);
+    const int MI1 = G1 / 2, NU1 = G1 - MI1, MI2 = G2 / 2, NU2 = G2 - MI2;
+    const double g1w = in1 ? ev1[size_t(yy1 - 1 >= MI1 ? yy1 - 1 - MI1 : NU1 + MI1 - yy1) * n + k] : 1e300;
+    const double g2w = in2 ? ev2[size_t(yy2 - 1 >= MI2 ? yy2 - 1 - MI2 : NU2 + MI2 - yy2) * n + k] : 1e300;
+    if (!(g1w < 0.05 * si[k] || g2w < 0.05 || g2w < 0.05 * sS[k])) {
+      T1A[k] = o7[k] + o8[k];
+      T1B[k] = in1 ? o7[k] : 0.0;
+      T2A[k] = o9[k] + o10[k];
+      T2B[k] = in2 ? o9[k] : 0.0;
+      continue;
+    }
+    build_thresh(G1, mid1[k], ev1, n, k, t1);
+    build_thresh(G2, mid2[k], ev2, n, k, t2);
+    const DimEdges f1 = edges_at(t1, yy1, G1, dF[k], si[k], ev1, n, k);
+    const DimEdges r1 = edges_at(t1, yy1, G1, dF[k] + dR[k], si[k], ev1, n, k);
+    const DimEdges n2 = edges_at(t2, yy2, G2, 0.0, 1.0, ev2, n, k);
+    const DimEdges r2 = edges_at(t2, yy2, G2, sd[k], sS[k], ev2, n, k);
+    if (!(cell_narrow(f1) || cell_narrow(r1) || cell_narrow(n2) || cell_narrow(r2))) {
+      T1A[k] = o7[k] + o8[k];
+      T1B[k] = f1.inner ? o7[k] : 0.0;
+      T2A[k] = o9[k] + o10[k];
+      T2B[k] = n2.inner ? o9[k] : 0.0;
+      continue;
+    }
+    const DimEdges* es[4] = {&f1, &r1, &n2, &r2};
+    bvn::v4d zl, zh, D, pl, ph;
+    for (int c = 0; c < 4; ++c) { zl[c] = es[c]->z_lo; zh[c] = es[c]->z_hi; }
+    bvn::probit_diff4(zl, zh, D, pl, ph);
+    double Dc[4], A[4], B[4];
+    for (int c = 0; c < 4; ++c) {
+      const DimEdges& e = *es[c];
+      double d = D[c], Ain = ph[c] - pl[c], Bin = ph[c];
+      if (cell_narrow(e)) {
+        const double w = e.w, m0 = e.z_lo + 0.5 * w, m2 = m0 * m0, w2 = w * w, u2 = (w * m0) * (w * m0);
+        const double ser = (u2 - w2) / 24.0 + (u2 * (u2 - 6.0 * w2) + 3.0 * w2 * w2) / 1920.0 +
+                           (u2 * (u2 * (u2 - 15.0 * w2) + 45.0 * w2 * w2) - 15.0 * w2 * w2 * w2) / 322560.0;
+        const double lpn = std::log(w) - 0.5 * m2 - 0.9189385332046727 + std::log1p(ser);
+        const double kk = std::exp(-0.125 * w2) / (w * (1.0 + ser));
+        d = std::exp(lpn);
+        Ain = -2.0 * kk * std::sinh(0.5 * m0 * w) * d;
+        Bin = kk * std::exp(-0.5 * m0 * w) * d;
+      }
+      Dc[c] = d;
+      A[c] = e.inner ? Ain : (e.lo ? -pl[c] : ph[c]);
+      B[c] = e.inner ? Bin : 0.0;
+    }
+    const double fl = 1e-300, L = lam[k];
+    const double p1f = std::max(Dc[0], fl), p1r = std::max(Dc[1], fl), p2n = std::max(Dc[2], fl), p2r = std::max(Dc[3], fl);
+    const double p_fam = p1f * p2n, p_rec = p1r * p2r, raw = (1.0 - L) * p_fam + L * p_rec;
+    const double prob = std::max(raw, fl), inv_P = raw > fl ? 1.0 / prob : 0.0;
+    const double cf1 = Dc[0] > fl ? (1.0 - L) * p2n * inv_P : 0.0, cr1 = Dc[1] > fl ? L * p2r * inv_P : 0.0;
+    const double cn2 = Dc[2] > fl ? (1.0 - L) * p1f * inv_P : 0.0, cr2 = Dc[3] > fl ? L * p1r * inv_P : 0.0;
+    const double isi = 1.0 / si[k], isS = 1.0 / sS[k];
+    const double gfA = cf1 * A[0], gfB = cf1 * B[0], grA = cr1 * A[1], grB = cr1 * B[1], gsA = cr2 * A[3], gsB = cr2 * B[3];
+    const double gf0 = -gfA * isi, gf1 = -lw_scale(gfA, gfB, f1.z_a, f1.w, f1.inner, f1.z_hi) * isi, gf2 = gfA * isi;
+    const double gr0 = -grA * isi, gr1 = -lw_scale(grA, grB, r1.z_a, r1.w, r1.inner, r1.z_hi) * isi, gr2 = grA * isi;
+    const double gs0 = -gsA * isS, gs1 = -lw_scale(gsA, gsB, r2.z_a, r2.w, r2.inner, r2.z_hi) * isS, gs2 = gsA * isS;
+    out[0][k] = std::log(prob);
+    out[1][k] = gf0 + gr0;
+    out[2][k] = gr0;
+    out[3][k] = gs0;
+    out[4][k] = (p_rec - p_fam) * inv_P;
+    out[5][k] = gf1 + gr1;
+    out[6][k] = gs1;
+    T1A[k] = gf2 + gr2;
+    T1B[k] = f1.inner ? (cf1 * B[0] + cr1 * B[1]) * isi : 0.0;
+    T2A[k] = cn2 * A[2] + gs2;
+    T2B[k] = n2.inner ? cn2 * B[2] + cr2 * B[3] * isS : 0.0;
+  }
+  for (int64_t k = 0; k < n; ++k) {
+    const int yy1 = int(y1[k]) - 1, yy2 = int(y2[k]) - 1;
+    const int MI1 = G1 / 2, NU1 = G1 - MI1, MI2 = G2 / 2, NU2 = G2 - MI2;
+    const bool in1 = yy1 > 0 && yy1 < G1 + 1, in2 = yy2 > 0 && yy2 < G2 + 1;
+    const int own1 = in1 ? (yy1 - 1 >= MI1 ? yy1 - 1 - MI1 : NU1 + MI1 - yy1) : -1;
+    const int own2 = in2 ? (yy2 - 1 >= MI2 ? yy2 - 1 - MI2 : NU2 + MI2 - yy2) : -1;
+    out[7][k] = T1A[k];
+    out[8][k] = T2A[k];
+    for (int g = 0; g < G1; ++g)
+      out[9 + g][k] = (gap_sign(g, G1, int(ka1[k])) * T1A[k] + (g == own1 ? T1B[k] : 0.0)) * dv1[size_t(g) * n + k];
+    for (int g = 0; g < G2; ++g)
+      out[9 + G1 + g][k] = (gap_sign(g, G2, int(ka2[k])) * T2A[k] + (g == own2 ? T2B[k] : 0.0)) * dv2[size_t(g) * n + k];
+  }
+}
+
+template <void (*FN)(int64_t, int, const double* const*, double* const*), int NIF, int NOF, bool F32>
+ffi::Error TrialImpl(ffi::ThreadPool pool, ffi::RemainingArgs args, ffi::RemainingRets rets) {
+  const int NI = int(args.size()), G = NI - NIF, NO = NOF + G;
+  if (G < 0 || int(rets.size()) != NO) return ffi::Error::InvalidArgument("bayesroc: trial kernel arity");
+  std::vector<const void*> in(NI);
+  std::vector<void*> out(NO);
+  int64_t n = 0;
+  for (int a = 0; a < NI; ++a) {
+    auto b = args.get<ffi::AnyBuffer>(a);
+    if (b.has_error()) return b.error();
+    in[a] = b.value().untyped_data();
+    n = b.value().element_count();
+  }
+  for (int a = 0; a < NO; ++a) {
+    auto r = rets.get<ffi::AnyBuffer>(a);
+    if (r.has_error()) return r.error();
+    out[a] = r.value()->untyped_data();
+  }
+  pool_for(pool, n, 256, [&](int64_t i0, int64_t i1) {
+    FlushDenormals ftz;
+    const int64_t m = i1 - i0;
+    std::vector<const double*> ci(NI);
+    std::vector<double*> co(NO);
+    if (!F32) {
+      for (int a = 0; a < NI; ++a) ci[a] = static_cast<const double*>(in[a]) + i0;
+      for (int a = 0; a < NO; ++a) co[a] = static_cast<double*>(out[a]) + i0;
+      FN(m, G, ci.data(), co.data());
+      return;
+    }
+    thread_local std::vector<double> cv;
+    if (cv.size() < size_t(NI + NO) * m) cv.resize(size_t(NI + NO) * m);
+    for (int a = 0; a < NI; ++a) {
+      double* dd = cv.data() + size_t(a) * m;
+      const float* f = static_cast<const float*>(in[a]) + i0;
+      for (int64_t k = 0; k < m; ++k) dd[k] = f[k];
+      ci[a] = dd;
+    }
+    for (int a = 0; a < NO; ++a) co[a] = cv.data() + size_t(NI + a) * m;
+    FN(m, G, ci.data(), co.data());
+    for (int a = 0; a < NO; ++a) {
+      float* f = static_cast<float*>(out[a]) + i0;
+      for (int64_t k = 0; k < m; ++k) f[k] = static_cast<float>(co[a][k]);
+    }
+  });
+  return ffi::Error::Success();
+}
+
+}
+
+#define BAYESROC_TRIAL(NAME, FN, NIF, NOF, F32)                                     \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (TrialImpl<FN, NIF, NOF, F32>),                 \
+                                ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
+
+BAYESROC_TRIAL(BayesrocMetadTrial, metad_chunk<false>, 8, 5, false);
+BAYESROC_TRIAL(BayesrocMetadTrialSp, metad_chunk<true>, 8, 5, false);
+BAYESROC_TRIAL(BayesrocMetadTrialF32, metad_chunk<false>, 8, 5, true);
+BAYESROC_TRIAL(BayesrocMetadTrialSpF32, metad_chunk<true>, 8, 5, true);
+BAYESROC_TRIAL(BayesrocBgTrial, bg_chunk<false>, 10, 8, false);
+BAYESROC_TRIAL(BayesrocBgTrialSp, bg_chunk<true>, 10, 8, false);
+BAYESROC_TRIAL(BayesrocBgTrialF32, bg_chunk<false>, 10, 8, true);
+BAYESROC_TRIAL(BayesrocBgTrialSpF32, bg_chunk<true>, 10, 8, true);
+BAYESROC_TRIAL(BayesrocVrdpTrial, vrdp_chunk<false>, 11, 9, false);
+BAYESROC_TRIAL(BayesrocVrdpTrialSp, vrdp_chunk<true>, 11, 9, false);
+BAYESROC_TRIAL(BayesrocVrdpTrialF32, vrdp_chunk<false>, 11, 9, true);
+BAYESROC_TRIAL(BayesrocVrdpTrialSpF32, vrdp_chunk<true>, 11, 9, true);
+
+#define BAYESROC_ORDINAL(NAME, SP, F32)                                             \
+  XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (OrdinalImpl<SP, F32>),                         \
+                                ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().RemainingArgs().RemainingRets())
+
+BAYESROC_ORDINAL(BayesrocOrdinal, false, false);
+BAYESROC_ORDINAL(BayesrocOrdinalSp, true, false);
+BAYESROC_ORDINAL(BayesrocOrdinalF32, false, true);
+BAYESROC_ORDINAL(BayesrocOrdinalSpF32, true, true);
 
 #define BAYESROC_F32(NAME, NI, NO, K)                                               \
   XLA_FFI_DEFINE_HANDLER_SYMBOL(NAME, (F32Impl<NI, NO, K>),                           \

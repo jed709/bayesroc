@@ -447,8 +447,8 @@ def _crit_re_shift(u, idx, conf, n_thresh, mid, n_gaps):
         def at(k):
             return jnp.where(has, u[k * R + tsafe, idx], 0.0)
     else:
-        def at(k):
-            return u[k, idx]
+        slab = u[np.array([mid] + [_gap_thresh_pos(g, mid, n_upper) for g in range(n_gaps)])][:, idx]
+        return slab[0], (slab[1:] if n_gaps else None)
     mid_shift = at(mid)
     gaps = [at(_gap_thresh_pos(g, mid, n_upper)) for g in range(n_gaps)]
     return mid_shift, (jnp.stack(gaps) if gaps else None)
@@ -467,6 +467,14 @@ def _crit2_varying_shift(u, idx, mode, y1_idx, n_thresh, mid, n_gaps, conf=None)
             return u[c, idx]
         return sum(Z[:, r] * u[c * R + r, idx] for r in range(R))
 
+    if mode == "full" and Z is None:
+        n_groups = u.shape[1]
+        n_bins = u.shape[0] // n_thresh
+        order = np.array([mid] + [_gap_thresh_pos(g, mid, n_upper) for g in range(n_gaps)])
+        flat = jnp.reshape(jnp.transpose(jnp.reshape(u[:n_bins * n_thresh], (n_bins, n_thresh, n_groups)), (1, 0, 2)),
+                           (n_thresh, n_bins * n_groups))[order]
+        slab = flat[:, jnp.clip(y1_idx, 0, n_bins - 1) * n_groups + idx]
+        return slab[0], (slab[1:] if n_gaps else None)
     if mode == "full":
         base = y1_idx * n_thresh
         gaps = [at(base + _gap_thresh_pos(g, mid, n_upper)) for g in range(n_gaps)]
@@ -739,7 +747,10 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
-                         ("probit_cell", "ProbitCell"),
+                         ("probit_cell", "ProbitCell"), ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
+                         ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
+                         ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
+                         ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
                          ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
                          ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"),
                          ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
@@ -749,6 +760,10 @@ if os.environ.get("BAYESROC_BVN_FFI"):
         for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
                          ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
                          ("probit_cell", "ProbitCell"), ("probit_diff", "ProbitDiff"),
+                         ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
+                         ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
+                         ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
+                         ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
                          ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
                          ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
                          ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd")):
@@ -2582,11 +2597,43 @@ def fused_loglik_gnoise(y, K, mu, sm, thresh_mid, gaps, gap_link="log"):
     return _fused_cache[key](y, mu, sm, thresh_mid, gaps_per_obs)
 
 
+def _make_metad_native(K, gap_link_is_softplus, q, relative):
+    """The probit meta-d' log-likelihood of _make_fused_metad_loglik from the native whole-trial kernel: criteria,
+    cell and derivatives in one pass, gaps a tuple of the K - 2 unconstrained gaps."""
+    name = "metad_trial_sp" if gap_link_is_softplus else "metad_trial"
+
+    def call(y, d, m_old, m_new, a, thresh_mid, gaps):
+        args = jnp.broadcast_arrays(d, m_old, m_new, jnp.asarray(a, dtype=d.dtype), thresh_mid, *gaps)
+        dt, shape = args[0].dtype, args[0].shape
+        return _native_call(name, K + 3, (jnp.asarray(y, dtype=dt),) + tuple(args[:5]) +
+                            (jnp.full(shape, q, dt), jnp.full(shape, 1.0 if relative else 0.0, dt)) + tuple(args[5:]))
+
+    @custom_jvp
+    def _metad(y, d, m_old, m_new, a, thresh_mid, gaps):
+        return call(y, d, m_old, m_new, a, thresh_mid, gaps)[0]
+
+    @_metad.defjvp
+    def _metad_jvp(primals, tangents):
+        _, t_d, t_mo, t_mn, _, t_mid, t_gaps = tangents
+        out = call(*primals)
+        tan = out[1] * t_d + out[2] * t_mo + out[3] * t_mn + out[4] * t_mid
+        for g in range(K - 2):
+            tan = tan + out[5 + g] * t_gaps[g]
+        return out[0], tan
+
+    return _metad
+
+
 def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link="log", q=0.5, relative=False,
                        link_name="probit"):
     """Meta-d' log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
     N = y.shape[0]
     is_softplus = gap_link == "softplus"
+    if _use_probit_native(link_name, d):
+        key = ("metad_native", int(K), bool(is_softplus), float(q), bool(relative))
+        if key not in _fused_cache:
+            _fused_cache[key] = _make_metad_native(int(K), bool(is_softplus), float(q), bool(relative))
+        return _fused_cache[key](y, d, m_old, m_new, is_old, thresh_mid, tuple(gaps[g] for g in range(K - 2)))
     gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, K - 2)) if gaps.ndim == 1 else gaps.T
     key = ("metad", int(K), bool(is_softplus), float(q), bool(relative), str(link_name))
     if key not in _fused_cache:
@@ -3885,6 +3932,41 @@ def _weight(p):
     return jnp.minimum(p, 1.0 - 0.5 * jnp.finfo(p.dtype).eps)
 
 
+def _make_vrdp_native(K1, K2, gap_link_is_softplus):
+    """The vrdp2d log-likelihood of _make_fused_batch_vrdp2d_loglik from the native whole-trial kernel: criteria,
+    cells, narrow rows and derivatives in one pass, each gaps a tuple of unconstrained gaps."""
+    name = "vrdp_trial_sp" if gap_link_is_softplus else "vrdp_trial"
+    G1, G2 = K1 - 2, K2 - 2
+
+    def call(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid,
+             gaps2):
+        args = jnp.broadcast_arrays(dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
+                                    thresh2_mid, *gaps1, *gaps2)
+        dt, shape = args[0].dtype, args[0].shape
+        return _native_call(name, 9 + G1 + G2, (jnp.asarray(y1, dtype=dt), jnp.asarray(y2, dtype=dt)) +
+                            tuple(args[:8]) + (jnp.full(shape, float(G1), dt),) + tuple(args[8:]))
+
+    @custom_jvp
+    def _vrdp(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid,
+              gaps2):
+        return call(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gaps1,
+                    thresh2_mid, gaps2)[0]
+
+    @_vrdp.defjvp
+    def _vrdp_jvp(primals, tangents):
+        _, _, d_F, d_R, d_sd, d_lam, d_si, d_sS, d_mid1, d_gaps1, d_mid2, d_gaps2 = tangents
+        out = call(*primals)
+        tan = (out[1] * d_F + out[2] * d_R + out[3] * d_sd + out[4] * d_lam + out[5] * d_si + out[6] * d_sS +
+               out[7] * d_mid1 + out[8] * d_mid2)
+        for g in range(G1):
+            tan = tan + out[9 + g] * d_gaps1[g]
+        for g in range(G2):
+            tan = tan + out[9 + G1 + g] * d_gaps2[g]
+        return out[0], tan
+
+    return _vrdp
+
+
 def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
                          lambda_val, sigma_item, sigma_S,
                          thresh1_mid, gaps1, thresh2_mid, gaps2, gap_link="log"):
@@ -3893,6 +3975,13 @@ def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
     n_gaps1 = K1 - 2
     n_gaps2 = K2 - 2
     is_softplus = (gap_link == "softplus")
+    if _native_ok(dprime_F):
+        key = ("vrdp_native", int(K1), int(K2), bool(is_softplus))
+        if key not in _fused_cache:
+            _fused_cache[key] = _make_vrdp_native(int(K1), int(K2), bool(is_softplus))
+        return _fused_cache[key](y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
+                                 tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
+                                 tuple(gaps2[g] for g in range(n_gaps2)))
 
     if gaps1.ndim == 1:
         gaps1_per_obs = jnp.broadcast_to(gaps1[None, :], (N, n_gaps1))
@@ -3912,6 +4001,38 @@ def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
                               thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs)
 
 
+def _make_bg_native(K1, K2, gap_link_is_softplus):
+    """The bivariate_sdt log-likelihood of _make_fused_batch_bivariate_sdt_loglik from the native whole-trial
+    kernel: criteria, rectangle, narrow strips and derivatives in one pass, each gaps a tuple of unconstrained
+    gaps."""
+    name = "bg_trial_sp" if gap_link_is_softplus else "bg_trial"
+    G1, G2 = K1 - 2, K2 - 2
+
+    def call(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gaps1, thresh2_mid, gaps2):
+        args = jnp.broadcast_arrays(mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, thresh2_mid, *gaps1, *gaps2)
+        dt, shape = args[0].dtype, args[0].shape
+        return _native_call(name, 8 + G1 + G2, (jnp.asarray(y1, dtype=dt), jnp.asarray(y2, dtype=dt)) +
+                            tuple(args[:7]) + (jnp.full(shape, float(G1), dt),) + tuple(args[7:]))
+
+    @custom_jvp
+    def _bg(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gaps1, thresh2_mid, gaps2):
+        return call(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gaps1, thresh2_mid, gaps2)[0]
+
+    @_bg.defjvp
+    def _bg_jvp(primals, tangents):
+        _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho, d_mid1, d_gaps1, d_mid2, d_gaps2 = tangents
+        out = call(*primals)
+        tan = (out[1] * d_mu1 + out[2] * d_mu2 + out[3] * d_sigma1 + out[4] * d_sigma2 + out[5] * d_rho +
+               out[6] * d_mid1 + out[7] * d_mid2)
+        for g in range(G1):
+            tan = tan + out[8 + g] * d_gaps1[g]
+        for g in range(G2):
+            tan = tan + out[8 + G1 + g] * d_gaps2[g]
+        return out[0], tan
+
+    return _bg
+
+
 def fused_loglik_bivariate_sdt(y1, y2, item_type, K1, K2, mu1, mu2, sigma1, sigma2, rho_val,
                                 thresh1_mid, gaps1, thresh2_mid, gaps2, gap_link="log"):
     """Fully-vectorized fused log-likelihood for bivariate_sdt."""
@@ -3919,6 +4040,13 @@ def fused_loglik_bivariate_sdt(y1, y2, item_type, K1, K2, mu1, mu2, sigma1, sigm
     n_gaps1 = K1 - 2
     n_gaps2 = K2 - 2
     is_softplus = (gap_link == "softplus")
+    if _native_ok(mu1):
+        key = ("bg_native", int(K1), int(K2), bool(is_softplus))
+        if key not in _fused_cache:
+            _fused_cache[key] = _make_bg_native(int(K1), int(K2), bool(is_softplus))
+        return _fused_cache[key](y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
+                                 tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
+                                 tuple(gaps2[g] for g in range(n_gaps2)))
 
     if gaps1.ndim == 1:
         gaps1_per_obs = jnp.broadcast_to(gaps1[None, :], (N, n_gaps1))
@@ -4164,6 +4292,91 @@ def fused_loglik_cdp(y, rk, is_old, old_idx, K, J,
                               thresh_mid, gaps_per_obs)
 
 
+def _make_ordinal_native(K, gap_link_is_softplus):
+    """The probit batch log-likelihood of _make_fused_batch_loglik from the native whole-trial kernel: criteria,
+    cell and derivatives in one pass, gaps a tuple of the K - 2 unconstrained gaps."""
+    name = "ordinal_sp" if gap_link_is_softplus else "ordinal"
+
+    def call(y, mu, sigma_val, thresh_mid, gaps):
+        args = jnp.broadcast_arrays(mu, sigma_val, thresh_mid, *gaps)
+        return _native_call(name, K + 2, (jnp.asarray(y, dtype=args[0].dtype),) + tuple(args))
+
+    @custom_jvp
+    def _ordinal(y, mu, sigma_val, thresh_mid, gaps):
+        return call(y, mu, sigma_val, thresh_mid, gaps)[0]
+
+    @_ordinal.defjvp
+    def _ordinal_jvp(primals, tangents):
+        _, d_mu, d_sigma_val, d_thresh_mid, d_gaps = tangents
+        out = call(*primals)
+        tangent_out = out[1] * d_mu + out[2] * d_sigma_val + out[3] * d_thresh_mid
+        for g in range(K - 2):
+            tangent_out = tangent_out + out[4 + g] * d_gaps[g]
+        return out[0], tangent_out
+
+    return _ordinal
+
+
+def _re_block_offset(u, conf):
+    """The [N] offset of a random-effect term block u [n_terms, n_groups] under its configuration: each
+    row's own term where term_idx names one (none where it is 0), every term otherwise, weighted by the
+    columns of Z for a design-matrix block."""
+    idx = jnp.array(conf["index"], dtype=jnp.int32) - 1
+    nt, n_groups = u.shape
+    if conf.get("type", "index") != "index":
+        Z = _ensure_2d(jnp.array(conf["Z"], dtype=_FLOAT))
+        return jnp.sum(Z.T * u[:, idx], axis=0)
+    if conf.get("term_idx") is None:
+        return jnp.sum(u, axis=0)[idx]
+    tidx = jnp.array(conf["term_idx"], dtype=jnp.int32) - 1
+    return jnp.where((tidx >= 0) & (tidx < nt), jnp.reshape(u, (-1,))[jnp.clip(tidx, 0, nt - 1) * n_groups + idx], 0.0)
+
+
+def _native_gaps(gaps, n_gaps):
+    return tuple(gaps[g] for g in range(n_gaps))
+
+
+def _ordinal_lp(y, K, mu, sigma_val, thresh_mid, gaps, is_softplus):
+    key = ("ordinal_native", int(K), bool(is_softplus))
+    if key not in _fused_cache:
+        _fused_cache[key] = _make_ordinal_native(int(K), bool(is_softplus))
+    mu, sigma_val, thresh_mid = jnp.broadcast_arrays(mu, sigma_val, thresh_mid)
+    return _fused_cache[key](y, mu, sigma_val, thresh_mid, _native_gaps(gaps, K - 2))
+
+
+@custom_jvp
+def _dp_combine(is_top, lambda_val, lp):
+    lq = jnp.log1p(-lambda_val) + lp
+    return jnp.where(is_top, jnp.logaddexp(jnp.log(lambda_val), lq), lq)
+
+
+@_dp_combine.defjvp
+def _dp_combine_jvp(primals, tangents):
+    is_top, lambda_val, lp = primals
+    _, d_lambda, d_lp = tangents
+    lq = jnp.log1p(-lambda_val) + lp
+    val = jnp.where(is_top, jnp.logaddexp(jnp.log(lambda_val), lq), lq)
+    d_lam = jnp.where(is_top, _exp_ratio(-val), 0.0) - _exp_ratio(lp - val)
+    return val, d_lam * d_lambda + jnp.exp(lq - val) * d_lp
+
+
+@custom_jvp
+def _mix_combine(lambda_val, lpa, lpb):
+    return jnp.logaddexp(jnp.log(lambda_val) + lpa, jnp.log1p(-lambda_val) + lpb)
+
+
+@_mix_combine.defjvp
+def _mix_combine_jvp(primals, tangents):
+    lambda_val, lpa, lpb = primals
+    d_lambda, d_a, d_b = tangents
+    la, lb = jnp.log(lambda_val) + lpa, jnp.log1p(-lambda_val) + lpb
+    val = jnp.logaddexp(la, lb)
+    ka, kb = jnp.abs(lpa - _LOG_P_FLOOR) > 1e-3, jnp.abs(lpb - _LOG_P_FLOOR) > 1e-3
+    d_lam = jnp.where(ka, _exp_ratio(lpa - val), 0.0) - jnp.where(kb, _exp_ratio(lpb - val), 0.0)
+    return val, (d_lam * d_lambda + jnp.where(ka, jnp.exp(la - val), 0.0) * d_a +
+                 jnp.where(kb, jnp.exp(lb - val), 0.0) * d_b)
+
+
 def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for evsdt/uvsdt.
 
@@ -4181,6 +4394,12 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", l
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
 
+    if _use_probit_native(link_name, mu):
+        key = ("ordinal_native", int(K), bool(is_softplus))
+        if key not in _fused_cache:
+            _fused_cache[key] = _make_ordinal_native(int(K), bool(is_softplus))
+        return _fused_cache[key](y, mu, sigma_val, thresh_mid, tuple(gaps[g] for g in range(n_gaps)))
+
     if gaps.ndim == 1:
         gaps_per_obs = jnp.broadcast_to(gaps[None, :], (N, n_gaps))
     else:
@@ -4196,6 +4415,9 @@ def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
                        gap_link="log", has_sigma=False, link_name="probit", edge=None):
     """Fully-vectorized fused log-likelihood for DPSDT (old items only)."""
     lambda_val = _weight(lambda_val)
+    if _use_probit_native(link_name, mu):
+        lp = _ordinal_lp(y, K, mu, sigma_val, thresh_mid, gaps, gap_link == "softplus")
+        return _dp_combine(y == (K if edge is None else int(edge)), lambda_val, lp)
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4215,6 +4437,10 @@ def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
                          thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for mixture (old items only)."""
     lambda_val = _weight(lambda_val)
+    if _use_probit_native(link_name, mu1):
+        sp = gap_link == "softplus"
+        return _mix_combine(lambda_val, _ordinal_lp(y, K, mu1, sigma1_val, thresh_mid, gaps, sp),
+                            _ordinal_lp(y, K, mu2, sigma2_val, thresh_mid, gaps, sp))
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4235,6 +4461,10 @@ def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
                                 gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for source_mixture."""
     lambda_val = _weight(lambda_val)
+    if _use_probit_native(link_name, d_attended):
+        sp, one = gap_link == "softplus", jnp.ones_like(d_attended)
+        return _mix_combine(lambda_val, _ordinal_lp(y, K, d_attended, one, thresh_mid, gaps, sp),
+                            _ordinal_lp(y, K, jnp.zeros_like(d_attended), one, thresh_mid, gaps, sp))
     N = y.shape[0]
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
@@ -4312,6 +4542,14 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     if family_name == "dpsdt" and lambda_val is not None and has_fused_inputs:
         has_sigma = (sigma is not None)
         mu_rows = is_old * mu_signal
+        if lambda_L is None and _use_probit_native(link_name, mu_rows):
+            old = is_old > 0
+            lp = _ordinal_lp(y, K, mu_rows, jnp.where(old, sd_signal, sd_noise), thresh_mid, log_gaps,
+                             gap_link == "softplus")
+            log_lik = jnp.where(old, _dp_combine(y == K, _weight(jnp.where(old, lambda_val, 0.5)), lp), lp)
+            if counts is not None:
+                log_lik = log_lik * counts
+            return log_lik
 
         def old_ll(i):
             return fused_loglik_dpsdt(y[i], K, mu_rows[i], sd_signal[i], lambda_val[i], thresh_mid[i],
@@ -4337,6 +4575,15 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
         _sigma2 = sigma2 if sigma2 is not None else jnp.ones(N)
         mu1_rows = is_old * mu_signal
         mu2_rows = _dprime2 - (1.0 - is_old) * mu_signal
+        if (lambda_val is not None and not (dprime_L is not None and lambda_L is not None)
+                and _use_probit_native(link_name, mu1_rows)):
+            old, sp = is_old > 0, gap_link == "softplus"
+            lp1 = _ordinal_lp(y, K, mu1_rows, jnp.where(old, sd_signal, sd_noise), thresh_mid, log_gaps, sp)
+            lp2 = _ordinal_lp(y, K, mu2_rows, _sigma2, thresh_mid, log_gaps, sp)
+            log_lik = jnp.where(old, _mix_combine(_weight(jnp.where(old, lambda_val, 0.5)), lp1, lp2), lp1)
+            if counts is not None:
+                log_lik = log_lik * counts
+            return log_lik
 
         if lambda_val is not None:
             def old_ll(i):
@@ -5602,20 +5849,7 @@ def sdt_model(config):
                     u_t = sd_t * z_t
                     u_all = u_all.at[t].set(u_t)
 
-                    if re_type == "index":
-                        idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                        if has_term_idx:
-                            tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
-                            offset = jnp.where(tidx == t, u_t[idx], 0.0)
-                        else:
-                            offset = u_t[idx]
-                    else:
-                        Z = _ensure_2d(jnp.array(re_conf["Z"], dtype=_FLOAT))
-                        idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                        offset = Z[:, t] * u_t[idx]
-
-                    _apply_re_offset(param, offset, param_values)
-
+                _apply_re_offset(param, _re_block_offset(u_all, re_conf), param_values)
                 if defer:
                     buf["u0"] = u_all
                 else:
@@ -5634,20 +5868,7 @@ def sdt_model(config):
             u = L @ z
             if key not in rkg_sites:
                 numpyro.deterministic(f"u_{param}_{group}", u.T)
-            if re_type == "index":
-                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                if has_term_idx:
-                    tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
-                    for t in range(n_terms):
-                        _apply_re_offset(param, jnp.where(tidx == t, u[t][idx], 0.0), param_values)
-                else:
-                    for t in range(n_terms):
-                        _apply_re_offset(param, u[t][idx], param_values)
-            else:
-                Z = _ensure_2d(jnp.array(re_conf["Z"], dtype=_FLOAT))
-                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                for t in range(n_terms):
-                    _apply_re_offset(param, Z[:, t] * u[t][idx], param_values)
+            _apply_re_offset(param, _re_block_offset(u, re_conf), param_values)
         else:
             if per_coef_varies:
                 sds = jnp.stack([numpyro.sample(f"sigma_{param}_{group}[{t+1}]", sd_priors[t])
@@ -5672,21 +5893,7 @@ def sdt_model(config):
             if key not in rkg_sites:
                 numpyro.deterministic(f"u_{param}_{group}", u.T)
 
-            if re_type == "index":
-                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                if has_term_idx:
-                    tidx = jnp.array(re_conf["term_idx"], dtype=jnp.int32) - 1
-                    for t in range(n_terms):
-                        offset = jnp.where(tidx == t, u[t][idx], 0.0)
-                        _apply_re_offset(param, offset, param_values)
-                else:
-                    for t in range(n_terms):
-                        _apply_re_offset(param, u[t][idx], param_values)
-            else:
-                Z = _ensure_2d(jnp.array(re_conf["Z"], dtype=_FLOAT))
-                idx = jnp.array(re_conf["index"], dtype=jnp.int32) - 1
-                for t in range(n_terms):
-                    _apply_re_offset(param, Z[:, t] * u[t][idx], param_values)
+            _apply_re_offset(param, _re_block_offset(u, re_conf), param_values)
 
     _batched_groups = {}
     _unbatched_idxs = []
@@ -5806,22 +6013,7 @@ def sdt_model(config):
                 cross_cor_bias_contributions.append((u_portion, jnp.array(m_conf["index"], dtype=jnp.int32) - 1, m_conf))
                 continue
 
-            re_type = m_conf.get("type", "index")
-            has_term_idx = m_conf.get("term_idx") is not None
-            for t in range(nt):
-                u_t = u[d_off + t]
-                if re_type == "index":
-                    idx = jnp.array(m_conf["index"], dtype=jnp.int32) - 1
-                    if has_term_idx:
-                        tidx = jnp.array(m_conf["term_idx"], dtype=jnp.int32) - 1
-                        offset = jnp.where(tidx == t, u_t[idx], 0.0)
-                        _apply_re_offset(param, offset, param_values)
-                    else:
-                        _apply_re_offset(param, u_t[idx], param_values)
-                else:
-                    Z = _ensure_2d(jnp.array(m_conf["Z"], dtype=_FLOAT))
-                    idx = jnp.array(m_conf["index"], dtype=jnp.int32) - 1
-                    _apply_re_offset(param, Z[:, t] * u_t[idx], param_values)
+            _apply_re_offset(param, _re_block_offset(u_portion, m_conf), param_values)
 
     # ---- Smooth terms: non-centered parameterization ----
     smooth_configs = config.get("smooths", [])
