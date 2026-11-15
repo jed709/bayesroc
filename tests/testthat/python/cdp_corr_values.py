@@ -3,11 +3,7 @@ import os
 import sys
 
 sys.path.insert(0, sys.argv[1])
-if len(sys.argv) > 2 and sys.argv[2]:
-    os.environ["BAYESROC_BVN_FFI"] = sys.argv[2]
-else:
-    os.environ.pop("BAYESROC_BVN_FFI", None)
-    os.environ["BAYESROC_PURE_JAX_REFERENCE"] = "1"
+os.environ["BAYESROC_BVN_FFI"] = sys.argv[2]
 os.environ["BAYESROC_ENABLE_X64"] = "1"
 import numpy as np
 import jax
@@ -17,7 +13,7 @@ import numpyro_backend as nb
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jvp_check
 
-out = {"ffi_loaded": bool(nb._BVN_FFI)}
+out = {"ffi_loaded": nb._bvn_lib is not None}
 for name, n_rkg, crit in (("rk", 2, (1.5, 0.4)), ("rkg", 3, (1.5, 0.4)), ("rkg_tail", 3, (4.0, 3.5))):
     f, args, _ = jvp_check.cdp_case(n_rkg, crit=crit, corr=os.environ.get("CDP_NO_CORR") != "1")
     val = np.asarray(jax.jit(f)(*args))

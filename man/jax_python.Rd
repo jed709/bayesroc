@@ -10,7 +10,7 @@ jax_python()
 Character path to a Python executable, or \code{NULL}.
 }
 \description{
-Returns the Python path that \code{fit_broc(backend = "jax")} will currently use.
+Returns the Python path that \code{fit_broc()} will currently use.
 Resolution order:
 \enumerate{
 \item \code{Sys.getenv("BAYESROC_PYTHON")} if set and the file exists (set by

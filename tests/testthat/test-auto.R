@@ -25,25 +25,20 @@
 .auto_warmup <- function(sampler) if (sampler == "drghmc") 50 else 30
 
 .fit_fixed <- function(m, n, seed, sampler = "nuts", warmup = .auto_warmup(sampler)) {
-  fit_broc(m, backend = "jax", sampler = sampler, chains = 2, parallel_chains = 2,
+  fit_broc(m, sampler = sampler, chains = 2, parallel_chains = 2,
            iter_warmup = warmup, iter_sampling = n, seed = seed, progress_bar = FALSE)
 }
 
 .fit_auto_capped <- function(m, max_draws, seed, sampler = "nuts", warmup = .auto_warmup(sampler), ...) {
   ctrl <- utils::modifyList(list(ess_target = 1e9, min_draws = 25, max_draws = max_draws, check_every = 25), list(...))
-  .warnings_of(fit_broc(m, backend = "jax", sampler = sampler, chains = 2, parallel_chains = 2,
+  .warnings_of(fit_broc(m, sampler = sampler, chains = 2, parallel_chains = 2,
                         iter_warmup = warmup, iter_sampling = "auto", seed = seed,
                         control = ctrl, progress_bar = FALSE))
 }
 
-test_that("fit_broc refuses any backend but JAX", {
-  m <- .auto_model()
-  expect_error(fit_broc(m, backend = "stan", iter_sampling = "auto"), "`backend` must be \"jax\"")
-})
-
 test_that("auto settings are validated and only accepted with iter_sampling = 'auto'", {
   m <- .auto_model()
-  bad <- function(...) fit_broc(m, backend = "jax", sampler = "nuts", iter_sampling = "auto", control = list(...))
+  bad <- function(...) fit_broc(m, sampler = "nuts", iter_sampling = "auto", control = list(...))
   expect_error(bad(max_draws = 0), "positive whole number")
   expect_error(bad(check_every = 2.5), "positive whole number")
   expect_error(bad(max_kept = -1), "positive whole number")
@@ -53,10 +48,10 @@ test_that("auto settings are validated and only accepted with iter_sampling = 'a
   expect_error(bad(ess_target = c(100, 200)), "single number")
   expect_error(bad(ess_target = FALSE, rhat_target = FALSE), "cannot both be switched off")
   expect_error(bad(min_draws = 0), "positive whole number")
-  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", control = list(ess_target = 100)),
+  expect_error(fit_broc(m, sampler = "nuts", control = list(ess_target = 100)),
                "only applies with iter_sampling")
-  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", iter_sampling = "lots"), "positive whole number")
-  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", save_loglik = NULL), "TRUE or FALSE")
+  expect_error(fit_broc(m, sampler = "nuts", iter_sampling = "lots"), "positive whole number")
+  expect_error(fit_broc(m, sampler = "nuts", save_loglik = NULL), "TRUE or FALSE")
 })
 
 test_that("auto defaults keep every draw, and thin overrides max_kept", {
@@ -142,9 +137,9 @@ test_that("the stopping rule's ESS and R-hat equal what summaries report on the 
   skip_if_no_jax()
   d <- .fixture_crossed(n_sub = 6, n_item = 10)
   m <- broc(brf(item_resp | is_old ~ 1 + (1 + is_old | sub), criterion ~ 1 + (1 | sub), family = evsd()), d)
-  for (smp in c("nuts", "drghmc")) {
-    f <- .fit_auto_capped(m, if (smp == "nuts") 100 else 300, seed = 12, sampler = smp,
-                          max_kept = 30, check_every = if (smp == "nuts") 25 else 100)$value
+  for (smp in c("hmc", "nuts", "drghmc")) {
+    f <- .fit_auto_capped(m, if (smp == "drghmc") 300 else 100, seed = 12, sampler = smp,
+                          max_kept = 30, check_every = if (smp == "drghmc") 100 else 25)$value
     da <- posterior::subset_draws(f$.draws_array, variable = .monitored(posterior::variables(f$.draws_array)))
     sm <- posterior::summarise_draws(da, ess_bulk = function(x) .ess_bulk(x, smp), ess_tail = function(x) .ess_tail(x, smp),
                                      rhat = posterior::rhat)
@@ -163,7 +158,7 @@ test_that("the stopping rule's ESS and R-hat equal what summaries report on the 
 test_that("auto sampling stops once the targets are met and on the time cap", {
   skip_if_no_jax()
   m <- .auto_model()
-  f <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+  f <- fit_broc(m, sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
                 iter_sampling = "auto", seed = 3, progress_bar = FALSE,
                 control = list(ess_target = 1, rhat_target = 10, check_every = 25))
   expect_identical(attr(f, "stop_reason"), "targets")
@@ -172,17 +167,17 @@ test_that("auto sampling stops once the targets are met and on the time cap", {
   expect_identical(attr(run$value, "stop_reason"), "max_time")
   expect_equal(run$value$.iter_sampling, 25L)
   expect_true(any(grepl("stopped at 1e-06 seconds", run$warnings)))
-  g <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+  g <- fit_broc(m, sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
                 iter_sampling = "auto", seed = 3, progress_bar = FALSE,
                 control = list(ess_target = FALSE, rhat_target = 10, min_draws = 60, check_every = 25))
   expect_identical(attr(g, "stop_reason"), "targets")
   expect_equal(g$.iter_sampling, 75L)
-  h <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+  h <- fit_broc(m, sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
                 iter_sampling = "auto", seed = 3, progress_bar = FALSE,
                 control = list(ess_target = FALSE, rhat_target = 10, min_draws = 60, check_every = 50))
   expect_equal(attr(h, "ess_trace")$draws[1], 75)
   expect_equal(h$.iter_sampling, 75L)
-  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", iter_sampling = "auto",
+  expect_error(fit_broc(m, sampler = "nuts", iter_sampling = "auto",
                         control = list(min_draws = 500, max_draws = 100)), "cannot exceed")
 })
 
@@ -204,11 +199,29 @@ test_that("resume continues auto and fixed fits exactly and merges the log-likel
   .same_draws(g2, .fit_fixed(m, 400, seed = 6, sampler = "drghmc"))
 })
 
+test_that("resume continues auto and fixed HMC fits exactly", {
+  skip_if_no_jax()
+  m <- .auto_model()
+  f1 <- .fit_auto_capped(m, 50, seed = 6, sampler = "hmc")$value
+  expect_identical(f1$.sampler, "hmc")
+  f2 <- .warnings_of(fit_broc(m, iter_sampling = "auto", resume = f1, progress_bar = FALSE,
+                              control = list(ess_target = 1e9, min_draws = 25, max_draws = 100, check_every = 25)))$value
+  expect_identical(f2$.sampler, "hmc")
+  expect_equal(f2$.iter_sampling, 100L)
+  expect_equal(attr(f2, "ess_trace")$draws, c(25, 50, 75, 100))
+  f3 <- fit_broc(m, iter_sampling = 25, resume = f2, progress_bar = FALSE)
+  expect_equal(attr(f3, "draws_per_chain"), 125L)
+  fref <- .fit_fixed(m, 125, seed = 6, sampler = "hmc")
+  .same_draws(f3, fref)
+  expect_equal(read_npy(f3$.loglik_path), read_npy(fref$.loglik_path), tolerance = 1e-6, ignore_attr = TRUE)
+  expect_null(f3$diagnostic_summary()$num_max_treedepth)
+})
+
 test_that("a saved and reloaded fit resumes exactly and keeps its attributes", {
   skip_if_no_jax()
   m <- .auto_model()
   file <- tempfile(fileext = ".rds")
-  f1 <- .warnings_of(fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
+  f1 <- .warnings_of(fit_broc(m, sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 30,
                               iter_sampling = "auto", seed = 8, file = file, loo = TRUE,
                               progress_bar = FALSE,
                               control = list(ess_target = 1e9, max_draws = 50, check_every = 25)))$value
@@ -241,7 +254,7 @@ test_that("auto monitors the ordered mixture gap through its log-scale sampler c
   d$is_old <- as.integer((as.integer(d$words) + as.integer(d$participant)) %% 2 == 0)
   d$conf <- sample(1:6, nrow(d), TRUE)
   m <- broc(brf(conf | is_old ~ 1 + (1 | participant), lambda ~ 1, dprime2 ~ 1, family = mixture()), d)
-  f <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_sampling = "auto", chains = 2, parallel_chains = 2,
+  f <- fit_broc(m, sampler = "hmc", iter_sampling = "auto", chains = 2, parallel_chains = 2,
                 iter_warmup = 50, control = list(max_draws = 100, check_every = 100), progress_bar = FALSE)
   expect_true("dprime_order_gap" %in% f$metadata()$variables)
   expect_true(all(f$draws(variables = "dprime_order_gap") > 0))

@@ -870,17 +870,6 @@ def _fsolve(L, b):
     return y
 
 
-def _bsolve(L, b):
-    D = len(L)
-    x = [None] * D
-    for i in reversed(range(D)):
-        v = b[i]
-        for k in range(i + 1, D):
-            v = v - L[k][i] * x[k]
-        x[i] = v / L[i][i]
-    return x
-
-
 def _n4(n):
     return -(-n // 4)
 
@@ -899,14 +888,9 @@ def _untile(tiled, n):
     return jnp.transpose(tiled, (1, 2, 0, 3)).reshape(D, D, -1)[:, :, :n]
 
 
-def _native():
-    import numpyro_backend as nb
-    return nb._BVN_FFI
-
-
 _CHUNKS = 8
 _TRI_MIN = 16  # tmap_kernel.h kTriMin: wider blocks keep their factors for the adjoint
-_UNROLL_MAX = 20  # without the kernel: unrolled up to here, batched linear algebra above
+_UNROLL_MAX = 20
 
 
 def _ffi(name, outs, *args):
@@ -1279,7 +1263,7 @@ class TMap:
         L1 = jnp.linalg.cholesky(Lam1 + Q1[None])
         return L1, solve_triangular(L1, r[..., None], lower=True)[..., 0]
 
-    def _kept_solve(self, k, v, an, us, ans, post, ks1, perm1, inv1, native):
+    def _kept_solve(self, k, v, an, us, ans, post, ks1, perm1, inv1):
         """The kept dimensions mapped on their own anchors: u [D1, n] in their natural order, the
         log-determinant term and the prior factors A1, A1^-1."""
         sb = self.sbs[k]
@@ -1289,15 +1273,10 @@ class TMap:
         s1 = jnp.take(an["s_k"], ks1, axis=0)
         delta = self._delta(k, v, an, us, ans, kept=perm1)
         zeta = jnp.take(v[sb.pos1], perm1, axis=0)
-        if native:
-            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
-        else:
-            L1, y1 = self._kept_dense(an, Q1, s1, delta)
-            u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
-            ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
+        u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
         return jnp.take(u_k, inv1, axis=0), jnp.sum(ld) + sb.n * sb.logdet1(post), A1, Ainv1
 
-    def _cheap(self, k, v, an, us, ans, post, native):
+    def _cheap(self, k, v, an, us, ans, post):
         """(th, log-determinant term, u [D, n] in natural order) for super-block k with its
         candidate blocks non-centred (their standardised effects sampled as they are) and the
         kept dimensions mapped on their own anchors."""
@@ -1306,7 +1285,7 @@ class TMap:
         th, ld = v, 0.0
         u = jnp.zeros((sb.D, sb.n), v.dtype)
         if ks1.shape[0]:
-            u1, ld, A1, Ainv1 = self._kept_solve(k, v, an, us, ans, post, ks1, perm1, inv1, native)
+            u1, ld, A1, Ainv1 = self._kept_solve(k, v, an, us, ans, post, ks1, perm1, inv1)
             th = th.at[sb.pos1].set(Ainv1 @ u1)
             if sb.linked:
                 u = u.at[sb.kept_nat].set(u1)
@@ -1334,7 +1313,7 @@ class TMap:
         Q1 = jnp.take(jnp.take(Q1, perm1, axis=0), perm1, axis=1)
         return A1, Ainv1, Q1, jnp.sum(jnp.log(jnp.diagonal(TK))), sb.A(post).astype(dtype), ks1, perm1, inv1
 
-    def _split_fwd(self, k, v, an, us, ans, post, native):
+    def _split_fwd(self, k, v, an, us, ans, post):
         """A wide correlated block mapped on its informed dimensions only: the kept dimensions (the
         leading rows of the lower-triangular prior factor in the sampled order) through their own
         anchors, the rest non-centred. -> (th, log-determinant term, u [D, n] natural order)."""
@@ -1343,12 +1322,7 @@ class TMap:
         s1 = jnp.take(an["s_k"], ks1, axis=0)
         delta = self._delta(k, v, an, us, ans, kept=perm1)
         zeta = jnp.take(v[sb.pos1], perm1, axis=0)
-        if native:
-            u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
-        else:
-            L1, y1 = self._kept_dense(an, Q1, s1, delta)
-            u_k = solve_triangular(jnp.swapaxes(L1, 1, 2), (y1 + zeta.T)[..., None], lower=False)[..., 0].T
-            ld = jnp.sum(jnp.log(jnp.diagonal(L1, axis1=1, axis2=2)), 1)
+        u_k, ld = _group_solve(an["Lam1_t"], Q1, s1, jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
         u1 = jnp.take(u_k, inv1, axis=0)
         z1 = Ainv1 @ u1
         if sb.cand_map == "diag":
@@ -1503,12 +1477,11 @@ class TMap:
         th, ld = tht, 0.0
         post = self._post(tht, aux, trim)
         us = {}
-        native = _native()
         for k, sb in enumerate(self.sbs):
             an = ans[k]
 
             def full(th):
-                if native and sb.D >= _TRI_MIN:
+                if sb.D >= _TRI_MIN:
                     # the kernel takes a lower-triangular factor: rows in the sampled orders (T), its
                     # natural order that one, and the standardised rows paired with the kernel's as below
                     T = sb.T(post).astype(th.dtype)
@@ -1519,25 +1492,16 @@ class TMap:
                     return sb.put(th, thb), jnp.sum(ldg) + sb.n * sb.logdet(post), jnp.take(uT, qi, axis=0)
                 zeta = jnp.take(sb.get(th), an["perm_rev"], axis=0)
                 A, Ainv, Q = self._prior(k, th, post, an)
-                if native:
-                    delta = self._delta(k, th, an, us, ans)
-                    u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s_k"], jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
-                    ldg = jnp.sum(ldg)
-                elif sb.D <= _UNROLL_MAX:
-                    _, _, L, y = self._parts(k, th, post, ans, us)
-                    u_rev = jnp.stack(_bsolve(L, [y[i] + zeta[i] for i in range(sb.D)]))
-                    ldg = sum(jnp.sum(jnp.log(L[i][i])) for i in range(sb.D))
-                else:
-                    _, _, L, y = self._dense(k, th, post, ans, us)
-                    u_rev = solve_triangular(jnp.swapaxes(L, 1, 2), (y + zeta.T)[..., None], lower=False)[..., 0].T
-                    ldg = jnp.sum(jnp.log(jnp.diagonal(L, axis1=1, axis2=2)))
+                delta = self._delta(k, th, an, us, ans)
+                u_rev, ldg = _group_solve(an["Lam_t"], Q, an["s_k"], jnp.zeros((0,), zeta.dtype) if delta is None else delta, zeta)
+                ldg = jnp.sum(ldg)
                 u = jnp.take(u_rev, an["inv_rev"], axis=0)
                 return sb.put(th, Ainv @ u), ldg + sb.n * sb.logdet(post), u
 
             if sb.cand is not None and self.static[k] and sb.split:
-                th, ldg, u = self._split_fwd(k, th, an, us, ans, post, native)
+                th, ldg, u = self._split_fwd(k, th, an, us, ans, post)
             elif sb.cand is not None and self.static[k]:
-                th, ldg, u = self._cheap(k, th, an, us, ans, post, native)
+                th, ldg, u = self._cheap(k, th, an, us, ans, post)
             else:
                 th, ldg, u = full(th)
             us[k] = u

@@ -19,13 +19,11 @@ ln = np.where(Dn == 0, -np.inf, np.log(np.where(Dn == 0, 1.0, Dn)))
 lf = np.where(np.isinf(Df), np.inf, np.log(np.where(np.isinf(Df), 1.0, Df)))
 args = [jnp.asarray(v) for v in (a, ln, lf, s)]
 nat = [np.asarray(v) for v in nb._lnoise_raw(*args)]
-jx = [np.asarray(v) for v in jax.jit(nb._lnoise_cell_jax)(*args)]
 
 
 def worst(x, y):
     return float(max(np.max(np.abs(p - q) / np.maximum(1.0, np.abs(q))) for p, q in zip(x, y)))
 
 
-print("RESULT " + json.dumps({"ffi_loaded": bool(nb._BVN_FFI), "native_vs_ref": worst(nat, ref),
-                              "jax_vs_ref": worst(jx, ref), "native_vs_jax": worst(nat, jx),
+print("RESULT " + json.dumps({"ffi_loaded": nb._bvn_lib is not None, "native_vs_ref": worst(nat, ref),
                               "finite": bool(all(np.all(np.isfinite(v)) for v in nat))}))

@@ -13,13 +13,14 @@ test_that("native survival kernels use the model's link", {
   for (lk in c("probit", "logit", "cloglog")) {
     F <- function(z) link_cdf_r(z, lk)
     code <- .native_link_code(lk)
-    for (kind in 0:2) {
+    for (kind in c(0L, 1L, 2L, 4L)) {
       acc <- .C(.bvn_native$sym_surv, as.double(th), as.double(mu), as.double(sig), as.double(lam), as.double(mu2),
                 as.double(u), as.double(w), as.integer(c(S, R, J, length(u), kind, 0L, 1L, code)), 8.0,
                 acc = double(S * length(u)), NAOK = TRUE)$acc
       hand <- sapply(u, function(c) {
         f <- F((c - mu) / sig)
-        f <- if (kind == 1) (1 - lam) * f else if (kind == 2) (1 - lam) * f + lam * F((c - mu2) / sig) else f
+        f <- if (kind == 1) (1 - lam) * f else if (kind == 2) (1 - lam) * f + lam * F((c - mu2) / sig)
+             else if (kind == 4) (1 - lam) * f + lam * (1 - mu2) else f
         as.vector((1 - f) %*% w)
       })
       expect_equal(matrix(acc, S), hand, tolerance = 1e-12, info = paste(lk, "kind", kind))

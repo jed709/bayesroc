@@ -1142,7 +1142,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       dprime_random <- drop_reference_level_from_random_slopes(dprime_random, data)
     }
     
-    stan_data$P_dprime <- 0
     stan_data$X_dprime <- matrix(0, nrow = N, ncol = 1)
   } else {
     dprime_fixed_formula <- build_formula_from_parsed(parsed$dprime$fixed, allow_empty = is_cumulative || is_bivariate_cumulative)
@@ -1170,7 +1169,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
       dprime_random <- drop_reference_level_from_random_slopes(dprime_random, data)
     }
     
-    stan_data$P_dprime <- dprime_fixed$n_coef
     stan_data$X_dprime <- dprime_fixed$X
   }
   
@@ -1263,7 +1261,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     criterion2_scale_random <- build_random_effects_structure(parsed$criterion2_scale$random, data, encoding_vars, is_old_var)
     stan_data$P_criterion2_scale <- criterion2_scale_fixed$n_coef
     stan_data$X_criterion2_scale <- criterion2_scale_fixed$X
-    if (isTRUE(criterion2_scale_fixed$normalised_shape)) stan_data$ls_gap_basis2 <- .sum_zero_basis(K2 - 2L)
   }
 
   criterion_scale_fixed <- NULL
@@ -1273,7 +1270,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
     criterion_scale_random <- build_random_effects_structure(parsed$criterion_scale$random, data, encoding_vars, is_old_var)
     stan_data$P_criterion_scale <- criterion_scale_fixed$n_coef
     stan_data$X_criterion_scale <- criterion_scale_fixed$X
-    if (isTRUE(criterion_scale_fixed$normalised_shape)) stan_data$ls_gap_basis <- .sum_zero_basis(n_thresh - 1L)
   }
 
   lambda_fixed <- NULL
@@ -1300,7 +1296,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                                  parsed_fixed = parsed$dprime2$fixed)
     dprime2_random <- build_random_effects_structure(parsed$dprime2$random, data, encoding_vars, is_old_var)
     
-    stan_data$P_dprime2 <- dprime2_fixed$n_coef
     stan_data$X_dprime2 <- dprime2_fixed$X
   }
   
@@ -1333,7 +1328,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                                   parsed_fixed = parsed$dprime_B$fixed)
     dprime_B_random <- build_random_effects_structure(parsed$dprime_B$random, data, encoding_vars, is_old_var)
     
-    stan_data$P_dprime_B <- dprime_B_fixed$n_coef
     stan_data$X_dprime_B <- dprime_B_fixed$X
   }
   
@@ -1573,7 +1567,6 @@ build_model_data <- function(parsed, data, family, counts = NULL,
                                                   parsed_fixed = parsed$dprime_L$fixed)
     dprime_L_random <- build_random_effects_structure(parsed$dprime_L$random, data, encoding_vars, is_old_var)
     
-    stan_data$P_dprime_L <- dprime_L_fixed$n_coef
     stan_data$X_dprime_L <- dprime_L_fixed$X
   }
   
@@ -2310,7 +2303,7 @@ print.broc_model <- function(x, ...) {
 #' model <- broc(brf(conf | old ~ cond), data = dat, family = evsd())
 #' cfg <- get_numpyro_config(model)
 #' str(cfg)
-#' # Exactly what fit_broc(backend = "jax") sends to Python:
+#' # Exactly what fit_broc() sends to Python:
 #' cat(get_numpyro_config(model, json = TRUE))
 #' }
 #' @export
@@ -2429,13 +2422,11 @@ get_numpyro_config <- function(x, json = FALSE) {
 #'   process's CPU affinity; the draws are the same whatever the limit. Supported on
 #'   Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
 #'   fit uses every CPU, with a warning.
-#' @param backend Inference backend: `"jax"` (the only one; fits run in JAX/NumPyro and
-#'   need a configured Python environment, see [install_jax_backend()]). Compiled XLA
+#' @param python Optional path to the Python executable for the JAX backend.
+#'   `NULL` (default) uses the managed environment (see [install_jax_backend()]). Compiled XLA
 #'   programs are not kept between fits unless `options(bayesroc.xla_cache = TRUE)` (a cache under
 #'   `tools::R_user_dir("bayesroc", "cache")`) or a path is set; see
 #'   [bayesroc_clear_cache()].
-#' @param python Optional path to the Python executable for the JAX backend.
-#'   `NULL` (default) uses the managed environment (see [install_jax_backend()]).
 #' @param progress_bar If `TRUE` (default), show the sampler's progress. On the JAX backend
 #'   this is one bar per phase (warmup, sampling and, with `iter_sampling = "auto"`, each
 #'   round between convergence checks), redrawn in place in the console and printed at each
@@ -2491,7 +2482,7 @@ get_numpyro_config <- function(x, json = FALSE) {
 #' model <- broc(brf(conf | old ~ cond + (1|subj),
 #'                   sigma ~ 1), data = dat, family = uvsd())
 #' fit <- fit_broc(model)
-#' fit <- fit_broc(model, backend = "jax", chains = 2)
+#' fit <- fit_broc(model, chains = 2)
 #'
 #' # Save on first run; reload instead of refitting on later runs.
 #' fit <- fit_broc(model, file = "my_fit")          # writes my_fit.rds
@@ -2561,7 +2552,6 @@ fit_broc <- function(model,
                     control = list(),
                     init = NULL,
                     total_cores = NULL,
-                    backend = "jax",
                     python = NULL,
                     progress_bar = TRUE,
                     seed = NULL,
@@ -2605,10 +2595,6 @@ fit_broc <- function(model,
             (k != "max_treedepth" || sampler == "nuts")) control[[k]] <- prev[[k]]
       }
     }
-  }
-  if (!identical(backend, "jax")) {
-    stop("`backend` must be \"jax\": bayesroc fits with JAX/NumPyro (see install_jax_backend()).",
-         call. = FALSE)
   }
   if (sampler_missing && is.null(resume)) sampler <- "hmc"
   sampler <- match.arg(sampler)

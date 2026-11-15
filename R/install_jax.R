@@ -149,7 +149,7 @@ install_jax_backend <- function(dir = jax_backend_dir(),
 
 #' Resolve the Python executable used by the JAX backend
 #'
-#' Returns the Python path that `fit_broc(backend = "jax")` will currently use.
+#' Returns the Python path that `fit_broc()` will currently use.
 #' Resolution order:
 #'   1. `Sys.getenv("BAYESROC_PYTHON")` if set and the file exists (set by
 #'      [set_jax_python()] or auto-cached during the last fit / install).
@@ -176,7 +176,7 @@ jax_python <- function() {
 #' Override the Python executable used by the JAX backend
 #'
 #' Sets `BAYESROC_PYTHON` for the current R session. Future
-#' `fit_broc(backend = "jax")` calls will use this Python without going
+#' `fit_broc()` calls will use this Python without going
 #' through auto-discovery.
 #'
 #' @param python Path to a Python executable. Must already have `jax` and

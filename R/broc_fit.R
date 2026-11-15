@@ -20,19 +20,6 @@
 #' @param loglik_path Path to the `.npy` log_lik sidecar, or `NULL`
 #' @return An broc_fit object (environment with S3 class)
 #' @noRd
-.restore_centred_draws <- function(draws) {
-  v <- dimnames(draws)[[3]]
-  o <- which(startsWith(v %||% character(0), "orig__"))
-  if (!length(o)) return(draws)
-  tgt <- match(substring(v[o], 7L), v)
-  cls <- class(draws)
-  draws <- unclass(draws)
-  draws[, , tgt[!is.na(tgt)]] <- draws[, , o[!is.na(tgt)], drop = FALSE]
-  draws <- draws[, , -o, drop = FALSE]
-  class(draws) <- cls
-  draws
-}
-
 new_broc_fit <- function(backend_fit, model, backend = "jax",
                         num_chains = 4L, iter_sampling = 1000L,
                         elapsed = NULL, draws_array = NULL,
@@ -49,7 +36,7 @@ new_broc_fit <- function(backend_fit, model, backend = "jax",
   self$.num_chains <- as.integer(num_chains)
   self$.iter_sampling <- as.integer(iter_sampling)
   self$.elapsed <- elapsed
-  self$.draws_array <- .restore_centred_draws(draws_array)
+  self$.draws_array <- draws_array
   self$.max_treedepth <- as.integer(max_treedepth)
   self$.sampler <- sampler
   self$.save_loglik <- isTRUE(save_loglik)

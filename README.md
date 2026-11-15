@@ -207,7 +207,7 @@ ESS of at least `ess_target` and R-hat of at most `rhat_target` (defaults 400 an
 targets and caps go in `control`, and ESS targets can differ by parameter class:
 
 ```r
-fit <- fit_broc(model, backend = "jax", iter_sampling = "auto",
+fit <- fit_broc(model, iter_sampling = "auto",
                 control = list(ess_target = c(pop = 2000, sd = 400, cor = 200),
                                max_time = 3600))
 attr(fit, "stop_reason")   # "targets", "max_draws" or "max_time"

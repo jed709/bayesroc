@@ -129,7 +129,6 @@ def _bcss(potential_fn, kinetic_fn, forward_mode_differentiation=False):
 
 
 build_tree = _with_globals(_hu.build_tree, _double_tree=_double_tree)
-hmc = _with_globals(_hmc_mod.hmc, build_tree=build_tree)
 def _adapter(gamma):
     """numpyro's (Stan's) windowed adaptation with dual averaging at gain `gamma` (Stan's `adapt gamma`;
     None keeps the default 0.05)."""

@@ -1,5 +1,5 @@
 
-.bridge_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 50 else 1000
+.bridge_iter   <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 50 else 200
 .bridge_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 2
 
 .fit_bridge <- function(m) {

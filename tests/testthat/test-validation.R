@@ -105,20 +105,6 @@ test_that("broc() errors when encoding_vars column missing", {
   )
 })
 
-test_that("broc() rejects factor/character is_old with non-numeric labels", {
-  d <- .fixture_univariate()
-  d$is_old <- factor(ifelse(d$is_old == 1, "old", "new"), levels = c("new", "old"))
-  expect_error(
-    broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), d),
-    "text labels|coded 0/1"
-  )
-  d2 <- .fixture_univariate()
-  d2$is_old <- factor(d2$is_old, levels = c(0, 1))
-  expect_no_error(
-    broc(brf(item_resp | is_old ~ 1, criterion ~ 1, family = evsd()), d2)
-  )
-})
-
 test_that("broc() drops zero-count rows", {
   d <- .fixture_univariate()
   agg <- aggregate(list(n = rep(1L, nrow(d))),

@@ -14,7 +14,6 @@ test_that("predictors go on the cutpoints, as per-cutpoint effects or one shift 
   expect_error(broc(brf(rating ~ grp + (1 | rater), family = cumulative()), d), "cutpoints ~ grp")
   m <- broc(brf(rating ~ 1, cutpoints_shift ~ grp + (1 | rater) + (1 | item), family = cumulative()), d)
   md <- m$model_data
-  expect_equal(md$stan_data$P_dprime, 0)
   expect_length(md$dprime_random, 0)
   expect_true(md$criterion$location_scale)
   expect_equal(unname(vapply(md$criterion$random, function(r) as.integer(r$dim), 1L)), c(1L, 1L))

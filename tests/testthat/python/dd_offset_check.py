@@ -86,4 +86,4 @@ for softplus in (False, True):
             key = f"{'crossing' if crossing else 'criterion'}_{'softplus' if softplus else 'exp'}_n{L}"
             worst[key] = float(max(ulps))
 print("RESULT " + json.dumps({"dd_offset_max_ulps": max(worst.values()), "by_case": worst, "same_at_every_length": same,
-                              "ffi_loaded": bool(nb._BVN_FFI)}))
+                              "ffi_loaded": nb._bvn_lib is not None}))

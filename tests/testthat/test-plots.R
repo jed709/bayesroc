@@ -43,7 +43,7 @@ test_that("the averaged ROC curve passes through the model's pooled operating po
   m <- suppressMessages(broc(brf(item_resp | is_old ~ condition - 1 + (1 | sub), sigma ~ 1,
                                  criterion ~ 1 + (1 | sub), family = uvsd()), d, encoding_vars = "condition"))
   f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 50, iter_sampling = 20,
-                                 seed = 1, show_messages = FALSE))
+                                 seed = 1))
   setup <- .plot_setup(f, m, NULL, NULL)
   roles <- .roc_roles(m, 1)
   w <- .row_weights(m)

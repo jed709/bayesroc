@@ -14,8 +14,7 @@
       m <- suppressMessages(broc(brf(item_resp | is_old ~ condition - 1 + (1 | sub), sigma ~ condition - 1,
                                      criterion ~ 1 + (1 | sub), family = uvsd()), d, encoding_vars = "condition"))
       cache <<- list(d = d, fit = suppressMessages(fit_broc(m, chains = 2, parallel_chains = 2,
-                                                            iter_warmup = 100, iter_sampling = 50, seed = 1,
-                                                            show_messages = FALSE)))
+                                                            iter_warmup = 100, iter_sampling = 50, seed = 1)))
     }
     cache
   }
@@ -110,8 +109,7 @@ test_that("numeric predictors get natural-scale slope rows per standard deviatio
   d$x <- rnorm(nrow(d), 2, 3)
   d$cond <- factor(sample(c("a", "b"), nrow(d), TRUE))
   m <- suppressMessages(broc(brf(item_resp | is_old ~ cond * x, sigma ~ x, criterion ~ x, family = uvsd()), d))
-  f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 50, seed = 1,
-                                 show_messages = FALSE))
+  f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 50, seed = 1))
   e <- estimates(f)
   s <- sqrt(mean((d$x - mean(d$x))^2))
   expect_equal(unname(attr(e, "predictor_sd")), s, tolerance = 1e-12)

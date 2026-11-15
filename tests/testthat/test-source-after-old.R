@@ -51,7 +51,7 @@ test_that("rows without a source rating are scored on the detection response alo
   skip_if_no_jax()
   for (nm in names(cs <- .sao_cases(.sao_data()))) {
     m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 100, iter_sampling = 20,
+    f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 20,
                                    seed = 1))
     dm <- f$draws(format = "matrix")
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), dm, re_formula = NULL)
@@ -69,7 +69,7 @@ test_that("pp_check, the source ROC and replicated data follow the design", {
                                  family = bivariate_gaussian()), bv))
   sd <- .source_design(m)
   expect_true(sd$rule)
-  f <- suppressMessages(fit_broc(m, backend = "jax", chains = 2, iter_warmup = 150, iter_sampling = 100, seed = 2))
+  f <- suppressMessages(fit_broc(m, chains = 2, iter_warmup = 150, iter_sampling = 100, seed = 2))
   b <- .ppc_block(f, m, NULL, 50, NULL, 2L, 1, "bivariate_sdt", TRUE)
   expect_identical(tail(b$cat_labels, 1), "not asked")
   expect_equal(sum(b$obs[, b$K]), sum(m$stan_data$src_obs == 0L))

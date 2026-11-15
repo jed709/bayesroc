@@ -61,7 +61,7 @@ test_that("slope-only random effects: JAX log_lik matches R", {
   for (nm in names(cs)) {
     c1 <- cs[[nm]]
     m <- suppressMessages(broc(c1[[1]], c1[[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 2,
+    f <- suppressMessages(fit_broc(m, sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 2,
                                    seed = 1, progress_bar = FALSE))
     dm <- posterior::as_draws_matrix(f$draws())
     ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))

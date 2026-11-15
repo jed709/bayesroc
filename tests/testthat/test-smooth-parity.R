@@ -18,7 +18,7 @@ test_that("criterion2 smooth: JAX log_lik matches the R reference", {
   m <- suppressMessages(broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,
                                  criterion ~ 1, criterion2 ~ 1 + s(w, k = 5),
                                  family = bivariate_gaussian()), d))
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+  f <- suppressMessages(fit_broc(m, sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
                                  seed = 5, progress_bar = FALSE))
   dm <- posterior::as_draws_matrix(f$draws())
   ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))

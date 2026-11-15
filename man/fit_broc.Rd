@@ -15,7 +15,6 @@ fit_broc(
   control = list(),
   init = NULL,
   total_cores = NULL,
-  backend = "jax",
   python = NULL,
   progress_bar = TRUE,
   seed = NULL,
@@ -117,14 +116,11 @@ process's CPU affinity; the draws are the same whatever the limit. Supported on
 Windows and Linux. macOS cannot restrict a process to a set of CPUs, so there the
 fit uses every CPU, with a warning.}
 
-\item{backend}{Inference backend: \code{"jax"} (the only one; fits run in JAX/NumPyro and
-need a configured Python environment, see \code{\link[=install_jax_backend]{install_jax_backend()}}). Compiled XLA
+\item{python}{Optional path to the Python executable for the JAX backend.
+\code{NULL} (default) uses the managed environment (see \code{\link[=install_jax_backend]{install_jax_backend()}}). Compiled XLA
 programs are not kept between fits unless \code{options(bayesroc.xla_cache = TRUE)} (a cache under
 \code{tools::R_user_dir("bayesroc", "cache")}) or a path is set; see
 \code{\link[=bayesroc_clear_cache]{bayesroc_clear_cache()}}.}
-
-\item{python}{Optional path to the Python executable for the JAX backend.
-\code{NULL} (default) uses the managed environment (see \code{\link[=install_jax_backend]{install_jax_backend()}}).}
 
 \item{progress_bar}{If \code{TRUE} (default), show the sampler's progress. On the JAX backend
 this is one bar per phase (warmup, sampling and, with \code{iter_sampling = "auto"}, each
@@ -256,7 +252,7 @@ cost, which grows with the cube of the block's width. Every block is mapped by d
 model <- broc(brf(conf | old ~ cond + (1|subj),
                   sigma ~ 1), data = dat, family = uvsd())
 fit <- fit_broc(model)
-fit <- fit_broc(model, backend = "jax", chains = 2)
+fit <- fit_broc(model, chains = 2)
 
 # Save on first run; reload instead of refitting on later runs.
 fit <- fit_broc(model, file = "my_fit")          # writes my_fit.rds

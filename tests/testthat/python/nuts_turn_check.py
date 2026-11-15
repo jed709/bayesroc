@@ -8,7 +8,9 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 from numpyro.infer.hmc import hmc as hmc_stock
 from numpyro.infer.util import ParamInfo
-from nuts_turn import hmc as hmc_checked
+from nuts_turn import hmc_for
+
+hmc_checked = hmc_for("leapfrog")
 
 D = 2000
 pot = lambda z: 0.5 * jnp.sum(z ** 2)

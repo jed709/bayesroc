@@ -1,5 +1,5 @@
 .worker_fit <- function(m, seed = 1) {
-  fit_broc(m, backend = "jax", sampler = "drghmc", seed = seed, iter_warmup = 50, iter_sampling = 20,
+  fit_broc(m, seed = seed, iter_warmup = 50, iter_sampling = 20,
            chains = 2, parallel_chains = 2, progress_bar = FALSE)
 }
 
@@ -60,7 +60,7 @@ test_that("a worker that dies during auto sampling restarts the fit and reproduc
     Sys.unsetenv("BAYESROC_WORKER_CRASH_ONCE")
     .jax_worker_discard()
   })
-  auto_fit <- function() fit_broc(m, backend = "jax", sampler = "drghmc", seed = 2, iter_warmup = 50,
+  auto_fit <- function() fit_broc(m, seed = 2, iter_warmup = 50,
                                   iter_sampling = "auto", chains = 2, parallel_chains = 2, progress_bar = FALSE,
                                   control = list(max_draws = 40, check_every = 20))
   ref <- suppressWarnings(.worker_draws(auto_fit()))

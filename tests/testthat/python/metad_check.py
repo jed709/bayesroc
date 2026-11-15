@@ -35,20 +35,6 @@ for sid, rs in sets.items():
     ref = np.array([float(r["log_prob"]) for r in rs])
     worst_fx = max(worst_fx, float(np.max(np.abs(np.asarray(ll) - ref) / np.maximum(1.0, np.abs(ref)))))
 
-rng = np.random.default_rng(5)
-N = 20000
-side = rng.integers(0, 2, N).astype(bool)
-z_a = rng.normal(0, 3, N)
-z_c = rng.normal(0, 3, N)
-w1, w2 = rng.exponential(1.0, N), rng.exponential(1.0, N)
-z_lo = np.where(side, z_c + w1, z_c - w1 - w2)
-z_hi = np.where(side, z_c + w1 + w2, z_c - w1)
-z_lo[: N // 10] = np.where(side[: N // 10], z_c[: N // 10], -nb._OPEN)
-z_hi[N // 10: N // 5] = np.where(side[N // 10: N // 5], nb._OPEN, z_c[N // 10: N // 5])
-args = [jnp.asarray(v) for v in (z_a, z_lo, z_hi, z_c)] + [jnp.asarray(side)]
-nat = [np.asarray(v) for v in nb._metad_cell(*args)]
-ref = [np.asarray(v) for v in nb._metad_cell_jax(*args)]
-worst_nat = max(float(np.max(np.abs(a - b) / np.maximum(1.0, np.abs(b)))) for a, b in zip(nat, ref))
 y = np.array([1, 2, 3, 4, 5, 6, 6, 1])
 rows_ok = True
 for shared in (False, True):
@@ -57,5 +43,5 @@ for shared in (False, True):
                       ("mratio_N", None if shared else y <= 3)):
         got = tmap._param_rows(cfg, prm, len(y))
         rows_ok &= (got is None) if want is None else (got is not None and bool(np.array_equal(got, want)))
-print("RESULT " + json.dumps({"ffi_loaded": bool(nb._BVN_FFI), "fixture_rel": worst_fx, "native_vs_jax": worst_nat,
+print("RESULT " + json.dumps({"ffi_loaded": nb._bvn_lib is not None, "fixture_rel": worst_fx,
                               "tmap_rows": bool(rows_ok)}))

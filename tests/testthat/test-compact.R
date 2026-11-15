@@ -48,17 +48,30 @@ test_that(".pack_re_draws rejects non-finite draws", {
   expect_error(.pack_re_draws(posterior::as_draws_array(arr), "f32"), "non-finite")
 })
 
-test_that("packing a draws_array removes and restores RE variables", {
+test_that("save_broc_fit(re_store =) packs RE draws and load_broc_fit restores them", {
   skip_if_no_jax()
   f <- .fx_fit("evsd_crossed")
-  da <- posterior::as_draws_array(f$draws())
-  re_vars <- grep("^(z_|u_)", posterior::variables(da), value = TRUE)
-  skip_if(length(re_vars) == 0, "no per-level RE variables in this fit")
-
-  sp <- .pack_re_draws(da, "f64")
-  expect_false(any(grepl("^(z_|u_)", posterior::variables(sp$draws))))
-  back <- .unpack_re_draws(sp$draws, sp$packed)
-  expect_identical(posterior::variables(back), posterior::variables(da))
-  expect_equal(as.array(posterior::subset_draws(back, variable = re_vars)),
-               as.array(posterior::subset_draws(da, variable = re_vars)))
+  da <- f$.draws_array
+  vars <- grep("^log_lik(\\[|$)", posterior::variables(da), value = TRUE, invert = TRUE)
+  re_vars <- grep("^(z_|u_)", vars, value = TRUE)
+  expect_gt(length(re_vars), 0L)
+  other <- setdiff(vars, re_vars)
+  x <- unclass(posterior::subset_draws(da, variable = re_vars))
+  for (st in c("f64", "f32", "int16", "int8")) {
+    file <- tempfile(fileext = ".rds")
+    suppressMessages(save_broc_fit(f, file, verbose = FALSE, include_loglik = FALSE, re_store = st))
+    saved <- readRDS(file)
+    expect_identical(saved$re_packed$store, st)
+    expect_false(any(grepl("^(z_|u_)", posterior::variables(saved$draws_array))), label = st)
+    back <- load_broc_fit(file)$.draws_array
+    expect_identical(posterior::variables(back), vars, label = st)
+    expect_equal(as.array(posterior::subset_draws(back, variable = other)),
+                 as.array(posterior::subset_draws(da, variable = other)), tolerance = 0, label = st)
+    err <- apply(abs(unclass(posterior::subset_draws(back, variable = re_vars)) - x), 3, max)
+    rng <- apply(x, 3, function(v) diff(range(v)))
+    tol <- switch(st, f64 = 0 * rng, f32 = 1e-6 * apply(abs(x), 3, max),
+                  int16 = rng / 65535, int8 = rng / 255)
+    expect_true(all(err <= tol + 1e-12), label = st)
+    unlink(c(file, paste0(tools::file_path_sans_ext(file), "_state.pkl")))
+  }
 })

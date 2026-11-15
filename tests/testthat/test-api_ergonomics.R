@@ -55,7 +55,7 @@ test_that("plot() default dpar and summary() diagnostics banner work", {
   expect_s3_class(p, "ggplot")
 
   out <- paste(capture.output(print(summary(fit))), collapse = "\n")
-  expect_match(out, "Sampler:")
+  expect_match(out, "Sampler (hmc):", fixed = TRUE)
   expect_match(out, "E-BFMI")
 
   lp <- posterior_linpred(fit, dpar = "sigma", summary = TRUE)

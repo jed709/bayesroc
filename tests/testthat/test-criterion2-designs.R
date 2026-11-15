@@ -15,12 +15,6 @@ fixture_crit2 <- function(seed = 41, n = 1500, slope = 0.5) {
   d
 }
 
-by_name <- function(fit, pattern) {
-  s <- posterior::summarise_draws(fit$draws(format = "array"), "mean")
-  s <- s[grep(pattern, s$variable), ]
-  stats::setNames(s$mean, sub("[[]([0-9]+)[]]$", "[\\1,1]", s$variable))
-}
-
 test_that("criterion2 design matrix reaches the JAX config", {
   d <- fixture_crit2()
   m <- broc(brf(resp(det, src) | item_type ~ 1, discrim ~ 1, rho ~ 1,

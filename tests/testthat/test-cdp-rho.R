@@ -1,11 +1,4 @@
-.cdp_rho_fixture <- function() {
-  src <- readLines(testthat::test_path("test-cdp-rkg.R"))
-  env <- new.env()
-  eval(parse(text = src[1:(grep("^}", src)[1])]), envir = env)
-  env$fixture_cdp_rkg()
-}
-
-.cdp_rho_model <- function(extra, data = .cdp_rho_fixture(), priors = NULL, rkg = TRUE) {
+.cdp_rho_model <- function(extra, data = fixture_cdp_rkg(), priors = NULL, rkg = TRUE) {
   base <- list(resp(conf, rk) | old ~ 1, fam ~ 1, criterion ~ 1, rec_crit ~ 1)
   if (rkg) base <- c(base, list(know_crit ~ 1))
   broc(do.call(brf, c(base, extra, list(family = cdp(old_levels = 2:4)))), data = data, priors = priors)
@@ -41,7 +34,7 @@
 }
 
 test_that("cdp correlation formulas give the five layouts, labelled by their spelling", {
-  d <- .cdp_rho_fixture()
+  d <- fixture_cdp_rkg()
   cases <- list(
     none   = list(f = list(), has = c(FALSE, FALSE), shared = FALSE, labels = character(0), note = NA),
     shared = list(f = list(rho ~ 1), has = c(TRUE, FALSE), shared = TRUE, labels = "rho", note = NA),
@@ -64,7 +57,7 @@ test_that("cdp correlation formulas give the five layouts, labelled by their spe
 })
 
 test_that("cdp rejects a shared rho mixed with separate correlations, and rho_N", {
-  d <- .cdp_rho_fixture()
+  d <- fixture_cdp_rkg()
   expect_error(.cdp_rho_model(list(rho ~ 1, rho_lure ~ 1), d), "cannot be combined with 'rho_lure'")
   expect_error(.cdp_rho_model(list(rho ~ 1, rho_target ~ 1, rho_lure ~ 1), d),
                "cannot be combined with 'rho_target' or 'rho_lure'")
@@ -72,7 +65,7 @@ test_that("cdp rejects a shared rho mixed with separate correlations, and rho_N"
 })
 
 test_that("cdp correlation priors apply only under their own spelling", {
-  d <- .cdp_rho_fixture()
+  d <- fixture_cdp_rkg()
   p_t <- broc_prior("normal(0, 0.3)", class = "b", dpar = "rho_target")
   p_s <- broc_prior("normal(0, 0.2)", class = "b", dpar = "rho")
   r <- .rho_messages(.cdp_rho_model(list(rho ~ 1), d, priors = p_t))
@@ -121,7 +114,7 @@ test_that("R-side CDP cells with a correlation partition the band and reduce to 
 })
 
 test_that("CDP predictions with correlations: native band cells match the R loop", {
-  d <- .cdp_rho_fixture()
+  d <- fixture_cdp_rkg()
   for (f in list(list(rho ~ 1), list(rho_target ~ 1, rho_lure ~ 1), list(rho_lure ~ 1))) {
     m <- suppressMessages(.cdp_rho_model(f, d))
     S <- 3; N <- 12
@@ -149,25 +142,21 @@ test_that("CDP predictions with correlations: native band cells match the R loop
 
 test_that("JAX CDP kernel with a correlation matches the R reference cells", {
   skip_if_no_jax()
-  lib <- .bvn_ffi_lib()
-  for (l in list(lib, "")) {
-    out <- system2(jax_python(), c(testthat::test_path("python", "cdp_corr_values.py"), dirname(find_backend_script()),
-                                   shQuote(l)),
-                   stdout = TRUE, stderr = FALSE)
-    out <- paste(out[seq(grep("^RESULT ", out), length(out))], collapse = "")
-    res <- jsonlite::fromJSON(sub("^RESULT ", "", out))
-    expect_identical(res$ffi_loaded, nzchar(l))
-    for (nm in c("rk", "rkg", "rkg_tail")) {
-      x <- res[[nm]]
-      lo <- as.numeric(x$tau_lo); hi <- as.numeric(x$tau_hi)
-      ref <- log(vapply(seq_along(x$lp), function(i) {
-        ks <- if (nm == "rk" && x$rk[i] == 2) 2:3 else x$rk[i]
-        sum(vapply(ks, function(k) .cdp_ref_cell(k, x$mu_R[i], x$sigma_R[i], x$mu_F[i], x$sigma_F[i], x$c_R[i], x$c_K[i],
-                                                  lo[i], hi[i], x$corr[i]), numeric(1)))
-      }, numeric(1)))
-      fin <- is.finite(ref) & ref > -460
-      expect_lt(max(abs(exp(x$lp[fin]) - exp(ref[fin])) / (exp(ref[fin]) + 1e-4)), 1e-6,
-                label = paste(nm, if (nzchar(l)) "native" else "pure JAX"))
-    }
+  out <- system2(jax_python(), c(testthat::test_path("python", "cdp_corr_values.py"), dirname(find_backend_script()),
+                                 shQuote(.bvn_ffi_lib())),
+                 stdout = TRUE, stderr = FALSE)
+  out <- paste(out[seq(grep("^RESULT ", out), length(out))], collapse = "")
+  res <- jsonlite::fromJSON(sub("^RESULT ", "", out))
+  expect_true(res$ffi_loaded)
+  for (nm in c("rk", "rkg", "rkg_tail")) {
+    x <- res[[nm]]
+    lo <- as.numeric(x$tau_lo); hi <- as.numeric(x$tau_hi)
+    ref <- log(vapply(seq_along(x$lp), function(i) {
+      ks <- if (nm == "rk" && x$rk[i] == 2) 2:3 else x$rk[i]
+      sum(vapply(ks, function(k) .cdp_ref_cell(k, x$mu_R[i], x$sigma_R[i], x$mu_F[i], x$sigma_F[i], x$c_R[i], x$c_K[i],
+                                                lo[i], hi[i], x$corr[i]), numeric(1)))
+    }, numeric(1)))
+    fin <- is.finite(ref) & ref > -460
+    expect_lt(max(abs(exp(x$lp[fin]) - exp(ref[fin])) / (exp(ref[fin]) + 1e-4)), 1e-6, label = nm)
   }
 })

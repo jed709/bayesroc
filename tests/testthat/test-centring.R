@@ -49,21 +49,14 @@ test_that("the config carries centring for intercept designs and the fingerprint
   broc(f_treat, d)
 }
 
-test_that("a treatment-coded JAX fit returns draws in the model's coordinates and honours inits", {
-  skip_if_no_jax()
+test_that("a treatment-coded JAX fit returns draws in the model's coordinates", {
   skip_if_no_jax()
   m <- .centring_treat_case()
-  init <- list(beta_dprime = c(0.5, 0.2, -0.05), beta_discrim = c(0.6, 0.1))
-  fit_j <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
-                    iter_warmup = 50, iter_sampling = 5, seed = 4, init = list(init), progress_bar = FALSE)
-  expect_s3_class(fit_j, "broc_fit")
-  expect_false(any(grepl("^orig__|^centre__", posterior::variables(fit_j$.draws_array))))
-  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fit_j$draws(format = "matrix"), re_formula = NULL)
-  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fit_j), 1L, m$model_data$N))), 1e-5,
+  fit <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 50, iter_sampling = 5,
+                                   seed = 4, progress_bar = FALSE))
+  expect_s3_class(fit, "broc_fit")
+  expect_false(any(grepl("^orig__|^centre__", posterior::variables(fit$.draws_array))))
+  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fit$draws(format = "matrix"), re_formula = NULL)
+  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fit), 1L, m$model_data$N))), 1e-5,
             label = "JAX vs R log_lik")
-  fit_s <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 5,
-                                     seed = 3, show_messages = FALSE))
-  ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), fit_s$draws(format = "matrix"), re_formula = NULL)
-  expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(fit_s), 1L, m$model_data$N))), 1e-5,
-            label = "Stan vs R log_lik")
 })

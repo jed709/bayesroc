@@ -15,7 +15,7 @@
     stop("unknown fixture model: ", key)))
 }
 
-.fx_fit <- function(key, sampler = "nuts") {
+.fx_fit <- function(key, sampler = "hmc") {
   .fx_memo(paste("fit", key, sampler, sep = ":"),
            fit_broc(.fx_model(key), sampler = sampler, chains = 2, parallel_chains = 2,
                     iter_warmup = 50, iter_sampling = 50, seed = 1, progress_bar = FALSE))

@@ -78,7 +78,7 @@ test_that("component SD priors reach get_broc_prior and the JAX config", {
   expect_equal(unlist(rc$prior_sd_per_coef), want)
 })
 
-test_that("DR-G-HMC traces a correlated block whose SD priors differ by component", {
+test_that("a correlated block whose SD priors differ by component fits and reports its SDs", {
   skip_if_no_jax()
   set.seed(2)
   d <- expand.grid(participant = factor(1:8), words = factor(1:24))
@@ -92,7 +92,7 @@ test_that("DR-G-HMC traces a correlated block whose SD priors differ by componen
   per <- .crit_re_sd_priors(m$prior_lookup, "criterion", "participant",
                             .re_list_of(m$model_data, "criterion")[["participant"]])
   expect_gt(length(unique(per)), 1L)
-  fit <- fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 50, iter_sampling = 5,
+  fit <- fit_broc(m, iter_warmup = 50, iter_sampling = 5,
                   chains = 1, parallel_chains = 1)
   expect_true(any(grepl("^sigma_cross_p_participant", fit$metadata()$variables)))
 })

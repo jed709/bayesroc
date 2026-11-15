@@ -2060,7 +2060,7 @@ compute_category_probs <- function(trial_params, thresh, data_src, model, link_n
   K2 <- model$model_data$K2
   is_bivariate <- family_name %in% c("bivariate_sdt", "bivariate_dp", "vrdp2d", "bivariate_cumulative")
   native <- .bvn_native_ready() && (is_bivariate || (family_name == "cdp" && !is.null(.bvn_native$sym_cdp) &&
-                                                     isTRUE(getOption("bayesroc.cdp_native", TRUE))))
+                                                     isTRUE(.test_option("bayesroc.cdp_native"))))
   if (native && cores > 1) {
     # the native kernels thread the integrals themselves
     old_threads <- .bvn_native$threads
@@ -2947,9 +2947,9 @@ probs_cdp <- function(params, thresh, is_old, S, N, K, model) {
 }
 
 # probs_cdp through the native band cells (the likelihood's own one-dimensional integrals), all draws and
-# trials at once; NULL without the library. options(bayesroc.cdp_native = FALSE) forces the R loop.
+# trials at once; NULL without the library.
 .probs_cdp_native <- function(params, thresh, is_old, S, N, K, J, old_levels, new_levels, n_rkg) {
-  if (!isTRUE(getOption("bayesroc.cdp_native", TRUE)) || !.bvn_native_ready() || is.null(.bvn_native$sym_cdp)) return(NULL)
+  if (!isTRUE(.test_option("bayesroc.cdp_native")) || !.bvn_native_ready() || is.null(.bvn_native$sym_cdp)) return(NULL)
   target <- matrix(rep(is_old == 1, each = S), S, N)
   pick <- function(nm, alt) if (!is.null(params[[nm]])) ifelse(target, params[[nm]], alt) else matrix(alt, S, N)
   mu_R <- pick("dprime", 0); mu_F <- pick("dprime2", 0)

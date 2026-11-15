@@ -60,6 +60,7 @@
 }
 
 test_that("the transport map couples every random effect to exactly the coefficients it trades off against", {
+  skip_if_not_slow()
   skip_if_no_jax()
   d <- .coupling_data()
   dir <- tempfile("coupling_")
@@ -73,7 +74,7 @@ test_that("the transport map couples every random effect to exactly the coeffici
                          auto_unbox = TRUE, digits = 17, null = "null")
   }
   py <- find_python_with_jax()
-  res <- processx::run(py, c("-I", test_path("coupling_check.py"), system.file("python", package = "bayesroc"), dir),
+  res <- processx::run(py, c("-I", test_path("python", "coupling_check.py"), system.file("python", package = "bayesroc"), dir),
                        env = .jax_env(py, 1L), error_on_status = FALSE)
   lines <- strsplit(res$stdout, "\n")[[1]]
   status <- lines[!startsWith(lines, " ")]

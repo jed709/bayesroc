@@ -527,16 +527,6 @@ from jax import custom_jvp
 # Bivariate normal: rectangle and CDF with exact derivatives
 # =============================================================================
 
-_SIN_C = [(-1.0) ** k / float(np.prod(np.arange(1, 2 * k + 2))) for k in range(11)]
-_ASIN_P = [4.253011369004428248960E-3, -6.019598008014123785661E-1, 5.444622390564711410273E0,
-           -1.626247967210700244449E1, 1.956261983317594739197E1, -8.198089802484824371615E0]
-_ASIN_Q = [1.0, -1.474091372988853791896E1, 7.049610280856842141659E1,
-           -1.471791292232726029859E2, 1.395105614657485689735E2, -4.918853881490881290097E1]
-_ASIN_R = [2.967721961301243206100E-3, -5.634242780008963776856E-1, 6.968710824104713396794E0,
-           -2.556901049652824852289E1, 2.853665548261061424989E1]
-_ASIN_S = [1.0, -2.194779531642920639778E1, 1.470656354026814941758E2,
-           -3.838770957603691357202E2, 3.424398657913078477438E2]
-
 
 def _horner(c, x):
     acc = c[0]
@@ -545,114 +535,7 @@ def _horner(c, x):
     return acc
 
 
-def _sin_halfpi(x):
-    x2 = x * x
-    acc = _SIN_C[-1]
-    for c in reversed(_SIN_C[:-1]):
-        acc = acc * x2 + c
-    return x * acc
-
-
-def _asin(x):
-    a = jnp.abs(x)
-    z = a * a
-    small = a + a * z * _horner(_ASIN_P, z) / _horner(_ASIN_Q, z)
-    zz = 1.0 - a
-    p = zz * _horner(_ASIN_R, zz) / _horner(_ASIN_S, zz)
-    zs = jnp.sqrt(zz + zz)
-    big = (0.785398163397448309616 - zs) - (zs * p - 6.123233995736765886130E-17) + 0.785398163397448309616
-    return jnp.sign(x) * jnp.where(a > 0.625, big, small)
-
-
-_DW_RULES = {m: np.polynomial.legendre.leggauss(m) for m in (8, 10, 12, 14, 16, 20, 28, 32, 40, 48, 64, 80, 96, 128)}
 _RHO_MAX = 0.999999
-_DW_TIER_EDGES = (0.67, 0.79, 0.865, 0.91, 0.94, 0.97, 0.99, 0.994, 0.9978, 0.999, 0.9997, 0.99985, 0.99997)
-_DW_TIER_NODES = (8, 10, 12, 14, 16, 20, 28, 32, 40, 48, 64, 80, 96, 128)
-
-
-def _dw_nodes(rho, m):
-    """The Gauss-Legendre nodes of the sine-rule integral on a trailing axis of length m."""
-    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
-    A = _asin(r)
-    X, W = _DW_RULES[m]
-    xp = jnp.asarray((X + 1.0) / 2.0, dtype=A.dtype)
-    w = jnp.asarray(W, dtype=A.dtype)
-    s = _sin_halfpi(A[..., None] * xp)
-    ic2 = 1.0 / (1.0 - s * s)
-    return r, A, (w, s, ic2, s * ic2, w * xp * jnp.sqrt(ic2))
-
-
-def _dw_corner(h, k, A, nodes):
-    w, s, ic2, sic, wdq = nodes
-    a = ((h * h + k * k) / 2.0)[..., None]
-    b = (h * k)[..., None]
-    e = jnp.exp(-a * ic2 + b * sic)
-    we = w * e
-    S0 = jnp.sum(we, -1)
-    S1 = jnp.sum(we * ic2, -1)
-    S2 = jnp.sum(we * sic, -1)
-    T = jnp.sum(e * wdq * (b - 2.0 * a * sic + 2.0 * b * s * sic), -1)
-    c = A / (4.0 * jnp.pi)
-    return c * S0, -c * (h * S1 - k * S2), -c * (k * S1 - h * S2), (S0 + A * T) / (4.0 * jnp.pi)
-
-
-def _dw_corners(HK, rho):
-    """Corner integrals with the Gauss-Legendre order set by the largest |rho| present (same tiers as the
-    native kernel: better than 1e-6 relative on rectangles above the tail switch up to |rho| = 0.9995)."""
-    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
-    tier = jnp.searchsorted(jnp.asarray(_DW_TIER_EDGES), jnp.max(jnp.abs(r)), side="right")
-
-    def branch(m):
-        def f(_):
-            _, A, nodes = _dw_nodes(rho, m)
-            return [_dw_corner(h, k, A, nodes) for h, k in HK]
-        return f
-    return r, jax.lax.switch(tier, [branch(m) for m in _DW_TIER_NODES], None)
-
-
-def _phi2_density(x, y, rho):
-    """The bivariate normal density at (x, y), the exact derivative of the CDF in rho; zero at an open
-    edge and at or past the rho clamp, as the kernels' derivative in rho is."""
-    r = jnp.clip(rho, -_RHO_MAX, _RHO_MAX)
-    c = (1.0 - r) * (1.0 + r)
-    fin = (jnp.abs(x) < 1e9) & (jnp.abs(y) < 1e9) & (jnp.abs(rho) < _RHO_MAX)
-    xs, ys = jnp.where(fin, x, 0.0), jnp.where(fin, y, 0.0)
-    d = jnp.exp(-(xs * xs - 2.0 * r * xs * ys + ys * ys) / (2.0 * c)) / (2.0 * np.pi * jnp.sqrt(c))
-    return jnp.where(fin, d, 0.0)
-
-
-_ACC_PHI_C = [0.5893276044905619, 0.47231061768868227, 0.1485473376619552, 0.03611913148900286, 0.006378297104388951, 0.0006592194044005224, -1.1534346994167076e-05, -1.541999589462102e-05, -1.4350295963176838e-06, 2.671384604629693e-07, 5.842069382918476e-08, -4.878387335732758e-09, -2.0166300903829314e-09, 1.2065191939381096e-10, 7.135408878679637e-11, -4.885139134318498e-12, -2.630066125081603e-12, 2.7380131795870467e-13, 9.691376820174753e-14]
-_ACC_PHI_D = [1.1854995356145523, 1.3097573132537195, 0.45298641056440525, 0.10328147437489583, 0.01295638227198467, -0.0003253821430972744, -0.0004287832995995369, -4.434221633584315e-05, 9.551609080045374e-06, 2.278034508995305e-06, -2.1182703839817368e-07, -9.437945361118253e-08, 6.090771522883504e-09, 3.89287566636132e-09, -2.7866990704357154e-10, -1.638034930910627e-10, 1.8902019919991792e-11, 7.084052091904388e-12]
-_ACC_PHI_A = 0.015
-_ACC_PHI_B = 1.0
-
-
-def _clenshaw(co, u):
-    b1 = 0.0
-    b2 = 0.0
-    for k in range(len(co) - 1, 0, -1):
-        b1, b2 = 2.0 * u * b1 - b2 + co[k], b1
-    return u * b1 - b2 + co[0]
-
-
-def _acc_phi_and_deriv(x):
-    """Phi to ~1e-14 absolute (tail mass to ~2e-13 relative) as phi(x) * t * C(t), C a
-    degree-18 Chebyshev series in t = 1 / (1 + 0.2316419 |x|); returns Phi, its exact
-    derivative, and the tail mass. Used where bivariate cancellation needs accurate marginals."""
-    t = 1.0 / (1.0 + 0.2316419 * jnp.abs(x))
-    u = (2.0 * t - (_ACC_PHI_A + _ACC_PHI_B)) / (_ACC_PHI_B - _ACC_PHI_A)
-    Cu = _clenshaw(_ACC_PHI_C, u)
-    Du = _clenshaw(_ACC_PHI_D, u)
-    e = _PHI_D * jnp.exp(-0.5 * x * x)
-    q = e * t * Cu
-    G = (1.0 - t) / 0.2316419 * Cu + 0.2316419 * t * t * (Cu + t * Du)
-    return jnp.where(x >= 0, 1.0 - q, q), e * G, q
-
-
-def _acc_phi_diff(z_lo, z_hi):
-    Ph, dh, Qh = _acc_phi_and_deriv(z_hi)
-    Pl, dl, Ql = _acc_phi_and_deriv(z_lo)
-    return jnp.where(z_lo >= 0, Ql - Qh, Ph - Pl), -dl, dh
 
 
 _PROBIT_C = (0.23164256724403792, 0.2316161018958152, 0.21963988229322737, 0.19034147705499127, 0.182843173379805, 0.023627126024141354, 0.3261383197776697, -0.4226294412990229, 0.566393164718276, -0.42518433981895243, 0.14839140546152088, -0.019505298125989647)
@@ -679,15 +562,10 @@ def _probit_triple(x):
 
 def _phi_diff(z_lo, z_hi):
     """(Phi(z_hi) - Phi(z_lo), -phi(z_lo), phi(z_hi)), differenced on the side of zero the
-    interval lies on; the native kernel (~1e-9 relative in both tails) when it is loaded."""
+    interval lies on, from the native kernel (~1e-9 relative in both tails)."""
     z_lo, z_hi = jnp.broadcast_arrays(jnp.asarray(z_lo), jnp.asarray(z_hi))
-    if _native_ok(z_lo):
-        D, pdf_lo, pdf_hi = _native_call("probit_diff", 3, [z_lo, z_hi])
-        return D, -pdf_lo, pdf_hi
-    Ph, dh, Qh = _probit_triple(z_hi)
-    Pl, dl, Ql = _probit_triple(z_lo)
-    dl, dh = _band_pdfs(z_lo, z_hi, dl, dh)
-    return _probit_band(z_lo, z_hi, Pl, Ph, Ql, Qh), -dl, dh
+    D, pdf_lo, pdf_hi = _native_call("probit_diff", 3, [z_lo, z_hi])
+    return D, -pdf_lo, pdf_hi
 
 
 _HALF_PHI = (0.3989422804014327, -0.06649038006690544, 0.009973557010035817, -0.0011873282154804543, 0.00011543468761615529, -9.444656259503615e-06, 6.659693516316651e-07, -4.122667414862689e-08, 2.2735298243728065e-09, -1.1301171641619213e-10, 5.1124347902563106e-12, -2.121761474217046e-13, 8.133418984498675e-15, -2.896516732371323e-16, 9.631274849017947e-18, -3.0033007593711877e-19)
@@ -719,69 +597,41 @@ def _band_pdfs(z_lo, z_hi, dl, dh):
     return jnp.where(narrow, exact(z_lo), dl), jnp.where(narrow, exact(z_hi), dh)
 
 
-def _dw_rect_grads_jax(z1_lo, z1_hi, z2_lo, z2_hi, rho):
-    r, (hh, lh, hl, ll) = _dw_corners(((z1_hi, z2_hi), (z1_lo, z2_hi), (z1_hi, z2_lo), (z1_lo, z2_lo)), rho)
-    D1, dD1_lo, dD1_hi = _acc_phi_diff(z1_lo, z1_hi)
-    D2, dD2_lo, dD2_hi = _acc_phi_diff(z2_lo, z2_hi)
-    p = D1 * D2 + hh[0] - lh[0] - hl[0] + ll[0]
-    return (p,
-            dD1_lo * D2 - lh[1] + ll[1],
-            dD1_hi * D2 + hh[1] - hl[1],
-            D1 * dD2_lo - hl[2] + ll[2],
-            D1 * dD2_hi + hh[2] - lh[2],
-            _phi2_density(z1_hi, z2_hi, rho) - _phi2_density(z1_lo, z2_hi, rho) - _phi2_density(z1_hi, z2_lo, rho)
-            + _phi2_density(z1_lo, z2_lo, rho))
-
-
-def _dw_cdf_grads_jax(h, k, rho):
-    r, (c,) = _dw_corners(((h, k),), rho)
-    Ph, dh, _ = _acc_phi_and_deriv(h)
-    Pk, dk, _ = _acc_phi_and_deriv(k)
-    return Ph * Pk + c[0], dh * Pk + c[1], Ph * dk + c[2], _phi2_density(h, k, rho)
-
-
-_BVN_FFI = False
-if os.environ.get("BAYESROC_BVN_FFI"):
-    import ctypes
-    try:
-        _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
-        for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
-                         ("probit_cell", "ProbitCell"), ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
-                         ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
-                         ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
-                         ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
-                         ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
-                         ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"),
-                         ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
-                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
-                         ("dd_offset", "DdOffset")):
-            jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
-                                        platform="cpu")
-        for _t, _sym in (("bvn_rect", "BvnRect"), ("vrdp2d", "Vrdp2d"),
-                         ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
-                         ("probit_cell", "ProbitCell"), ("probit_diff", "ProbitDiff"),
-                         ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
-                         ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
-                         ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
-                         ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
-                         ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
-                         ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
-                         ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
-                         ("dd_offset", "DdOffset")):
-            jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
-                                        platform="cpu")
-    except Exception as _e:
-        raise RuntimeError(f"bayesroc: the native kernel failed to load ({_e}); rebuild it with "
-                           "bayesroc:::.bvn_ffi_lib(rebuild = TRUE)") from _e
-    _BVN_FFI = True
-elif os.environ.get("BAYESROC_PURE_JAX_REFERENCE") != "1":
+if not os.environ.get("BAYESROC_BVN_FFI"):
     raise RuntimeError("bayesroc: no native kernel given (BAYESROC_BVN_FFI); fits must go through "
                        "bayesroc's R interface, which builds it")
-
-
-def _native_ok(x):
-    return _BVN_FFI and jnp.asarray(x).dtype in (jnp.float64, jnp.float32)
+import ctypes
+try:
+    _bvn_lib = ctypes.cdll.LoadLibrary(os.environ["BAYESROC_BVN_FFI"])
+    for _t, _sym in (("bvn_rect", "BvnRect"),
+                     ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
+                     ("probit_cell", "ProbitCell"), ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
+                     ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
+                     ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
+                     ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
+                     ("probit_diff", "ProbitDiff"), ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"),
+                     ("pcq", "Pcq"), ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"),
+                     ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                     ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
+                     ("dd_offset", "DdOffset")):
+        jax.ffi.register_ffi_target(f"bayesroc_{_t}", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}")),
+                                    platform="cpu")
+    for _t, _sym in (("bvn_rect", "BvnRect"),
+                     ("bvn_cdf2", "BvnCdf2"), ("bvn_cdf4", "BvnCdf4"),
+                     ("probit_cell", "ProbitCell"), ("probit_diff", "ProbitDiff"),
+                     ("ordinal", "Ordinal"), ("ordinal_sp", "OrdinalSp"),
+                     ("metad_trial", "MetadTrial"), ("metad_trial_sp", "MetadTrialSp"),
+                     ("bg_trial", "BgTrial"), ("bg_trial_sp", "BgTrialSp"),
+                     ("vrdp_trial", "VrdpTrial"), ("vrdp_trial_sp", "VrdpTrialSp"),
+                     ("cdp_cell", "CdpCell"), ("metad_cell", "MetadCell"), ("pcq", "Pcq"),
+                     ("lnoise_cell", "LnoiseCell"), ("bbv_cell", "BbvCell"), ("tmap_fwd", "TmapFwd"), ("tmap_bwd", "TmapBwd"),
+                     ("tmap_blk_fwd", "TmapBlkFwd"), ("tmap_blk_bwd", "TmapBlkBwd"),
+                     ("dd_offset", "DdOffset")):
+        jax.ffi.register_ffi_target(f"bayesroc_{_t}_f32", jax.ffi.pycapsule(getattr(_bvn_lib, f"Bayesroc{_sym}F32")),
+                                    platform="cpu")
+except Exception as _e:
+    raise RuntimeError(f"bayesroc: the native kernel failed to load ({_e}); rebuild it with "
+                       "bayesroc:::.bvn_ffi_lib(rebuild = TRUE)") from _e
 
 
 def _native_call(name, n_out, args):
@@ -800,335 +650,10 @@ def _probit_cell_native(z_lo, z_hi):
     return _native_call("probit_cell", 3, jnp.broadcast_arrays(jnp.asarray(z_lo), jnp.asarray(z_hi)))
 
 
-def _use_probit_native(link_name, x):
-    return link_name == "probit" and _native_ok(x)
-
-
-_GL32_X, _GL32_W = np.polynomial.legendre.leggauss(32)
 _LOG_SQRT_2PI = 0.9189385332046727
 
 
-def _log_q_pos(x):
-    t = 1.0 / (1.0 + 0.2316419 * x)
-    u = (2.0 * t - (_ACC_PHI_A + _ACC_PHI_B)) / (_ACC_PHI_B - _ACC_PHI_A)
-    cheb = -0.5 * x * x - _LOG_SQRT_2PI + jnp.log(t * _clenshaw(_ACC_PHI_C, u))
-    xs = jnp.maximum(x, 40.0)
-    r = 1.0 / (xs * xs)
-    asym = (-0.5 * xs * xs - jnp.log(xs) - _LOG_SQRT_2PI +
-            jnp.log1p(r * (-1.0 + r * (3.0 + r * (-15.0 + r * (105.0 - 945.0 * r))))))
-    return jnp.where(x > 40.0, asym, cheb)
-
-
-def _log_q(x):
-    ax = jnp.abs(x)
-    lq = _log_q_pos(ax)
-    return jnp.where(x >= 0, lq, jnp.log1p(-jnp.exp(lq)))
-
-
-def _log_diff_phi(lo, hi):
-    a_up, b_up = _log_q(lo), _log_q(hi)
-    a_dn, b_dn = _log_q(-hi), _log_q(-lo)
-    up = a_up + jnp.log1p(-jnp.exp(b_up - a_up))
-    dn = a_dn + jnp.log1p(-jnp.exp(b_dn - a_dn))
-    mid = jnp.log(jnp.maximum(0.5 * (jax.scipy.special.erf(hi * 0.7071067811865476) -
-                                     jax.scipy.special.erf(lo * 0.7071067811865476)), 1e-300))
-    out = jnp.where(lo >= 0, up, jnp.where(hi <= 0, dn, mid))
-    return jnp.where(hi > lo, out, -jnp.inf)
-
-
 _GL16_X, _GL16_W = np.polynomial.legendre.leggauss(16)
-_GRADE_LEVELS = 6
-
-
-def _graded_log_integral(g, px, ps):
-    """log of the integral of exp(g) over (px[..., 0], px[..., -1]), split at the sorted points px
-    [..., P], on Gauss-Legendre panels graded geometrically from each point's local scale ps out to
-    the middle of each piece (as bvn_tail.h)."""
-    A, B = px[..., :-1], px[..., 1:]
-    H = 0.5 * jnp.maximum(B - A, 0.0)
-    k = jnp.arange(_GRADE_LEVELS + 1.0) / _GRADE_LEVELS
-    vals = []
-    for end, sc, sign in ((A, ps[..., :-1], 1.0), (B, ps[..., 1:], -1.0)):
-        ratio = jnp.maximum(H / jnp.maximum(sc, 1e-300), 1.0)
-        offs = jnp.where((ratio > 1.0)[..., None], H[..., None] * ratio[..., None] ** (k - 1.0), H[..., None] * k)
-        offs = jnp.concatenate([jnp.zeros_like(offs[..., :1]), offs], axis=-1)
-        lo, hi = offs[..., :-1], offs[..., 1:]
-        h = 0.5 * (hi - lo)
-        xs = end[..., None, None] + sign * ((lo + h)[..., None] + h[..., None] * _GL16_X)
-        lw = jnp.log(jnp.maximum(h[..., None] * _GL16_W, 1e-300))
-        v = lw + g(xs.reshape(xs.shape[:-3] + (-1,))).reshape(xs.shape)
-        v = jnp.where((h > 0.0)[..., None] & jnp.isfinite(v), v, jax.lax.stop_gradient(jnp.full_like(v, -jnp.inf)))
-        vals.append(v.reshape(v.shape[:-3] + (-1,)))
-    return jax.scipy.special.logsumexp(jnp.concatenate(vals, axis=-1), axis=-1)
-
-
-def _tail_split_points(dg, m, left, right, kinks):
-    """Sorted split points (the ends, the mode and the integrand's transitions inside the range)
-    and their local scales; `kinks` is a list of (point, width) with non-finite points ignored. The
-    mode's scale is at most the narrowest transition's width, as one may lie beside it."""
-    width = jnp.ones_like(m)
-    for x, w in kinks:
-        width = jnp.where(jnp.isfinite(x), jnp.minimum(width, w), width)
-    d = 1e-3 * width
-    curv = -(dg(m + d) - dg(m - d)) / (2.0 * d)
-    mode_scale = jnp.minimum(1.0 / jnp.sqrt(jnp.maximum(jnp.where(jnp.isfinite(curv), curv, 1.0), 1.0)), width)
-    big = jnp.full_like(m, jnp.inf)
-    pts = [left, m, right]
-    scl = [big, mode_scale, big]
-    for x, w in kinks:
-        inside = jnp.isfinite(x) & (x > left) & (x < right)
-        pts.append(jnp.where(inside, x, m))
-        scl.append(jnp.where(inside, w, mode_scale))
-    px, ps = jnp.stack(pts, -1), jnp.stack(scl, -1)
-    order = jnp.argsort(px, axis=-1)
-    return jnp.take_along_axis(px, order, -1), jnp.take_along_axis(ps, order, -1)
-
-
-def _rect_tail_jax(a1, b1, a2, b2, rho):
-    """Tail-accurate P(a1 < Z1 < b1, a2 < Z2 < b2; rho) and its derivatives in
-    (a1, b1, a2, b2, rho): log-space Gauss-Legendre over the log-concave integrand
-    phi(x) P(a2 < Z2 < b2 | x) around its mode; same algorithm as bvn_tail.h."""
-    clamped = ~(jnp.abs(rho) < 0.999999)
-    rho = jnp.clip(rho, -0.999999, 0.999999)
-    s = jnp.sqrt((1.0 - rho) * (1.0 + rho))
-    lo = jnp.maximum(a1, -40.0)
-    hi = jnp.minimum(b1, 40.0)
-    ok = hi > lo
-    hi = jnp.where(ok, hi, lo + 1.0)
-
-    def bc(v, x):
-        return v.reshape(v.shape + (1,) * (x.ndim - v.ndim))
-
-    def lcond(x):
-        A2, B2, R, S = bc(a2, x), bc(b2, x), bc(rho, x), bc(s, x)
-        return _log_diff_phi((A2 - R * x) / S, (B2 - R * x) / S)
-
-    def g(x):
-        return -0.5 * x * x - _LOG_SQRT_2PI + lcond(x)
-
-    def dg(x):
-        l, u = (a2 - rho * x) / s, (b2 - rho * x) / s
-        ld = _log_diff_phi(l, u)
-        tl = jnp.where(jnp.abs(l) < 1e9, jnp.exp(-0.5 * l * l - _LOG_SQRT_2PI - ld), 0.0)
-        tu = jnp.where(jnp.abs(u) < 1e9, jnp.exp(-0.5 * u * u - _LOG_SQRT_2PI - ld), 0.0)
-        return -x + (rho / s) * (tl - tu)
-
-    at_lo = dg(lo) <= 0.0
-    at_hi = dg(hi) >= 0.0
-
-    def bis(_, lh):
-        L, H = lh
-        M = 0.5 * (L + H)
-        up = dg(M) > 0.0
-        return jnp.where(up, M, L), jnp.where(up, H, M)
-    L, H = jax.lax.fori_loop(0, 64, bis, (lo, hi))
-    m = jnp.where(at_lo, lo, jnp.where(at_hi, hi, 0.5 * (L + H)))
-    gm = g(m)
-    steps = 0.25 * (1.6 ** jnp.arange(40.0))
-    offs = jnp.cumsum(steps)
-
-    def reach(direction, edge):
-        xs = m[..., None] + direction * offs
-        past = (xs - edge[..., None]) * direction >= 0.0
-        drop = (gm[..., None] - g(jnp.where(past, m[..., None], xs))) > 40.0
-        stop = past | drop
-        first = jnp.argmax(stop, axis=-1)
-        x_stop = jnp.take_along_axis(xs, first[..., None], axis=-1)[..., 0]
-        hit_edge = jnp.take_along_axis(past, first[..., None], axis=-1)[..., 0]
-        e = jnp.where(hit_edge, edge, x_stop)
-        return jnp.where((edge - m) * direction > 0.0, e, m)
-    left = reach(-1.0, lo)
-    right = reach(1.0, hi)
-    safe = jnp.where(rho == 0.0, 1.0, rho)
-    kw = s / jnp.abs(safe)
-    kinks = [(jnp.where(rho == 0.0, jnp.inf, a2 / safe), kw), (jnp.where(rho == 0.0, jnp.inf, b2 / safe), kw)]
-    px, ps = _tail_split_points(dg, m, left, right, kinks)
-    lp = _graded_log_integral(g, px, ps)
-    lp = jnp.where(ok, lp, -jnp.inf)
-    p = jnp.exp(lp)
-
-    def edge_d(x, lo2, hi2):
-        fin = jnp.abs(x) < 1e9
-        xs = jnp.where(fin, x, 0.0)
-        v = jnp.exp(-0.5 * xs * xs - _LOG_SQRT_2PI + _log_diff_phi((lo2 - rho * xs) / s, (hi2 - rho * xs) / s))
-        return jnp.where(fin, v, 0.0)
-    d1h = edge_d(b1, a2, b2)
-    d1l = -edge_d(a1, a2, b2)
-    d2h = edge_d(b2, a1, b1)
-    d2l = -edge_d(a2, a1, b1)
-
-    def phi2(x, y):
-        fin = (jnp.abs(x) < 1e9) & (jnp.abs(y) < 1e9)
-        xs, ys = jnp.where(fin, x, 0.0), jnp.where(fin, y, 0.0)
-        v = jnp.exp(-(xs * xs - 2.0 * rho * xs * ys + ys * ys) / (2.0 * s * s) - jnp.log(s) - 1.8378770664093455)
-        return jnp.where(fin, v, 0.0)
-    drho = jnp.where(clamped, 0.0, phi2(b1, b2) - phi2(a1, b2) - phi2(b1, a2) + phi2(a1, a2))
-    return p, d1l, d1h, d2l, d2h, drho
-
-
-def _lin_bounds(Al, Bl, Au, Bu, x):
-    l = jnp.where(jnp.isfinite(Al), Al + Bl * x, jax.lax.stop_gradient(jnp.sign(Al) * _OPEN))
-    u = jnp.where(jnp.isfinite(Au), Au + Bu * x, jax.lax.stop_gradient(jnp.sign(Au) * _OPEN))
-    return l, u
-
-
-def _lin_log_integral_jax(Al, Bl, Au, Bu, a, b):
-    """log of the integral over (a, b) of phi(x) [Phi(Au + Bu x) - Phi(Al + Bl x)]; an infinite
-    A is a constant bound. Same algorithm as _rect_tail_jax; the band may vanish at an end
-    (a polygon vertex), where the log integrand is -inf and rises into the interval."""
-    lo = jnp.maximum(a, -40.0)
-    hi = jnp.minimum(b, 40.0)
-    ok = hi > lo
-    hi = jnp.where(ok, hi, lo + 1.0)
-
-    def bc(v, x):
-        return v.reshape(v.shape + (1,) * (x.ndim - v.ndim))
-
-    def g(x):
-        l, u = _lin_bounds(bc(Al, x), bc(Bl, x), bc(Au, x), bc(Bu, x), x)
-        return -0.5 * x * x - _LOG_SQRT_2PI + _log_diff_phi(l, u)
-
-    def dg(x):
-        l, u = _lin_bounds(Al, Bl, Au, Bu, x)
-        ld = _log_diff_phi(l, u)
-        live = jnp.isfinite(ld)
-        tl = jnp.where(live & (jnp.abs(l) < 1e9), jnp.exp(-0.5 * l * l - _LOG_SQRT_2PI - ld), 0.0)
-        tu = jnp.where(live & (jnp.abs(u) < 1e9), jnp.exp(-0.5 * u * u - _LOG_SQRT_2PI - ld), 0.0)
-        return -x + Bu * tu - Bl * tl
-
-    at_lo = (dg(lo) <= 0.0) & jnp.isfinite(g(lo))
-    at_hi = (dg(hi) >= 0.0) & jnp.isfinite(g(hi))
-
-    def bis(_, lh):
-        L, H = lh
-        M = 0.5 * (L + H)
-        up = dg(M) > 0.0
-        return jnp.where(up, M, L), jnp.where(up, H, M)
-    L, H = jax.lax.fori_loop(0, 64, bis, (lo, hi))
-    m = jnp.where(at_lo, lo, jnp.where(at_hi, hi, 0.5 * (L + H)))
-    gm = g(m)
-    offs = jnp.cumsum(0.25 * (1.6 ** jnp.arange(40.0)))
-
-    def reach(direction, edge):
-        xs = m[..., None] + direction * offs
-        past = (xs - edge[..., None]) * direction >= 0.0
-        drop = (gm[..., None] - g(jnp.where(past, m[..., None], xs))) > 40.0
-        stop = past | drop
-        first = jnp.argmax(stop, axis=-1)
-        x_stop = jnp.take_along_axis(xs, first[..., None], axis=-1)[..., 0]
-        hit_edge = jnp.take_along_axis(past, first[..., None], axis=-1)[..., 0]
-        e = jnp.where(hit_edge, edge, x_stop)
-        return jnp.where((edge - m) * direction > 0.0, e, m)
-    left = reach(-1.0, lo)
-    right = reach(1.0, hi)
-    kinks = []
-    for A_, B_ in ((Al, Bl), (Au, Bu)):
-        live = jnp.isfinite(A_) & (B_ != 0.0)
-        safe = jnp.where(live, B_, 1.0)
-        kinks.append((jnp.where(live, -jnp.where(live, A_, 0.0) / safe, jnp.inf), 1.0 / jnp.abs(safe)))
-    px, ps = _tail_split_points(dg, m, left, right, kinks)
-    lp = _graded_log_integral(g, px, ps)
-    return jnp.where(ok & jnp.isfinite(gm), lp, -jnp.inf)
-
-
-def _gauss_line_jax(A, B, xa, xb):
-    """log of the integral over (xa, xb) of phi(x) phi(A + Bx), and the ratio of the x-weighted
-    integral to it; closed forms via phi(x) phi(A + Bx) = phi(A/s) phi(s (x + AB/s^2))."""
-    s2 = 1.0 + B * B
-    s = jnp.sqrt(s2)
-    m = A * B / s2
-    tl = jnp.where(jnp.isfinite(xa), s * (xa + m), xa)
-    th = jnp.where(jnp.isfinite(xb), s * (xb + m), xb)
-    ld = _log_diff_phi(tl, th)
-    fl = jnp.where(jnp.isfinite(tl) & jnp.isfinite(ld), jnp.exp(-0.5 * tl * tl - _LOG_SQRT_2PI - ld), 0.0)
-    fh = jnp.where(jnp.isfinite(th) & jnp.isfinite(ld), jnp.exp(-0.5 * th * th - _LOG_SQRT_2PI - ld), 0.0)
-    return -0.5 * (A / s) ** 2 - _LOG_SQRT_2PI - jnp.log(s) + ld, (fl - fh) / s - m
-
-
-def _cdp_cell_jax(kind, muR, sR, muF, sF, cR, cK, tlo, thi, corr):
-    """log P of a CDP R/K/G cell (kind 1 = Remember, 2 = Know, 3 = Guess) as a one-dimensional
-    integral over the standardised recollection axis, and its derivatives in
-    (muR, sR, muF, sF, cR, cK, tlo, thi, corr); same construction as bvn_tail::cdp_cell. Given R,
-    F is normal with mean muF + corr sF x and SD sF sqrt(1 - corr^2)."""
-    inf = jnp.inf
-    zero = jnp.zeros_like(muR)
-    s2 = (1.0 - corr) * (1.0 + corr)
-    s = jnp.sqrt(s2)
-    sc = sF * s
-    cs2 = corr / s2
-    B = -(sR + corr * sF) / sc
-    BK = -corr / s
-    xcR = (cR - muR) / sR
-    fin_hi, fin_lo = jnp.isfinite(thi), jnp.isfinite(tlo)
-    xkh = jnp.where(fin_hi, (thi - cK - muR) / sR, inf)
-    xkl = jnp.where(fin_lo, (tlo - cK - muR) / sR, -inf)
-    Alo = jnp.where(fin_lo, (tlo - muR - muF) / sc, -inf)
-    Ahi = jnp.where(fin_hi, (thi - muR - muF) / sc, inf)
-    AK = (cK - muF) / sc
-    Blo = jnp.where(fin_lo, B, 0.0)
-    Bhi = jnp.where(fin_hi, B, 0.0)
-
-    def vec(*c):
-        return jnp.stack([jnp.broadcast_to(v, muR.shape) for v in c], axis=-1)
-    Z = vec(*([zero] * 9))
-    dxcR = vec(-1 / sR, -xcR / sR, zero, zero, 1 / sR, zero, zero, zero, zero)
-    dxkh = jnp.where(fin_hi[..., None], vec(-1 / sR, -xkh / sR, zero, zero, zero, -1 / sR, zero, 1 / sR, zero), Z)
-    dxkl = jnp.where(fin_lo[..., None], vec(-1 / sR, -xkl / sR, zero, zero, zero, -1 / sR, 1 / sR, zero, zero), Z)
-    dAlo = jnp.where(fin_lo[..., None], vec(-1 / sc, zero, -1 / sc, -Alo / sF, zero, zero, 1 / sc, zero, Alo * cs2), Z)
-    dAhi = jnp.where(fin_hi[..., None], vec(-1 / sc, zero, -1 / sc, -Ahi / sF, zero, zero, zero, 1 / sc, Ahi * cs2), Z)
-    dB = vec(zero, -1 / sc, zero, sR / (sF * sc), zero, zero, zero, zero, -sR * corr / (sc * s2) - 1 / (s * s2))
-    dBlo = jnp.where(fin_lo[..., None], dB, Z)
-    dBhi = jnp.where(fin_hi[..., None], dB, Z)
-    dAK = vec(zero, zero, -1 / sc, -AK / sF, zero, 1 / sc, zero, zero, AK * cs2)
-    dBK = vec(zero, zero, zero, zero, zero, zero, zero, zero, -1 / (s * s2))
-
-    def pick(c, a, da, b, db):
-        return jnp.where(c, a, b), jnp.where(c[..., None], da, db)
-
-    g1b, dg1b = pick(xkh <= xcR, xkh, dxkh, xcR, dxcR)
-    g2a, dg2a = pick(xkh >= xkl, xkh, dxkh, xkl, dxkl)
-    ub, dub = pick(xcR <= xkh, xcR, dxcR, xkh, dxkh)
-    k1b, dk1b = pick(xkl <= ub, xkl, dxkl, ub, dub)
-    ninf = jnp.full_like(muR, -inf)
-    pinf = jnp.full_like(muR, inf)
-    is1, is2 = kind == 1, kind == 2
-
-    def sel(r, k, g):
-        if isinstance(r, tuple):
-            return tuple(sel(a, b, c) for a, b, c in zip(r, k, g))
-        cond1 = is1[..., None] if r.ndim > muR.ndim else is1
-        cond2 = is2[..., None] if r.ndim > muR.ndim else is2
-        return jnp.where(cond1, r, jnp.where(cond2, k, g))
-
-    pieces = [
-        sel((xcR, pinf, Alo, Blo, Ahi, Bhi, dxcR, Z, dAlo, dBlo, dAhi, dBhi),
-            (ninf, k1b, Alo, Blo, Ahi, Bhi, Z, dk1b, dAlo, dBlo, dAhi, dBhi),
-            (xkl, g1b, Alo, Blo, AK, BK, dxkl, dg1b, dAlo, dBlo, dAK, dBK)),
-        sel((pinf, pinf, Alo, Blo, Ahi, Bhi, Z, Z, Z, Z, Z, Z),
-            (xkl, ub, AK, BK, Ahi, Bhi, dxkl, dub, dAK, dBK, dAhi, dBhi),
-            (g2a, xcR, Alo, Blo, Ahi, Bhi, dg2a, dxcR, dAlo, dBlo, dAhi, dBhi)),
-    ]
-    lps = [_lin_log_integral_jax(p[2], p[3], p[4], p[5], p[0], p[1]) for p in pieces]
-    lp = jnp.logaddexp(lps[0], lps[1])
-    d = jnp.zeros(muR.shape + (9,), dtype=muR.dtype)
-    for p, lpi in zip(pieces, lps):
-        xa0, xb0, Al, Bl, Au, Bu, dxa, dxb, dAl, dBl, dAu, dBu = p
-        live = jnp.isfinite(lpi) & jnp.isfinite(lp)
-        xa = jnp.maximum(xa0, -40.0)
-        xb = jnp.minimum(xb0, 40.0)
-
-        def gat(x):
-            l, u = _lin_bounds(Al, Bl, Au, Bu, x)
-            return -0.5 * x * x - _LOG_SQRT_2PI + _log_diff_phi(l, u)
-        w_xb = jnp.where(live & (xb0 < 40.0), jnp.exp(gat(xb) - lp), 0.0)
-        w_xa = jnp.where(live & (xa0 > -40.0), -jnp.exp(gat(xa) - lp), 0.0)
-        lJu, ru = _gauss_line_jax(jnp.where(jnp.isfinite(Au), Au, 0.0), Bu, xa, xb)
-        lJl, rl = _gauss_line_jax(jnp.where(jnp.isfinite(Al), Al, 0.0), Bl, xa, xb)
-        eu = jnp.where(live & jnp.isfinite(Au), jnp.exp(lJu - lp), 0.0)
-        el = jnp.where(live & jnp.isfinite(Al), jnp.exp(lJl - lp), 0.0)
-        for w, dv in ((w_xa, dxa), (w_xb, dxb), (-el, dAl), (-el * rl, dBl), (eu, dAu), (eu * ru, dBu)):
-            d = d + w[..., None] * dv
-    return lp, d
 
 
 def _cdp_tail(flag, kind, muR, sR, muF, sF, cR, cK, tlo, thi, corr):
@@ -1138,44 +663,12 @@ def _cdp_tail(flag, kind, muR, sR, muF, sF, cR, cK, tlo, thi, corr):
     dt = args[0].dtype
 
     def run(_):
-        if _native_ok(args[0]):
-            out = _native_call("cdp_cell", 10, [jnp.asarray(flag, dt), jnp.asarray(kind, dt), *args])
-            return out[0], jnp.stack(out[1:], axis=-1)
-        lp, d = _cdp_cell_jax(jnp.asarray(kind), *args)
-        f = jnp.asarray(flag, bool)
-        live = f & jnp.isfinite(lp)
-        lp = jnp.where(live, lp, jax.lax.stop_gradient(jnp.where(f, -jnp.inf, 0.0)))
-        return lp, jnp.where(live[..., None], d, 0.0)
+        out = _native_call("cdp_cell", 10, [jnp.asarray(flag, dt), jnp.asarray(kind, dt), *args])
+        return out[0], jnp.stack(out[1:], axis=-1)
 
     def skip(_):
         return jnp.zeros_like(args[0]), jnp.zeros(args[0].shape + (9,), dt)
     return jax.lax.cond(jnp.any(flag), run, skip, None)
-
-
-_TAIL_CHUNK = 256
-
-
-def _with_rect_tail(out, a1, b1, a2, b2, rho):
-    """Replace cells below the tail switch by _rect_tail_jax, in fixed-size chunks that
-    are skipped unless they hold such a cell (bounded memory for any N)."""
-    shape = jnp.shape(out[0])
-    flat = [jnp.ravel(jnp.broadcast_to(x, shape)) for x in (*out, a1, b1, a2, b2, rho)]
-    n = flat[0].shape[0]
-    pad = (-n) % _TAIL_CHUNK
-    fill = (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
-    cols = [jnp.concatenate([x, jnp.full((pad,), v, x.dtype)]).reshape(-1, _TAIL_CHUNK)
-            for x, v in zip(flat, fill)]
-
-    def chunk(args):
-        o, a = args[:6], args[6:]
-        tail = o[0] < _TAIL_SWITCH
-
-        def run(_):
-            t = _rect_tail_jax(*a)
-            return tuple(jnp.where(tail, ti, oi) for ti, oi in zip(t, o))
-        return jax.lax.cond(jnp.any(tail), run, lambda _: tuple(o), None)
-    res = jax.lax.map(chunk, tuple(cols))
-    return tuple(r.reshape(-1)[:n].reshape(shape) for r in res)
 
 
 def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
@@ -1184,9 +677,7 @@ def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
     on |rho|, and a log-space quadrature for cells below 1e-4."""
     args = [jnp.asarray(a) for a in (z1_lo, z1_hi, z2_lo, z2_hi, rho)]
     args = jnp.broadcast_arrays(*args)
-    if _native_ok(args[0]):
-        return _native_call("bvn_rect", 6, args)
-    return _with_rect_tail(_dw_rect_grads_jax(*args), *args)
+    return _native_call("bvn_rect", 6, args)
 
 
 _GL4_X, _GL4_W = np.polynomial.legendre.leggauss(4)
@@ -1311,21 +802,9 @@ def _bvn_cdf_multi(pairs, extras, rho):
     ks = arrs[1:2 * n:2]
     xs = arrs[2 * n:2 * n + m]
     r = arrs[-1]
-    if _native_ok(r) and (n, m) in ((2, 1), (4, 2)):
-        out = _native_call(f"bvn_cdf{n}", 8 * n + 2 * m, [*hs, *ks, *xs, r])
-        return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
-                                                                 for j in range(m)]
-    res = []
-    for h, k in zip(hs, ks):
-        p, dh, dk, dr = _dw_cdf_grads_jax(h, k, r)
-        _, dPh, Qh = _acc_phi_and_deriv(h)
-        _, dPk, Qk = _acc_phi_and_deriv(k)
-        res.append((p, dh, dk, dr, Qh, dPh, Qk, dPk))
-    ext = []
-    for x in xs:
-        _, dPx, Qx = _acc_phi_and_deriv(x)
-        ext.append((Qx, dPx))
-    return res, ext
+    out = _native_call(f"bvn_cdf{n}", 8 * n + 2 * m, [*hs, *ks, *xs, r])
+    return [tuple(out[8 * q:8 * q + 8]) for q in range(n)], [tuple(out[8 * n + 2 * j:8 * n + 2 * j + 2])
+                                                             for j in range(m)]
 
 
 def _phi_from_q(x, q):
@@ -1334,19 +813,6 @@ def _phi_from_q(x, q):
 
 def _band_from_q(z_lo, z_hi, q_lo, q_hi):
     return jnp.where(z_lo >= 0, q_lo - q_hi, _phi_from_q(z_hi, q_hi) - _phi_from_q(z_lo, q_lo))
-
-
-def _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
-                   dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S):
-    """vrdp2d log p and its partials (dprime_F, dprime_R, source_d, lambda, sigma_item,
-    sigma_S, c1_hi, c1_lo, c2_hi, c2_lo) in one native pass; None when unavailable."""
-    if not _native_ok(c1_hi):
-        return None
-    dt = jnp.asarray(c1_hi).dtype
-    f = lambda a: jnp.asarray(a, dtype=dt)
-    args = [f(c1_hi), f(c1_lo), f(c2_hi), f(c2_lo), f(has1_hi), f(has1_lo), f(has2_hi), f(has2_lo),
-            f(dprime_F), f(dprime_R), f(source_d), f(lambda_val), f(sigma_item), f(sigma_S)]
-    return _native_call("vrdp2d", 11, jnp.broadcast_arrays(*args))
 
 
 def _thresh_layout(K):
@@ -1555,15 +1021,11 @@ def _link_cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi):
 
 
 def _cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi):
-    """log P, d log P / dz_a at fixed width and d log P / dw of a cell of _cell_lw: the native probit cell, the
-    log-space logit or cloglog cell, or without the native kernel the probit cell floored before log."""
-    if _use_probit_native(link_name, z_lo):
+    """log P, d log P / dz_a at fixed width and d log P / dw of a cell of _cell_lw: the native probit cell or the
+    log-space logit or cloglog cell."""
+    if link_name == "probit":
         return _probit_cell_lw_native(z_lo, z_hi, w, has_lo, has_hi)
-    if link_name != "probit":
-        return _link_cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi)
-    P, A, B, _ = _cell_lw(link_name, z_lo, z_hi, w, has_lo, has_hi)
-    ip = jnp.where(P > _pfloor(), 1.0 / jnp.maximum(P, _pfloor()), 0.0)
-    return jnp.log(jnp.maximum(P, _pfloor())), A * ip, B * ip
+    return _link_cell_log(link_name, z_lo, z_hi, w, has_lo, has_hi)
 
 
 def _log_or_prob(link_name, make, logged, prob):
@@ -1662,14 +1124,6 @@ _METAD_DEEP = 1e20
 _METAD_TAIL = 8.0
 
 
-def _hazard_excess(x):
-    """phi(x) / Q(x) - x by Laplace's continued fraction, at rounding from x = _METAD_TAIL up."""
-    t = x
-    for k in range(16, 1, -1):
-        t = x + k / t
-    return 1.0 / t
-
-
 def _metad_tail(z_lo, z_hi, z_c, old, e=None, w=None):
     """The meta-d' cell's tail rows, the meta criterion beyond _METAD_TAIL on the response's side, with the
     distance e from the criterion to the cell's near edge and the cell's width w, taken from the edges
@@ -1677,60 +1131,6 @@ def _metad_tail(z_lo, z_hi, z_c, old, e=None, w=None):
     e = jnp.where(old, z_lo - z_c, z_c - z_hi) if e is None else e
     w = z_hi - z_lo if w is None else w
     return (jnp.where(old, z_c, -z_c) > _METAD_TAIL) & (e >= 0.0), e, w
-
-
-def _metad_cell_jax(z_a, z_lo, z_hi, z_c, old, e=None, w=None):
-    """(lp, d/dz_a, d/dz_lo, d/dz_hi, d/dz_c, d/d shift) of log P(R | S) + log P'(cell) - log P'(R | S),
-    every term an upper-tail probability after reflecting "new" responses, the last the derivative in a
-    common shift of z_lo, z_hi and z_c. On the tail rows of _metad_tail the cell is taken from z_c, e and w:
-    the hazards x + r(x) of the three points differ by e, w and differences of the excesses r, and the log
-    survivals by integrals of the hazard, so that neither the value nor the shift derivative is a
-    difference of terms the size of z_c."""
-    s = jnp.where(old, 1.0, -1.0).astype(z_a.dtype)
-    ua, uc = s * z_a, s * z_c
-    ul, uh = jnp.where(old, z_lo, -z_hi), jnp.where(old, z_hi, -z_lo)
-    fl = _pfloor()
-    Pa, da, qa = _probit_triple(ua)
-    Pc, dc, qc = _probit_triple(uc)
-    Pl, dl, ql = _probit_triple(ul)
-    Ph, dh, qh = _probit_triple(uh)
-    Qa = jnp.where(ua >= 0, qa, 1.0 - qa)
-    Qc = jnp.where(uc >= 0, qc, 1.0 - qc)
-    D = _probit_band(ul, uh, Pl, Ph, ql, qh)
-    dl, dh = _band_pdfs(ul, uh, dl, dh)
-    ia = jnp.where(Qa > fl, 1.0 / jnp.maximum(Qa, fl), 0.0)
-    ib = jnp.where(D > fl, 1.0 / jnp.maximum(D, fl), 0.0)
-    ic = jnp.where(Qc > fl, 1.0 / jnp.maximum(Qc, fl), 0.0)
-    lp = jnp.log(jnp.maximum(Qa, fl)) + jnp.log(jnp.maximum(D, fl) / jnp.maximum(Qc, fl))
-    ga, gc, bl, bh = -s * da * ia, s * dc * ic, -dl * ib, dh * ib
-    deep = (Qa < _METAD_DEEP * fl) | (D < _METAD_DEEP * fl) | (Qc < _METAD_DEEP * fl)
-    pick = lambda x, safe: jnp.where(deep, x, safe)
-    ua_s, uc_s, ul_s, uh_s = pick(ua, 0.0), pick(uc, 0.0), pick(ul, 0.0), pick(uh, 1.0)
-    lQa, lQc, lD = _log_q(ua_s), _log_q(uc_s), _log_diff_phi(ul_s, uh_s)
-    lphi = lambda x: -0.5 * x * x - _LOG_SQRT_2PI
-    edge = lambda x: jnp.abs(x) < 0.5 * _OPEN
-    ga = jnp.where(deep, -s * jnp.exp(lphi(ua_s) - lQa), ga)
-    gc = jnp.where(deep, s * jnp.exp(lphi(uc_s) - lQc), gc)
-    bl = jnp.where(deep, jnp.where(edge(ul_s), -jnp.exp(lphi(ul_s) - lD), 0.0), bl)
-    bh = jnp.where(deep, jnp.where(edge(uh_s), jnp.exp(lphi(uh_s) - lD), 0.0), bh)
-    lp = jnp.where(deep, lQa + lD - lQc, lp)
-    tail, e, w = _metad_tail(z_lo, z_hi, z_c, old, e, w)
-    u, es, ws = jnp.where(tail, uc, _METAD_TAIL), jnp.where(tail, e, 0.0), jnp.where(tail, w, 1.0)
-    x1 = u + es
-    x2, xm = x1 + ws, x1 + 0.5 * ws
-    ru, r1, rm, r2 = _hazard_excess(u), _hazard_excess(x1), _hazard_excess(xm), _hazard_excess(x2)
-    hu, h1, hm, h2 = u + ru, x1 + r1, xm + rm, x2 + r2
-    d1 = es + (r1 - ru)
-    H01 = es * (u + 0.5 * es) + jnp.log1p(d1 / hu)
-    nar = ws * x2 < _NARROW_U
-    dh = jnp.where(nar, ws * (h1 * r1 + 4.0 * hm * rm + h2 * r2) / 6.0, ws + (r2 - r1))
-    H12 = jnp.where(nar, ws * (h1 + 4.0 * hm + h2) / 6.0, ws * (x1 + 0.5 * ws) + jnp.log1p(dh / h1))
-    em, om = jnp.expm1(H12), -jnp.expm1(-H12)
-    lp = jnp.where(tail, jnp.where(deep, lQa, jnp.log(jnp.maximum(Qa, fl))) + (jnp.log(om) - H01), lp)
-    gc = jnp.where(tail, s * hu, gc)
-    bl, bh = jnp.where(tail, -h1 / om, bl), jnp.where(tail, h2 / em, bh)
-    gl, gh = jnp.where(old, bl, -bh), jnp.where(old, bh, -bl)
-    return lp, ga, gl, gh, gc, jnp.where(tail, s * (dh / em - d1), gl + gh + gc)
 
 
 def _cloglog_old_shift(z_c, e, w, inner):
@@ -1748,7 +1148,7 @@ def _cloglog_old_shift(z_c, e, w, inner):
 
 
 def _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb=None):
-    """The meta-d' cell of _metad_cell_jax under a logistic or Gumbel-min latent distribution: the
+    """The meta-d' cell of _metad_cell under a logistic or Gumbel-min latent distribution: the
     survival on "old" responses and the CDF on "new" ones taken directly, the link not being symmetric.
     lb, a log mass the caller adds to the rating cell's (a narrow band's, with open edges here), is added
     before the meta-level decision's is taken off, which far into one tail is as large and cancels it.
@@ -1842,331 +1242,23 @@ def _metad_cell(z_a, z_lo, z_hi, z_c, old, link_name="probit", lb=None, e=None, 
     if link_name != "probit":
         lp, ga, gl, gh, gc = _metad_cell_link(z_a, z_lo, z_hi, z_c, old, link_name, lb)
         return lp, ga, gl, gh, gc, gl + gh + gc
-    if _native_ok(z_a):
-        tail, e, w = _metad_tail(z_lo, z_hi, z_c, old, e, w)
-        return _native_call("metad_cell", 6, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype), tail.astype(z_a.dtype),
-                                              e, w])
-    return _metad_cell_jax(z_a, z_lo, z_hi, z_c, old, e, w)
-
-
-_PCQ_GL_X, _PCQ_GL_W = np.polynomial.legendre.leggauss(64)
-_PCQ_DROP = 40.0
-
-
-def _pcq_jax(a, c):
-    """(log int phi(z) prod_j Phi(a_j z + c_j) dz, d/dc, d/da) over the trailing axis: the log-concave
-    integrand split at its mode, each side by Gauss-Legendre out to where it has fallen by e^-40; the
-    pure-JAX reference of the native kernel (64 nodes a side, its finest tier)."""
-    X = jnp.asarray(_PCQ_GL_X, dtype=a.dtype)
-    W = jnp.asarray(_PCQ_GL_W, dtype=a.dtype)
-
-    def lam(x):
-        return jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - _log_q(-x))
-
-    def h(z):
-        return -0.5 * z * z + jnp.sum(_log_q(-(a * z[..., None] + c)), -1)
-
-    def gh(z):
-        x = a * z[..., None] + c
-        lx = lam(x)
-        return -z + jnp.sum(a * lx, -1), -1.0 - jnp.sum(a * a * lx * (x + lx), -1)
-
-    def newton(_, st):
-        z, zl, zr = st
-        g, h2 = gh(z)
-        zl = jnp.where(g > 0.0, z, zl)
-        zr = jnp.where(g > 0.0, zr, z)
-        zn = z - g / h2
-        return jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr)), zl, zr
-
-    shape = a.shape[:-1]
-    zm, _, _ = jax.lax.fori_loop(0, 80, newton, (jnp.zeros(shape, a.dtype), jnp.full(shape, -60.0, a.dtype),
-                                                  jnp.full(shape, 60.0, a.dtype)))
-    hm = h(zm)
-    target = hm - _PCQ_DROP
-
-    def edge(side):
-        def step(_, st):
-            z, zi, zo = st
-            hz = h(z)
-            g, _ = gh(z)
-            zo = jnp.where(hz < target, z, zo)
-            zi = jnp.where(hz < target, zi, z)
-            zn = z - (hz - target) / g
-            zn = jnp.where((zn - zi) * (zn - zo) < 0.0, zn, 0.5 * (zi + zo))
-            return zn, zi, zo
-        zo = zm + side * np.sqrt(2.0 * _PCQ_DROP)
-        return jax.lax.fori_loop(0, 60, step, (zo, zm, zo))[0]
-
-    zl = edge(-1.0)
-    zr = edge(1.0)
-    lo = jnp.stack([zl, zm], -1)
-    hi = jnp.stack([zm, zr], -1)
-    hh = 0.5 * (hi - lo)
-    zi = ((lo + hh)[..., None] + hh[..., None] * X).reshape(shape + (2 * X.shape[0],))
-    wi = (hh[..., None] * W).reshape(zi.shape)
-    hv = jax.vmap(h, in_axes=-1, out_axes=-1)(zi) - hm[..., None]
-    e = wi * jnp.exp(hv)
-    sm = jnp.sum(e, -1)
-    w = e / sm[..., None]
-    li = lam(a[..., None, :] * zi[..., :, None] + c[..., None, :])
-    dc = jnp.sum(w[..., None] * li, -2)
-    da = jnp.sum(w[..., None] * li * zi[..., None], -2)
-    return hm + jnp.log(sm) - _LOG_SQRT_2PI, dc, da
+    tail, e, w = _metad_tail(z_lo, z_hi, z_c, old, e, w)
+    return _native_call("metad_cell", 6, [z_a, z_lo, z_hi, z_c, old.astype(z_a.dtype), tail.astype(z_a.dtype),
+                                          e, w])
 
 
 def _pcq_raw(a, c):
-    if _native_ok(a):
-        dt = a.dtype
-        target = "bayesroc_pcq" if dt == jnp.float64 else "bayesroc_pcq_f32"
-        return tuple(jax.ffi.ffi_call(target, (jax.ShapeDtypeStruct(a.shape[:-1], dt), jax.ShapeDtypeStruct(a.shape, dt),
-                                               jax.ShapeDtypeStruct(a.shape, dt)), vmap_method="broadcast_all")(
-            jnp.asarray(a, dt), jnp.asarray(c, dt)))
-    return _pcq_jax(a, c)
-
-
-_LN_R = 8.5
-_LN_GL_X, _LN_GL_W = np.polynomial.legendre.leggauss(56)
-_LN_GH_X, _LN_GH_W = np.polynomial.hermite_e.hermegauss(24)
-_LN_GH_LW = np.log(_LN_GH_W) + 0.5 * _LN_GH_X ** 2
-_LN_FLOOR = 1e-300
-
-
-def _ln_lam(x):
-    return jnp.exp(-0.5 * x * x - _LOG_SQRT_2PI - _log_q(-x))
-
-
-def _ln_mode(a, l, s):
-    w = jnp.exp(l)
-    x = a - w
-    L = _ln_lam(x)
-    sw = s * w
-    zl = jnp.maximum(-L * sw, -40.0)
-    d2 = -1.0 - L * s * sw - L * (x + L) * sw * sw
-    z = jnp.clip(L * sw / d2, zl, 0.0)
-
-    def body(_, st):
-        z, zl, zr = st
-        w = jnp.exp(l + s * z)
-        x = a - w
-        L = _ln_lam(x)
-        sw = s * w
-        g = -z - L * sw
-        d2 = -1.0 - L * s * sw - L * (x + L) * sw * sw
-        zl = jnp.where(g > 0.0, z, zl)
-        zr = jnp.where(g > 0.0, zr, z)
-        zn = z - g / d2
-        zn = jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr))
-        return zn, zl, zr
-
-    z, _, _ = jax.lax.fori_loop(0, 60, body, (z, zl, jnp.zeros_like(z)))
-    w = jnp.exp(l + s * z)
-    x = a - w
-    L = _ln_lam(x)
-    sw = s * w
-    return z, -1.0 - L * s * sw - L * (x + L) * sw * sw
-
-
-def _ln_interval(lo, hi):
-    return jnp.where(lo >= 0.0, jax.scipy.special.ndtr(-lo) - jax.scipy.special.ndtr(-hi),
-                     jax.scipy.special.ndtr(hi) - jax.scipy.special.ndtr(lo))
-
-
-_LN_GH8_X, _LN_GH8_W = np.polynomial.hermite_e.hermegauss(8)
-_LN_GH8_W = _LN_GH8_W / np.sqrt(2.0 * np.pi)
-_LN_WSER = 0.01
-
-
-def _ln_pdf(t):
-    return jnp.exp(-0.5 * t * t - _LOG_SQRT_2PI)
-
-
-def _ln_D(a, w, Pa, Qa):
-    """Phi(a) - Phi(a - w) = P(0 < T <= w), by a midpoint Hermite series for w <= 0.01 (no cancellation)."""
-    ndtr = jax.scipy.special.ndtr
-    u = a - w
-    sub = jnp.where(u >= 0.0, ndtr(-u) - Qa, Pa - ndtr(u))
-    m = a - 0.5 * w
-    h2 = 0.25 * w * w
-    mc = jnp.clip(m, -40.0, 40.0)
-    m2 = mc * mc
-    he2, he4, he6 = m2 - 1.0, m2 * m2 - 6.0 * m2 + 3.0, m2 * m2 * m2 - 15.0 * m2 * m2 + 45.0 * m2 - 15.0
-    ser = w * _ln_pdf(m) * (1.0 + h2 * (he2 / 6.0 + h2 * (he4 / 120.0 + h2 * he6 / 5040.0)))
-    return jnp.maximum(jnp.where(w <= _LN_WSER, ser, sub), 1e-300)
-
-
-def _ln_dD_da(a, w, pa):
-    """d/da of _ln_D, with the same series for small w."""
-    m = a - 0.5 * w
-    h2 = 0.25 * w * w
-    mc = jnp.clip(m, -40.0, 40.0)
-    m2 = mc * mc
-    he3, he5 = mc * (m2 - 3.0), mc * (m2 * m2 - 10.0 * m2 + 15.0)
-    he7 = mc * (m2 * m2 * m2 - 21.0 * m2 * m2 + 105.0 * m2 - 105.0)
-    ser = -w * _ln_pdf(m) * (mc + h2 * (he3 / 6.0 + h2 * (he5 / 120.0 + h2 * he7 / 5040.0)))
-    return jnp.where(w <= _LN_WSER, ser, pa - _ln_pdf(a - w))
-
-
-def _ln_mode_k(a, l, s, zs, Pa, Qa):
-    """Mode of K's integrand phi(z) D(w(z)) on (0, min(zs, 40)) and its curvature; `atzs` where it has no
-    interior mode there (the integrand rises up to zs)."""
-    zr0 = jnp.minimum(jnp.maximum(zs, 0.0), 40.0)
-
-    def gd(z):
-        w = jnp.exp(l + s * z)
-        x = a - w
-        r = _ln_pdf(x) / _ln_D(a, w, Pa, Qa)
-        sw = s * w
-        return -z + r * sw, -1.0 + r * s * sw + r * (x - r) * sw * sw
-
-    g_r, d2_r = gd(zr0)
-    atzs = (zr0 <= 0.0) | (g_r >= 0.0)
-    g0, _ = gd(jnp.zeros_like(a))
-
-    def body(_, st):
-        z, zl, zr = st
-        g, d2 = gd(z)
-        zl = jnp.where(g > 0.0, z, zl)
-        zr = jnp.where(g > 0.0, zr, z)
-        zn = jnp.where(d2 < 0.0, z - g / jnp.where(d2 < 0.0, d2, -1.0), 0.5 * (zl + zr))
-        zn = jnp.where((zn > zl) & (zn < zr), zn, 0.5 * (zl + zr))
-        return zn, zl, zr
-
-    z, _, _ = jax.lax.fori_loop(0, 40, body, (jnp.clip(g0, 0.0, zr0), jnp.zeros_like(a), zr0))
-    _, d2 = gd(z)
-    zk = jnp.where(atzs, jnp.where(zr0 <= 0.0, 0.0, zr0), z)
-    d2k = jnp.where(atzs, jnp.where(zr0 <= 0.0, -1.0, d2_r), d2)
-    return zk, d2k, atzs
-
-
-def _ln_mode_e(a, l, s, zs, es):
-    """Mode in e = T - a, above es, of C's T-route integrand phi(e) P(zs < Z <= Z(a + e)) (log-concave): it moves
-    far above es when s is small and Z(a + e) is deep in the lower tail."""
-    ndtr = jax.scipy.special.ndtr
-
-    def slope(e):
-        T = a + e
-        Z = (jnp.log(T) - l) / s
-        diff = jnp.where(zs >= 0.0, ndtr(-zs) - ndtr(-Z), ndtr(Z) - ndtr(zs))
-        return -e + _ln_pdf(Z) / jnp.maximum(diff, 1e-300) / (s * T)
-
-    lo0 = es + 1e-9 * jnp.maximum(1.0, jnp.abs(es))
-    hi0 = es + 80.0
-
-    def body(_, lh):
-        lo, hi = lh
-        mid = 0.5 * (lo + hi)
-        up = slope(mid) > 0.0
-        return jnp.where(up, mid, lo), jnp.where(up, hi, mid)
-
-    lo, hi = jax.lax.fori_loop(0, 50, body, (lo0, hi0))
-    return 0.5 * (lo + hi)
-
-
-def _ln_cum(a, l, s, Pa, Qa, pa):
-    """(C, K, dC/da, dK/da, dC/dl, dC/ds) for C = P(T > e^(l + s Z)), T ~ N(a, 1), and K = Phi(a) - C. The
-    smaller of the two (picked by an 8-node Gauss-Hermite estimate of C) is integrated around its own mode,
-    the other is Phi(a) less it; dK/dl = -dC/dl and dK/ds = -dC/ds. Outside the Gauss-Hermite regime K's
-    z-piece runs from max(min(zs, 0) - R, zs - 20) to zs, as its mass sits at z >= 0 up to zs."""
-    ndtr = jax.scipy.special.ndtr
-    pdf = _ln_pdf
-    zs = (-jnp.log(s) - l) / s
-    c8 = jnp.sum(_LN_GH8_W * ndtr(a[..., None] - jnp.exp(l[..., None] + s[..., None] * _LN_GH8_X)), -1)
-    tk = c8 > 0.5 * Pa
-    zm, d2m = _ln_mode(a, l, s)
-    zk, d2k, atzs = _ln_mode_k(a, l, s, zs, Pa, Qa)
-    zt = jnp.where(tk, zk, zm)
-    d2t = jnp.where(tk, d2k, d2m)
-    sct = jnp.where(d2t < 0.0, 1.0 / jnp.sqrt(jnp.where(d2t < 0.0, -d2t, 1.0)), 1.0)
-    agh = jnp.where(tk, ~atzs & (zs >= zk + _LN_R * jnp.maximum(sct, 1.0)), zs >= zm + _LN_R)
-    sign = jnp.where(tk, 1.0, -1.0)[..., None]
-    a_, l_, s_, Pa_, Qa_, pa_, tk_ = (v[..., None] for v in (a, l, s, Pa, Qa, pa, tk))
-
-    def target(z, w):
-        u = a_ - w
-        pu = pdf(u)
-        f = jnp.where(tk_, _ln_D(a_, w, Pa_, Qa_), ndtr(u))
-        fa = jnp.where(tk_, _ln_dD_da(a_, w, pa_), pu)
-        return f, fa, sign * pu * w, sign * pu * w * z
-
-    sc = jnp.where(agh, sct, 1.0)
-    wt = jnp.exp(l + s * zt)
-    ft = jnp.where(tk, _ln_D(a, wt, Pa, Qa), ndtr(a - wt))
-    h0 = jnp.where(agh, -0.5 * zt * zt + jnp.log(jnp.maximum(ft, 1e-300)), 0.0)
-    zg = zt[..., None] + sc[..., None] * _LN_GH_X
-    wg = jnp.exp(l_ + s_ * zg)
-    eg = jnp.exp(-0.5 * zg * zg + _LN_GH_LW - h0[..., None])
-    cg = sc * jnp.exp(h0) / np.sqrt(2.0 * np.pi)
-    g_agh = [cg * jnp.sum(eg * v, -1) for v in target(zg, wg)]
-
-    zc = jnp.minimum(zt, zs)
-    lo = jnp.where(tk, jnp.maximum(jnp.minimum(zs, 0.0) - _LN_R, zs - 20.0), zc - _LN_R)
-    hi = jnp.where(tk, zs, jnp.minimum(zc + _LN_R, zs))
-    h = 0.5 * jnp.maximum(hi - lo, 0.0)
-    z = (lo + h)[..., None] + h[..., None] * _LN_GL_X
-    w = jnp.exp(l_ + s_ * z)
-    pz = _LN_GL_W * pdf(z)
-    vz = [h * jnp.sum(pz * v, -1) for v in target(z, w)]
-
-    es = 1.0 / s - a
-    elo = jnp.maximum(es, -_LN_R)
-    net = es - jnp.where(zs < 0.0, _ln_lam(zs), 0.0)
-    ehi = jnp.where((es > 0.0) & (net * _LN_R > 40.0), es + 40.0 / jnp.where(net > 0.0, net, 1.0),
-                    jnp.maximum(es, 0.0) + _LN_R)
-    ehi = jnp.where(tk, ehi, jnp.maximum(ehi, _ln_mode_e(a, l, s, zs, es) + _LN_R))
-    zsb = zs[..., None]
-
-    def piece_e(lo_e, hi_e):
-        he = 0.5 * jnp.maximum(hi_e - lo_e, 0.0)
-        e = (lo_e + he)[..., None] + he[..., None] * _LN_GL_X
-        ae = jnp.maximum(a_ + e, 1e-300)
-        Z = (jnp.log(ae) - l_) / s_
-        pe = _LN_GL_W * pdf(e)
-        pZ = pdf(Z) / s_
-        diff = jnp.where(zsb >= 0.0, ndtr(-zsb) - ndtr(-Z), ndtr(Z) - ndtr(zsb))
-        f = jnp.where(tk_, ndtr(-Z), diff)
-        return [he * jnp.sum(pe * v, -1) for v in (f, -sign * pZ / ae, sign * pZ, sign * pZ * Z)]
-
-    ve = piece_e(elo, ehi)
-    vb = piece_e(jnp.minimum(es, -_LN_R), jnp.full_like(es, -_LN_R))
-    Qzs = ndtr(-zs)
-    kc = jnp.where(tk, _ln_interval(-a, es) * Qzs, 0.0)
-    kca = jnp.where(tk, pa * Qzs, 0.0)
-    split = [vz[0] + ve[0] + vb[0] + kc, vz[1] + ve[1] + vb[1] + kca, vz[2] + ve[2] + vb[2], vz[3] + ve[3] + vb[3]]
-    T, Ta, Tl, Ts = [jnp.where(agh, x, y) for x, y in zip(g_agh, split)]
-    return [jnp.where(tk, Pa - T, T), jnp.where(tk, T, Pa - T), jnp.where(tk, pa - Ta, Ta), jnp.where(tk, Ta, pa - Ta),
-            jnp.where(tk, -Tl, Tl), jnp.where(tk, -Ts, Ts)]
-
-
-def _lnoise_cell_jax(a, ln, lf, s):
-    """Pure-JAX reference of the native lognormal meta-noise cell kernel: log P(D_near e^(sZ) < T <=
-    D_far e^(sZ)), T ~ N(a, 1), with ln = log D_near (-inf: open, D = 0) and lf = log D_far (+inf: open),
-    and its derivatives in a, ln, lf and s."""
-    on = jnp.isneginf(ln)
-    of = jnp.isposinf(lf)
-    Pa = jax.scipy.special.ndtr(a)
-    Qa = jax.scipy.special.ndtr(-a)
-    pa = jnp.exp(-0.5 * a * a - _LOG_SQRT_2PI)
-    n = _ln_cum(a, jnp.where(on, 0.0, ln), s, Pa, Qa, pa)
-    f = _ln_cum(a, jnp.where(of, 0.0, lf), s, Pa, Qa, pa)
-    z0 = jnp.zeros_like(a)
-    n = [jnp.where(on, v, x) for v, x in zip((Pa, z0, pa, z0, z0, z0), n)]
-    f = [jnp.where(of, v, x) for v, x in zip((z0, Pa, z0, pa, z0, z0), f)]
-    use_k = f[1] < n[0]
-    P = jnp.where(use_k, f[1] - n[1], n[0] - f[0])
-    ok = P > _LN_FLOOR
-    iP = jnp.where(ok, 1.0 / jnp.where(ok, P, 1.0), 0.0)
-    lp = jnp.log(jnp.where(ok, P, _LN_FLOOR))
-    da = jnp.where(use_k, f[3] - n[3], n[2] - f[2]) * iP
-    return lp, da, n[4] * iP, -f[4] * iP, (n[5] - f[5]) * iP
+    dt = a.dtype
+    target = "bayesroc_pcq" if dt == jnp.float64 else "bayesroc_pcq_f32"
+    return tuple(jax.ffi.ffi_call(target, (jax.ShapeDtypeStruct(a.shape[:-1], dt), jax.ShapeDtypeStruct(a.shape, dt),
+                                           jax.ShapeDtypeStruct(a.shape, dt)), vmap_method="broadcast_all")(
+        jnp.asarray(a, dt), jnp.asarray(c, dt)))
 
 
 def _lnoise_raw(a, ln, lf, s):
     """(lp, d/da, d/dln, d/dlf, d/ds) of a lognormal meta-noise cell."""
     a, ln, lf, s = jnp.broadcast_arrays(*(jnp.asarray(v) for v in (a, ln, lf, s)))
-    if _native_ok(a):
-        return _native_call("lnoise_cell", 5, (a, ln, lf, s))
-    return _lnoise_cell_jax(a, ln, lf, s)
+    return _native_call("lnoise_cell", 5, (a, ln, lf, s))
 
 
 def _mafc_terms(y0, t0, m, d, sg, b):
@@ -2631,7 +1723,7 @@ def fused_loglik_metad(y, K, d, m_old, m_new, is_old, thresh_mid, gaps, gap_link
     """Meta-d' log-likelihood; gaps [n_gaps, N] effective log-gaps, or [n_gaps] if shared."""
     N = y.shape[0]
     is_softplus = gap_link == "softplus"
-    if _use_probit_native(link_name, d):
+    if link_name == "probit":
         key = ("metad_native", int(K), bool(is_softplus), float(q), bool(relative))
         if key not in _fused_cache:
             _fused_cache[key] = _make_metad_native(int(K), bool(is_softplus), float(q), bool(relative))
@@ -2837,183 +1929,9 @@ def _batch_build_thresh(thresh_mid, gap_vals, n_gaps, mid_idx, n_upper):
     return jnp.concatenate(parts, axis=1)
 
 
-def _make_fused_batch_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus):
-    """Fully-vectorized batch log-likelihood for bivariate_sdt: one bivariate normal rectangle per
-    trial, each dimension's cell by its lower edge and width (_rect_lw), with an analytic JVP."""
-    n_thresh1 = K1 - 1
-    n_gaps1 = n_thresh1 - 1
-    mid_idx1 = (n_thresh1 - 1) // 2
-    n_upper1 = n_thresh1 - mid_idx1 - 1
-
-    n_thresh2 = K2 - 1
-    n_gaps2 = n_thresh2 - 1
-    mid_idx2 = (n_thresh2 - 1) // 2
-    n_upper2 = n_thresh2 - mid_idx2 - 1
-
-    gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
-    gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
-    own_idx1, own_mask1 = _own_gap(K1)
-    own_idx2, own_mask2 = _own_gap(K2)
-
-    def edges(y, K, c, gv, own_idx, mu, sigma):
-        r = y - 1
-        n_thresh = K - 1
-        obs = jnp.arange(y.shape[0])
-        k_hi = jnp.clip(r, 0, n_thresh - 1)
-        k_lo = jnp.clip(r - 1, 0, n_thresh - 1)
-        has_hi, has_lo = r < K - 1, r > 0
-        z_hi = jnp.where(has_hi, (c[obs, k_hi] - mu) / sigma, _OPEN)
-        z_lo = jnp.where(has_lo, (c[obs, k_lo] - mu) / sigma, -_OPEN)
-        w = gv[obs, jnp.asarray(own_idx)[r]] / sigma if gv.shape[1] else jnp.ones_like(z_lo)
-        return z_lo, z_hi, w, jnp.where(has_lo, z_lo, z_hi), jnp.where(has_lo, k_lo, k_hi), has_lo & has_hi
-
-    def pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2):
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-        e1 = edges(y1, K1, c1, gv1, own_idx1, mu1, sigma1)
-        e2 = edges(y2, K2, c2, gv2, own_idx2, mu2, sigma2)
-        return e1, e2, _rect_lw(e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], rho_val)
-
-    @custom_jvp
-    def _batch_fused(y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
-                     thresh1_mid, gaps1, thresh2_mid, gaps2):
-        gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
-        gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
-        P = pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1, thresh2_mid, gv2)[2][0]
-        return jnp.log(jnp.clip(P, _pfloor()))
-
-    @_batch_fused.defjvp
-    def _batch_fused_jvp(primals, tangents):
-        (y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
-         thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
-        (_, _, _, d_mu1, d_mu2, d_sigma1, d_sigma2, d_rho,
-         d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
-        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
-        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
-        e1, e2, (p_raw, A1, B1, A2, B2, dr) = pieces(y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid, gv1,
-                                                     thresh2_mid, gv2)
-        prob = jnp.clip(p_raw, _pfloor())
-        val = jnp.log(prob)
-        inv_P = jnp.where(p_raw > _pfloor(), 1.0 / prob, 0.0)
-        inv_s1, inv_s2 = 1.0 / sigma1, 1.0 / sigma2
-        g1 = _lw_chain(A1 * inv_P, B1 * inv_P, e1[3], e1[2], e1[5], inv_s1, e1[1])
-        g2 = _lw_chain(A2 * inv_P, B2 * inv_P, e2[3], e2[2], e2[5], inv_s2, e2[1])
-        dg1 = _lw_gap_grads(A1 * inv_P * inv_s1, B1 * inv_P * inv_s1, e1[4], jnp.asarray(own_mask1)[:, y1 - 1],
-                            e1[5], gap_mask1_np, gd1)
-        dg2 = _lw_gap_grads(A2 * inv_P * inv_s2, B2 * inv_P * inv_s2, e2[4], jnp.asarray(own_mask2)[:, y2 - 1],
-                            e2[5], gap_mask2_np, gd2)
-        tangent_out = (g1[0] * d_mu1 + g2[0] * d_mu2 + g1[1] * d_sigma1 + g2[1] * d_sigma2 + dr * inv_P * d_rho +
-                       g1[2] * d_thresh1_mid + jnp.sum(dg1 * d_gaps1, axis=1) +
-                       g2[2] * d_thresh2_mid + jnp.sum(dg2 * d_gaps2, axis=1))
-        return val, tangent_out
-
-    return _batch_fused
-
-
 # =============================================================================
 # Batch-vectorized bounded bivariate_sdt loglik (no vmap)
 # =============================================================================
-
-def _two_sum(a, b):
-    s = a + b
-    bb = s - a
-    return s, (a - (s - bb)) + (b - bb)
-
-
-def _veltkamp(a):
-    c = 134217729.0 * a
-    hi = c - (c - a)
-    return hi, a - hi
-
-
-def _two_prod(a, b):
-    p = a * b
-    ah, al = _veltkamp(a)
-    bh, bl = _veltkamp(b)
-    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
-
-
-def _dd_sum(terms):
-    """sum(terms) as a double-double (hi, lo), each addition error-free (TwoSum)."""
-    hi, lo = terms[0], jnp.zeros_like(terms[0])
-    for t in terms[1:]:
-        hi, e = _two_sum(hi, t)
-        lo = lo + e
-    return hi, lo
-
-
-def _dd_div(a_hi, a_lo, b_hi, b_lo):
-    q = a_hi / b_hi
-    p, pe = _two_prod(q, b_hi)
-    return q, (((a_hi - p) - pe) + a_lo - q * b_lo) / b_hi
-
-
-_DD_LN2 = (0.6931471805599453, 2.3190468138462996e-17)
-_DD_LOG1P = ((1.0, 0.0), (-0.5, 0.0), (0.3333333333333333, 1.850371707708594e-17), (-0.25, 0.0), (0.2, -1.1102230246251566e-17), (-0.16666666666666666, -9.25185853854297e-18), (0.14285714285714285, 7.93016446160826e-18), (-0.125, 0.0))
-_DD_INVFACT = ((1.0, 0.0), (1.0, 0.0), (0.5, 0.0), (0.16666666666666666, 9.25185853854297e-18), (0.041666666666666664, 2.3129646346357427e-18), (0.008333333333333333, 1.1564823173178714e-19), (0.001388888888888889, -5.300543954373577e-20), (0.0001984126984126984, 1.7209558293420705e-22), (2.48015873015873e-05, 2.1511947866775882e-23), (2.7557319223985893e-06, -1.858393274046472e-22), (2.755731922398589e-07, 2.3767714622250297e-23), (2.505210838544172e-08, -1.448814070935912e-24), (2.08767569878681e-09, -1.20734505911326e-25), (1.6059043836821613e-10, 1.2585294588752098e-26), (1.1470745597729725e-11, 2.0655512752830745e-28), (7.647163731819816e-13, 7.03872877733453e-30), (4.779477332387385e-14, 4.399205485834081e-31), (2.8114572543455206e-15, 1.6508842730861433e-31), (1.5619206968586225e-16, 1.1910679660273754e-32), (8.22063524662433e-18, 2.2141894119604265e-34), (4.110317623312165e-19, 1.4412973378659527e-36), (1.9572941063391263e-20, -1.3643503830087908e-36), (8.896791392450574e-22, -7.911402614872376e-38), (3.868170170630684e-23, -8.843177655482344e-40))
-
-
-def _dd_add(a, b):
-    hi, e = _two_sum(a[0], b[0])
-    return _two_sum(hi, e + a[1] + b[1])
-
-
-def _dd_mul(a, b):
-    p, e = _two_prod(a[0], b[0])
-    return _two_sum(p, e + a[0] * b[1] + a[1] * b[0])
-
-
-def _dd_exp(x):
-    """exp(x) as a double-double: x = k ln 2 + r with ln 2 in double-double, exp(r / 256) by its Taylor series and
-    eight squarings, scaled by 2^k."""
-    k = jnp.round(x / _DD_LN2[0])
-    p, pe = _two_prod(k, _DD_LN2[0])
-    r = _dd_add(_dd_add((x, jnp.zeros_like(x)), (-p, -pe)), (-k * _DD_LN2[1], jnp.zeros_like(x)))
-    r = (r[0] / 256.0, r[1] / 256.0)
-    e = tuple(jnp.full_like(x, v) for v in _DD_INVFACT[12])
-    for n in range(11, -1, -1):
-        e = _dd_add(_dd_mul(e, r), tuple(jnp.full_like(x, v) for v in _DD_INVFACT[n]))
-    for _ in range(8):
-        e = _dd_mul(e, e)
-    ki = k.astype(jnp.int32)
-    return jnp.ldexp(e[0], ki), jnp.ldexp(e[1], ki)
-
-
-def _dd_gap(g, softplus):
-    """A gap value, exp(g) or softplus(g) = log(1 + exp(g)), as a double-double (softplus by one Newton step of
-    exp(y) = 1 + exp(g) from the double result)."""
-    if not softplus:
-        return _dd_exp(g)
-    y = jax.nn.softplus(g)
-    ey = _dd_exp(y)
-    rhs = _dd_add(_dd_exp(g), (jnp.ones_like(g), jnp.zeros_like(g)))
-    num = _dd_add(ey, (-rhs[0], -rhs[1]))
-    newton = _two_sum(y, -(num[0] + num[1]) / ey[0])
-    v = _dd_exp(jnp.minimum(g, -10.0))
-    c = tuple(jnp.full_like(g, t) for t in _DD_LOG1P[-1])
-    for t in _DD_LOG1P[-2::-1]:
-        c = _dd_add(_dd_mul(c, v), tuple(jnp.full_like(g, u) for u in t))
-    series = _dd_mul(c, v)
-    small = g < -10.0
-    return jnp.where(small, series[0], newton[0]), jnp.where(small, series[1], newton[1])
-
-
-def _dd_criterion(mid, gaps, softplus, gm, k):
-    """Criterion k of every row ([N]) from the midpoint and the [N, n_gaps] gap parameters as a double-double, gm
-    the [n_gaps, n_thresh] signs with which the gaps build the criteria."""
-    sg = jnp.asarray(gm)[:, k]
-    c = (mid, jnp.zeros_like(mid))
-    for g in range(gaps.shape[1]):
-        v = _dd_gap(gaps[:, g], softplus)
-        c = _dd_add(c, (sg[g] * v[0], sg[g] * v[1]))
-    return c
-
-
-def _dd_offset(a, b):
-    """a - b for double-doubles a and b, rounded once."""
-    hi, lo = _two_sum(a[0], -b[0])
-    return hi + (lo + (a[1] - b[1]))
-
 
 def _band_edge_grads(A, B, inner, has_lo):
     """(dP/d lower edge, dP/d upper edge) of a band given in the anchor-and-width form of _cell_lw."""
@@ -3054,15 +1972,7 @@ def _cp_offset(thresh1_mid, gaps1, softplus, gm1, y1, n_thresh1, mu1, sigma1, mu
     """The crossing point -mu2 / (rho sigma2) less the detection cell's lower edge (c_lo - mu1) / sigma1, both in
     double-double, rounded once: the width of the cell's part below the crossing point to full precision."""
     k = jnp.clip(y1 - 2, 0, n_thresh1 - 1)
-    if _native_ok(mu1):
-        return _dd_offset_native(True, softplus, (mu1, sigma1, mu2, sigma2, rho), thresh1_mid, gaps1, gm1, k)
-    c = _dd_criterion(thresh1_mid, gaps1, softplus, gm1, k)
-    num = _dd_sum([c[0], -mu1, c[1]])
-    z1 = _dd_div(num[0], num[1], sigma1, jnp.zeros_like(sigma1))
-    d = _two_prod(rho, sigma2)
-    d = _dd_sum([d[0], jnp.full_like(d[0], 1e-30), d[1]])
-    zc = _dd_div(-mu2, jnp.zeros_like(mu2), d[0], d[1])
-    return _dd_offset(zc, z1)
+    return _dd_offset_native(True, softplus, (mu1, sigma1, mu2, sigma2, rho), thresh1_mid, gaps1, gm1, k)
 
 
 def _bounded_geometry(e2, c2, y2, n_thresh2, item_type, mu2, sigma2, rho_val):
@@ -3132,9 +2042,6 @@ def _bbv_cell(e1, e2, geo, rho_val, w_cut_fn):
     z1_lo, z1_hi, w1 = e1[:3]
     z2_lo, z2_hi, w2 = e2[:3]
     z_cp, zs_lo, zs_hi, ws, is_new = geo[0], geo[1], geo[2], geo[3], geo[8]
-    full = lambda x: x
-    if not _native_ok(z1_lo):
-        return _bbv_jax(e1, e2, geo, rho_val, w_cut_fn(full))
     dt = jnp.asarray(z1_lo).dtype
     out = _native_call("bbv_cell", 14, jnp.broadcast_arrays(
         *[jnp.asarray(a, dtype=dt) for a in (z1_lo, z1_hi, w1, z2_lo, z2_hi, w2, zs_lo, zs_hi, ws, rho_val, z_cp,
@@ -3257,119 +2164,6 @@ def _make_fused_batch_bounded_bivariate_sdt_loglik(K1, K2, gap_link_is_softplus)
 # =============================================================================
 # Batch-vectorized vrdp2d loglik (no vmap)
 # =============================================================================
-
-def _make_fused_batch_vrdp2d_loglik(K1, K2, gap_link_is_softplus):
-    """Fully-vectorized batch log-likelihood for VRDP2D.
-
-    P = (1-lambda)*p1_fam*p2_noise + lambda*p1_rec*p2_rec
-    All univariate — no bivariate CDF needed. Each cell enters by its lower edge and width; with the
-    native kernel loaded, rows holding a narrow cell take the width-form JAX path.
-    """
-    n_thresh1 = K1 - 1
-    n_gaps1 = n_thresh1 - 1
-    mid_idx1 = (n_thresh1 - 1) // 2
-    n_upper1 = n_thresh1 - mid_idx1 - 1
-
-    n_thresh2 = K2 - 1
-    n_gaps2 = n_thresh2 - 1
-    mid_idx2 = (n_thresh2 - 1) // 2
-    n_upper2 = n_thresh2 - mid_idx2 - 1
-
-    gap_mask1_np = _make_batch_gap_mask_np(n_gaps1, n_thresh1, mid_idx1, n_upper1)
-    gap_mask2_np = _make_batch_gap_mask_np(n_gaps2, n_thresh2, mid_idx2, n_upper2)
-    own_idx1, own_mask1 = _own_gap(K1)
-    own_idx2, own_mask2 = _own_gap(K2)
-
-    def setup(y1, y2, dprime_F, dprime_R, source_d, sigma_item, sigma_S, thresh1_mid, gv1, thresh2_mid, gv2):
-        c1 = _batch_build_thresh(thresh1_mid, gv1, n_gaps1, mid_idx1, n_upper1)
-        c2 = _batch_build_thresh(thresh2_mid, gv2, n_gaps2, mid_idx2, n_upper2)
-        one = jnp.ones_like(dprime_F)
-        f1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, dprime_F, sigma_item)
-        r1 = _bivariate_edges(y1, K1, c1, gv1, own_idx1, dprime_F + dprime_R, sigma_item)
-        n2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, jnp.zeros_like(dprime_F), one)
-        r2 = _bivariate_edges(y2, K2, c2, gv2, own_idx2, source_d, sigma_S)
-        obs = jnp.arange(y1.shape[0])
-        cut = lambda c, y, n: (c[obs, jnp.clip(y - 1, 0, n - 1)], c[obs, jnp.clip(y - 2, 0, n - 1)])
-        return f1, r1, n2, r2, cut(c1, y1, n_thresh1), cut(c2, y2, n_thresh2)
-
-    def narrow_rows(bands):
-        out = jnp.zeros(bands[0][0].shape, dtype=bool)
-        for e in bands:
-            out = out | _probit_narrow(jnp.where(e[5], e[0], 0.0), jnp.where(e[5], e[2], 1.0), e[5])[0]
-        return out
-
-    def jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S):
-        cells = [_cell_lw("probit", e[0], e[1], e[2], e[6], e[7]) for e in (f1, r1, n2, r2)]
-        (D1f, A1f, B1f, _), (D1r, A1r, B1r, _), (D2n, A2n, B2n, _), (D2r, A2r, B2r, _) = cells
-        fl = _pfloor()
-        p1f, p1r, p2n, p2r = (jnp.clip(D, fl) for D in (D1f, D1r, D2n, D2r))
-        p_fam, p_rec = p1f * p2n, p1r * p2r
-        prob_raw = (1.0 - lambda_val) * p_fam + lambda_val * p_rec
-        prob = jnp.clip(prob_raw, fl)
-        inv_P = jnp.where(prob_raw > fl, 1.0 / prob, 0.0)
-        cf1 = jnp.where(D1f > fl, (1.0 - lambda_val) * p2n * inv_P, 0.0)
-        cr1 = jnp.where(D1r > fl, lambda_val * p2r * inv_P, 0.0)
-        cn2 = jnp.where(D2n > fl, (1.0 - lambda_val) * p1f * inv_P, 0.0)
-        cr2 = jnp.where(D2r > fl, lambda_val * p1r * inv_P, 0.0)
-        inv_si, inv_sS = 1.0 / sigma_item, 1.0 / sigma_S
-        gf, gr = _lw_chain(cf1 * A1f, cf1 * B1f, f1[3], f1[2], f1[5], inv_si, f1[1]), \
-            _lw_chain(cr1 * A1r, cr1 * B1r, r1[3], r1[2], r1[5], inv_si, r1[1])
-        gs = _lw_chain(cr2 * A2r, cr2 * B2r, r2[3], r2[2], r2[5], inv_sS, r2[1])
-        T1A = gf[2] + gr[2]
-        T1B = jnp.where(f1[5], (cf1 * B1f + cr1 * B1r) * inv_si, 0.0)
-        T2A = cn2 * A2n + gs[2]
-        T2B = jnp.where(n2[5], cn2 * B2n + cr2 * B2r * inv_sS, 0.0)
-        return (jnp.log(prob), gf[0] + gr[0], gr[0], gs[0], (p_rec - p_fam) * inv_P, gf[1] + gr[1], gs[1],
-                T1A, T1B, T2A, T2B)
-
-    def evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gv1,
-                 thresh2_mid, gv2):
-        f1, r1, n2, r2, (c1_hi, c1_lo), (c2_hi, c2_lo) = setup(y1, y2, dprime_F, dprime_R, source_d, sigma_item,
-                                                               sigma_S, thresh1_mid, gv1, thresh2_mid, gv2)
-        has1_lo, has1_hi, has2_lo, has2_hi = f1[6], f1[7], n2[6], n2[7]
-        nat = _vrdp2d_native(c1_hi, c1_lo, c2_hi, c2_lo, has1_hi, has1_lo, has2_hi, has2_lo,
-                             dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S)
-        if nat is None:
-            out = jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S)
-        else:
-            out = nat[:7] + (nat[7] + nat[8], jnp.where(f1[5], nat[7], 0.0), nat[9] + nat[10],
-                             jnp.where(n2[5], nat[9], 0.0))
-            narrow = narrow_rows((f1, r1, n2, r2))
-            out = jax.lax.cond(jnp.any(narrow),
-                               lambda o: tuple(jnp.where(narrow, a, b) for a, b in
-                                               zip(jax_path(f1, r1, n2, r2, lambda_val, sigma_item, sigma_S), o)),
-                               lambda o: o, out)
-        return out, f1, n2
-
-    @custom_jvp
-    def _batch_fused(y1, y2, item_type, dprime_F, dprime_R, source_d, lambda_val,
-                     sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid, gaps2):
-        gv1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)[0]
-        gv2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)[0]
-        return evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid, gv1,
-                        thresh2_mid, gv2)[0][0]
-
-    @_batch_fused.defjvp
-    def _batch_fused_jvp(primals, tangents):
-        (y1, y2, item_type, dprime_F, dprime_R, source_d, lambda_val,
-         sigma_item, sigma_S, thresh1_mid, gaps1, thresh2_mid, gaps2) = primals
-        (_, _, _, d_dprime_F, d_dprime_R, d_source_d, d_lambda,
-         d_sigma_item, d_sigma_S, d_thresh1_mid, d_gaps1, d_thresh2_mid, d_gaps2) = tangents
-        gv1, gd1 = _gap_vals_and_derivs(gaps1, gap_link_is_softplus)
-        gv2, gd2 = _gap_vals_and_derivs(gaps2, gap_link_is_softplus)
-        out, f1, n2 = evaluate(y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
-                               gv1, thresh2_mid, gv2)
-        val, d_dpF, d_dpR, d_sd, d_lam, d_si, d_sS, T1A, T1B, T2A, T2B = out
-        dg1 = _lw_gap_grads(T1A, T1B, f1[4], jnp.asarray(own_mask1)[:, y1 - 1], f1[5], gap_mask1_np, gd1)
-        dg2 = _lw_gap_grads(T2A, T2B, n2[4], jnp.asarray(own_mask2)[:, y2 - 1], n2[5], gap_mask2_np, gd2)
-        tangent_out = (d_dpF * d_dprime_F + d_dpR * d_dprime_R + d_sd * d_source_d + d_lam * d_lambda +
-                       d_si * d_sigma_item + d_sS * d_sigma_S +
-                       T1A * d_thresh1_mid + jnp.sum(dg1 * d_gaps1, axis=1) +
-                       T2A * d_thresh2_mid + jnp.sum(dg2 * d_gaps2, axis=1))
-        return val, tangent_out
-
-    return _batch_fused
-
 
 # =============================================================================
 # Batch-vectorized CDP loglik (no vmap)
@@ -3505,12 +2299,8 @@ def _make_fused_batch_cdp_loglik(K, J, gap_link_is_softplus, n_rkg=2, has_corr=F
         lo = jnp.where(inner, tau_lo, 0.0)
         narrow = inner & (_cdp_strip_scale(kind, lo, gap, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, corr) < _NARROW_U)
         gs = jnp.where(narrow, gap, 1e-3)
-        if not n_gaps:
-            g1 = c_R + c_K - lo
-        elif _native_ok(c_R):
-            g1 = _dd_offset_native(False, gap_link_is_softplus, (c_R, c_K), mid, gaps, gap_mask_np, k)
-        else:
-            g1 = _dd_offset(_dd_sum([c_R, c_K]), _dd_criterion(mid, gaps, gap_link_is_softplus, gap_mask_np, k))
+        g1 = (_dd_offset_native(False, gap_link_is_softplus, (c_R, c_K), mid, gaps, gap_mask_np, k)
+              if n_gaps else c_R + c_K - lo)
         return narrow, inner, kind, lo, gs, k, g1
 
     def _rk_tail(tail, is_R, z_cR, z_lo, z_hi, rho):
@@ -3992,34 +2782,15 @@ def fused_loglik_vrdp2d(y1, y2, item_type, K1, K2, dprime_F, dprime_R, source_d,
                          lambda_val, sigma_item, sigma_S,
                          thresh1_mid, gaps1, thresh2_mid, gaps2, gap_link="log"):
     """Fully-vectorized fused log-likelihood for VRDP2D."""
-    N = y1.shape[0]
     n_gaps1 = K1 - 2
     n_gaps2 = K2 - 2
     is_softplus = (gap_link == "softplus")
-    if _native_ok(dprime_F):
-        key = ("vrdp_native", int(K1), int(K2), bool(is_softplus))
-        if key not in _fused_cache:
-            _fused_cache[key] = _make_vrdp_native(int(K1), int(K2), bool(is_softplus))
-        return _fused_cache[key](y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
-                                 tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
-                                 tuple(gaps2[g] for g in range(n_gaps2)))
-
-    if gaps1.ndim == 1:
-        gaps1_per_obs = jnp.broadcast_to(gaps1[None, :], (N, n_gaps1))
-    else:
-        gaps1_per_obs = gaps1.T
-    if gaps2.ndim == 1:
-        gaps2_per_obs = jnp.broadcast_to(gaps2[None, :], (N, n_gaps2))
-    else:
-        gaps2_per_obs = gaps2.T
-
-    key = ("batch_vrdp2d", int(K1), int(K2), bool(is_softplus))
+    key = ("vrdp_native", int(K1), int(K2), bool(is_softplus))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_vrdp2d_loglik(
-            int(K1), int(K2), bool(is_softplus))
-    return _fused_cache[key](y1, y2, item_type, dprime_F, dprime_R, source_d,
-                              lambda_val, sigma_item, sigma_S,
-                              thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs)
+        _fused_cache[key] = _make_vrdp_native(int(K1), int(K2), bool(is_softplus))
+    return _fused_cache[key](y1, y2, dprime_F, dprime_R, source_d, lambda_val, sigma_item, sigma_S, thresh1_mid,
+                             tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
+                             tuple(gaps2[g] for g in range(n_gaps2)))
 
 
 def _make_bg_native(K1, K2, gap_link_is_softplus):
@@ -4057,33 +2828,15 @@ def _make_bg_native(K1, K2, gap_link_is_softplus):
 def fused_loglik_bivariate_sdt(y1, y2, item_type, K1, K2, mu1, mu2, sigma1, sigma2, rho_val,
                                 thresh1_mid, gaps1, thresh2_mid, gaps2, gap_link="log"):
     """Fully-vectorized fused log-likelihood for bivariate_sdt."""
-    N = y1.shape[0]
     n_gaps1 = K1 - 2
     n_gaps2 = K2 - 2
     is_softplus = (gap_link == "softplus")
-    if _native_ok(mu1):
-        key = ("bg_native", int(K1), int(K2), bool(is_softplus))
-        if key not in _fused_cache:
-            _fused_cache[key] = _make_bg_native(int(K1), int(K2), bool(is_softplus))
-        return _fused_cache[key](y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
-                                 tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
-                                 tuple(gaps2[g] for g in range(n_gaps2)))
-
-    if gaps1.ndim == 1:
-        gaps1_per_obs = jnp.broadcast_to(gaps1[None, :], (N, n_gaps1))
-    else:
-        gaps1_per_obs = gaps1.T
-    if gaps2.ndim == 1:
-        gaps2_per_obs = jnp.broadcast_to(gaps2[None, :], (N, n_gaps2))
-    else:
-        gaps2_per_obs = gaps2.T
-
-    key = ("batch_bivariate_sdt", int(K1), int(K2), bool(is_softplus))
+    key = ("bg_native", int(K1), int(K2), bool(is_softplus))
     if key not in _fused_cache:
-        _fused_cache[key] = _make_fused_batch_bivariate_sdt_loglik(
-            int(K1), int(K2), bool(is_softplus))
-    return _fused_cache[key](y1, y2, item_type, mu1, mu2, sigma1, sigma2, rho_val,
-                              thresh1_mid, gaps1_per_obs, thresh2_mid, gaps2_per_obs)
+        _fused_cache[key] = _make_bg_native(int(K1), int(K2), bool(is_softplus))
+    return _fused_cache[key](y1, y2, mu1, mu2, sigma1, sigma2, rho_val, thresh1_mid,
+                             tuple(gaps1[g] for g in range(n_gaps1)), thresh2_mid,
+                             tuple(gaps2[g] for g in range(n_gaps2)))
 
 
 def fused_loglik_bounded_bivariate_sdt(y1, y2, item_type, K1, K2, mu1, mu2, sigma1, sigma2, rho_val,
@@ -4415,7 +3168,7 @@ def fused_loglik_simple(y, K, mu, sigma_val, thresh_mid, gaps, gap_link="log", l
     n_gaps = K - 2
     is_softplus = (gap_link == "softplus")
 
-    if _use_probit_native(link_name, mu):
+    if link_name == "probit":
         key = ("ordinal_native", int(K), bool(is_softplus))
         if key not in _fused_cache:
             _fused_cache[key] = _make_ordinal_native(int(K), bool(is_softplus))
@@ -4436,7 +3189,7 @@ def fused_loglik_dpsdt(y, K, mu, sigma_val, lambda_val, thresh_mid, gaps,
                        gap_link="log", has_sigma=False, link_name="probit", edge=None):
     """Fully-vectorized fused log-likelihood for DPSDT (old items only)."""
     lambda_val = _weight(lambda_val)
-    if _use_probit_native(link_name, mu):
+    if link_name == "probit":
         lp = _ordinal_lp(y, K, mu, sigma_val, thresh_mid, gaps, gap_link == "softplus")
         return _dp_combine(y == (K if edge is None else int(edge)), lambda_val, lp)
     N = y.shape[0]
@@ -4458,7 +3211,7 @@ def fused_loglik_mixture(y, K, mu1, sigma1_val, mu2, sigma2_val, lambda_val,
                          thresh_mid, gaps, gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for mixture (old items only)."""
     lambda_val = _weight(lambda_val)
-    if _use_probit_native(link_name, mu1):
+    if link_name == "probit":
         sp = gap_link == "softplus"
         return _mix_combine(lambda_val, _ordinal_lp(y, K, mu1, sigma1_val, thresh_mid, gaps, sp),
                             _ordinal_lp(y, K, mu2, sigma2_val, thresh_mid, gaps, sp))
@@ -4482,7 +3235,7 @@ def fused_loglik_source_mixture(y, K, d_attended, lambda_val, thresh_mid, gaps,
                                 gap_link="log", link_name="probit"):
     """Fully-vectorized fused log-likelihood for source_mixture."""
     lambda_val = _weight(lambda_val)
-    if _use_probit_native(link_name, d_attended):
+    if link_name == "probit":
         sp, one = gap_link == "softplus", jnp.ones_like(d_attended)
         return _mix_combine(lambda_val, _ordinal_lp(y, K, d_attended, one, thresh_mid, gaps, sp),
                             _ordinal_lp(y, K, jnp.zeros_like(d_attended), one, thresh_mid, gaps, sp))
@@ -4563,7 +3316,7 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
     if family_name == "dpsdt" and lambda_val is not None and has_fused_inputs:
         has_sigma = (sigma is not None)
         mu_rows = is_old * mu_signal
-        if lambda_L is None and _use_probit_native(link_name, mu_rows):
+        if lambda_L is None and link_name == "probit":
             old = is_old > 0
             lp = _ordinal_lp(y, K, mu_rows, jnp.where(old, sd_signal, sd_noise), thresh_mid, log_gaps,
                              gap_link == "softplus")
@@ -4597,7 +3350,7 @@ def univariate_loglik(y, dprime, thresh, is_old, link_name, family_name,
         mu1_rows = is_old * mu_signal
         mu2_rows = _dprime2 - (1.0 - is_old) * mu_signal
         if (lambda_val is not None and not (dprime_L is not None and lambda_L is not None)
-                and _use_probit_native(link_name, mu1_rows)):
+                and link_name == "probit"):
             old, sp = is_old > 0, gap_link == "softplus"
             lp1 = _ordinal_lp(y, K, mu1_rows, jnp.where(old, sd_signal, sd_noise), thresh_mid, log_gaps, sp)
             lp2 = _ordinal_lp(y, K, mu2_rows, _sigma2, thresh_mid, log_gaps, sp)
@@ -7119,7 +5872,7 @@ class NutsCoords:
 
     def __init__(self, config, chains, seed, parallel, progress_bar, init_strategy, init_radius,
                  init_z=None, transport=True, aux=None, build=None, announce=True, on_anchors=None,
-                 anchors="laplace", label="NUTS", split=None, split_masks=None, split_at="lap", split_cand="nc"):
+                 anchors="laplace", label="NUTS"):
         import drghmc as dr
         _t0 = time.time()
         self.vg, self.unflatten, self.keys, self.off, self.D, self.pp = build or dr._build(sdt_model, config)
@@ -7131,9 +5884,8 @@ class NutsCoords:
         self._config = config
         self.start, self._th0, self._init_strategy = th0, th0, init_strategy
         self._init_draw = None if init_z is not None or (init_strategy not in ("random", "prior") and not init_radius) else             (seed, init_strategy, init_radius)
-        self.source, self.pf, self._split_flags, self.label = None, None, None, label
-        self.klog, self.wlog = {}, {}
-        self.split_thr, self.split_at, self.split_cand = (float(split) if split else None), split_at, split_cand
+        self.source, self.pf, self.label = None, None, label
+        self.klog = {}
         self._cfg = config
         self._tm, self._chains, self._parallel, self._progress = None, chains, parallel, progress_bar
         tm = None
@@ -7153,10 +5905,6 @@ class NutsCoords:
             self.source = "given"
             if progress_bar and announce:
                 print(f"[{label}] group transport map on {', '.join(tm.specs)}", flush=True)
-            if split_masks is not None:
-                import tmap as _tmap
-                tm, self._split_flags = _tmap.split_supers(tm, None, masks=split_masks, cand_map=split_cand)
-                self._tm = tm
             self.aux_flat = np.asarray(aux)[:1]
             self.tm = tm.cheap_of(self.aux_flat)
             self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
@@ -7167,8 +5915,7 @@ class NutsCoords:
                 print(f"[{label}] group transport map on {', '.join(tm.specs)}; anchors from the Laplace-marginal mode",
                       flush=True)
             _t1 = time.time()
-            early = on_anchors is not None and not split
-            if early:
+            if on_anchors is not None:
                 self.aux_flat = np.zeros((1, tm.aux_size))
                 self.tm = tm.cheap_of(self.aux_flat)
                 self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
@@ -7178,12 +5925,6 @@ class NutsCoords:
             self.tsub["anchors0"] = time.time() - _t1
             self.pf = self._lapmap_passes(seed, chains)
             self._klog("lap")
-            if split:
-                self.wlog["lap"] = self._wbar_lap()
-            if split and split_at == "lap":
-                self._apply_split(self.wlog["lap"], self.pf["center"], self._th_s)
-            if on_anchors is not None and split:
-                on_anchors(self)
             return
         self.source = "dr"
         if progress_bar and announce:
@@ -7276,7 +6017,6 @@ class NutsCoords:
             th_all = np.asarray(fwd_many(jnp.asarray(np.concatenate([center[None], starts])), self.aux))
             th_c, th_s = th_all[:1], th_all[1:]
             self.set_aux(self._tm.anchors_chains(self.vg, np.repeat(th_c, chains, 0), OFF, self._parallel)[:1], th_s)
-            self._th_s = th_s
             info["walls"].append(_t.time() - t0)
             info["iters"].append(it)
             if bar is not None:
@@ -7326,74 +6066,10 @@ class NutsCoords:
     def _sd_pos(self, sb):
         return None if len(sb.blocks) != 1 or sb.blocks[0].L_flat is None else np.asarray(sb.blocks[0].sd_idx)
 
-    def _wbar_lap(self):
-        """Each single correlated block's per-dimension map weight w = K / (1 + K) averaged over the Laplace
-        approximation of its standard deviation: K = Lam sigma^2 with Lam from the Laplace anchors and sigma =
-        scale q(t), t the prior-quantile coordinate, integrated over t ~ N(t_hat, h^-1) by three-point
-        Gauss-Hermite. None for a block without one correlated block."""
-        from drghmc import _sd_logq
-        nodes, wts = np.array([0.0, 3.0 ** 0.5, -(3.0 ** 0.5)]), np.array([2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0])
-        hpos = {int(h): i for i, h in enumerate(np.asarray(self.pf["hidx"]))}
-        center = np.asarray(self.pf["center"])[0]
-        out = []
-        for k, sb in enumerate(self._tm.sbs):
-            pos = self._sd_pos(sb)
-            if pos is None:
-                out.append(None)
-                continue
-            K = np.asarray(self.klog["lap"][k])
-            t = center[pos]
-            sd = np.array([float(self.pf["h_sd_final"][hpos[int(p)]]) for p in pos])
-            lq0 = np.asarray(_sd_logq(jnp.asarray(t)))
-            w = np.zeros_like(K)
-            for x, a in zip(nodes, wts):
-                r2 = np.exp(2.0 * (np.asarray(_sd_logq(jnp.asarray(t + x * sd))) - lq0))
-                w = w + a * K * r2 / (1.0 + K * r2)
-            out.append(w)
-        return out
-
-    def wbar_reb(self, sd2_ratio):
-        """The rebuild's per-dimension map weight with sigma^2 averaged over the rebuild window's draws:
-        `sd2_ratio` per block is mean(sigma^2 over the window) / sigma^2 at the last draw (the anchors' reference)."""
-        out = []
-        for k, sb in enumerate(self._tm.sbs):
-            if sd2_ratio[k] is None:
-                out.append(None)
-                continue
-            K = np.asarray(self.klog["reb"][k]) * np.asarray(sd2_ratio[k])
-            out.append(K / (1.0 + K))
-        return out
-
-    def _apply_split(self, wbar, th_ref, th_start):
-        """Split the single correlated blocks whose dimensions straddle the threshold on the averaged weights
-        `wbar`, and rebuild the anchors in the split map at `th_ref` [1, D] with the chains at `th_start`."""
-        import tmap as _tmap
-        masks = [None if w is None else (np.asarray(w) < self.split_thr) for w in wbar]
-        masks = [None if m is None or not (0 < int((~m).sum()) < len(m)) else m for m in masks]
-        if all(m is None for m in masks):
-            return False
-        tm2, fl = _tmap.split_supers(self._tm, None, masks=masks, cand_map=self.split_cand)
-        if fl is None:
-            return False
-        self._tm, self._split_flags = tm2, fl
-        if self._progress:
-            print(f"[{self.label}] map: " + "; ".join(f"{sb.name} {len(sb.kept_nat)} of {sb.D} dimensions mapped, "
-                                                     f"the rest non-centred" for sb in tm2.sbs if sb.split), flush=True)
-        self.set_aux(tm2.anchors_chains(self.vg, np.repeat(np.asarray(th_ref)[:1], self._chains, 0), self.vg.OFF0,
-                                        self._parallel)[:1], th_start)
-        return True
-
     def _klog(self, tag):
         """Each super-block's per-dimension map strength K (natural order) at the current anchors."""
         P = self._tm.parts(self.aux_flat)
         self.klog[tag] = [np.asarray(P[8 * k + 5])[0].copy() for k in range(len(self._tm.sbs))]
-
-    @property
-    def split_masks(self):
-        """The candidate masks of a split map (per super-block, natural order), None without a split."""
-        if self._split_flags is None:
-            return None
-        return [np.asarray(sb.cand).copy() if sb.split else None for sb in self._tm.sbs]
 
     def rebuild_from(self, last, mean):
         """New anchors at the window mean pooled over the chains (model coordinates [chains, D]); the chains
@@ -7412,8 +6088,6 @@ class NutsCoords:
 
     def set_aux(self, aux, th):
         tm = self._tm
-        if self._split_flags is not None:
-            aux = tm.with_flags(np.asarray(aux)[:1], self._split_flags)
         self.aux_flat = np.asarray(aux)[:1]
         self.tm = tm.cheap_of(self.aux_flat)
         self.aux = tuple(p[0] for p in tm.parts(self.aux_flat))
@@ -7724,7 +6398,7 @@ def _chain_adapt(parallel, chains, gamma=_HMC_GAMMA, reduce=_HMC_REDUCE):
 
 def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_tree_depth, step_size, progress_bar,
                init_strategy, init_radius, init_z, transport, sampler, sampling=True, build=None, parallel=True,
-               gamma=_HMC_GAMMA, integrator="bcss", reduce=_HMC_REDUCE, split=None, split_at="lap", split_cand="nc"):
+               gamma=_HMC_GAMMA, integrator="bcss", reduce=_HMC_REDUCE):
     """The coordinates (Laplace anchors) and the background-compiled programs of a fold fit. `gamma`: the
     HMC step size's dual averaging gain (Stan's `adapt gamma`)."""
     hmc = sampler == "hmc"
@@ -7743,12 +6417,11 @@ def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_t
     par = parallel and chains > 1
     if not jax.config.jax_enable_x64:
         return _fold_setup_f32(config, chains, warmup, thinning, seed, max_tree_depth, progress_bar, init_strategy,
-                               init_radius, init_z, transport, hmc, sampling, par, make_kernel, label, split)
+                               init_radius, init_z, transport, hmc, sampling, par, make_kernel, label)
     pg = _FoldPrograms(config, chains, warmup, thinning, random.PRNGKey(seed), make_kernel,
                        _HMC_TMAX if hmc else None, sampling, par, max_steps=2 ** int(max_tree_depth))
     coords = NutsCoords(config, chains, seed, par, progress_bar, init_strategy, init_radius, init_z,
-                        transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build,
-                        split=split, split_at=split_at, split_cand=split_cand)
+                        transport=transport, on_anchors=pg.start, anchors="laplace", label=label, build=build)
     if pg.thread is None:
         pg.start(coords)
     pg.wait()
@@ -7756,14 +6429,12 @@ def fold_setup(config, chains, warmup, thinning, seed, target_accept_prob, max_t
 
 
 def _fold_setup_f32(config, chains, warmup, thinning, seed, max_tree_depth, progress_bar, init_strategy, init_radius,
-                    init_z, transport, hmc, sampling, par, make_kernel, label, split):
+                    init_z, transport, hmc, sampling, par, make_kernel, label):
     """fold_setup in a float32 process: the Laplace stage and the anchors are built in a float64 child (their
     curvatures are finite differences of gradients) while this process compiles its programs; the
     log-likelihood is summed relative to its value at the first chain's start (a runtime argument of the
     programs), so that the float32 potential keeps its digits; the child stays up to rebuild the anchors at the
     end of the first mass window."""
-    if split is not None:
-        raise ValueError("bayesroc: transport_split is not available in float32")
     child = _Fold64Child(chains, par, config=config, seed=seed, progress_bar=progress_bar,
                          init_strategy=init_strategy, init_radius=init_radius, transport=transport, label=label,
                          init_z=None if init_z is None else {k: np.asarray(v) for k, v in init_z.items()})
@@ -7825,21 +6496,6 @@ def fold_warmup(pg, coords, warmup, trace, progress_bar, label):
         if rb is not None and i == rb:
             mean = tot / max(n_acc, 1)
             coords.rebuild_from(np.asarray(last), mean[:, :D])
-            if pg.sdp_np.size and coords.split_thr is not None:
-                from drghmc import _sd_logq
-                lastq2 = np.exp(2.0 * np.asarray(_sd_logq(jnp.asarray(np.asarray(last)[:, pg.sdp_np]))))
-                ratio = mean[:, D:].mean(0) / lastq2.mean(0)
-                per, o = [], 0
-                for sb in coords._tm.sbs:
-                    p = coords._sd_pos(sb)
-                    per.append(None if p is None else ratio[o:o + len(p)])
-                    o += 0 if p is None else len(p)
-                coords.wlog["reb"] = coords.wbar_reb(per)
-                if coords.split_thr is not None and coords.split_at == "reb" and coords._split_flags is None:
-                    ref = np.where(coords._tm.scale_mask(D), np.asarray(last), mean[:, :D])
-                    if coords._apply_split(coords.wlog["reb"], ref[:1], np.asarray(last)):
-                        pg.start(coords)
-                        pg.wait()
             if coords.pf is not None:
                 coords.lap_curvature()
             parts = coords.aux
@@ -7910,10 +6566,7 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
                                    step_size, progress_bar, init_strategy, init_radius, init_z,
                                    bool((control or {}).get("transport", True)), sampler, parallel=parallel,
                                    gamma=float((control or {}).get("adapt_gamma", _HMC_GAMMA)),
-                                   integrator=str((control or {}).get("integrator", "bcss")),
-                                   split=_split_threshold(control),
-                                   split_at=str((control or {}).get("transport_split_at", "lap")),
-                                   split_cand=str((control or {}).get("transport_split_cand", "nc")))
+                                   integrator=str((control or {}).get("integrator", "bcss")))
     trace_path = os.environ.get("BAYESROC_NUTS_TRACE")
     trace = {"t_coords": time.time() - t0, **{f"prep_{k}": v for k, v in pg.t.items()}} if trace_path else None
     try:
@@ -7925,16 +6578,9 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
             coords._f64 = None
     if trace is not None and coords._tm is not None:
         trace["K_blocks"] = np.asarray([sb.name for sb in coords._tm.sbs])
-        for k, m in enumerate(coords.split_masks or []):
-            if m is not None:
-                trace[f"split_cand_{k}"] = np.asarray(m, bool)
         for tag, Ks in coords.klog.items():
             for k, K in enumerate(Ks):
                 trace[f"K_{tag}_{k}"] = K
-        for tag, ws in coords.wlog.items():
-            for k, w in enumerate(ws):
-                if w is not None:
-                    trace[f"wbar_{tag}_{k}"] = w
     elapsed = time.time() - t0
     if trace is not None:
         trace["elapsed"] = elapsed
@@ -7949,16 +6595,8 @@ def _fit_fold(config, chains, warmup, samples, seed, target_accept_prob, max_tre
     _restore_centred(samples_np)
     out = {"samples": samples_np, "extra_fields": {k: np.array(v) for k, v in extra.items()}, "elapsed": float(elapsed)}
     if save_state:
-        out["state"] = {"hmc": st, "offset": getattr(coords, "offset", None), "aux": coords.aux_flat,
-                        "split": coords.split_masks, "split_cand": coords.split_cand}
+        out["state"] = {"hmc": st, "offset": getattr(coords, "offset", None), "aux": coords.aux_flat}
     return out
-
-
-def _split_threshold(control):
-    v = (control or {}).get("transport_split", False)
-    if v is True:
-        return 0.1
-    return float(v) if v else None
 
 
 def fit_model(config, chains=4, warmup=500, samples=1000, seed=0,

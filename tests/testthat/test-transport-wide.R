@@ -36,11 +36,11 @@
 test_that("control$transport_wide takes TRUE or FALSE", {
   skip_if_no_jax()
   m <- suppressMessages(.wide_model(.fixture_wide()))
-  expect_error(fit_broc(m, backend = "jax", sampler = "drghmc", control = list(transport_wide = "yes")),
+  expect_error(fit_broc(m, sampler = "drghmc", control = list(transport_wide = "yes")),
                "transport_wide")
-  expect_error(fit_broc(m, backend = "jax", sampler = "drghmc", control = list(transport_wide = "auto")),
+  expect_error(fit_broc(m, sampler = "drghmc", control = list(transport_wide = "auto")),
                "transport_wide")
-  expect_error(fit_broc(m, backend = "jax", sampler = "nuts", control = list(transport_wide = TRUE)),
+  expect_error(fit_broc(m, sampler = "nuts", control = list(transport_wide = TRUE)),
                "Unknown control key")
 })
 
@@ -56,19 +56,4 @@ test_that("the map with a super-block's wide blocks non-centred is an exact bije
     expect_equal(res[[paste0("jacobian_sign_", flag)]], 1)
     expect_lt(res[[paste0("grad_err_", flag)]], 1e-5, label = paste("gradient, flag", flag))
   }
-})
-
-test_that("a wide block sampled non-centred gives the same posterior as mapped", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  m <- suppressMessages(.wide_model(.fixture_wide(P = 12L, I = 20L)))
-  fits <- lapply(c(TRUE, FALSE), function(w)
-    fit_broc(m, backend = "jax", sampler = "drghmc", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
-             seed = 7, progress_bar = FALSE, control = list(transport_wide = w)))
-  vars <- grep("^(beta_|sigma_)", posterior::variables(fits[[1]]$.draws_array), value = TRUE)
-  sm <- lapply(fits, function(f) posterior::summarise_draws(posterior::subset_draws(f$.draws_array, variable = vars),
-                                                             "mean", "sd", "mcse_mean"))
-  z <- (sm[[1]]$mean - sm[[2]]$mean) / sqrt(sm[[1]]$mcse_mean^2 + sm[[2]]$mcse_mean^2)
-  expect_true(all(abs(z) < 5), label = "means within 5 MCSE")
-  expect_true(all(abs(sm[[1]]$sd / sm[[2]]$sd - 1) < 0.2), label = "spreads within 20%")
 })

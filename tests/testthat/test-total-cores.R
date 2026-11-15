@@ -28,7 +28,7 @@ test_that("a JAX fit honours total_cores", {
   skip_on_os("mac")
   d <- .fixture_univariate()
   m <- suppressMessages(broc(brf(item_resp | is_old ~ 1, family = evsd()), data = d))
-  msgs <- capture.output(fit <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 2,
+  msgs <- capture.output(fit <- suppressMessages(fit_broc(m, chains = 2,
                                                           parallel_chains = 2, iter_warmup = 50, iter_sampling = 10,
                                                           total_cores = 2, seed = 1, loo = FALSE, save_loglik = FALSE)),
                          type = "output")

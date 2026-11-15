@@ -58,7 +58,7 @@ test_that("kfold leaves out a subject by zero weight and scores it as a new leve
   skip_if_no_jax()
   d <- .kfold_agg()
   m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), data = d$agg, counts = "n")
-  fit <- fit_broc(m, backend = "jax", chains = 2, iter_warmup = 200, iter_sampling = 200, seed = 3)
+  fit <- fit_broc(m, chains = 2, iter_warmup = 200, iter_sampling = 200, seed = 3)
   kf <- kfold(fit, group = "sub", Ksub = array(2L), seed = 3)
   expect_s3_class(kf, "kfold")
   held <- rep(d$agg$sub, d$agg$n) == "2"
@@ -74,7 +74,7 @@ test_that("kfold_predict simulates every held-out trial and kfold compares fits 
   skip_if_not_slow()
   skip_if_no_jax()
   d <- .kfold_agg()
-  fa <- list(backend = "jax", chains = 2, iter_warmup = 200, iter_sampling = 200, seed = 3)
+  fa <- list(chains = 2, iter_warmup = 200, iter_sampling = 200, seed = 3)
   f1 <- do.call(fit_broc, c(list(broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), data = d$agg, counts = "n")), fa))
   f2 <- do.call(fit_broc, c(list(broc(brf(item_resp | is_old ~ 1, family = evsd()), data = d$agg, counts = "n")), fa))
   set.seed(1)
@@ -95,13 +95,4 @@ test_that("kfold_predict simulates every held-out trial and kfold compares fits 
   d2 <- d$agg[-1, ]
   f3 <- do.call(fit_broc, c(list(broc(brf(item_resp | is_old ~ 1, family = evsd()), data = d2, counts = "n")), fa))
   expect_error(kfold(f1, f3, K = 2), "same data")
-})
-
-test_that("a two-site model without a transport map initialises its chains in parallel", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  m <- suppressMessages(broc(brf(item_resp ~ 1, cutpoints ~ 1, family = cumulative()), data = .fixture_univariate()))
-  expect_no_error(fit <- fit_broc(m, backend = "jax", chains = 2, iter_warmup = 100, iter_sampling = 100,
-                                  seed = 1))
-  expect_equal(posterior::ndraws(fit$draws()), 200L)
 })

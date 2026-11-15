@@ -14,18 +14,13 @@ groups = {}
 for line in open(sys.argv[3]):
     n, a, c, r = line.strip().split(";")
     groups.setdefault(int(n), []).append(([float(x) for x in a.split(",")], [float(x) for x in c.split(",")], float(r)))
-ref_jax = jax.jit(nb._pcq_jax)
-out = {"native": 0.0, "jax": 0.0, "native_vs_jax_grad": 0.0, "steep_rows": 0}
+out = {"native": 0.0, "steep_rows": 0}
 for n, rows in groups.items():
     a = jnp.asarray([r[0] for r in rows])
     c = jnp.asarray([r[1] for r in rows])
     ref = np.array([r[2] for r in rows])
     nat = [np.asarray(v) for v in nb._pcq_raw(a, c)]
-    jx = [np.asarray(v) for v in ref_jax(a, c)]
     out["native"] = max(out["native"], float(np.max(np.abs(nat[0] - ref))))
-    out["jax"] = max(out["jax"], float(np.max(np.abs(jx[0] - ref))))
-    out["native_vs_jax_grad"] = max(out["native_vs_jax_grad"],
-                                    float(max(np.max(np.abs(nat[k] - jx[k])) for k in (1, 2))))
     out["steep_rows"] += int(np.sum(np.max(np.asarray(a), -1) > 3))
 rng = np.random.default_rng(4)
 ab = jnp.asarray(rng.uniform(0.5, 2.0, (3, 50, 4)))
@@ -33,5 +28,5 @@ cb = jnp.asarray(rng.normal(0.5, 1.0, (3, 50, 4)))
 vm = [np.asarray(v) for v in jax.vmap(nb._pcq_raw)(ab, cb)]
 rows = [[np.asarray(v) for v in nb._pcq_raw(ab[i], cb[i])] for i in range(3)]
 out["vmap_vs_rows"] = float(max(np.max(np.abs(vm[k][i] - rows[i][k])) for i in range(3) for k in range(3)))
-out["ffi_loaded"] = bool(nb._BVN_FFI)
+out["ffi_loaded"] = nb._bvn_lib is not None
 print("RESULT " + json.dumps(out))

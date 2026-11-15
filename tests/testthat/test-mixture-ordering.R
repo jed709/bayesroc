@@ -32,7 +32,7 @@ test_that("mixture ordering: JAX keeps the average order in every draw and R rep
   skip_if_no_jax()
   d <- .sim_mixture()
   m <- suppressMessages(.mixture_model(d))
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+  f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 50,
                                  iter_sampling = 20, seed = 1, progress_bar = FALSE))
   dr <- f$draws(format = "matrix")
   b1 <- dr[, c("beta_dprime[1]", "beta_dprime[2]"), drop = FALSE]

@@ -8,7 +8,7 @@
 
 .np_jax <- function(f, d) {
   m <- suppressMessages(broc(f, d))
-  fit <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 10,
+  fit <- suppressMessages(fit_broc(m, sampler = "nuts", chains = 1, iter_warmup = 10,
                                    iter_sampling = 5, seed = 1, progress_bar = FALSE, keep_re = TRUE))
   list(m = m, dm = posterior::as_draws_matrix(fit$draws()))
 }
@@ -19,7 +19,7 @@
     matrix(dm[s, as.vector(outer(seq_len(G), seq_len(D), function(g, t) paste0(base, "[", g, ",", t, "]")))], G, D))
 }
 
-test_that("JAX random-effect draws use Stan's names and satisfy Stan's identities", {
+test_that("random-effect draws carry the documented names and satisfy u = raw * sigma * L", {
   skip_if_no_jax()
   d <- .np_data()
   G <- nlevels(d$sub)

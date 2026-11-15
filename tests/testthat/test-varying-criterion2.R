@@ -63,7 +63,7 @@ test_that("shared new-response criteria: JAX log_lik matches predict() cell prob
   d <- .sim_varying_cov(n_sub = 10, n_per = 80)
   fam <- bivariate_gaussian(source_criteria = "varying_shared_new", old_levels = 3:4)
   m <- suppressMessages(.varying_model(d, criterion2 ~ 1 + x + (1 | sub), fam))
-  fit <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 1,
+  fit <- fit_broc(m, sampler = "nuts", chains = 1,
                   iter_warmup = 15, iter_sampling = 5, seed = 5, progress_bar = FALSE, save_loglik = TRUE)
   vars <- posterior::variables(fit$draws())
   expect_equal(sum(startsWith(vars, "beta_thresh_mid_2_varying[")), 3L)
@@ -110,7 +110,7 @@ test_that("varying source criteria with cell means: R reproduces the JAX log-lik
   )
   for (cs in cases) {
     m <- suppressMessages(.varying_model(d, cs[[1]], cs[[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+    f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 50,
                                    iter_sampling = 5, seed = 1, progress_bar = FALSE))
     expect_equal(sum(startsWith(posterior::variables(f$draws()), "beta_thresh_mid_2_varying[")), m$stan_data$n_vset)
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)

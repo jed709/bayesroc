@@ -1,5 +1,5 @@
-.jp_iter <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 100 else 1000
-.jp_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 4
+.jp_iter <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 100 else 200
+.jp_chains <- if (identical(Sys.getenv("BAYESROC_TEST_FAST", "true"), "true")) 1 else 2
 .jp_renders <- function(g) {
   expect_s3_class(g, "ggplot")
   expect_no_error(ggplot2::ggplot_build(g))

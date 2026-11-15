@@ -41,7 +41,7 @@ def fd_check(f, args, cont_idx, seed=0, steps=(1e-4, 1e-5, 1e-6)):
 
 
 names = sys.argv[3].split(",")
-out = {"ffi_loaded": bool(nb._BVN_FFI)}
+out = {"ffi_loaded": nb._bvn_lib is not None}
 for name in names:
     f, args, cont = jvp_check.CASES[name]()
     out[name] = fd_check(f, args, cont)

@@ -1,28 +1,7 @@
-
-test_that("drghmc: posterior means agree with nuts (jax)", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fn <- fit_broc(m, backend = "jax", sampler = "nuts", seed = 1,
-                 iter_warmup = 500, iter_sampling = 500, chains = 4,
-                 progress_bar = FALSE)
-  fj <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 1,
-                 iter_warmup = 1000, iter_sampling = 3000, chains = 4,
-                 progress_bar = FALSE)
-  vars <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  sn <- posterior::as_draws_matrix(fn$draws(variables = vars))
-  sj <- posterior::as_draws_matrix(fj$draws(variables = vars))
-  for (v in vars) {
-    expect_lt(abs(mean(sn[, v]) - mean(sj[, v])), 0.05,
-              label = sprintf("|mean_nuts - mean_drghmc|(%s)", v))
-  }
-})
-
 test_that("drghmc: diagnostics carry DR stages, no divergences/treedepth", {
   skip_if_no_jax()
   m <- .fx_model("uvsd")
-  fj <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 1,
+  fj <- fit_broc(m, sampler = "drghmc", seed = 1,
                  iter_warmup = 50, iter_sampling = 20, chains = 2, parallel_chains = 2,
                  progress_bar = FALSE)
   dd <- fj$diagnostic_summary()
@@ -38,36 +17,23 @@ test_that("drghmc: control knobs plumb through; unknown keys and short warmup er
   skip_if_no_jax()
   m <- .fx_model("uvsd")
   expect_error(
-    fit_broc(m, backend = "jax", sampler = "drghmc", control = list(bogus = 1),
+    fit_broc(m, sampler = "drghmc", control = list(bogus = 1),
              iter_warmup = 200, iter_sampling = 200, chains = 4,
              progress_bar = FALSE),
     "Unknown control key")
   expect_error(
-    fit_broc(m, backend = "jax", sampler = "drghmc", iter_warmup = 5,
+    fit_broc(m, sampler = "drghmc", iter_warmup = 5,
              iter_sampling = 200, chains = 4, progress_bar = FALSE),
     "needs iter_warmup >= control")
-})
-
-test_that("drghmc: f32 control converges on a small model", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  d <- .fixture_univariate(sigma = 1.3)
-  m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fj <- fit_broc(m, backend = "jax", sampler = "drghmc",
-                 control = list(precision = "f32"), seed = 1,
-                 iter_warmup = 800, iter_sampling = 1500, chains = 4,
-                 progress_bar = FALSE)
-  sm <- fj$summary(variables = "beta_dprime[1]")
-  expect_lt(sm$rhat[1], 1.05)
 })
 
 test_that("drghmc accepts sample counts that are not a multiple of the chunk length", {
   skip_if_no_jax()
   m <- .fx_model("evsd")
-  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+  f <- fit_broc(m, sampler = "drghmc", chains = 1, parallel_chains = 1,
                 iter_warmup = 50, iter_sampling = 301, seed = 3, progress_bar = FALSE)
   expect_equal(posterior::niterations(f$.draws_array), 301L)
-  f2 <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+  f2 <- fit_broc(m, sampler = "drghmc", chains = 1, parallel_chains = 1,
                  iter_warmup = 50, iter_sampling = 301, thin = 7, seed = 3, progress_bar = FALSE)
   expect_equal(posterior::niterations(f2$.draws_array), 43L)
 })
@@ -78,12 +44,12 @@ test_that("drghmc recovers NUTS posterior means and SDs for dr_k 2 and 3", {
   d <- .fixture_univariate(sigma = 1.3, n_per = 400)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   vars <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  ref <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
+  ref <- fit_broc(m, sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 4000,
                   seed = 5, progress_bar = FALSE)
   rs <- posterior::summarise_draws(posterior::subset_draws(ref$.draws_array, variable = vars),
                                    "mean", "sd", "mcse_mean")
   for (k in 2:3) {
-    f <- fit_broc(m, backend = "jax", sampler = "drghmc", control = list(dr_k = k),
+    f <- fit_broc(m, sampler = "drghmc", control = list(dr_k = k),
                   chains = 4, iter_warmup = 1000, iter_sampling = 4000, seed = 6,
                   progress_bar = FALSE)
     fs <- posterior::summarise_draws(posterior::subset_draws(f$.draws_array, variable = vars),
@@ -97,21 +63,13 @@ test_that("drghmc recovers NUTS posterior means and SDs for dr_k 2 and 3", {
 test_that("drghmc seeds do not share random streams", {
   skip_if_no_jax()
   m <- .fx_model("evsd")
-  a <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+  a <- fit_broc(m, sampler = "drghmc", chains = 1, parallel_chains = 1,
                 iter_warmup = 50, iter_sampling = 10, seed = 1, progress_bar = FALSE)
-  b <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, parallel_chains = 1,
+  b <- fit_broc(m, sampler = "drghmc", chains = 1, parallel_chains = 1,
                 iter_warmup = 50, iter_sampling = 10, seed = 94, progress_bar = FALSE)
   v <- "beta_dprime[1]"
   expect_false(isTRUE(all.equal(as.numeric(a$.draws_array[, , v]),
                                 as.numeric(b$.draws_array[, , v]))))
-})
-
-test_that("drghmc runs chains sequentially when parallel_chains < chains", {
-  skip_if_no_jax()
-  m <- .fx_model("uvsd")
-  fs <- fit_broc(m, backend = "jax", sampler = "drghmc", seed = 7, chains = 2, parallel_chains = 1,
-                 iter_warmup = 50, iter_sampling = 20, progress_bar = FALSE)
-  expect_equal(dim(fs$.draws_array)[1:2], c(20L, 2L))
 })
 
 test_that("drghmc sequential and parallel chains sample the same posterior", {
@@ -119,7 +77,7 @@ test_that("drghmc sequential and parallel chains sample the same posterior", {
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
-  fit <- function(pc) fit_broc(m, backend = "jax", sampler = "drghmc", seed = 7, chains = 2,
+  fit <- function(pc) fit_broc(m, sampler = "drghmc", seed = 7, chains = 2,
                                parallel_chains = pc, iter_warmup = 200, iter_sampling = 300,
                                progress_bar = FALSE)
   fs <- fit(1)
@@ -131,30 +89,30 @@ test_that("drghmc sequential and parallel chains sample the same posterior", {
   expect_lt(max(abs(ms - mp)), 0.05)
 })
 
-test_that("f32 fits (NUTS and DR-G-HMC) run without divergences and return finite draws", {
+test_that("f32 fits (HMC, NUTS and DR-G-HMC) run without divergences and return finite draws", {
   skip_if_no_jax()
   m <- .fx_model("uvsd")
   v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  for (smp in c("nuts", "drghmc")) {
-    f <- fit_broc(m, backend = "jax", sampler = smp, seed = 3, chains = 1, parallel_chains = 1,
+  for (smp in c("hmc", "nuts", "drghmc")) {
+    f <- fit_broc(m, sampler = smp, seed = 3, chains = 1, parallel_chains = 1,
                   iter_warmup = 50, iter_sampling = 20, control = list(precision = "f32"), progress_bar = FALSE)
     expect_equal(sum(f$diagnostic_summary()$num_divergent), 0, label = smp)
     expect_true(all(is.finite(posterior::as_draws_matrix(f$draws(variables = v)))), label = smp)
   }
 })
 
-test_that("f32 fits (NUTS and DR-G-HMC) sum the likelihood relative to a warmed-up offset", {
+test_that("f32 fits (HMC, NUTS and DR-G-HMC) sum the likelihood relative to a warmed-up offset", {
   skip_if_not_slow()
   skip_if_no_jax()
   d <- .fixture_univariate(sigma = 1.3)
   m <- broc(brf(item_resp | is_old ~ 1, sigma ~ 1, family = uvsd()), d)
   v <- c("beta_dprime[1]", "beta_sigma[1]", "beta_thresh_mid[1]")
-  ref <- fit_broc(m, backend = "jax", sampler = "nuts", seed = 3, chains = 2, iter_warmup = 300, iter_sampling = 600,
+  ref <- fit_broc(m, sampler = "nuts", seed = 3, chains = 2, iter_warmup = 300, iter_sampling = 600,
                   progress_bar = FALSE)
   mr <- colMeans(posterior::as_draws_matrix(ref$draws(variables = v)))
   sr <- apply(posterior::as_draws_matrix(ref$draws(variables = v)), 2, sd)
-  for (smp in c("nuts", "drghmc")) {
-    f <- fit_broc(m, backend = "jax", sampler = smp, seed = 3, chains = 2, iter_warmup = 300,
+  for (smp in c("hmc", "nuts", "drghmc")) {
+    f <- fit_broc(m, sampler = smp, seed = 3, chains = 2, iter_warmup = 300,
                   iter_sampling = 600, control = list(precision = "f32"), progress_bar = FALSE)
     expect_equal(sum(f$diagnostic_summary()$num_divergent), 0, label = smp)
     mf <- colMeans(posterior::as_draws_matrix(f$draws(variables = v)))
@@ -167,9 +125,9 @@ test_that("drghmc samples weakly identified standard deviations from the NUTS po
   skip_if_no_jax()
   d <- .fixture_crossed()
   m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub) + (1 | item), family = evsd()), d)
-  ref <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 6000,
+  ref <- fit_broc(m, sampler = "nuts", chains = 4, iter_warmup = 1000, iter_sampling = 6000,
                   seed = 3, progress_bar = FALSE, control = list(adapt_delta = 0.99))
-  f <- fit_broc(m, backend = "jax", sampler = "drghmc", chains = 4, iter_warmup = 1500,
+  f <- fit_broc(m, sampler = "drghmc", chains = 4, iter_warmup = 1500,
                 iter_sampling = 12000, seed = 4, progress_bar = FALSE)
   vars <- grep("^sigma_", posterior::variables(ref$.draws_array), value = TRUE)
   expect_gt(length(vars), 1L)

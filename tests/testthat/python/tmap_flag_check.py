@@ -27,7 +27,7 @@ OFF = vg.OFF0
 rng = np.random.default_rng(0)
 th = rng.normal(size=(1, D)) * 0.3
 aux0 = tm.anchors_chains(vg, th, OFF, parallel=False)
-res = {"ffi_loaded": bool(nb._BVN_FFI), "candidates": int(sum(sb.cand is not None for sb in tm.sbs)),
+res = {"ffi_loaded": nb._bvn_lib is not None, "candidates": int(sum(sb.cand is not None for sb in tm.sbs)),
        "kept_dims": [int(d) for d in tm.kept_dims]}
 e = rng.normal(size=D)
 e /= np.linalg.norm(e)

@@ -69,10 +69,6 @@ test_that("criterion_scale ~ 0 + cond gives each level its own spread and a shap
   md <- m$model_data
   expect_true(md$criterion_scale_fixed$normalised_shape)
   expect_identical(unname(md$criterion_scale_fixed$coef_names), c("conda", "condb"))
-  B <- m$stan_data$ls_gap_basis
-  expect_equal(dim(B), c(4L, 3L))
-  expect_equal(unname(crossprod(B)), diag(3), tolerance = 1e-12)
-  expect_equal(colSums(B), rep(0, 3), tolerance = 1e-12)
   expect_true(build_numpyro_config(m)$crit_ls_norm)
   tab <- get_broc_prior(m)
   expect_identical(unique(tab$prior[tab$dpar == "criterion_scale" & tab$class == "b"]), "normal(-0.5, 0.5)")
@@ -86,7 +82,6 @@ test_that("criterion_scale ~ 0 + cond gives each level its own spread and a shap
   expect_false(mx$model_data$criterion_scale_fixed$normalised_shape)
   d3 <- d; d3$item_resp <- pmin(d3$item_resp, 3L)
   m3 <- suppressMessages(broc(brf(item_resp | is_old ~ 1, criterion_scale ~ 0 + cond, family = evsd()), d3))
-  expect_equal(dim(m3$stan_data$ls_gap_basis), c(1L, 0L))
 })
 
 test_that("location-scale thresholds: R reproduces the sampler's log-likelihood on both gap links", {
@@ -96,7 +91,7 @@ test_that("location-scale thresholds: R reproduces the sampler's log-likelihood 
   for (gl in c("log", "softplus")) {
     for (f in list(.ls_formula(), .ls_cm_formula(), both_cm)) {
       m <- suppressMessages(broc(f, d, gap_link = if (gl == "softplus") "softplus"))
-      fit <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+      fit <- suppressMessages(fit_broc(m, sampler = "hmc", chains = 1, iter_warmup = 50,
                                        iter_sampling = 20, seed = 1, progress_bar = FALSE))
       dm <- fit$draws(format = "matrix")
       ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), dm, re_formula = NULL)
@@ -143,14 +138,13 @@ test_that("criterion2_scale: one scale per response bin, location-only source cr
   expect_length(mv$model_data$criterion2_scale_fixed$coef_names, 8L)
   ms <- suppressMessages(broc(cs$shared_cellmeans[[1]], cs$shared_cellmeans[[2]]))
   expect_true(ms$model_data$criterion2_scale_fixed$normalised_shape)
-  expect_equal(dim(ms$stan_data$ls_gap_basis2), c(2L, 1L))
 })
 
 test_that("criterion2_scale: R reproduces the JAX log-likelihood", {
   skip_if_no_jax()
   for (nm in names(cs <- .ls2_cases())) {
     m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+    f <- suppressMessages(fit_broc(m, sampler = "hmc", chains = 1, iter_warmup = 50,
                                    iter_sampling = 10, seed = 1, progress_bar = FALSE))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5, label = nm)
@@ -164,7 +158,7 @@ test_that("criterion2_shift with cell-means varying source criteria: R reproduce
                                  criterion2_shift ~ 0 + g + (1 | sub), criterion2_scale ~ x,
                                  family = vrdp2d(source_criteria = "varying")), bv))
   expect_equal(m$stan_data$n_vcell, 2L)
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+  f <- suppressMessages(fit_broc(m, sampler = "hmc", chains = 1, iter_warmup = 50,
                                  iter_sampling = 10, seed = 1, progress_bar = FALSE))
   ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
   expect_lt(max(abs(ll_r - .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N))), 1e-5)

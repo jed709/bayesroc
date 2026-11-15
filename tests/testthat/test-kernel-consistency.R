@@ -7,41 +7,19 @@
   jsonlite::fromJSON(sub("^RESULT ", "", line))
 }
 
-.kernels <- c(
-  paste0(rep(c("simple", "dpsdt", "mixture", "source_mixture"), each = 3), "_",
-         c("probit", "logit", "cloglog")),
-  "bivariate_sdt", "bounded_bivariate_sdt", "bounded_bivariate_dp", "bounded_bivariate_dp_part",
-  "vrdp2d", "cdp_rk", "cdp_rkg", "cdp_rkg_tail", "cdp_rk_corr", "cdp_rkg_corr", "cdp_rkg_tail_corr",
-  "cdp_rk_tail", "cdp_rk_tail_corr",
-  "metad_abs", "metad_rel", "metad_abs_k4", "metad_rel_k8_centred", "metad_abs_tail", "metad_rel_tail",
-  "gnoise", "gnoise_k4_small_noise", "gnoise_k8_tail", "mafc_m4", "mafc_m8_uv", "mafc_m21",
-  "lnoise", "lnoise_k4_small_noise", "lnoise_k8_large_noise", "lnoise_tail", "mafc_m4_steep",
-  "mafc_m2", "mafc_m3", "mafc_m5_uv", "mafc_mixed_m"
-)
+.kernels_link <- paste0(rep(c("simple", "dpsdt", "mixture", "source_mixture"), each = 2), "_",
+                        c("logit", "cloglog"))
 
-.jvp_expect <- function(res, ks) {
-  for (k in ks) {
+test_that("every logit and cloglog univariate kernel's custom JVP is the exact derivative of its value", {
+  skip_if_no_jax()
+  res <- .run_py_check("jvp_check.py", c(.bvn_ffi_lib(), paste(.kernels_link, collapse = ",")))
+  for (k in .kernels_link) {
     r <- res[[k]]
     expect_true(isTRUE(r$custom_jvp), label = paste(k, "has a custom JVP"))
     expect_true(r$finite, label = k)
     expect_lt(r$primal_abs, 1e-10, label = paste(k, "JVP primal vs plain value"))
-    tol <- if (grepl("^cdp_", k)) 2e-7 else 1e-8
-    expect_lt(r$tangent_abs, tol, label = paste(k, "JVP tangent vs autodiff of the value"))
+    expect_lt(r$tangent_abs, 1e-8, label = paste(k, "JVP tangent vs autodiff of the value"))
   }
-}
-
-.kernels_jax <- grep("^(simple|dpsdt|mixture|source_mixture)_", .kernels, value = TRUE)
-
-test_that("every univariate kernel's custom JVP is the exact derivative of its value", {
-  skip_if_no_jax()
-  .jvp_expect(.run_py_check("jvp_check.py", paste(.kernels_jax, collapse = ",")), .kernels_jax)
-})
-
-test_that("every native-backed kernel's pure-JAX custom JVP matches autodiff of its value, to quadrature accuracy where the rho derivative is closed form", {
-  skip_if_not_slow()
-  skip_if_no_jax()
-  ks <- setdiff(.kernels, .kernels_jax)
-  .jvp_expect(.run_py_check("jvp_check.py", paste(ks, collapse = ",")), ks)
 })
 
 test_that("with the native kernels loaded, every probit and bivariate JVP matches finite differences", {
@@ -63,7 +41,7 @@ test_that("with the native kernels loaded, every probit and bivariate JVP matche
   }
 })
 
-test_that("the Gaussian product-of-CDFs kernel matches the 30-digit reference at equal and steep slopes, native and JAX", {
+test_that("the Gaussian product-of-CDFs kernel matches the 30-digit reference at equal and steep slopes", {
   skip_if_no_jax()
   py <- jax_python()
   out <- system2(py, c(test_path("python", "pcq_check.py"), dirname(find_backend_script()), .bvn_ffi_lib(),
@@ -72,7 +50,6 @@ test_that("the Gaussian product-of-CDFs kernel matches the 30-digit reference at
   expect_true(res$ffi_loaded)
   expect_gt(res$steep_rows, 50)
   expect_lt(res$native, 1e-12)
-  expect_lt(res$jax, 1e-12)
   expect_equal(res$vmap_vs_rows, 0)
 })
 
@@ -98,7 +75,7 @@ test_that("f32 logit and cloglog cells far below the float32 floor keep their lo
   }
 })
 
-test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0.9 to 0.99999 and in the far tails, native and JAX paths agree", {
+test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0.9 to 0.99999 and in the far tails", {
   skip_if_no_jax()
   lib <- .bvn_ffi_lib()
   res <- .run_py_check("bvn_check.py", c(lib,
@@ -112,19 +89,12 @@ test_that("bivariate normal rectangle and CDF are accurate at every |rho| from 0
   expect_lt(res$hi_rho_point_abs_err, 5e-10)
   expect_lt(res$hi_rho_tail_rel_err, 1e-8)
   expect_lt(res$hi_rho_tail_rel_err_999, 1e-5)
-  expect_lt(res$hi_rho_ffi_vs_jax, 1e-8)
   expect_lt(res$tail_rel_err, 1e-8)
-  expect_lt(res$tail_fallback_rel_err, 1e-8)
   expect_lt(res$cdf_abs_err, 1e-8)
-  expect_lt(res$acc_phi_abs_err, 1e-13)
-  expect_lt(res$acc_phi_tail_rel_err, 1e-12)
   expect_true(res$ffi_loaded)
-  expect_lt(res$ffi_vs_jax_rect, 2e-6)
-  expect_lt(res$ffi_vs_jax_cdf, 1e-8)
   expect_lt(res$probit_cell_rel_err, 1e-8)
   expect_lt(res$probit_cell_fd_err, 1e-5)
   expect_lt(res$cdp_cell_rel_err, 1e-10)
-  expect_lt(res$cdp_cell_jax_rel_err, 1e-10)
   expect_true(res$cdp_cell_empty_ok)
 })
 
@@ -142,6 +112,9 @@ test_that("the transport-map kernel matches a reference solve and its gradients 
   res <- .run_py_check("tmap_kernel_check.py", c(.bvn_ffi_lib(), paste(widths, collapse = ",")))
   expect_true(res$ffi_loaded)
   for (D in widths) expect_lt(res[[paste0("D", D)]], 1e-10, label = paste("width", D, "kernel vs reference"))
+  wide <- widths[widths >= 16]
+  expect_setequal(grep("^block_D", names(res), value = TRUE), paste0("block_D", wide))
+  for (D in wide) expect_lt(res[[paste0("block_D", D)]], 1e-10, label = paste("width", D, "block map vs reference"))
 })
 
 test_that("NUTS checks U-turns across subtree boundaries, so resonant step sizes do not run to the depth limit", {

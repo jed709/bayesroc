@@ -1,21 +1,3 @@
-fixture_cdp_rkg <- function(seed = 21, n_sub = 8, n_item = 40) {
-  set.seed(seed)
-  mu_R <- 0.9; sigma_R <- 2.0; mu_F <- 0.8; sigma_F <- 0.8
-  c_R <- 0.8; c_K <- 0.3
-  tau <- c(0.2, 0.9, 1.6)
-  rows <- expand.grid(sub = seq_len(n_sub), item = seq_len(n_item))
-  rows$old <- rep(c(0L, 1L), length.out = nrow(rows))
-  n <- nrow(rows)
-  R <- ifelse(rows$old == 1L, rnorm(n, mu_R, sigma_R), rnorm(n))
-  F_ <- ifelse(rows$old == 1L, rnorm(n, mu_F, sigma_F), rnorm(n))
-  M <- R + F_
-  rows$conf <- as.integer(1L + rowSums(outer(M, tau, ">")))
-  rk <- ifelse(R > c_R, 1L, ifelse(F_ > c_K, 2L, 3L))
-  rows$rk <- ifelse(rows$conf >= 2L, rk, NA_integer_)
-  rows$sub <- factor(rows$sub)
-  rows
-}
-
 cdp_rkg_model <- function(d) {
   broc(brf(resp(conf, rk) | old ~ 1,
            fam ~ 1,
@@ -28,8 +10,8 @@ cdp_rkg_model <- function(d) {
 }
 
 .cdp_rkg_jax_fit <- function() {
-  .fx_memo("cdp_rkg:jax", suppressMessages(fit_broc(cdp_rkg_model(fixture_cdp_rkg()), backend = "jax", sampler = "drghmc",
-                                                     chains = 1, iter_warmup = 50, iter_sampling = 5, seed = 5,
+  .fx_memo("cdp_rkg:jax", suppressMessages(fit_broc(cdp_rkg_model(fixture_cdp_rkg()), chains = 1,
+                                                     iter_warmup = 50, iter_sampling = 5, seed = 5,
                                                      progress_bar = FALSE)))
 }
 
@@ -105,7 +87,7 @@ test_that("JAX honours a user init for the reparameterised know criterion", {
               list(beta_rec_crit = 0.9, beta_know_crit = 0.3, beta_dprime = 1.1))
   msgs <- character(0)
   f <- withCallingHandlers(
-    fit_broc(m, backend = "jax", sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 100, iter_sampling = 20,
+    fit_broc(m, sampler = "nuts", chains = 2, parallel_chains = 2, iter_warmup = 100, iter_sampling = 20,
              seed = 4, init = ini, progress_bar = FALSE),
     message = function(e) { msgs <<- c(msgs, conditionMessage(e)); invokeRestart("muffleMessage") })
   expect_false(any(grepl("ignored", msgs)))

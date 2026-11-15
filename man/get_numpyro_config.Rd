@@ -21,15 +21,14 @@ character vector of class \code{json}.
 Returns the config list that \code{\link[=broc]{broc()}} generates for the JAX backend, the
 counterpart to \code{\link[=get_stan_code]{get_stan_code()}}/\code{\link[=get_stan_data]{get_stan_data()}}. It describes the model
 (family, link, response data, design matrices, priors, threshold and
-random-effect structure) and is serialized to JSON for \code{\link[=fit_broc]{fit_broc()}} with
-\code{backend = "jax"}.
+random-effect structure) and is serialized to JSON for \code{\link[=fit_broc]{fit_broc()}}.
 }
 \examples{
 \dontrun{
 model <- broc(brf(conf | old ~ cond), data = dat, family = evsd())
 cfg <- get_numpyro_config(model)
 str(cfg)
-# Exactly what fit_broc(backend = "jax") sends to Python:
+# Exactly what fit_broc() sends to Python:
 cat(get_numpyro_config(model, json = TRUE))
 }
 }

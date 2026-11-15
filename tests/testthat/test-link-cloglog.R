@@ -23,7 +23,7 @@ test_that("evsd + cloglog recovers a Gumbel-min location shift (JAX)", {
   skip_if_no_jax()
   d <- .fixture_gumbel_min()
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
-  fj <- fit_broc(m, backend = "jax", sampler = "nuts", iter_warmup = 500, iter_sampling = 500,
+  fj <- fit_broc(m, sampler = "nuts", iter_warmup = 500, iter_sampling = 500,
                  chains = 4)
   dp <- posterior::as_draws_matrix(fj$draws(variables = "beta_dprime[1]"))[, 1]
   expect_lt(abs(mean(dp) - 1.0), 3 * sd(dp) + 0.02)
@@ -44,7 +44,7 @@ test_that("evsd + cloglog (JAX): predictions are complete distributions and R re
   skip_if_no_jax()
   d <- .fixture_gumbel_min(n_per = 150)
   m <- broc(brf(item_resp | is_old ~ 1, family = evsd(link = link_cloglog())), d)
-  fj <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", iter_warmup = 30, iter_sampling = 20,
+  fj <- suppressMessages(fit_broc(m, sampler = "nuts", iter_warmup = 30, iter_sampling = 20,
                                   chains = 1, seed = 1, progress_bar = FALSE))
   ep <- posterior_epred(fj, ndraws = 20)
   expect_true(all(is.finite(ep)))

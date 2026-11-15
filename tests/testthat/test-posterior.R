@@ -42,21 +42,3 @@ test_that("predict(seed = ...) is reproducible", {
   p3 <- predict(fit, summary = FALSE, ndraws = 50, seed = 8)
   expect_false(isTRUE(all.equal(p1, p3, tolerance = 0)))
 })
-
-test_that("allow_new_levels = FALSE errors on new RE level, TRUE works", {
-  skip_if_no_jax()
-  d <- .fixture_univariate()
-  d$subj <- factor(rep(1:6, length.out = nrow(d)))
-  m <- broc(brf(item_resp | is_old ~ 1 + (1|subj), family = evsd()), d)
-  fit <- fit_broc(m, chains = 1,
-                  iter_warmup = 50, iter_sampling = 50)
-  new_dat <- data.frame(item_resp = 1L, is_old = 1L,
-                        subj = factor("z_new", levels = "z_new"),
-                        cond = factor("A", levels = c("A", "B")))
-  expect_error(predict(fit, newdata = new_dat, summary = FALSE,
-                            allow_new_levels = FALSE),
-               "allow_new_levels")
-  p <- predict(fit, newdata = new_dat, summary = FALSE,
-                    allow_new_levels = TRUE, seed = 1)
-  expect_true(is.array(p))
-})

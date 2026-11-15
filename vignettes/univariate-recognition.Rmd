@@ -111,13 +111,12 @@ effects and contaminate the covariance structure by altering the implied prior. 
 `encoding_vars` should always be used for manipulations that apply only to targets.
 
 Once we have constructed a model, we can run MCMC sampling using the `fit_broc` function.
-Here, we retain most of the default settings but use the NumPyro backend for speed:
+Here, we retain the default settings and only set a seed:
 
 
 ```r
 fit.1 <- fit_broc(
   model = m.1,
-  backend = 'jax',
   seed = 999
 )
 #> 
@@ -376,7 +375,6 @@ m.2 <- broc(formula = f.2,
             data = whitridge_2024)
 fit.2 <- fit_broc(
   model = m.2,
-  backend = 'jax',
   seed = 999
 )
 #> 
@@ -460,7 +458,6 @@ m.3 <- broc(formula = f.3,
             data = whitridge_2024)
 fit.3 <- fit_broc(
   model = m.3,
-  backend = 'jax',
   seed = 999
 )
 #> 
@@ -508,7 +505,6 @@ m.4 <- broc(formula = f.4,
             encoding_vars = 'condition')
 fit.4 <- fit_broc(
   model = m.4,
-  backend = 'jax',
   seed = 999
 )
 #> 
@@ -557,7 +553,6 @@ m.5 <- broc(formula = f.5,
             encoding_vars = 'condition')
 fit.5 <- fit_broc(
   model = m.5,
-  backend = 'jax',
   seed = 999
 )
 #> 
@@ -605,7 +600,6 @@ m.6 <- broc(formula = f.6,
             encoding_vars = 'condition')
 fit.6 <- fit_broc(
   model = m.6,
-  backend = 'jax',
   seed = 999
 )
 #> 

@@ -2,12 +2,11 @@ import json
 import os
 import sys
 
-os.environ.pop("BAYESROC_BVN_FFI", None)
-os.environ["BAYESROC_PURE_JAX_REFERENCE"] = "1"
+sys.path.insert(0, sys.argv[1])
+os.environ.setdefault("BAYESROC_BVN_FFI", sys.argv[2])
+os.environ.setdefault("BAYESROC_ENABLE_X64", "1")
 
 import numpy as np
-
-sys.path.insert(0, sys.argv[1])
 import jax
 import jax.numpy as jnp
 
@@ -18,7 +17,7 @@ import numpyro_backend as nb
 
 def check(f, args, cont_idx, seed=0):
     """Custom-JVP primal vs the plain value, and custom-JVP tangent vs autodiff of the
-    undecorated value function (f.fun). Runs in pure-JAX reference mode so f.fun can be differentiated."""
+    undecorated value function (f.fun), for kernels whose value makes no native call (logit and cloglog)."""
     rng = np.random.default_rng(seed)
     plain = np.asarray(f(*args))
     if not hasattr(f, "fun"):
@@ -106,7 +105,7 @@ def biv_case(kind, N=400, K=6, seed=3, part=False):
             jnp.asarray(rng.integers(1, 4, N), dtype=jnp.int32)]
     th = [_n(rng, 0.0, 0.2, N), _n(rng, -0.4, 0.2, (N, ng)), _n(rng, 0.0, 0.2, N), _n(rng, -0.4, 0.2, (N, ng))]
     if kind == "vrdp2d":
-        f = nb._make_fused_batch_vrdp2d_loglik(K, K, False)
+        f = lambda y1, y2, it, *a: nb.fused_loglik_vrdp2d(y1, y2, it, K, K, *a[:6], a[6], a[7].T, a[8], a[9].T, "log")
         cont = [_n(rng, 1.0, 0.5, N), _n(rng, 1.0, 0.5, N), _n(rng, 0.8, 0.5, N),
                 _u(rng, 0.05, 0.6, N), _u(rng, 0.7, 1.5, N), _u(rng, 0.7, 1.5, N)]
     else:
@@ -114,9 +113,11 @@ def biv_case(kind, N=400, K=6, seed=3, part=False):
                 _u(rng, 0.7, 1.5, N), _u(rng, -0.7, 0.7, N)]
         if kind == "bounded_bivariate_dp":
             base += [_u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N), _u(rng, 0.05, 0.6, N), _u(rng, 0.05, 0.9, N)]
-        f = {"bivariate_sdt": nb._make_fused_batch_bivariate_sdt_loglik,
-             "bounded_bivariate_sdt": nb._make_fused_batch_bounded_bivariate_sdt_loglik,
-             "bounded_bivariate_dp": nb._make_fused_batch_bounded_bivariate_dp_loglik}[kind](K, K, False)
+        if kind == "bivariate_sdt":
+            f = lambda y1, y2, it, *a: nb.fused_loglik_bivariate_sdt(y1, y2, it, K, K, *a[:5], a[5], a[6].T, a[7], a[8].T, "log")
+        else:
+            f = {"bounded_bivariate_sdt": nb._make_fused_batch_bounded_bivariate_sdt_loglik,
+                 "bounded_bivariate_dp": nb._make_fused_batch_bounded_bivariate_dp_loglik}[kind](K, K, False)
         cont = base
     args = ints + cont + th
     if kind == "bounded_bivariate_dp":
@@ -201,7 +202,7 @@ for _k in ("bivariate_sdt", "bounded_bivariate_sdt", "bounded_bivariate_dp", "vr
     CASES[_k] = (lambda k=_k: biv_case(k))
 
 if __name__ == "__main__":
-    names = sys.argv[2].split(",") if len(sys.argv) > 2 else list(CASES)
+    names = sys.argv[3].split(",")
     out = {}
     for name in names:
         f, args, cont = CASES[name]()

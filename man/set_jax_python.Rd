@@ -15,6 +15,6 @@ Invisibly returns the new path.
 }
 \description{
 Sets \code{BAYESROC_PYTHON} for the current R session. Future
-\code{fit_broc(backend = "jax")} calls will use this Python without going
+\code{fit_broc()} calls will use this Python without going
 through auto-discovery.
 }

@@ -55,7 +55,7 @@ test_that("new-item recollection: JAX matches R", {
   skip_if_no_jax()
   for (nm in names(cs <- .dpsd_rr_cases(.dpsd_rr_data()))) {
     m <- suppressMessages(broc(cs[[nm]][[1]], cs[[nm]][[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 100, iter_sampling = 20,
+    f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 100, iter_sampling = 20,
                                    seed = 1))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     ll_j <- .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N)
@@ -70,7 +70,7 @@ test_that("the ROC survival carries the new items' recollected mass below every 
   d <- .dpsd_rr_data()
   m <- suppressMessages(broc(brf(conf | old ~ 1, criterion ~ 1, lambda ~ 1, lambda_new ~ 1, sigma ~ 1,
                                  family = dpsd()), d))
-  f <- suppressMessages(fit_broc(m, backend = "jax", chains = 1, iter_warmup = 150, iter_sampling = 40,
+  f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 150, iter_sampling = 40,
                                  seed = 3))
   setup <- bayesroc:::.plot_setup(f, m, 20, NULL)
   w <- bayesroc:::.row_weights(m)

@@ -11,15 +11,15 @@
            broc(brf(item_resp | is_old ~ 1, family = evsd()), .agg_fixture(n_per)$agg, counts = "n"))
 }
 
-.ls_stan <- function(m, ...) {
+.ls_fit <- function(m, ...) {
   fit_broc(m, seed = 1, chains = 2,
            parallel_chains = 2, iter_warmup = 50, iter_sampling = 100, ...)
 }
 
-.ls_stan_f64 <- function() .fx_memo("ls:stan_f64", .ls_stan(.ls_model(), loglik_precision = "f64"))
+.ls_fit_f64 <- function() .fx_memo("ls:fit_f64", .ls_fit(.ls_model(), loglik_precision = "f64"))
 
-.ls_jax_loo <- function() {
-  .fx_memo("ls:jax_loo", fit_broc(.ls_model(120), backend = "jax", sampler = "nuts", chains = 2,
+.ls_loo_fit <- function() {
+  .fx_memo("ls:loo_fit", fit_broc(.ls_model(120), sampler = "nuts", chains = 2,
                                   parallel_chains = 2, iter_warmup = 30, iter_sampling = 50, seed = 4,
                                   loo = TRUE, save_loglik = FALSE, progress_bar = FALSE))
 }
@@ -29,7 +29,7 @@ test_that("streamed loo matches the brute-force trial-level oracle", {
   fx <- .agg_fixture()
   expect_lt(nrow(fx$agg), nrow(fx$trial))
   m <- .ls_model()
-  f <- .ls_stan_f64()
+  f <- .ls_fit_f64()
 
   l <- loo(f, cores = 1)
   expect_equal(dim(l)[2], nrow(fx$trial))
@@ -64,7 +64,7 @@ test_that("streamed loo matches the brute-force trial-level oracle", {
 
 test_that("chunking does not change the streamed result", {
   skip_if_no_jax()
-  f <- .ls_stan_f64()
+  f <- .ls_fit_f64()
   wide <- loo(f, cores = 1)
   narrow <- loo(f, cores = 2, chunk_mb = 0.001)
   expect_equal(narrow$estimates, wide$estimates, tolerance = 1e-8)
@@ -74,7 +74,7 @@ test_that("chunking does not change the streamed result", {
 test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
   skip_if_no_jax()
   fx <- .agg_fixture()
-  f <- .ls_stan(.ls_model(), loo = TRUE, save_loglik = FALSE)
+  f <- .ls_fit(.ls_model(), loo = TRUE, save_loglik = FALSE)
 
   expect_s3_class(f$.loo, "loo")
   expect_equal(dim(f$.loo)[2], nrow(fx$trial))
@@ -84,7 +84,7 @@ test_that("loo = TRUE computes at fit time and reclaims the sidecar", {
 
 test_that("drop_loglik frees a temp sidecar and disables loo", {
   skip_if_no_jax()
-  f <- .ls_stan(.ls_model())
+  f <- .ls_fit(.ls_model())
   p <- f$.loglik_path
   expect_true(file.exists(p))
 
@@ -106,13 +106,13 @@ test_that("r_eff survives log_lik far below exp() underflow", {
 
 test_that("loo() errors actionably once log_lik is gone", {
   skip_if_no_jax()
-  f <- .ls_jax_loo()
+  f <- .ls_loo_fit()
   expect_error(loo(f, type = "cell"), "No log_lik is available")
 })
 
 test_that("save_broc_fit persists the sidecar only when asked", {
   skip_if_no_jax()
-  f <- .ls_stan(.ls_model(), loglik_precision = "f64")
+  f <- .ls_fit(.ls_model(), loglik_precision = "f64")
   ref <- loo(f, cores = 1)$estimates
 
   plain <- tempfile(fileext = ".rds")
@@ -141,14 +141,14 @@ test_that("a fit-time loo result survives save and load", {
   skip_if_no_jax()
   fx <- .agg_fixture()
   m <- .ls_model()
-  f <- .ls_stan(m, loo = TRUE, save_loglik = FALSE)
+  f <- .ls_fit(m, loo = TRUE, save_loglik = FALSE)
   file <- tempfile(fileext = ".rds")
   suppressMessages(save_broc_fit(f, file, verbose = FALSE))
   f2 <- load_broc_fit(file)
   expect_equal(loo(f2)$estimates, f$.loo$estimates)
   expect_error(loo(f2, type = "cell"), "only a stored type = 'trial'")
 
-  k <- .ls_stan(m, loo = TRUE, save_loglik = TRUE)
+  k <- .ls_fit(m, loo = TRUE, save_loglik = TRUE)
   expect_true(file.exists(k$.loglik_path))
   expect_equal(dim(suppressWarnings(loo(k, cores = 1, type = "cell")))[2],
                nrow(fx$agg))
@@ -159,22 +159,13 @@ test_that("keep_re controls whether JAX returns per-level RE draws", {
   d <- .fixture_crossed(n_sub = 6, n_item = 10)
   m <- broc(brf(item_resp | is_old ~ 1 + (1 | sub), family = evsd()), d)
 
-  f0 <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 1,
+  f0 <- fit_broc(m, sampler = "nuts", chains = 1,
                  iter_warmup = 30, iter_sampling = 10, seed = 4,
                  progress_bar = FALSE)
   expect_false(any(grepl("^u_dprime_sub_raw", posterior::variables(f0$.draws_array))))
 
-  f1 <- fit_broc(m, backend = "jax", sampler = "nuts", chains = 1,
+  f1 <- fit_broc(m, sampler = "nuts", chains = 1,
                  iter_warmup = 30, iter_sampling = 10, seed = 4,
                  keep_re = TRUE, progress_bar = FALSE)
   expect_true(any(grepl("^u_dprime_sub_raw", posterior::variables(f1$.draws_array))))
-})
-
-test_that("JAX honours loo = TRUE and reclaims the sidecar", {
-  skip_if_no_jax()
-  fx <- .agg_fixture(n_per = 120)
-  f <- .ls_jax_loo()
-  expect_s3_class(f$.loo, "loo")
-  expect_equal(dim(f$.loo)[2], nrow(fx$trial))
-  expect_null(f$.loglik_path)
 })

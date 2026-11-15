@@ -12,13 +12,6 @@ fixture_criterion_smooth <- function(seed = 7, n_sub = 12, n_item = 40) {
   d
 }
 
-pop_means <- function(f) {
-  s <- posterior::summarise_draws(f$draws(format = "array"), "mean")
-  s <- s[grep("^beta_|^sds_", s$variable), ]
-  nm <- sub("[[]([0-9]+)[]]$", "[\\1,1]", s$variable)
-  stats::setNames(s$mean, nm)
-}
-
 test_that("criterion smooth keeps its unpenalized null-space columns", {
   d <- fixture_criterion_smooth()
   m <- broc(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d)
@@ -38,7 +31,7 @@ test_that("criterion smooth: JAX log_lik matches the R reference", {
   skip_if_no_jax()
   d <- fixture_criterion_smooth()
   m <- broc(brf(conf | old ~ 1, criterion ~ s(x), family = evsd()), data = d)
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+  f <- suppressMessages(fit_broc(m, sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
                                  seed = 1, progress_bar = FALSE))
   dm <- posterior::as_draws_matrix(f$draws())
   ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))

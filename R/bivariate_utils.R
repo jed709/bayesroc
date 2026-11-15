@@ -168,8 +168,10 @@ binormal_cdf_r <- function(z1, z2, rho) {
 
 .bvn_native <- new.env(parent = emptyenv())
 
+.test_option <- function(name) if (identical(Sys.getenv("TESTTHAT"), "true")) getOption(name, TRUE) else TRUE
+
 # Whether the native kernel library (the one the JAX backend builds) can serve Phi2 and the prediction
-# kernels to R. Without it, or with options(bayesroc.native_predict = FALSE), the R paths are used. A library
+# kernels to R. Without it the R paths are used. A library
 # named by BAYESROC_BVN_LIB is taken only when it carries every kernel; otherwise the library of the current
 # sources is built (or found in the cache). A session that ends up on the R path says so once.
 .bvn_native_ready <- function() {
@@ -178,7 +180,7 @@ binormal_cdf_r <- function(z1, z2, rho) {
   if (!is.null(st$ok) && identical(st$pid, Sys.getpid())) return(st$ok)
   st$ok <- FALSE
   st$pid <- Sys.getpid()
-  if (isFALSE(getOption("bayesroc.native_predict", TRUE))) return(FALSE)
+  if (isFALSE(.test_option("bayesroc.native_predict"))) return(FALSE)
   load_lib <- function(lib) {
     tryCatch({
       dll <- dyn.load(lib)

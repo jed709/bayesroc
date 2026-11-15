@@ -634,9 +634,3 @@ build_criterion_structure <- function(formula, re_terms, data, n_thresh,
   pn <- if (which == 2L) "criterion2_scale" else "criterion_scale"
   isTRUE(model_data[[paste0("has_", pn)]]) && isTRUE(model_data[[paste0(pn, "_fixed")]]$normalised_shape)
 }
-
-.sum_zero_basis <- function(n) {
-  if (n < 2L) return(matrix(0, n, 0))
-  H <- stats::contr.helmert(n)
-  unname(sweep(H, 2L, sqrt(colSums(H^2)), "/"))
-}

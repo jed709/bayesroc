@@ -12,7 +12,7 @@ test_that("centered is_old coding: JAX matches R", {
   for (nm in names(cs <- .centered_cases())) {
     c1 <- cs[[nm]]
     m <- suppressMessages(broc(c1[[1]], c1[[2]]))
-    f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "drghmc", chains = 1, iter_warmup = 50,
+    f <- suppressMessages(fit_broc(m, chains = 1, iter_warmup = 50,
                                    iter_sampling = 5, seed = 1, progress_bar = FALSE))
     ll_r <- .obs_loglik_r(m, build_data_source_from_model(m), f$draws(format = "matrix"), re_formula = NULL)
     ll_j <- .read_loglik_SN_cols(.loglik_path(f), 1L, m$model_data$N)

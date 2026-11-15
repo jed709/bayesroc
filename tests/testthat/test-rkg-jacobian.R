@@ -49,7 +49,7 @@ test_that("the R/K/G slack reparameterisation has the exact Jacobian for every p
                          auto_unbox = TRUE, digits = 17, null = "null")
   }
   py <- find_python_with_jax()
-  res <- processx::run(py, c("-I", test_path("rkg_jacobian_check.py"), system.file("python", package = "bayesroc"), dir),
+  res <- processx::run(py, c("-I", test_path("python", "rkg_jacobian_check.py"), system.file("python", package = "bayesroc"), dir),
                        env = .jax_env(py, 1L), error_on_status = FALSE)
   lines <- strsplit(res$stdout, "\n")[[1]]
   expect_length(lines, length(specs))

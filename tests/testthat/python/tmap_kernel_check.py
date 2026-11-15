@@ -87,5 +87,5 @@ def worst_block(D, n=11):
     return max(errs)
 
 
-print("RESULT " + json.dumps({"ffi_loaded": bool(nb._BVN_FFI), **{f"D{D}": worst(D) for D in map(int, sys.argv[3].split(","))},
+print("RESULT " + json.dumps({"ffi_loaded": nb._bvn_lib is not None, **{f"D{D}": worst(D) for D in map(int, sys.argv[3].split(","))},
                               **{f"block_D{D}": worst_block(D) for D in map(int, sys.argv[3].split(",")) if D >= tmap._TRI_MIN}}))

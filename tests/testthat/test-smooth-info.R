@@ -77,7 +77,7 @@ test_that("smooth_info blocks equal the curvature of the log-likelihood in the s
 test_that("smooth_info: JAX log_lik matches the R reference", {
   skip_if_no_jax()
   m <- suppressMessages(broc(.si_formula(), .si_data(), smooth_info = TRUE))
-  f <- suppressMessages(fit_broc(m, backend = "jax", sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
+  f <- suppressMessages(fit_broc(m, sampler = "nuts", chains = 1, iter_warmup = 15, iter_sampling = 5,
                                  seed = 3, progress_bar = FALSE))
   dm <- posterior::as_draws_matrix(f$draws())
   ll_j <- as.matrix(posterior::as_draws_matrix(f$draws(variables = "log_lik")))

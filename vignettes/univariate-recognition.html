@@ -429,11 +429,10 @@ contaminate the covariance structure by altering the implied prior.
 Thus, <code>encoding_vars</code> should always be used for manipulations
 that apply only to targets.</p>
 <p>Once we have constructed a model, we can run MCMC sampling using the
-<code>fit_broc</code> function. Here, we retain most of the default
-settings but use the NumPyro backend for speed:</p>
+<code>fit_broc</code> function. Here, we retain the default settings and
+only set a seed:</p>
 <div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>fit<span class="fl">.1</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.1</span>,</span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>)</span>
 <span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
@@ -837,7 +836,6 @@ sampling:</p>
 <span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024)</span>
 <span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a>fit<span class="fl">.2</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.2</span>,</span>
-<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb10-7"><a href="#cb10-7" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb10-8"><a href="#cb10-8" tabindex="-1"></a>)</span>
 <span id="cb10-9"><a href="#cb10-9" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
@@ -1137,7 +1135,6 @@ on any parameter.</p>
 <span id="cb13-13"><a href="#cb13-13" tabindex="-1"></a>            <span class="at">data =</span> whitridge_2024)</span>
 <span id="cb13-14"><a href="#cb13-14" tabindex="-1"></a>fit<span class="fl">.3</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb13-15"><a href="#cb13-15" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.3</span>,</span>
-<span id="cb13-16"><a href="#cb13-16" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb13-17"><a href="#cb13-17" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb13-18"><a href="#cb13-18" tabindex="-1"></a>)</span>
 <span id="cb13-19"><a href="#cb13-19" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
@@ -1179,7 +1176,6 @@ for correlated random effects across parameters:</p>
 <span id="cb16-9"><a href="#cb16-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
 <span id="cb16-10"><a href="#cb16-10" tabindex="-1"></a>fit<span class="fl">.4</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb16-11"><a href="#cb16-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.4</span>,</span>
-<span id="cb16-12"><a href="#cb16-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb16-13"><a href="#cb16-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb16-14"><a href="#cb16-14" tabindex="-1"></a>)</span>
 <span id="cb16-15"><a href="#cb16-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
@@ -1363,7 +1359,6 @@ the probability of recollection for this family:</p>
 <span id="cb17-9"><a href="#cb17-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
 <span id="cb17-10"><a href="#cb17-10" tabindex="-1"></a>fit<span class="fl">.5</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb17-11"><a href="#cb17-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.5</span>,</span>
-<span id="cb17-12"><a href="#cb17-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb17-13"><a href="#cb17-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb17-14"><a href="#cb17-14" tabindex="-1"></a>)</span>
 <span id="cb17-15"><a href="#cb17-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>
@@ -1547,7 +1542,6 @@ targets.</p>
 <span id="cb18-9"><a href="#cb18-9" tabindex="-1"></a>            <span class="at">encoding_vars =</span> <span class="st">&#39;condition&#39;</span>)</span>
 <span id="cb18-10"><a href="#cb18-10" tabindex="-1"></a>fit<span class="fl">.6</span> <span class="ot">&lt;-</span> <span class="fu">fit_broc</span>(</span>
 <span id="cb18-11"><a href="#cb18-11" tabindex="-1"></a>  <span class="at">model =</span> m<span class="fl">.6</span>,</span>
-<span id="cb18-12"><a href="#cb18-12" tabindex="-1"></a>  <span class="at">backend =</span> <span class="st">&#39;jax&#39;</span>,</span>
 <span id="cb18-13"><a href="#cb18-13" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">999</span></span>
 <span id="cb18-14"><a href="#cb18-14" tabindex="-1"></a>)</span>
 <span id="cb18-15"><a href="#cb18-15" tabindex="-1"></a><span class="co">#&gt; Fitting with NumPyro (4 chains, 2000 warmup, 2000 samples)...</span></span>

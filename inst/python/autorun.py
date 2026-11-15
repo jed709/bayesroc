@@ -210,8 +210,7 @@ class _Fold(_InProcess):
             aux = resume.get("aux")
             coords = nb.NutsCoords(config, C, int(a["seed"]), s.parallel, s.progress,
                                    a.get("init_strategy", "numeric"), float(a.get("init_radius", 0.0)), None,
-                                   transport=aux is not None, aux=aux, build=build, label="HMC" if hmc else "NUTS",
-                                   split_masks=resume.get("split"), split_cand=resume.get("split_cand", "nc"))
+                                   transport=aux is not None, aux=aux, build=build, label="HMC" if hmc else "NUTS")
             kernel = (nb.FastHMC(model, coords=coords, integrator=str((a.get("control") or {}).get("integrator", "bcss")),
                                  cross_chain=nb._chain_adapt(s.parallel, C), gamma=nb._HMC_GAMMA, reduce=nb._HMC_REDUCE,
                                  target_accept_prob=tad,
@@ -227,8 +226,7 @@ class _Fold(_InProcess):
                                               s.init_z, bool((a.get("control") or {}).get("transport", True)),
                                               s.sampler, sampling=False, build=build, parallel=s.parallel,
                                               gamma=float((a.get("control") or {}).get("adapt_gamma", nb._HMC_GAMMA)),
-                                              integrator=str((a.get("control") or {}).get("integrator", "bcss")),
-                                              split=nb._split_threshold(a.get("control")))
+                                              integrator=str((a.get("control") or {}).get("integrator", "bcss")))
             kernel = pg.kernel
             state = nb.fold_warmup(pg, coords, int(a["warmup"]), None, s.progress, label)
             offset = getattr(coords, "offset", None)
@@ -255,7 +253,7 @@ class _Fold(_InProcess):
 
     def state(self, carry, T):
         return {"hmc": jax.tree.map(np.asarray, carry), "offset": None if self.offset is None else np.asarray(self.offset),
-                "aux": self.coords.aux_flat, "split": self.coords.split_masks, "split_cand": self.coords.split_cand}
+                "aux": self.coords.aux_flat}
 
 
 def _dr_store(s, model, config, a, ctrl, seed, tm=None):
