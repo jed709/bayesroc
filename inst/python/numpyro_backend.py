@@ -323,7 +323,7 @@ _OPEN = 1e10
 _CLOGLOG_MED = -0.36651292058166435
 
 
-_TAIL_SWITCH = 1e-6
+_TAIL_SWITCH = 1e-4
 
 
 def _pfloor():
@@ -1179,7 +1179,7 @@ def _with_rect_tail(out, a1, b1, a2, b2, rho):
 def _bvn_rect(z1_lo, z1_hi, z2_lo, z2_hi, rho):
     """P(z1_lo < Z1 < z1_hi, z2_lo < Z2 < z2_hi; rho) and its exact derivatives in
     (z1_lo, z1_hi, z2_lo, z2_hi, rho): Drezner-Wesolowsky with the Gauss-Legendre order tiered
-    on |rho|, and a log-space quadrature for cells below 1e-6."""
+    on |rho|, and a log-space quadrature for cells below 1e-4."""
     args = [jnp.asarray(a) for a in (z1_lo, z1_hi, z2_lo, z2_hi, rho)]
     args = jnp.broadcast_arrays(*args)
     if _native_ok(args[0]):

@@ -1358,7 +1358,7 @@ extern "C" void bayesroc_r_pnorm(const double* x, const int* n, const int* threa
 // confidence thresholds; dims = {S, N, J, K, n_rkg, threads, n_new}; old_levels [J] and new_levels [n_new]
 // (1-based response levels). Band b (0 = below the first threshold = the new responses, b >= 1 = old level b)
 // splits into Remember / Know (/ Guess) by the closed forms of compute_rkg_probs_r (normal and bivariate-normal
-// CDFs, the band's Phi2 shared with its neighbour), and any share below 1e-6 is replaced by the likelihood's
+// CDFs, the band's Phi2 shared with its neighbour), and any share below 1e-4 is replaced by the likelihood's
 // exact one-dimensional integral (bvn_tail::cdp_cell, or the strips about the recollection criterion when
 // n_rkg = 2). probs, prem, pknow [S, N, K]: the band's probability spread over its levels, and the judgement
 // shares.
@@ -1431,18 +1431,18 @@ extern "C" void bayesroc_r_cdp_probs(const double* muR, const double* sR, const 
           if (n_rkg == 3) {
             c3 = G[b + 1] - G[b];
             c2 = pband - c1 - c3;
-            if (c1 < 1e-6) c1 = std::exp(bvn_tail::cdp_cell(1, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
-            if (c2 < 1e-6) c2 = std::exp(bvn_tail::cdp_cell(2, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
-            if (c3 < 1e-6) c3 = std::exp(bvn_tail::cdp_cell(3, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
+            if (c1 < bvn_tail::kTailSwitch) c1 = std::exp(bvn_tail::cdp_cell(1, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
+            if (c2 < bvn_tail::kTailSwitch) c2 = std::exp(bvn_tail::cdp_cell(2, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
+            if (c3 < bvn_tail::kTailSwitch) c3 = std::exp(bvn_tail::cdp_cell(3, mR, dR, mF, dF, c_R, c_K, tlo, thi, cr).lp);
           } else {
             c2 = pband - c1;
-            if (c1 < 1e-6 || c2 < 1e-6) {
+            if (c1 < bvn_tail::kTailSwitch || c2 < bvn_tail::kTailSwitch) {
               const double sc = dF * std::sqrt((1.0 - cr) * (1.0 + cr)), B = -(dR + cr * dF) / sc;
               const double Alo = std::isfinite(tlo) ? (tlo - mR - mF) / sc : -inf;
               const double Ahi = std::isfinite(thi) ? (thi - mR - mF) / sc : inf;
               bvn_tail::LinCond c{Alo, std::isfinite(tlo) ? B : 0.0, Ahi, std::isfinite(thi) ? B : 0.0};
-              if (c1 < 1e-6) c1 = std::exp(bvn_tail::log_integral(c, zcR, inf));
-              if (c2 < 1e-6) c2 = std::exp(bvn_tail::log_integral(c, -inf, zcR));
+              if (c1 < bvn_tail::kTailSwitch) c1 = std::exp(bvn_tail::log_integral(c, zcR, inf));
+              if (c2 < bvn_tail::kTailSwitch) c2 = std::exp(bvn_tail::log_integral(c, -inf, zcR));
             }
           }
           const double total = c1 + c2 + c3;

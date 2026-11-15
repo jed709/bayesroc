@@ -471,27 +471,60 @@ inline void corners_n(const v4d* H, const v4d* K, v4d A, const double* X, const 
 }
 
 template <int NC>
+inline void corners_tier(int t, const v4d* H, const v4d* K, v4d A, CornerV* out) {
+  switch (t) {
+    case 0: corners_n<NC, 8>(H, K, A, kX8, kW8, out); break;
+    case 1: corners_n<NC, 10>(H, K, A, kX10, kW10, out); break;
+    case 2: corners_n<NC, 12>(H, K, A, kX12, kW12, out); break;
+    case 3: corners_n<NC, 14>(H, K, A, kX14, kW14, out); break;
+    case 4: corners_n<NC, 16>(H, K, A, kX16, kW16, out); break;
+    case 5: corners_n<NC, 20>(H, K, A, kX20, kW20, out); break;
+    case 6: corners_n<NC, 28>(H, K, A, kX28, kW28, out); break;
+    case 7: corners_n<NC, 32>(H, K, A, kX32, kW32, out); break;
+    case 8: corners_n<NC, 40>(H, K, A, kX40, kW40, out); break;
+    case 9: corners_n<NC, 48>(H, K, A, kX48, kW48, out); break;
+    case 10: corners_n<NC, 64>(H, K, A, kX64, kW64, out); break;
+    case 11: corners_n<NC, 80>(H, K, A, kX80, kW80, out); break;
+    case 12: corners_n<NC, 96>(H, K, A, kX96, kW96, out); break;
+    default: corners_n<NC, 128>(H, K, A, kX128, kW128, out); break;
+  }
+}
+
+inline int rho_tier(double a) {
+  if (!(a >= kRhoTier[0])) return 0;
+  for (int t = 1; t < 13; ++t)
+    if (a < kRhoTier[t]) return t;
+  return 13;
+}
+
+template <int NC>
 inline void corners(const v4d* H, const v4d* K, v4d rho, v4d& r, v4d& dAdr, CornerV* out) {
   r = vmin(vmax(rho, splat(-kRhoMax)), splat(kRhoMax));
   v4d A = vasin(r);
   dAdr = vsel(vabs(rho) < splat(kRhoMax), splat(1.0) / vsqrt(splat(1.0) - r * r), splat(0.0));
   v4d ar = vabs(r);
-  double m = ar[0];
-  for (int l = 1; l < 4; ++l) m = ar[l] > m ? ar[l] : m;
-  if (!(m >= kRhoTier[0])) corners_n<NC, 8>(H, K, A, kX8, kW8, out);
-  else if (m < kRhoTier[1]) corners_n<NC, 10>(H, K, A, kX10, kW10, out);
-  else if (m < kRhoTier[2]) corners_n<NC, 12>(H, K, A, kX12, kW12, out);
-  else if (m < kRhoTier[3]) corners_n<NC, 14>(H, K, A, kX14, kW14, out);
-  else if (m < kRhoTier[4]) corners_n<NC, 16>(H, K, A, kX16, kW16, out);
-  else if (m < kRhoTier[5]) corners_n<NC, 20>(H, K, A, kX20, kW20, out);
-  else if (m < kRhoTier[6]) corners_n<NC, 28>(H, K, A, kX28, kW28, out);
-  else if (m < kRhoTier[7]) corners_n<NC, 32>(H, K, A, kX32, kW32, out);
-  else if (m < kRhoTier[8]) corners_n<NC, 40>(H, K, A, kX40, kW40, out);
-  else if (m < kRhoTier[9]) corners_n<NC, 48>(H, K, A, kX48, kW48, out);
-  else if (m < kRhoTier[10]) corners_n<NC, 64>(H, K, A, kX64, kW64, out);
-  else if (m < kRhoTier[11]) corners_n<NC, 80>(H, K, A, kX80, kW80, out);
-  else if (m < kRhoTier[12]) corners_n<NC, 96>(H, K, A, kX96, kW96, out);
-  else corners_n<NC, 128>(H, K, A, kX128, kW128, out);
+  int t[4];
+  for (int l = 0; l < 4; ++l) t[l] = rho_tier(ar[l]);
+  if (t[0] == t[1] && t[0] == t[2] && t[0] == t[3]) {
+    corners_tier<NC>(t[0], H, K, A, out);
+    return;
+  }
+  bool done[4] = {false, false, false, false};
+  for (int l0 = 0; l0 < 4; ++l0) {
+    if (done[l0]) continue;
+    CornerV tmp[NC];
+    corners_tier<NC>(t[l0], H, K, A, tmp);
+    v4i m = {0, 0, 0, 0};
+    for (int l = l0; l < 4; ++l)
+      if (!done[l] && t[l] == t[l0]) { m[l] = -1; done[l] = true; }
+    for (int c = 0; c < NC; ++c) {
+      if (l0 == 0) out[c] = tmp[c];
+      out[c].I = vsel(m, tmp[c].I, out[c].I);
+      out[c].dh = vsel(m, tmp[c].dh, out[c].dh);
+      out[c].dk = vsel(m, tmp[c].dk, out[c].dk);
+      out[c].dA = vsel(m, tmp[c].dA, out[c].dA);
+    }
+  }
 }
 
 struct Phi2V {
@@ -555,6 +588,72 @@ constexpr Rect4Fn kRect4[16] = {rect4m<0>, rect4m<1>, rect4m<2>, rect4m<3>, rect
                                 rect4m<6>, rect4m<7>, rect4m<8>, rect4m<9>, rect4m<10>, rect4m<11>,
                                 rect4m<12>, rect4m<13>, rect4m<14>, rect4m<15>};
 
+inline v4d vmills(v4d x) {
+  const v4d one = splat(1.0);
+  v4d r = one / (x * x);
+  v4d asym = (one + r * (splat(-1.0) + r * (splat(3.0) + r * (splat(-15.0) + r * (splat(105.0) - splat(945.0) * r))))) / x;
+  v4d xc = vmin(x, splat(40.0));
+  v4d t = one / (one + splat(0.2316419) * xc);
+  v4d u = (splat(2.0) * t - splat(kPhiA + kPhiB)) * splat(1.0 / (kPhiB - kPhiA));
+  return vsel(x > splat(40.0), asym, t * clenshaw<19>(kPhiC, u));
+}
+
+inline v4d vband_ld(v4d l, v4d u) {
+  const v4d zero = splat(0.0), ninf = splat(-bvn_tail::kInf);
+  const v4i up = l >= zero, down = u <= zero, empty = ~(u > l);
+  v4d p = vsel(up, l, -u), q = vsel(up, u, -l);
+  const v4i qfin = vabs(q) < splat(bvn_tail::kInf);
+  v4d pf = vsel(vabs(p) < splat(bvn_tail::kInf), p, zero);
+  v4d qf = vsel(qfin, q, zero);
+  v4d E = vsel(qfin, vexp(splat(0.5) * (pf - qf) * (pf + qf)), zero);
+  v4d W = vmills(pf) - vsel(E > zero, E * vmills(qf), zero);
+  v4d ld = splat(-0.5) * pf * pf - splat(bvn_tail::kLogSqrt2Pi) + vlog(W);
+  const v4i mid = ~up & ~down;
+  if (mid[0] | mid[1] | mid[2] | mid[3]) {
+    const v4d big = splat(bvn_tail::kInf);
+    PhiV H = vacc_phi(vsel(vabs(u) < big, u, zero)), L = vacc_phi(vsel(vabs(l) < big, l, zero));
+    v4d Pu = vsel(u >= big, splat(1.0), H.P), Pl = vsel(l <= -big, zero, L.P);
+    ld = vsel(mid, vlog(Pu - Pl), ld);
+  }
+  return vsel(empty, ninf, ld);
+}
+
+struct CondV : bvn_tail::Cond {
+  void panel(double A, double B, double& vmax, double& acc) const {
+    static const double lw[bvn_tail::kNodes] = {
+        std::log(bvn_tail::kGW[0]), std::log(bvn_tail::kGW[1]), std::log(bvn_tail::kGW[2]), std::log(bvn_tail::kGW[3]),
+        std::log(bvn_tail::kGW[4]), std::log(bvn_tail::kGW[5]), std::log(bvn_tail::kGW[6]), std::log(bvn_tail::kGW[7]),
+        std::log(bvn_tail::kGW[8]), std::log(bvn_tail::kGW[9]), std::log(bvn_tail::kGW[10]), std::log(bvn_tail::kGW[11]),
+        std::log(bvn_tail::kGW[12]), std::log(bvn_tail::kGW[13]), std::log(bvn_tail::kGW[14]), std::log(bvn_tail::kGW[15]),
+        std::log(bvn_tail::kGW[16]), std::log(bvn_tail::kGW[17]), std::log(bvn_tail::kGW[18]), std::log(bvn_tail::kGW[19])};
+    const double h = 0.5 * (B - A), c0 = 0.5 * (A + B), lh = std::log(h);
+    const v4d H = splat(h), C0 = splat(c0), RHO = splat(rho), IS = splat(1.0 / s), A2 = splat(a2), B2 = splat(b2);
+    constexpr int G = bvn_tail::kNodes / 4;
+    v4d v[G];
+    v4d mv = splat(-bvn_tail::kInf);
+    for (int g = 0; g < G; ++g) {
+      v4d gx, w;
+      for (int l = 0; l < 4; ++l) { gx[l] = bvn_tail::kGX[4 * g + l]; w[l] = lw[4 * g + l]; }
+      v4d x = C0 + H * gx;
+      v4d lo = (A2 - RHO * x) * IS, hi = (B2 - RHO * x) * IS;
+      v[g] = splat(lh) + w + splat(-0.5) * x * x - splat(bvn_tail::kLogSqrt2Pi) + vband_ld(lo, hi);
+      mv = vsel(v[g] > mv, v[g], mv);
+    }
+    double m = mv[0];
+    for (int l = 1; l < 4; ++l) m = mv[l] > m ? mv[l] : m;
+    if (!(m > -bvn_tail::kInf)) return;
+    v4d sv = splat(0.0);
+    for (int g = 0; g < G; ++g) sv += vsel(v[g] > splat(-bvn_tail::kInf), vexp(v[g] - splat(m)), splat(0.0));
+    const double sum = (sv[0] + sv[1]) + (sv[2] + sv[3]);
+    if (m > vmax) {
+      acc = acc * std::exp(vmax - m) + sum;
+      vmax = m;
+    } else {
+      acc += sum * std::exp(m - vmax);
+    }
+  }
+};
+
 inline bool finite_bound(double x) { return std::fabs(x) < 1e9; }
 
 inline void rect_tail_fix(int64_t j, const double* a1, const double* b1, const double* a2,
@@ -562,7 +661,7 @@ inline void rect_tail_fix(int64_t j, const double* a1, const double* b1, const d
                           double* d2l, double* d2h, double* drho) {
   if (p[j] >= bvn_tail::kTailSwitch) return;
   if (std::isnan(a1[j]) || std::isnan(b1[j]) || std::isnan(a2[j]) || std::isnan(b2[j]) || std::isnan(rho[j])) return;
-  bvn_tail::Rect r = bvn_tail::rect(a1[j], b1[j], a2[j], b2[j], rho[j]);
+  bvn_tail::Rect r = bvn_tail::rect<CondV>(a1[j], b1[j], a2[j], b2[j], rho[j]);
   p[j] = r.p;
   d1l[j] = r.d1l;
   d1h[j] = r.d1h;
@@ -574,23 +673,26 @@ inline void rect_tail_fix(int64_t j, const double* a1, const double* b1, const d
 inline void rect_array(int64_t n, const double* a1, const double* b1, const double* a2,
                        const double* b2, const double* rho, double* p, double* d1l, double* d1h,
                        double* d2l, double* d2h, double* drho) {
+  constexpr int NB = 16 * 14;
   std::vector<int32_t> perm(n);
   std::vector<uint8_t> pat(n);
-  int64_t cnt[17] = {0};
+  int64_t cnt[NB + 1] = {0};
   for (int64_t i = 0; i < n; ++i) {
     bool fa1 = finite_bound(a1[i]), fb1 = finite_bound(b1[i]);
     bool fa2 = finite_bound(a2[i]), fb2 = finite_bound(b2[i]);
     int m = (fb1 && fb2) | ((fa1 && fb2) << 1) | ((fb1 && fa2) << 2) | ((fa1 && fa2) << 3);
-    pat[i] = static_cast<uint8_t>(m);
-    ++cnt[m + 1];
+    double r = std::fmin(std::fmax(rho[i], -kRhoMax), kRhoMax);
+    pat[i] = static_cast<uint8_t>(m * 14 + rho_tier(std::fabs(r)));
+    ++cnt[pat[i] + 1];
   }
-  for (int m = 0; m < 16; ++m) cnt[m + 1] += cnt[m];
-  int64_t pos[16];
-  for (int m = 0; m < 16; ++m) pos[m] = cnt[m];
+  for (int m = 0; m < NB; ++m) cnt[m + 1] += cnt[m];
+  int64_t pos[NB];
+  for (int m = 0; m < NB; ++m) pos[m] = cnt[m];
   for (int64_t i = 0; i < n; ++i) perm[pos[pat[i]]++] = static_cast<int32_t>(i);
-  for (int m = 0; m < 16; ++m) {
-    for (int64_t s0 = cnt[m]; s0 < cnt[m + 1]; s0 += 4) {
-      int64_t lanes = cnt[m + 1] - s0 < 4 ? cnt[m + 1] - s0 : 4;
+  for (int b = 0; b < NB; ++b) {
+    const int m = b / 14;
+    for (int64_t s0 = cnt[b]; s0 < cnt[b + 1]; s0 += 4) {
+      int64_t lanes = cnt[b + 1] - s0 < 4 ? cnt[b + 1] - s0 : 4;
       v4d A1, B1, A2, B2, R, P, O1, O2, O3, O4, O5;
       for (int l = 0; l < 4; ++l) {
         int64_t j = perm[s0 + (l < lanes ? l : 0)];
@@ -656,59 +758,102 @@ inline void cdf_multi4(const v4d* H, const v4d* K, const v4d* X, v4d rho, v4d* o
   }
 }
 
+inline int tier_of(double rho) { return rho_tier(std::fabs(std::fmin(std::fmax(rho, -kRhoMax), kRhoMax))); }
+
+inline bool single_tier(int64_t n, const double* rho) {
+  if (n == 0) return true;
+  const int t0 = tier_of(rho[0]);
+  for (int64_t i = 1; i < n; ++i)
+    if (tier_of(rho[i]) != t0) return false;
+  return true;
+}
+
+inline void tier_order(int64_t n, const double* rho, std::vector<int32_t>& perm, int64_t* cnt) {
+  std::vector<uint8_t> tier(n);
+  for (int t = 0; t <= 14; ++t) cnt[t] = 0;
+  for (int64_t i = 0; i < n; ++i) {
+    double r = std::fmin(std::fmax(rho[i], -kRhoMax), kRhoMax);
+    tier[i] = static_cast<uint8_t>(rho_tier(std::fabs(r)));
+    ++cnt[tier[i] + 1];
+  }
+  for (int t = 0; t < 14; ++t) cnt[t + 1] += cnt[t];
+  int64_t pos[14];
+  for (int t = 0; t < 14; ++t) pos[t] = cnt[t];
+  perm.resize(n);
+  for (int64_t i = 0; i < n; ++i) perm[pos[tier[i]]++] = static_cast<int32_t>(i);
+}
+
 template <int NP, int NM>
 inline void cdf_multi_array(int64_t n, const double* const* in, double* const* out) {
   constexpr int NI = 2 * NP + NM + 1, NO = 8 * NP + 2 * NM;
   v4d V[NI], O[NO];
-  int64_t i = 0;
-  for (; i + 4 <= n; i += 4) {
-    for (int a = 0; a < NI; ++a) std::memcpy(&V[a], in[a] + i, 32);
-    cdf_multi4<NP, NM>(V, V + NP, V + 2 * NP, V[NI - 1], O);
-    for (int a = 0; a < NO; ++a) std::memcpy(out[a] + i, &O[a], 32);
-  }
-  if (i < n) {
-    for (int a = 0; a < NI; ++a) {
-      V[a] = splat(0.0);
-      for (int64_t l = 0; i + l < n; ++l) V[a][l] = in[a][i + l];
+  if (single_tier(n, in[NI - 1])) {
+    int64_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+      for (int a = 0; a < NI; ++a) std::memcpy(&V[a], in[a] + i, 32);
+      cdf_multi4<NP, NM>(V, V + NP, V + 2 * NP, V[NI - 1], O);
+      for (int a = 0; a < NO; ++a) std::memcpy(out[a] + i, &O[a], 32);
     }
-    cdf_multi4<NP, NM>(V, V + NP, V + 2 * NP, V[NI - 1], O);
-    for (int a = 0; a < NO; ++a)
-      for (int64_t l = 0; i + l < n; ++l) out[a][i + l] = O[a][l];
+    if (i < n) {
+      for (int a = 0; a < NI; ++a) {
+        V[a] = splat(in[a][i]);
+        for (int64_t l = 0; i + l < n; ++l) V[a][l] = in[a][i + l];
+      }
+      cdf_multi4<NP, NM>(V, V + NP, V + 2 * NP, V[NI - 1], O);
+      for (int a = 0; a < NO; ++a)
+        for (int64_t l = 0; i + l < n; ++l) out[a][i + l] = O[a][l];
+    }
+    return;
+  }
+  std::vector<int32_t> perm;
+  int64_t cnt[15];
+  tier_order(n, in[NI - 1], perm, cnt);
+  for (int t = 0; t < 14; ++t) {
+    for (int64_t s0 = cnt[t]; s0 < cnt[t + 1]; s0 += 4) {
+      int64_t lanes = cnt[t + 1] - s0 < 4 ? cnt[t + 1] - s0 : 4;
+      for (int l = 0; l < 4; ++l) {
+        int64_t j = perm[s0 + (l < lanes ? l : 0)];
+        for (int a = 0; a < NI; ++a) V[a][l] = in[a][j];
+      }
+      cdf_multi4<NP, NM>(V, V + NP, V + 2 * NP, V[NI - 1], O);
+      for (int l = 0; l < lanes; ++l) {
+        int64_t j = perm[s0 + l];
+        for (int a = 0; a < NO; ++a) out[a][j] = O[a][l];
+      }
+    }
   }
 }
 
 inline void cdf_array(int64_t n, const double* h, const double* k, const double* rho, double* p,
                       double* dh, double* dk, double* drho) {
-  int64_t i = 0;
-  for (; i + 4 <= n; i += 4) {
-    v4d H, K, R, P, O1, O2, O3;
-    std::memcpy(&H, h + i, 32);
-    std::memcpy(&K, k + i, 32);
-    std::memcpy(&R, rho + i, 32);
-    cdf4(H, K, R, P, O1, O2, O3);
-    std::memcpy(p + i, &P, 32);
-    std::memcpy(dh + i, &O1, 32);
-    std::memcpy(dk + i, &O2, 32);
-    std::memcpy(drho + i, &O3, 32);
+  std::vector<int32_t> perm;
+  int64_t cnt[15];
+  if (single_tier(n, rho)) {
+    perm.resize(n);
+    for (int64_t i = 0; i < n; ++i) perm[i] = static_cast<int32_t>(i);
+    for (int t = 0; t < 15; ++t) cnt[t] = 0;
+    for (int t = 1; t < 15; ++t) cnt[t] = n;
+  } else {
+    tier_order(n, rho, perm, cnt);
   }
-  if (i < n) {
-    v4d H = splat(0), K = splat(0), R = splat(0), P, O1, O2, O3;
-    for (int64_t l = 0; i + l < n; ++l) {
-      H[l] = h[i + l];
-      K[l] = k[i + l];
-      R[l] = rho[i + l];
-    }
-    cdf4(H, K, R, P, O1, O2, O3);
-    for (int64_t l = 0; i + l < n; ++l) {
-      p[i + l] = P[l];
-      dh[i + l] = O1[l];
-      dk[i + l] = O2[l];
-      drho[i + l] = O3[l];
+  for (int t = 0; t < 14; ++t) {
+    for (int64_t s0 = cnt[t]; s0 < cnt[t + 1]; s0 += 4) {
+      int64_t lanes = cnt[t + 1] - s0 < 4 ? cnt[t + 1] - s0 : 4;
+      v4d H, K, R, P, O1, O2, O3;
+      for (int l = 0; l < 4; ++l) {
+        int64_t j = perm[s0 + (l < lanes ? l : 0)];
+        H[l] = h[j]; K[l] = k[j]; R[l] = rho[j];
+      }
+      cdf4(H, K, R, P, O1, O2, O3);
+      for (int l = 0; l < lanes; ++l) {
+        int64_t j = perm[s0 + l];
+        p[j] = P[l]; dh[j] = O1[l]; dk[j] = O2[l]; drho[j] = O3[l];
+      }
     }
   }
   for (int64_t j = 0; j < n; ++j) {
     if (p[j] >= bvn_tail::kTailSwitch || std::isnan(h[j]) || std::isnan(k[j]) || std::isnan(rho[j])) continue;
-    bvn_tail::Rect r = bvn_tail::rect(-bvn_tail::kInf, h[j], -bvn_tail::kInf, k[j], rho[j]);
+    bvn_tail::Rect r = bvn_tail::rect<CondV>(-bvn_tail::kInf, h[j], -bvn_tail::kInf, k[j], rho[j]);
     p[j] = r.p;
     dh[j] = r.d1h;
     dk[j] = r.d2h;

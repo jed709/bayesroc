@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace bvn_tail {
 
@@ -15,7 +16,7 @@ constexpr double kLogSqrt2Pi = 0.91893853320467274;
 constexpr double kInvSqrt2Pi = 0.3989422804014327;
 constexpr double kLog2Pi = 1.8378770664093455;
 constexpr double kInf = std::numeric_limits<double>::infinity();
-constexpr double kTailSwitch = 1e-6;
+constexpr double kTailSwitch = 1e-4;
 constexpr double kDomain = 40.0;
 constexpr double kSpan = 25.0;
 constexpr int kMaxGrade = 30;
@@ -105,6 +106,16 @@ inline double lphi2(double x, double y, double rho, double s) {
   return -(x * x - 2.0 * rho * x * y + y * y) / (2.0 * s * s) - std::log(s) - kLog2Pi;
 }
 
+template <class C, class = void>
+struct HasPanel {
+  static constexpr bool value = false;
+};
+
+template <class C>
+struct HasPanel<C, decltype(std::declval<const C&>().panel(0.0, 0.0, std::declval<double&>(), std::declval<double&>()), void())> {
+  static constexpr bool value = true;
+};
+
 template <class C>
 inline double log_integral(const C& c, double a, double b) {
   double lo = std::fmax(a, -kDomain), hi = std::fmin(b, kDomain);
@@ -173,6 +184,10 @@ inline double log_integral(const C& c, double a, double b) {
   }
   double vmax = -kInf, acc = 0.0;
   auto panel = [&](double A, double B) {
+    if constexpr (HasPanel<C>::value) {
+      c.panel(A, B, vmax, acc);
+      return;
+    }
     double h = 0.5 * (B - A), c0 = 0.5 * (A + B), lh = std::log(h);
     for (int q = 0; q < kNodes; ++q) {
       double v = lh + std::log(kGW[q]) + c.g(c0 + h * kGX[q]);
@@ -205,13 +220,14 @@ inline double log_integral(const C& c, double a, double b) {
   return vmax + std::log(acc);
 }
 
+template <class CT = Cond>
 inline Rect rect(double a1, double b1, double a2, double b2, double rho) {
   Rect r{-kInf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   const bool clamped = !(std::fabs(rho) < 0.999999);
   if (rho > 0.999999) rho = 0.999999;
   if (rho < -0.999999) rho = -0.999999;
   double s = std::sqrt((1.0 - rho) * (1.0 + rho));
-  Cond c{a2, b2, rho, s, rho / s};
+  CT c{Cond{a2, b2, rho, s, rho / s}};
   r.lp = log_integral(c, a1, b1);
   if (!std::isfinite(r.lp)) return r;
   r.p = std::exp(r.lp);

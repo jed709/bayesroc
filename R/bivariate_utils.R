@@ -154,7 +154,7 @@ binormal_cdf_r <- function(z1, z2, rho) {
   delta <- as.numeric(product < 0 | (product == 0 & (z1f + z2f) < 0))
 
   p <- 0.5 * (pnorm(z1f) + pnorm(z2f) - delta) - owens_t_r(z1f, a1) - owens_t_r(z2f, a2)
-  for (i in which(p < 1e-6 & abs(rhof) < 1)) {
+  for (i in which(p < 1e-4 & abs(rhof) < 1)) {
     s <- sqrt((1 - rhof[i]) * (1 + rhof[i]))
     p[i] <- exp(.log_lin_integral_r(-Inf, 0, z2[finite][i] / s, -rhof[i] / s, -Inf, z1[finite][i]))
   }
@@ -326,12 +326,12 @@ binormal_cdf_r <- function(z1, z2, rho) {
 #' @param z_tau_lo Standardized lower confidence threshold
 #' @param z_tau_hi Standardized upper confidence threshold
 #' @param rho Correlation between R and M
-#' @return Scalar probability; cells below 1e-6 come from the log-space integral
+#' @return Scalar probability; cells below 1e-4 come from the log-space integral
 #' @noRd
 binormal_strip_upper_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
   p <- (pnorm(z_tau_hi) - binormal_cdf_r(z_cR, z_tau_hi, rho)) -
        (pnorm(z_tau_lo) - binormal_cdf_r(z_cR, z_tau_lo, rho))
-  if (p >= 1e-6) return(p)
+  if (p >= 1e-4) return(p)
   s <- sqrt((1 - rho) * (1 + rho))
   exp(.log_lin_integral_r(z_tau_lo / s, -rho / s, z_tau_hi / s, -rho / s, z_cR, Inf))
 }
@@ -339,11 +339,11 @@ binormal_strip_upper_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
 #' P(R <= c_R, tau_lo < M < tau_hi) -- "Know" in confidence band
 #'
 #' @inheritParams binormal_strip_upper_r
-#' @return Scalar probability; cells below 1e-6 come from the log-space integral
+#' @return Scalar probability; cells below 1e-4 come from the log-space integral
 #' @noRd
 binormal_strip_lower_r <- function(z_cR, z_tau_lo, z_tau_hi, rho) {
   p <- (binormal_cdf_r(z_cR, z_tau_hi, rho) - binormal_cdf_r(z_cR, z_tau_lo, rho))
-  if (p >= 1e-6) return(p)
+  if (p >= 1e-4) return(p)
   s <- sqrt((1 - rho) * (1 + rho))
   exp(.log_lin_integral_r(z_tau_lo / s, -rho / s, z_tau_hi / s, -rho / s, -Inf, z_cR))
 }
@@ -474,7 +474,7 @@ compute_rkg_probs_r <- function(mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, 
 
   raw <- c(p_Remember, p_Know, p_Guess)
   vapply(1:3, function(k) {
-    if (raw[k] >= 1e-6) raw[k]
+    if (raw[k] >= 1e-4) raw[k]
     else exp(cdp_log_cell_r(k, mu_R, sigma_R, mu_F, sigma_F, c_R, c_K, tau_lo, tau_hi, corr))
   }, numeric(1))
 }
